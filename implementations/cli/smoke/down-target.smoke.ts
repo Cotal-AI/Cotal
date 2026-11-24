@@ -311,6 +311,13 @@ try {
 
   process.chdir(neutral);
 
+  const ledgerSelectors: Record<string, string>[] = [{ file: "plan with spaces.yaml" }, { run: "run01" }, { file: "plan with spaces.yaml", run: "run01" }];
+  for (const selectors of ledgerSelectors) for (const format of ["json", "plain"]) {
+    const refusal = await rejection(run([], { ...selectors, "dry-run": true, [format]: true }));
+    check(`a ${format} ledger preview by ${Object.keys(selectors).join(" and ")} keeps the original preview`,
+      refusal?.code === "UNSUPPORTED" && refusal.remedy === `omit --${format} from the original command; keep --dry-run and the same deployment selection`, refusal);
+  }
+
   // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
   // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));

@@ -1083,8 +1083,9 @@ group and the folder has no extended ACL, the same rule as every other protected
 under it are not opened, and one that does not exist is reported missing,
 so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
 `install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
-installed. A relative `ZDOTDIR`
-is resolved from the current directory for this report, as zsh resolves it.
+installed. A relative `ZDOTDIR` is resolved from the current directory for this report, as zsh
+resolves it. Next explains the constraint and offers the zsh script for manual setup instead of
+suggesting a managed zsh install or uninstall with a relative `ZDOTDIR`.
 
 With `--json`, `result.shell` is the shell `$SHELL` names when Cotal completes it, else null.
 `result.shells` holds one item per shell:

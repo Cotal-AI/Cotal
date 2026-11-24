@@ -113,7 +113,7 @@ process.on("exit", () => {
 });
 
 // Asynchronous, so the stand-in exchange in this process can answer while the binary runs.
-const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const launcher = resolveOnPath("cotal", runEnv) ? "cotal" : "pnpm cotal";
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) =>
   new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
@@ -191,7 +191,14 @@ setCurrent("keep");
 // ── Usage refusals, before anything is read or dialed ─────────────────────────────────────────────────
 {
   const before = registryFiles();
-  check("add with no name and no bundle is USAGE_INVALID, exit 1", refused(await json(["space", "add", "--server", LIVE]), 1, "USAGE_INVALID"));
+  const options = ["--server", LIVE, "--root", root, "--mode", "open"];
+  const missingName = await json(["space", "add", ...options], userRoot);
+  check("a missing name asks to insert it into the same registration command", refused(missingName, 1, "USAGE_INVALID") && missingName.env?.error?.remedy === "repeat the same command with the space name after `add`", shown(missingName));
+  const missingBoth = await json(["space", "add", "--root", root]);
+  check("without a name or server the remedy asks for both", refused(missingBoth, 1, "USAGE_INVALID") && missingBoth.env?.error?.remedy?.includes("--server <url>"), shown(missingBoth));
+  const retry = await run(["space", "add", "open1", ...options, "--json"], { COTAL_HOME: join(home, "name-retry-home") }, userRoot);
+  const registered = JSON.parse(retry.stdout).result;
+  check("inserting the name returns a verified JSON registration for the requested root and broker", retry.status === 0 && registered?.verified === true && registered.space?.root === root && registered.space?.server === LIVE, shown(retry));
   const noServer = await json(["space", "add", "x", "--root", root]);
   check("add with no --server is USAGE_INVALID with an example remedy", refused(noServer, 1, "USAGE_INVALID") && /--server nats:\/\//.test(noServer.env?.error?.remedy ?? ""), shown(noServer));
   check("--file with --from is USAGE_INVALID", refused(await json(["space", "add", "--file", file, "--from", "https://x.test", "--root", userRoot]), 1, "USAGE_INVALID"));
@@ -204,7 +211,7 @@ setCurrent("keep");
   check("--mode with another value is USAGE_INVALID", refused(await json(["space", "add", "x", "--server", LIVE, "--mode", "token", "--root", root]), 1, "USAGE_INVALID"));
   check("an add flag on another form is USAGE_INVALID", refused(await json(["space", "--server", LIVE]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "keep", "--force"]), 1, "USAGE_INVALID"));
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
-  check("--from without a terminal is USAGE_INVALID and names --file", refused(fromScript, 1, "USAGE_INVALID") && /--file/.test(fromScript.env?.error?.remedy ?? ""), shown(fromScript));
+  check("discovery with JSON explains why it cannot prompt and how to keep JSON output", refused(fromScript, 1, "USAGE_INVALID") && fromScript.env?.error?.message.includes("--json disables") && fromScript.env.error.remedy.includes("without --json") && fromScript.env.error.remedy.includes("replace --from <url> with --file <bundle.json>"), shown(fromScript));
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
   // A name that starts with - reads as an option, so use, --space and the stack's own children could not take it.
   const dashed = await json(["space", "add", "--server", LIVE, "--root", root, "--force", "--", "-x"]);
@@ -337,7 +344,7 @@ setCurrent("keep");
   const plaintext = await json(["space", "add", "far", "--server", "nats://broker.example.com:4222", "--root", root]);
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
-  check("a --root that is not a directory is USAGE_INVALID", refused(noRoot, 1, "USAGE_INVALID"), shown(noRoot));
+  check("an invalid --root names the directory requirement for an open space", refused(noRoot, 1, "USAGE_INVALID") && noRoot.env?.error?.message.includes("pass an existing folder; for an open space it may be empty"), shown(noRoot));
   const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
   check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
   const fromHomeText = await run(["space", "add", "r3", "--server", LIVE, "--mode", "open"]);
@@ -1719,10 +1726,10 @@ if (process.platform === "linux") {
   } finally { await new Promise<void>((done) => occupier.close(() => done())); }
   // Omit --server to use the recorded address and reach the recorded-input comparison.
   const bound = await json(["up", "--detach", "--no-manager", "--host", "127.0.0.2"], fresh);
-  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and bare cotal up, and prepares nothing",
+  check("up --host naming a different bind is CONFLICT, exit 2, naming both hosts and the broker-only cotal up, and prepares nothing",
     refused(bound, 2, "CONFLICT") && (bound.env?.error?.message ?? "").includes("--host 127.0.0.2 (recorded: 127.0.0.1)") &&
       (bound.env?.error?.message ?? "").includes("nothing was prepared") &&
-      (bound.env?.error?.remedy ?? "").includes(`run bare \`cotal up\` from ${recordedRoot}`), shown(bound));
+      (bound.env?.error?.remedy ?? "").includes(`run \`cotal up --no-manager\` from ${recordedRoot}`), shown(bound));
   check("none of these refusals changed the stack journal", readFileSync(stackJournalPath(fresh), "utf8") === journalBefore);
   const brokerBefore = readStackJournal(fresh)?.journal.broker;
   const sameBind = await json(["up", "--no-manager", "--server", server, "--host", "127.0.0.1"], fresh);

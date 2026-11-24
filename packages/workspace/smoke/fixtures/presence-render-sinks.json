@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1135,
+    "total": 1139,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 913
+    "non-render/control": 917
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -4510,7 +4510,7 @@
     {
       "path": "implementations/cli/src/chat/plain.ts",
       "kind": "status-token",
-      "anchor": "tate = addNotice(state, \"waiting\", `draft is at its ${MAX",
+      "anchor": "tate = addNotice(state, \"waiting\", `line not added: it wo",
       "class": "non-render/control",
       "rationale": "Plain chat draft-limit notice: \"waiting\" is the color tone; the text is about the local draft, not a peer's presence."
     },
@@ -6743,9 +6743,37 @@
     {
       "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "eer) => peer.status !== \"offline\");\n      const address =",
+      "class": "non-render/control",
+      "rationale": "Seat resolution excludes offline peers from live name lookup before deciding whether to offer a foreground remedy."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "ome((p) => p.status !== \"offline\" && p.card.kind === \"end",
+      "class": "non-render/control",
+      "rationale": "The seat ownership check uses live manager presence to qualify the census result, without rendering the status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeer(live, address)",
+      "class": "non-render/control",
+      "rationale": "The filtered roster is used to resolve the requested peer, not to render its status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "hasNoSeatOwner(census, roster, peer)",
+      "class": "non-render/control",
+      "rationale": "The ownership predicate determines whether foreground recovery advice applies without printing presence status."
     },
     {
       "path": "implementations/cli/src/commands/spawn-managed-launch.ts",

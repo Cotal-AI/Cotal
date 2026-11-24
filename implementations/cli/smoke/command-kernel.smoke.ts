@@ -2450,7 +2450,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
   assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
   assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
-  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  const spawnCommand = findCommand(registry.all<Command>("command"), "spawn")!;
+  const restart = ["--restarts", "2", "--restart-window", "1000"];
+  for (const [placement, change] of [[[], "add -d"], [["--foreground"], "replace --foreground with -d"]] as const) {
+    const preview = ["--dry-run", "--json"];
+    const denied = refusal(parseCommandArgs(spawnCommand, [...placement, ...restart, ...preview]).values);
+    assert.equal(denied?.code, "USAGE_INVALID");
+    assert.equal(denied.remedy, `${change} to keep restart supervision, or omit --restarts and --restart-window to launch in this terminal`);
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, ["-d", ...restart, ...preview])), "the managed retry keeps both restart flags");
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, [...placement, ...preview])), "the direct retry omits both restart flags");
+  }
   assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
 }
 

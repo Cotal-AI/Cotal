@@ -129,7 +129,7 @@ export async function unrecordedStackServer(root: string, space: string, host: s
     return host ? reconcileHostAndServer(host, undefined, "--host", "--server", saved) : saved;
   }
   if (listSpaceAccounts(authDir(root)).includes(space) || existsSync(join(root, ".cotal", "nats")))
-    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run `cotal up --server <url>` with the address it ran at", { root, space });
+    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "repeat the same startup command, adding `--server <url>` with the address it ran at", { root, space });
   return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);
 }
 
@@ -584,8 +584,9 @@ export async function adoptProvenListener(
   storeDir: string,
   listener: string,
   heldLock?: MaintenanceLock,
+  channels?: string,
 ): Promise<void> {
-  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode);
+  await recreateAdoptedMemoryBuckets(attempt.root, attempt.space, attempt.server, attempt.mode, channels);
   const svc = await ensureRecoveredUserAuth(attempt);
   // Read the recorded exposure BEFORE re-recording: `recordOurMesh` writes the entry whole, so a
   // record built without this field would erase the operator's decision, and the adopted manager

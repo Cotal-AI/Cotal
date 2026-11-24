@@ -199,9 +199,10 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
   else try {
-    // Mint receipts identify the operation, not the auth namespace used by account reports.
-    const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
-      ? "auth mint" : cmd.name;
+    const subcommand = cmd.name === "auth" || cmd.name === "doctor"
+      ? findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name : undefined;
+    const command = cmd.name === "auth" && subcommand === "mint" ? "auth mint"
+      : cmd.name === "doctor" && subcommand === "auth" ? "doctor auth" : cmd.name;
     const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
     const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
@@ -521,8 +522,10 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
-    if (flag?.type === "boolean" && !flag.multiple && parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === true)
-      return { message: reason, remedy: `drop the unknown option; --${flag.name} is already set` };
+    if (flag && !flag.multiple && typeof parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === flag.type) {
+      const value = flag.type === "string" ? " and its value, if any" : "";
+      return { message: reason, remedy: `drop the unknown option${value}; --${flag.name} is already set` };
+    }
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
     const remedy = cmd.name === "completion" ? "drop the unknown option"
       : !takesOperands ? undefined : spellings ? `use ${spellings}`
@@ -968,7 +971,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
     // reads it.
     const home = process.env.COTAL_HOME;
-    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no

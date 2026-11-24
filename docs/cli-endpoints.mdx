@@ -509,6 +509,8 @@ If several registered spaces match the project folder, the inventory refuses wit
 Next names a command for each space and keeps the original inventory options. `show <name>` refuses the same way, naming each matching space and the retry for it.
 
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
+If space selection is ambiguous and you did not pass `--space`, the import uses the file's
+space only if it matches one of the registered candidates. It does not change the current selection.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
@@ -603,6 +605,8 @@ instance. Invocation receipts attribute resolution to the native responder that 
 
 ### Native registration inventory
 
+`endpoint --space <s>` lists saved references for that space without contacting a broker.
+For inventory, `--server` and `--creds` require `--live`.
 `endpoint --live` adds authorized native service-registration metadata to the local reference
 inventory. It uses the existing scoped service-record read rows, without adding grants or reading
 message bodies. The SDK paginates the filtered metadata list; per-key spec/status reads come from

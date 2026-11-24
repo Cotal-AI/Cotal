@@ -375,8 +375,15 @@ async function revoke(values: RunValues, runId: string | undefined): Promise<voi
     const kv = await new Kvm(nc).open(admissionBucket(conn.space));
     // The marker sits beside the run's admission. With no admission there is no run here to revoke,
     // so refuse before anything is written.
-    if (await kv.get(admissionKey(endpoint, runId)) === null)
-      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, { target: { space: conn.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+    if (await kv.get(admissionKey(endpoint, runId)) === null) {
+      const selectors = retryFlag("space", conn.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+      const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`, {
+        target: { space: conn.space, endpoint, run: runId },
+        remedy: privateServer ? "change the original subcommand to `list` and remove the run ID, `--by` and `--reason` with their values"
+          : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+      });
+    }
     await revokeRunAdmission(kv, endpoint, { version: 1, runId, reason: values.reason, by: values.by, revokedAt: Date.now() });
     const view = await readRunAdmission(await jetstreamManager(nc), conn.space, endpoint, runId);
     console.log(`run ${runId} on ${endpoint}: revoked by ${view.revoked!.by} (${view.revoked!.reason}); its hosts refuse the next channel effect, and it is not resumed or taken back`);
@@ -626,8 +633,15 @@ async function migrate(values: RunValues, planes: Planes, runId: string | undefi
   const endpoint = values.endpoint ?? "manager";
   const record = await readRunRecord(planes.kv, endpoint, runId);
   // A run ID nothing records is refused as `run show` refuses it; the check writes nothing either way.
-  if (record === undefined)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, { target: { space: planes.space, endpoint, run: runId }, remedy: "list the recorded runs with `cotal run`" });
+  if (record === undefined) {
+    const selectors = retryFlag("space", planes.space) + (["server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const privateServer = values.server !== undefined && brokerAddressForDisplay(values.server) !== oneLine(values.server);
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `run ${runId}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`, {
+      target: { space: planes.space, endpoint, run: runId },
+      remedy: privateServer ? "change the original subcommand to `list`, remove the run ID and program file (including `--file` if used), and add `--local` if missing"
+        : `list the recorded runs with ${codeSpan(`cotal run list --local${selectors}`)}`,
+    });
+  }
   const recorded = await readRunProgram(planes.kv, endpoint, runId);
   const replay = await replayRunJournal(planes.js, planes.jsm, planes.space, runId, takeoverId);
   const source = sourceOf(values.file);

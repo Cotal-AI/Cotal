@@ -211,9 +211,10 @@ export class ConsoleSession {
     return clean(this.out.slice(from)).includes("Enter sends");
   }
   /** `q`, then wait for the exit; true iff the console exited 0. */
-  async quit(): Promise<boolean> {
+  async quit(timeoutMs = 5_000): Promise<boolean> {
     this.write("q");
-    for (let i = 0; i < 50 && !this.exited; i++) await wait(100);
+    const deadline = Date.now() + timeoutMs;
+    while (!this.exited && Date.now() < deadline) await wait(100);
     return this.exited?.code === 0;
   }
   async close(): Promise<void> {
