@@ -207,11 +207,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   if (!json) writeReport();
   else try {
     const recognize = cmd.name === "backup" ? typographicOptions(cmd) : undefined;
-    const subcommand = cmd.name === "backup" || cmd.name === "auth" || cmd.name === "doctor"
+    const subcommand = cmd.name === "backup" || cmd.name === "auth" || cmd.name === "doctor" || cmd.name === "endpoint"
       ? findSubcommand(cmd, metadataPositionals(cmd, words, recognize && { optionSpelling: (word) => recognize(word)?.spelling }).positionals[0]?.value)?.name
       : undefined;
     const command = subcommand && (cmd.name === "backup" ||
-      (cmd.name === "auth" && subcommand === "mint") || (cmd.name === "doctor" && subcommand === "auth"))
+      (cmd.name === "auth" && subcommand === "mint") || (cmd.name === "doctor" && subcommand === "auth") ||
+      (cmd.name === "endpoint" && (subcommand === "init" || subcommand === "check")))
       ? `${cmd.name} ${subcommand}` : cmd.name;
     const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
     const historyFollow = cmd.name === "history" && follow
