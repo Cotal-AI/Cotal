@@ -168,26 +168,30 @@ function assertBackupOutsideAttempts(root: string, run: (...args: string[]) => S
   const journal = join(metadata, "v1", "journal.json");
   const attempts = join(metadata, "attempts");
   const before = readFileSync(journal, "utf8");
-  mkdirSync(attempts, { recursive: true, mode: 0o700 });
+  assert.ok(!existsSync(attempts), "the fresh cut has no maintenance attempts directory");
   const refused = run("backup", "create", join(".cotal", "maintenance", "attempts", "forbidden"), "--plain");
   assert.equal(refused.status, 1, `${refused.stdout}${refused.stderr}`);
   assert.match(refused.stderr, /Code:\s+USAGE_INVALID/);
   assert.ok(refused.stderr.includes(`is inside the maintenance attempt directory ${attempts}`), refused.stderr);
   assert.ok(refused.stderr.includes(`name a destination outside ${attempts}`), refused.stderr);
-  assert.doesNotMatch(refused.stderr, /LIFECYCLE_BLOCKED|before recovery|Native detail:|^Usage/m);
+  assert.doesNotMatch(refused.stderr, /LIFECYCLE_BLOCKED|before recovery|create that folder|Native detail:|^Usage/m);
+  assert.ok(!existsSync(attempts), "the refusal did not create the attempts directory");
 
+  mkdirSync(attempts, { mode: 0o700 });
   symlinkSync(attempts, join(root, "attempts-link"), "junction");
-  const destination = join(root, "attempts-link", "forbidden");
-  const linked = run("backup", "create", destination, "--json");
-  assert.equal(linked.status, 1, `${linked.stdout}${linked.stderr}`);
-  const envelope = JSON.parse(linked.stdout);
-  assert.equal(envelope.command, "backup create");
-  assert.equal(envelope.outcome, "refused");
-  assert.equal(envelope.error.code, "USAGE_INVALID");
-  assert.equal(envelope.target.directory, destination);
-  assert.equal(envelope.target.attempts, attempts);
-  assert.ok(!Object.hasOwn(envelope.target, "attemptId"));
-  assert.equal(envelope.error.remedy, `name a destination outside ${attempts}`);
+  for (const path of ["forbidden", join("missing", "nested", "forbidden")]) {
+    const destination = join(root, "attempts-link", path);
+    const linked = run("backup", "create", destination, "--json");
+    assert.equal(linked.status, 1, `${linked.stdout}${linked.stderr}`);
+    const envelope = JSON.parse(linked.stdout);
+    assert.equal(envelope.command, "backup create");
+    assert.equal(envelope.outcome, "refused");
+    assert.equal(envelope.error.code, "USAGE_INVALID");
+    assert.equal(envelope.target.directory, destination);
+    assert.equal(envelope.target.attempts, attempts);
+    assert.ok(!Object.hasOwn(envelope.target, "attemptId"));
+    assert.equal(envelope.error.remedy, `name a destination outside ${attempts}`);
+  }
   assert.equal(readFileSync(journal, "utf8"), before, "invalid destinations leave the ready journal unchanged");
   assert.deepEqual(readdirSync(attempts), [], "invalid destinations leave no artifact or attempt");
   assert.ok(!existsSync(join(metadata, "lock.json")), "no maintenance lock remains");

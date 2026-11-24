@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -49,7 +49,7 @@ import {
   type ProcessOwner,
   restoreLeftOut,
 } from "@cotal-ai/workspace";
-import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
@@ -367,9 +367,30 @@ export function chunkQueue(): {
   };
 }
 
-function canonicalFuturePath(path: string): string {
-  const absolute = resolve(path);
-  return join(realpathSync.native(dirname(absolute)), basename(absolute));
+function resolveBackupDestination(path: string, attempts: string): string {
+  const folder = dirname(path);
+  let ancestor = folder;
+  let realAncestor: string;
+  for (;;) {
+    try {
+      realAncestor = realpathSync.native(ancestor);
+      break;
+    } catch (error) {
+      const parent = dirname(ancestor);
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+  const artifact = join(realAncestor, relative(ancestor, path));
+  if (overlaps(artifact, attempts))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${path} is inside the maintenance attempt directory ${attempts}; no backup was written`, {
+      target: { directory: path, attempts }, remedy: `name a destination outside ${attempts}`, selfContained: true,
+    });
+  // An absent parent has a location for diagnosis, but cannot hold a backup.
+  if (ancestor === folder) return artifact;
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, {
+    target: { directory: path, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder",
+  });
 }
 
 function overlaps(a: string, b: string): boolean {
@@ -379,19 +400,11 @@ function overlaps(a: string, b: string): boolean {
   return contained(fromA) || contained(fromB);
 }
 
-function assertBackupDestinationOutsideAttempts(artifact: string, destination: string, attempts: string): void {
-  if (overlaps(artifact, attempts))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destination} is inside the maintenance attempt directory ${attempts}; no backup was written`, {
-      target: { directory: destination, attempts }, remedy: `name a destination outside ${attempts}`, selfContained: true,
-    });
-}
-
 function assertBackupPaths(source: string, destination: string, attempts: string): void {
   // A linked parent can change between preflight and the locked check before the sweep.
-  const artifact = canonicalFuturePath(destination);
   if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
+  const artifact = resolveBackupDestination(destination, attempts);
   if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
-  assertBackupDestinationOutsideAttempts(artifact, destination, attempts);
 }
 
 async function snapshotStream(
@@ -602,15 +615,12 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     const partial = journal.state === "claimed" && journal.claim.ownedPaths?.some((owned) => owned.label === "destination" && owned.path === destinationPath) ? journal.claim.attemptId : undefined;
     throw new CommandFailure("refused", "CONFLICT", partial ? `the backup destination ${destinationPath} is the partial artifact of interrupted backup attempt ${partial}; backup create writes only a new directory` : "the backup destination already exists; backup create writes only a new directory", { target: { directory: destinationPath }, remedy: partial ? `remove it with \`cotal backup recover ${partial} --yes\`, then run this create again` : "name a directory that does not exist yet" });
   }
-  if (missingBackupPath(destinationPath) === "folder")
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
-  const artifact = canonicalFuturePath(destinationPath);
   const project = canonicalRoot(root);
   const attempts = join(project, ".cotal", "maintenance", "attempts");
+  const artifact = resolveBackupDestination(destinationPath, attempts);
   const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
   if (preserved && overlaps(artifact, preserved))
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
-  assertBackupDestinationOutsideAttempts(artifact, destinationPath, attempts);
   // `clean all` removes the space's identity, material and launch files with whatever they hold, so
   // an artifact among them would be removed with them.
   const cleaned = Object.values(localIdentityCleanupTargets(project, journal.space)).flat().map(canonicalRoot)
