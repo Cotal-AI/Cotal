@@ -860,8 +860,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
-  // Structured version reports inventory failures itself and needs no extension commands.
-  const versionJson = builtin?.name === "version" && !wantsHelp && asksForJson(builtin, words);
+  // Version reads the inventory itself without recovering promotions or resolving extension commands.
+  const versionRead = builtin?.name === "version" && !wantsHelp;
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
@@ -871,7 +871,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // Root only resolves a path. The JSON list classifies inventory errors in its handler.
   const extDiagnostics = builtin?.name === "ext" && !wantsHelp
     && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
+  let useExtensionOverlay = opts.extensions && !versionRead && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -911,7 +911,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !extDiagnostics && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
       else {

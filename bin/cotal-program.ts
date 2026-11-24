@@ -7,22 +7,16 @@ import { ensureSupportedNode } from "./cotal.js";
 // The updater probes this form. Leave usage and invalid-home diagnostics to the dispatcher.
 async function runVersionFlag(): Promise<boolean> {
   if (process.argv.length !== 3 || (process.argv[2] !== "--version" && process.argv[2] !== "-V")) return false;
-  const { c, cotalHomeProblem, stderrLine } = await import("@cotal-ai/workspace");
+  const { cotalHomeProblem } = await import("@cotal-ai/workspace");
   const home = process.env.COTAL_HOME;
   if ((home && !isAbsolute(home)) || cotalHomeProblem()) return false;
   const { completeFileWrites, stdoutError } = await import("@cotal-ai/cli/dispatch");
-  const { cliVersion, printVersion, readExtensionVersions } = await import("@cotal-ai/cli/version");
+  const { cliVersion, reportVersion } = await import("@cotal-ai/cli/version");
   (await import("./update-notice.js")).installUpdateNotice(process.argv.slice(2), cliVersion());
-  const inventory = readExtensionVersions();
-  if (inventory.unreadable !== undefined && !inventory.unreadableSelection) {
-    stderrLine("✗ ", inventory.unreadable, c.red);
-    process.exitCode = 1;
-  } else {
-    process.stdout.on("error", stdoutError);
-    completeFileWrites();
-    await (await import("./startup-interrupt.js")).releaseStartupInterrupt();
-    printVersion(inventory.versions);
-  }
+  process.stdout.on("error", stdoutError);
+  completeFileWrites();
+  await (await import("./startup-interrupt.js")).releaseStartupInterrupt();
+  reportVersion("plain");
   return true;
 }
 

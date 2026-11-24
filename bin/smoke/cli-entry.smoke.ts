@@ -446,18 +446,28 @@ const envelopes = (r: Run) => {
   partialVersion("leading JSON and the version alias also produce the partial envelope", ["-j", "-V"], /no "extensions" array/);
   const [damagedReport] = envelopes(versionRun(["version", "--json"]));
   const damagedText = versionRun(["version"]);
+  check("version prints the running version before reporting the unreadable inventory in text",
+    damagedText.status === 4 && damagedText.stdout.split("\n")[0] === `cotal-ai ${env?.result?.version}`
+    && damagedText.stderr.includes('no "extensions" array') && damagedText.stderr.includes("the installed extensions could not be listed"), shown(damagedText));
+  for (const args of [["--version"], ["-V"], ["--no-color", "version"]]) {
+    const alias = versionRun(args);
+    check(`${args.join(" ")} reports the same partial text result`, same(damagedText, alias), shown(alias));
+  }
   check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
     && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
     && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
-    && damagedText.status === 1 && damagedText.stderr.includes("cotal ext seed --repair")
+    && damagedText.stderr.includes(damagedReport.error.remedy)
     && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
-  check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
+  check("version leaves the corrupt manifest unchanged in both formats", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);
   check("ext list still refuses the corrupt manifest", strict.status === 1 && strict.stdout === "" && /no "extensions" array/.test(strict.stderr), shown(strict));
 
   const pin = { pkg: "sample-extension", version: "1.2.3", provides: [{ kind: "runtime", name: "sample" }] };
   writeFileSync(manifest, JSON.stringify({ extensions: [pin] }));
   partialVersion("version --json refuses to call a malformed extension row complete", ["version", "--json"], /invalid extension inventory entry/);
+  const malformedText = versionRun(["version"]);
+  check("version also reports a malformed extension row as partial in text", malformedText.status === 4
+    && malformedText.stdout === damagedText.stdout && malformedText.stderr.includes("invalid extension inventory entry"), shown(malformedText));
   writeFileSync(manifest, JSON.stringify({ extensions: [{ ...pin, commands: [] }] }));
   const installed = versionRun(["version", "--json"]);
   const [installedReport] = envelopes(installed);

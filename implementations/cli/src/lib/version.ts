@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { cachedUpdateSummary, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CorruptExtensionsManifestError, extensionProvides, globalConfigDirProblem, loadExtensionsManifest, logicalExecutionEntry, UnreadableConnectorSelection, writeResult } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
-import { readUpdatePending } from "./update-pending.js";
+import { manifestRepair, readUpdatePending } from "./update-pending.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
@@ -47,17 +47,13 @@ export interface ExtensionVersion {
   pkg: string;
 }
 
-/** Installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
- *  versions, for `cotal version` and `cotal status`. Reads the on-disk manifest directly — no import, no
- *  seeding side effect. Returns `[]` on an absent or corrupt manifest: the version view stays
- *  resilient, and a corrupt manifest is surfaced loudly by the real commands (the overlay is fatal). */
+/** Installed extension pins, without loading or reconciling them. */
 export function extensionVersions(): ExtensionVersion[] {
   return readExtensionVersions().versions;
 }
 
-/** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
- *  report can say its list is incomplete rather than empty. */
-export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true } {
+/** Read the pinned versions without loading or reconciling any extension. */
+export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true; diagnosis?: string } {
   try {
     const versions = loadExtensionsManifest().extensions.map((entry, index) => {
       if (!entry || typeof entry.pkg !== "string" || !entry.pkg || typeof entry.version !== "string" || !entry.version || !Array.isArray(entry.commands)) {
@@ -70,20 +66,57 @@ export function readExtensionVersions(): { versions: ExtensionVersion[]; unreada
       return { label: [...new Set(refs.map((ref) => ref.name))].join(", ") || entry.pkg, version: entry.version, pkg: entry.pkg };
     });
     return { versions };
-  } catch (e) {
-    return { versions: [], unreadable: e instanceof Error ? e.message : String(e), ...(e instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}) };
+  } catch (error) {
+    return {
+      versions: [], unreadable: error instanceof Error ? error.message : String(error),
+      ...(error instanceof UnreadableConnectorSelection ? { unreadableSelection: true } : {}),
+      ...(error instanceof CorruptExtensionsManifestError ? { diagnosis: error.diagnosis } : {}),
+    };
   }
 }
 
-/** Print the same metadata for the version command and the standalone flags. */
-export function printVersion(exts = extensionVersions()): void {
-  const current = cliVersion();
-  const update = cachedUpdateSummary(current);
-  const pending = readUpdatePending(current);
-  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" || (pending.kind !== "none" && update === pending.instruction) ? [] : [`  ${update}`])];
+function versionLines(current: string, update: string, instruction: string | undefined, exts: readonly ExtensionVersion[]): string[] {
+  const lines = [`cotal-ai ${current}`];
+  if (instruction) lines.push(`  ${instruction}`);
+  if (update !== "update status unknown" && update !== "up to date" && update !== instruction) lines.push(`  ${update}`);
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
   }
-  console.log(lines.join("\n"));
+  return lines;
+}
+
+function versionMetadata() {
+  const current = cliVersion();
+  return { current, update: cachedUpdateSummary(current), pending: readUpdatePending(current) };
+}
+
+/** Print a bare version listing for consumers that supply their own inventory. */
+export function printVersion(exts = extensionVersions()): void {
+  const { current, update, pending } = versionMetadata();
+  console.log(versionLines(current, update, pending.kind === "none" ? undefined : pending.instruction, exts).join("\n"));
+}
+
+/** Report the running version even when the extension inventory cannot be read. */
+export function reportVersion(format: "plain" | "json"): void {
+  const { versions, unreadable, unreadableSelection, diagnosis } = readExtensionVersions();
+  const config = unreadable === undefined ? undefined : globalConfigDirProblem();
+  const { current, update, pending } = versionMetadata();
+  const reconciliation = config && pending.kind === "unreadable" && pending.source === "manifest"
+    ? { ...pending, error: config.message, instruction: config.remedy } : pending;
+  // The updater's text probe must succeed with an unrecognized connector selection.
+  const detail = format === "plain" ? diagnosis ?? unreadable : unreadable;
+  const reason = format === "plain" && unreadableSelection ? undefined : config?.message ?? detail;
+  const remedy = config?.remedy ?? manifestRepair;
+  const instruction = reconciliation.kind === "none" ? undefined : reconciliation.instruction;
+  writeResult(format, {
+    command: "version",
+    target: null,
+    result: { version: current, update, reconciliation, extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+    ...(reason === undefined ? {} : {
+      completeness: "partial",
+      warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${reason}` }],
+      partial: { message: "the installed extensions could not be listed", remedy },
+    }),
+  }, () => ({ sections: [{ blocks: [{ kind: "lines", lines: versionLines(current, update, reason !== undefined && instruction === remedy ? undefined : instruction, versions) }] }] }));
 }
