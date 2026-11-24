@@ -375,7 +375,7 @@ try {
     for (const [flag, name] of [["--open", "open"], ["--user-auth", "user auth"]] as const) {
       const pinned = cli(root, "up", flag, "--no-manager", "--json");
       check(`up ${flag} on the stopped static-auth root refuses CONFLICT, exit 2, and names another folder for ${name}`,
-        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${flag}\`, in another folder`)), shown(pinned));
+        pinned.status === 2 && pinned.env?.error?.code === "CONFLICT" && Boolean(pinned.env.error.remedy?.includes(`for ${name} run \`cotal space create <space>\`, then \`cotal up ${flag} --no-manager\`, in another folder`)), { ...shown(pinned), remedy: pinned.env?.error?.remedy });
     }
 
     // A bare up adds the manager, so the restart keeps --no-manager for the ps refusal.
