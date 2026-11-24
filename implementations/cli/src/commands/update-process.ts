@@ -159,12 +159,18 @@ export async function runGlobalProcess(
   try {
     const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
     if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
-    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
-    const recordCache = gated && staging !== undefined;
+    const reconcileCache = gated && operation === "reconcile";
+    cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
+    let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
-      const start = processStartToken(process.pid);
-      if (!start) throw new Error("cannot identify the staged npm cache owner");
-      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+      try {
+        const start = processStartToken(process.pid);
+        if (!start) throw new Error("cannot identify the staged npm cache owner");
+        writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+      } catch (cause) {
+        if (!reconcileCache) throw cause;
+        recordCache = false;
+      }
     }
     if (staging !== undefined) {
       // npm is quiet during a download. Its private cache receives the archive bytes and
@@ -200,7 +206,10 @@ export async function runGlobalProcess(
     if (child.pid !== undefined) {
       try {
         // Publish cache custody before the gate permits npm to write to it.
-        if (recordCache) writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
+        if (recordCache) {
+          try { writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" }); }
+          catch (cause) { if (!reconcileCache) throw cause; }
+        }
         mutation.markLive(child.pid);
         published = true;
       } catch (e) {

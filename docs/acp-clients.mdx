@@ -37,6 +37,7 @@ Each entry runs this computer's `cotal acp --space <name>` by absolute path, bec
 When `COTAL_HOME` or `XDG_CONFIG_HOME` is set, the entry passes it on.
 A new entry is named `Cotal (<name>)`.
 An entry that already runs `cotal acp` for the space, such as one you added by hand, is updated in place.
+In T3 Code, setup uses a different provider ID if another provider already has the ID Cotal would use.
 Setup keeps your other settings, and in Zed it keeps your comments.
 Before it changes a settings file, it copies it next to the original as `settings.json.cotal-backup-<time>`.
 Both apps load the change without a restart.

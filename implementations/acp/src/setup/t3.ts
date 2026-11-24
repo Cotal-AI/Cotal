@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ClientSetupProvider, ConnectorSetupInput, ConnectorStatusRow } from "@cotal-ai/core";
 import { resolveOnPath } from "@cotal-ai/workspace";
 import { acpCommand, acpSpace, passedEnv, refreshedArgs, staleCommand } from "./command.js";
@@ -41,10 +41,22 @@ interface Instance {
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Recognize direct Cotal launchers and Node invocations of the Cotal entry, even after they move. */
+function runsCotal(command: unknown, args: unknown): boolean {
+  if (typeof command !== "string" || !Array.isArray(args)) return false;
+  const at = args.indexOf("acp");
+  const launcher = basename(command);
+  if (at === 0) return /^(?:cotal(?:\.(?:cmd|exe|bat|js|ts))?|cotal-npm)$/i.test(launcher);
+  const entry = args[at - 1];
+  return at > 0 && /^(?:node|nodejs|cotal-node)(?:\.exe)?$/i.test(launcher) && typeof entry === "string" &&
+    /^cotal(?:\.(?:js|ts))?$/i.test(basename(entry));
+}
+
 /** The instances that run `cotal acp` as a local ACP command, whoever added them. */
 function cotalInstances(file: SettingsFile): Instance[] {
   return Object.entries(objectAt(file, "providerInstances")).flatMap(([id, value]): Instance[] => {
     if (!isObject(value) || value.driver !== "acpRegistry" || !isObject(value.config) || value.config.source !== "local") return [];
+    if (!runsCotal(value.config.commandPath, value.config.commandArgs)) return [];
     const space = acpSpace(value.config.commandArgs);
     return space === undefined ? [] : [{ id, space, value, config: value.config }];
   });
@@ -83,9 +95,13 @@ function setUp({ cotal, wrote, space }: ConnectorSetupInput): string {
     const ids = ours.map((instance) => instance.id).join(", ");
     return changed ? `provider ${ids} for ${space} updated; ${APP} loads it without a restart` : `provider ${ids} for ${space} is current`;
   }
-  const id = t3InstanceId(space);
-  if (objectAt(file, "providerInstances")[id] !== undefined)
-    throw new Error(`${file.path} already has a provider ${id} that does not run Cotal for ${space}. Rename it in ${APP}, then run \`cotal setup\` again.`);
+  const baseId = t3InstanceId(space);
+  const instances = objectAt(file, "providerInstances");
+  let id = baseId;
+  for (let n = 2; Object.hasOwn(instances, id); n++) {
+    const suffix = `-${n}`;
+    id = `${baseId.slice(0, 64 - suffix.length)}${suffix}`;
+  }
   const { command, args } = acpCommand(cotal, space);
   const env = environment(undefined, file, id);
   writeReported(APP, file, [{

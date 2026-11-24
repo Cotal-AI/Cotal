@@ -129,7 +129,7 @@ export async function unrecordedStackServer(root: string, space: string, host: s
     return host ? reconcileHostAndServer(host, undefined, "--host", "--server", saved) : saved;
   }
   if (listSpaceAccounts(authDir(root)).includes(space) || existsSync(join(root, ".cotal", "nats")))
-    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "run `cotal up --server <url>` with the address it ran at", { root, space });
+    throw new MissingFlags(`no stack journal, registration or saved broker definition records the address "${space}" ran at in ${root}, which holds its earlier trust or store; nothing was started`, "repeat the same startup command, adding `--server <url>` with the address it ran at", { root, space });
   return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);
 }
 

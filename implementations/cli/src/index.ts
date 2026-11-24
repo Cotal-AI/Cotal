@@ -657,7 +657,7 @@ const baseCommands: Command[] = [
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) launch through a manager with `cotal spawn --detach`",
+    summary: "(removed) launch with `cotal spawn`",
     validate: refuseRemovedStart,
     run: async (args) => refuseRemovedStart(args),
   },
@@ -777,7 +777,7 @@ const baseCommands: Command[] = [
     positionals: "[show|add|remove|describe|invoke|watch|session|work|init|check|deregister] [target] [command-or-instance]",
     summary: "save references, author contracts offline, and inspect or invoke native endpoints",
     examples: [{ command: "cotal endpoint", note: "list the saved endpoint references" }, { command: "cotal endpoint describe <target>", note: "read an endpoint's commands" }, { command: "cotal endpoint invoke <target> <command>", note: "call one of its commands" }],
-    usage: "cotal endpoint [show | add | remove | describe | invoke | watch | session | work | init | check | deregister] [target] [command-or-instance] [options]",
+    usage: "cotal endpoint [--space <s>] [--json|--plain]\ncotal endpoint --live [--space <s>] [--server <url>] [--creds <path>] [--json|--plain]\ncotal endpoint <command> [target] [command-or-instance] [options]",
     flagNames: ["space", "live", "server", "creds", "json", "plain"],
     flags: endpointFlags, outputs: ["json", "ndjson", "plain"], reads: true, prepareMeshTarget: false,
     subcommands: ([

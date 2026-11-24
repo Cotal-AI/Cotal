@@ -487,7 +487,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const space = shellWord(s.space);
-  const hints: Cell[] = s.current ? [] : [{ text: `select it with ${codeSpan(`cotal use ${space}`)}`, tone: "hint" }];
+  const hints: Cell[] = s.current ? [] : [{ text: `select it with ${codeSpan(`${displayCmd()} use ${s.space.startsWith("-") ? "-- " : ""}${space}`)}`, tone: "hint" }];
   if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with ${codeSpan(`${displayCmd()} down --space ${space} --yes`)}`, tone: "waiting" });
   if (!s.modeChecked && s.origin === "manual" && s.mode !== "user") {
     if (s.check === "reachable") {

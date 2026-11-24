@@ -205,9 +205,15 @@ try {
     check("cotal manager status reads it", status.status === 0 && /Recorded state:\s+running/.test(out(status)), out(status));
     const logs = cotal(["manager", "logs", "--tail", "20"]);
     check("cotal manager logs reads its log", logs.status === 0 && out(logs).length > 0, out(logs));
-    const other = cotal(["manager", "start", "--runtime", "nosuchruntime"]);
-    check("a start naming another runtime while it runs refuses and names the stop",
-      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --runtime") && out(other).includes(`cotal manager stop --space ${SPACE}`), out(other));
+    for (const [flag, value, code] of [["--runtime", "nosuchruntime", "DEPENDENCY_UNAVAILABLE"], ["--server", wrongServer, "CONFLICT"]] as const) {
+      const invalid = cotal(["manager", "start", "--space", SPACE, "--dry-run", "--json", flag, value], 180_000, { root: home, env, anchor });
+      check(`a running manager preview diagnoses invalid ${flag} without advising a stop`,
+        invalid.status === 2 && JSON.parse(invalid.stdout).error?.code === code && !out(invalid).includes("manager stop"), out(invalid));
+    }
+    const other = cotal(["manager", "start", "--max-sessions", "5", "--dry-run"]);
+    check("a valid replacement for a running manager refuses and names the stop",
+      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --max-sessions") && out(other).includes(`cotal manager stop --space ${SPACE}`)
+      && inventory().running.filter((name) => name === "manager").length === 1, out(other));
 
     // ---- A program of your own: add with --exec, start, status, logs, stop -----------------------
     const script = join(root, "hello.sh");
@@ -215,6 +221,8 @@ try {
     chmodSync(script, 0o700);
     const add = cotal(["service", "add", "hello", "--exec", `${script} 'big world'`]);
     check("service add hello --exec saves your program in one command", add.status === 0 && inventory().definitions.includes("hello"), out(add));
+    const manual = cotal(["service", "start", "hello", "--no-open", "--dry-run", "--json"]);
+    check("a saved non-dashboard service still refuses --no-open", manual.status === 1 && JSON.parse(manual.stdout).error?.code === "USAGE_INVALID", out(manual));
     const notStartedJson = cotal(["service", "status", "hello", "--json"]);
     const notStartedReceipt = JSON.parse(notStartedJson.stdout) as { outcome: string; completeness: string; result: { definition: string; instanceId: string | null; recordedState: string } | null };
     check("service status reports a saved service with no instance as not started in JSON",
@@ -386,9 +394,9 @@ try {
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
     for (const name of ["nats", "broker", "stack-broker"]) {
       const brokerSet = envelope(upCotal(["down", name, "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
-      check(`cotal down ${name} delivery refuses the whole set and names the bare down that stops the broker`,
+      check(`cotal down ${name} delivery refuses the whole set and names a preview in its project`,
         brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `${name} matches no service a set of names can stop in space ${UP_SPACE}; no service was stopped`
-          && brokerSet.error.remedy === "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack", brokerSet);
+          && brokerSet.error.remedy === `a set of names never stops the broker; to preview stopping the whole stack, run \`cotal down --dry-run --space=${UP_SPACE} --json\` in ${realpathSync(upProject)}`, brokerSet);
     }
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.

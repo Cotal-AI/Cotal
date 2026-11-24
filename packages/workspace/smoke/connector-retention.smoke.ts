@@ -82,7 +82,7 @@ try {
 `], { env: { ...childEnv, XDG_CONFIG_HOME: join(root, "repair-config"), COTAL_HOME: join(root, "repair-home") }, encoding: "utf8", timeout: 30_000 });
   assert.equal(repair.status, 0, `${repair.stdout}${repair.stderr}`);
   passed++;
-  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
+  for (const scenario of ["unfinished-root", "unfinished-holders", "unfinished-seat", "unfinished-live-seat", "unfinished-dead-seat", "unfinished-link", "unselected-holder", "seat-holder", "unknown-set", "unknown-seat", "previous-read", "previous-wrong-entry", "previous-wrong-root", "previous-wrong-version", "previous-linked-ancestor", "previous-nonprivate-ancestor", "retain", "linked-config", "moved-config", "pnpm-dlx-refresh", "no-identity", "invalid-selection", "linked-prefix", "linked-parent", "stage-root", "next-version", "live-holder", "removal-failure", "orphan-child", "interrupted-lineage", "interrupted-canonical-move", "interrupted-canonical-cleanup", "initial-inherit", "checkout", "desktop", "windows"] as const) {
     const config = join(root, scenario);
     mkdirSync(join(config, "cotal/seed/store/0.162.0"), { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "cotal/extensions/node_modules/old"), { recursive: true, mode: 0o700 });
@@ -103,6 +103,14 @@ import {join,dirname} from 'node:path';
 ${scenario === "checkout" ? `const checkout=${JSON.stringify(join(config, "checkout"))};mkdirSync(join(checkout,'bin/dist'),{recursive:true,mode:0o700});mkdirSync(join(checkout,'implementations'),{mode:0o700});writeFileSync(join(checkout,'bin/package.json'),JSON.stringify({name:'cotal-ai',version:'0.166.0',bin:{cotal:'./dist/cotal.js'}}));writeFileSync(join(checkout,'bin/dist/cotal.js'),'');Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:join(checkout,'bin/dist/cotal.js'),loadedEntry:join(checkout,'bin/dist/cotal.js')})});` : scenario === "pnpm-dlx-refresh" ? `const dlxA=${JSON.stringify(join(config, "cache/pnpm/dlx/f366da99/mwm2iwjx-ygzp/node_modules/.pnpm/cotal-ai@0.165.4/node_modules/cotal-ai"))},dlxB=${JSON.stringify(join(config, "cache/pnpm/dlx/f366da99/mwm2kdsm-z19x/node_modules/.pnpm/cotal-ai@0.165.4/node_modules/cotal-ai"))};for(const dir of [dlxA,dlxB]){mkdirSync(join(dir,'dist'),{recursive:true,mode:0o700});writeFileSync(join(dir,'package.json'),JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));writeFileSync(join(dir,'dist/cotal.js'),'// dlx fixture\\n');}let currentDlx=join(dlxA,'dist/cotal.js');Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{get(){return Object.freeze({logicalEntry:currentDlx,loadedEntry:currentDlx});}});` : scenario === "no-identity" ? "" : `Object.defineProperty(globalThis,Symbol.for('cotal.execution.identity'),{value:Object.freeze({logicalEntry:${JSON.stringify(entry)},loadedEntry:${JSON.stringify(entry)}})});`}
 ${scenario === "desktop" ? `writeFileSync(${JSON.stringify(join(installed, "desktop-runtime.json"))},'{}');` : scenario === "windows" ? `Object.defineProperty(process,'platform',{value:'win32'});` : ""}
 const {connectorConfigDir,retainConnectorConfig,inheritConnectorConfig,canRecoverConnectorConfig,prepareConnectorConfigForUpdate}=await import(${JSON.stringify(module)});
+function assertRootPermissionRefusal(path) {
+  if (process.getuid?.()===0) return;
+  fs.chmodSync(path,0o200);
+  try {
+    assert.throws(()=>connectorConfigDir(),error=>error.code==='EACCES' && !error.message.includes('restore it there from a backup'));
+    assert.throws(()=>prepareConnectorConfigForUpdate(),error=>error.code==='PERMISSION_DENIED' && error.remedy.includes('owned and writable'));
+  } finally { fs.chmodSync(path,0o700); }
+}
 const original=${JSON.stringify(join(config, "cotal"))};
 const metadata=${JSON.stringify(join(installed, "package.json"))};
 writeFileSync(metadata,JSON.stringify({name:'cotal-ai',version:'0.165.4',bin:{cotal:'./dist/cotal.js'}}));
@@ -130,6 +138,7 @@ fs.chmodSync(selected,0o500);
 prepareConnectorConfigForUpdate();
 assert.equal(fs.statSync(selected).mode&0o777,0o700);
 assert.equal(readFileSync(selectionFile,'utf8'),selection,'alias use does not republish the record');
+assertRootPermissionRefusal(selected);
 const record=JSON.parse(selection), foreign=mkdtempSync(join(physical,'foreign-'));
 writeFileSync(selectionFile,JSON.stringify({...record,root:join(foreign,selected.slice(join(safe,'cotal').length))}));
 assert.throws(()=>connectorConfigDir(),/differs/,'the same retained suffix under a different config is refused');
@@ -138,6 +147,90 @@ rmSync(selectionFile);
 assert.equal(connectorConfigDir(),selected,'the physical path can use the same-version lineage');
 writeFileSync(selectionFile,selection,{mode:0o600});
 process.env.XDG_CONFIG_HOME=safe;
+` : ""}
+${scenario === "moved-config" ? `
+const from=process.env.XDG_CONFIG_HOME, to=from+' café';
+const selectedAt=path=>to+path.slice(from.length);
+const selection=selectedAt(join(dirname(selected),'selection.json'));
+const lineage=join(dirname(dirname(selection)),'current.json');
+const moved=selectedAt(selected);
+writeFileSync(join(selected,'extensions','extensions.json'),'{"extensions":[]}');
+renameSync(from,to);
+process.env.XDG_CONFIG_HOME=to;
+const before=snapshot(to);
+assert.equal(connectorConfigDir(),moved);
+assert.equal(readFileSync(join(moved,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');
+assert.deepEqual(snapshot(to),before,'reading a moved selection does not write it back');
+const {updateSnapshotConfig}=await import(${JSON.stringify(module)});
+assert.equal(updateSnapshotConfig({snapshot:join(selected,'.update-snapshot-test'),previous:'0.165.4'}),undefined,'update recovery must not rebase a recorded snapshot');
+renameSync(selection,selection+'.saved');
+assert.equal(connectorConfigDir(),moved,'the moved lineage can name the current set');
+assert.equal(canRecoverConnectorConfig(),true);
+const originalMetadata=readFileSync(metadata);
+try {
+  writeFileSync(metadata,JSON.stringify({...JSON.parse(originalMetadata),version:'0.165.5'}));
+  assert.equal(connectorConfigDir(),moved,'the moved lineage can name a previous set');
+  assert.equal(canRecoverConnectorConfig(),false);
+} finally { writeFileSync(metadata,originalMetadata); }
+assert.equal(JSON.parse(readFileSync(lineage,'utf8')).root,selected);
+renameSync(selection+'.saved',selection);
+const explainsMove=reason=>error=>error.message.includes(JSON.stringify(selected)) &&
+  error.message.includes(JSON.stringify(moved)) && error.message.includes(reason) &&
+  error.message.includes('restore it there from a backup') && error.message.includes('Set XDG_CONFIG_HOME');
+const extensions=join(moved,'extensions'), manifest=join(extensions,'extensions.json');
+renameSync(extensions,extensions+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('extensions directory is missing'));
+renameSync(extensions+'.saved',extensions);
+renameSync(manifest,manifest+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('extensions manifest is missing'));
+renameSync(manifest+'.saved',manifest);
+assertRootPermissionRefusal(moved);
+const versionDir=dirname(moved);
+renameSync(versionDir,versionDir+'.saved');
+symlinkSync(versionDir+'.saved',versionDir);
+assert.throws(()=>connectorConfigDir(),explainsMove('is a symbolic link'));
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('is a symbolic link'));
+renameSync(lineage,lineage+'.saved');
+assert.throws(()=>connectorConfigDir(),error=>error.message.includes('not private') && !error.message.includes(selected),'never read selection.json through a linked version directory');
+renameSync(lineage+'.saved',lineage);
+rmSync(versionDir);
+const lineageBefore=readFileSync(lineage);
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing version directory identifies both roots through lineage');
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('ENOENT'),'preflight does not recreate the missing version directory');
+assert(!fs.existsSync(versionDir));
+assert.deepEqual(readFileSync(lineage),lineageBefore);
+renameSync(versionDir+'.saved',versionDir);
+mkdirSync(join(from,'cotal'),{recursive:true,mode:0o700});
+assert.throws(()=>connectorConfigDir(),explainsMove('differs'),'a separate existing config is not a move');
+rmSync(join(from,'cotal'),{recursive:true});
+symlinkSync(join(from,'missing'),join(from,'cotal'));
+assert.throws(()=>connectorConfigDir(),/differs/,'a dangling old config link is not a move');
+rmSync(from,{recursive:true});
+symlinkSync(from+'-missing',from);
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a dangling old ancestor is not a move');
+rmSync(from);
+renameSync(moved,moved+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing destination identifies both roots');
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('ENOENT'),'preflight does not recreate the missing root');
+renameSync(selection,selection+'.saved');
+assert.throws(()=>connectorConfigDir(),explainsMove('ENOENT'),'a missing root named only by lineage identifies both roots');
+renameSync(selection+'.saved',selection);
+symlinkSync(moved+'.saved',moved);
+assert.throws(()=>connectorConfigDir(),explainsMove('connector root is a symbolic link'));
+assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove('connector root is a symbolic link'));
+rmSync(moved);
+renameSync(moved+'.saved',moved);
+for (const name of ['seed','extensions']) {
+  const path=join(moved,name);
+  renameSync(path,path+'.saved');
+  symlinkSync(path+'.saved',path);
+  assert.throws(()=>connectorConfigDir(),explainsMove(name+' directory is a symbolic link'));
+  assert.throws(()=>prepareConnectorConfigForUpdate(),explainsMove(name+' directory is a symbolic link'));
+  rmSync(path);
+  renameSync(path+'.saved',path);
+}
+renameSync(to,from);
+process.env.XDG_CONFIG_HOME=from;
 ` : ""}
 ${scenario === "retain" ? `const unrelated=join(original,'installs','other-install');mkdirSync(unrelated,{mode:0o500});fs.chmodSync(selected,0o520);fs.chmodSync(join(selected,'seed'),0o500);prepareConnectorConfigForUpdate();assert.equal(connectorConfigDir(),selected);assert.equal(fs.statSync(selected).mode&0o777,0o700);assert.equal(fs.statSync(join(selected,'seed')).mode&0o777,0o700);assert.equal(fs.statSync(unrelated).mode&0o777,0o500);fs.chmodSync(unrelated,0o700);` : ""}
 assert.equal(readFileSync(join(selected,'extensions/node_modules/old/lazy.js'),'utf8'),'old graph\\n');

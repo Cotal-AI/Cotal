@@ -180,9 +180,18 @@ function launchPreview(space: string): void {
       && /\[--foreground\]\s+\[--dry-run\]/.test(help.stdout), out(help));
   }
   const preview = ["manager", "start", "--space", space, "--dry-run", "--json"];
-  const badHost = cotal([...preview, "--console-host", "bad host"]);
-  check("a fresh manager preview refuses a console host containing whitespace",
-    badHost.status === 1 && JSON.parse(badHost.stdout).error?.code === "USAGE_INVALID", out(badHost));
+  const hostPreview = [...preview, "--console-port", "0"];
+  const badHost = cotal([...hostPreview, "--console-host", "bad host"]);
+  const hostError = JSON.parse(badHost.stdout).error;
+  check("a fresh manager preview refuses an invalid --console-host and gives a replacement",
+    badHost.status === 1 && hostError?.code === "USAGE_INVALID" && hostError.message.includes("--console-host")
+      && hostError.remedy?.includes("`--console-host 127.0.0.1`")
+      && !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length, out(badHost));
+  const hostRetry = cotal([...hostPreview, "--console-host", "127.0.0.1"]);
+  const hostResult = JSON.parse(hostRetry.stdout).result;
+  check("the replacement host previews the same start without saving or allocating",
+    hostRetry.status === 0 && hostResult?.dryRun === true && hostResult.saved === false && hostResult.allocated === false
+      && !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length, out(hostRetry));
   const args = [...preview, "--foreground"];
   const launch = join(root, "absent-launch.json");
   const spec = JSON.stringify({ apiVersion: "cotal-launch/v1", space, runId: "preview", agents: [] });
@@ -239,11 +248,15 @@ try {
       const instances = () => serviceInstances(SPACE, "manager");
       const before = definition(), stoppedBefore = instances();
       const wrong = cotal([...manager, "--launch", launch, "--launch-sha256", "0".repeat(64)]);
+      const { error } = JSON.parse(wrong.stdout);
       check("a mismatched digest refuses without replacing the definition or stopped instance",
-        wrong.status === 2 && JSON.parse(wrong.stdout).error?.code === "CONFLICT"
+        wrong.status === 2 && error?.code === "CONFLICT"
           && before !== undefined && stoppedBefore.length === 1 && stoppedBefore[0]?.record.value.state === "stopped"
           && JSON.stringify(definition()?.record) === JSON.stringify(before.record)
           && JSON.stringify(instances().map((row) => row.record)) === JSON.stringify(stoppedBefore.map((row) => row.record)), out(wrong));
+      check("the digest refusal explains how to keep the saved launch or apply the override",
+        error?.remedy?.includes("omit both `--launch` and `--launch-sha256`") === true
+          && error.remedy.includes("matching SHA-256 in `--launch-sha256`"), out(wrong));
       const retry = cotal(manager);
       check("plain start still uses the saved launch digest and reaches readiness", retry.status === 0 && instances()[0]?.record.value.state === "running", out(retry));
     } finally {

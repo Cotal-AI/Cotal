@@ -246,6 +246,17 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+for (const [sub, words] of [["root", ["root", "\u2013json"]], ["add", ["\u2212j", "add"]]] as const) {
+  const refused = run(["ext", ...words]);
+  check(`ext ${sub} does not suggest a listing flag`, usageShape(refused, /starts with a typographic dash/)
+    && refused.stderr.includes(`omit this option; \`cotal ext ${sub}\` does not take --json`)
+    && !refused.stderr.includes("type the option with hyphens"), shown(refused));
+}
+const listSpelling = run(["ext", "list", "\u2212j"]);
+const listFlag = /^  type the option with hyphens: (-j)$/m.exec(listSpelling.stderr)?.[1];
+const inventory = listFlag && run(["ext", "list", listFlag]);
+check("the suggested short listing flag returns the inventory", listSpelling.status === 1 && !!inventory
+  && inventory.status === 0 && Array.isArray(JSON.parse(inventory.stdout).result.items), { refused: shown(listSpelling), retry: inventory && shown(inventory) });
 const shortHelp = run(["send", "-c", "general", "\u2013h"]);
 check("a typographic short help flag is refused with -h", usageShape(shortHelp, /starts with a typographic dash/)
   && shortHelp.stderr.includes("type the option with hyphens: -h"), shown(shortHelp));
@@ -351,6 +362,18 @@ if (process.platform !== "win32") {
     && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
     && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+
+  const unknown = run(["ep", "check", "reviews/contract.json", "--json", "--no-such-option"], {}, cwd);
+  check("endpoint check with a contract already supplied tells the caller to drop the unknown option",
+    unknown.status === 1 && parsed(unknown)?.error?.remedy === "drop the unknown option"
+    && corrected.status === 0, { refusal: shown(unknown), retry: shown(corrected) });
+  const dashContract = "--no-such-option";
+  writeFileSync(join(cwd, dashContract), readFileSync(join(cwd, "reviews/contract.json")));
+  const unfilled = run(["endpoint", "check", "--json", dashContract], {}, cwd);
+  const afterSeparator = run(["endpoint", "check", "--json", "--", dashContract], {}, cwd);
+  check("endpoint check still suggests the separator when the contract operand is missing",
+    unfilled.status === 1 && parsed(unfilled)?.error?.remedy?.includes("put -- before it") === true && afterSeparator.status === 0,
+    { refusal: shown(unfilled), retry: shown(afterSeparator) });
 }
 
 const referenceProject = join(home, "endpoint-reference");
@@ -757,6 +780,9 @@ for (const [args, usage, foreign] of [
       refused.status === 2 && receipt.schemaVersion === 1 && receipt.command === "endpoint" && receipt.outcome === "refused" &&
       receipt.target?.capability === "work" && receipt.target.operation === operation && receipt.error?.code === "UNSUPPORTED", shown(refused));
   }
+  const badLeaseFlag = run(["endpoint", "work", "lease", "ep:example", "review", "--no-such-option", "--json"]);
+  check("endpoint work lease does not suggest an extra operand when given an unknown option",
+    badLeaseFlag.status === 1 && parsed(badLeaseFlag)?.error?.remedy === "drop the unknown option", shown(badLeaseFlag));
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
   // in the folder of a space prepared there, which needs no stack. Without --subscribe the refusal
@@ -794,6 +820,20 @@ check("endpoint describe explains the --live refusal and both available reads",
   reportShape(describeLive, /endpoint describe already reads the contract live and does not take --live/) &&
   describeLive.stderr.includes("remove --live") && describeLive.stderr.includes("cotal endpoint list --live") &&
   !describeLive.stderr.includes("--file and --yes"), shown(describeLive));
+const inventoryHelp = run(["endpoint", "--help"]);
+check("endpoint help distinguishes saved and live inventory and scopes the broker and credential options",
+  inventoryHelp.status === 0 && /(?:pnpm )?cotal endpoint \[--space <s>\]/.test(inventoryHelp.stdout)
+    && /(?:pnpm )?cotal endpoint --live \[--space <s>\]/.test(inventoryHelp.stdout)
+    && /--space <s>[^\n]*saved references without a broker/.test(inventoryHelp.stdout)
+    && /--server <url>[^\n]*requires --live/.test(inventoryHelp.stdout)
+    && /--creds <path>[^\n]*requires --live/.test(inventoryHelp.stdout), shown(inventoryHelp));
+for (const [flag, value] of [["--server", "nats://127.0.0.1:37126"], ["--creds", "inventory.creds"]] as const) {
+  const inventory = run(["endpoint", flag, value, "--json"]);
+  const error = JSON.parse(inventory.stdout).error;
+  check(`endpoint inventory tells users how to use or omit ${flag}`,
+    inventory.status === 1 && inventory.stderr === "" && error?.code === "USAGE_INVALID"
+      && error.remedy === `add --live to read native registrations, or omit ${flag} to list saved references`, shown(inventory));
+}
 const ascii = { LANG: "C" };
 const plainOwn = run(["config", "get", "bogus", "--plain"]);
 check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
@@ -993,6 +1033,27 @@ if (process.platform !== "win32") {
   check("docs runs from a removed folder", docs.status === 0 && docs.stdout.includes('"outcome":"ok"'), shown(docs));
   const telemetry = fromRemoved(["telemetry", "--json"]);
   check("telemetry runs from a removed folder", telemetry.status === 0 && telemetry.stdout.includes('"outcome":"ok"'), shown(telemetry));
+}
+
+{
+  const relativeHome = { COTAL_HOME: "relative" };
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+  ] as const) {
+    const r = run([...args, "--json"], relativeHome);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames a relative COTAL_HOME refusal without a snapshot`, r.status === 1 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
+      && records[0].data?.message?.startsWith('COTAL_HOME "relative" is a relative path')
+      && records[0].data?.remedy?.startsWith("set COTAL_HOME to an absolute path, or unset it to use ")
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed", shown(r));
+  }
+  const finite = run(["history", "review", "--json"], relativeHome);
+  check("finite history with a relative COTAL_HOME still emits one usage refusal", finite.status === 1 && finite.stderr === ""
+    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
 }
 
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.
