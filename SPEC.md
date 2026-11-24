@@ -235,7 +235,8 @@ Open and no-login spaces resolve bare names as display names and do not accept `
 Reply shortcuts address the authenticated sender principal, not a remembered display name.
 
 The sender reads the username binding and builds `owner.actor` without testing recipient existence.
-An absent username is a refusal. A failed registry read is unavailable and nothing is published.
+An absent username or unused reservation is not found. A denied registry read and an unavailable
+registry read are distinct refusals. None of these results publishes a DM.
 A broker acknowledgement reports storage at a sequence. It says nothing about whether the actor
 exists or read the message. A publish timeout leaves the outcome unknown, and the sender does not
 retry automatically. Only upgraded senders interpret `user/agent`. Before publishing a qualified

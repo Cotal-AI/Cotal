@@ -162,6 +162,10 @@ try {
   check("a self-DM says it names this session", self.isError && self.text.includes('"Scout" is this session') && !self.text.includes("no peer"), self.text);
   const selfId = await run(me, "cotal_dm", { to: me.agent.id, text: "to my id" });
   check("a self-DM by instance id says the same", selfId.isError && selfId.text.includes("is this session"), selfId.text);
+  const unseen = "local.unobserved_dm_target";
+  const exact = await run(me, "cotal_dm", { to: unseen, text: "unobserved exact ID in open mode" });
+  check("an open mesh refuses an unobserved exact principal", exact.isError && exact.structured?.code === "TARGET_NOT_FOUND" &&
+    exact.text.includes(`no peer "${unseen}"`), exact);
   const base = await run(me, "cotal_dm", { to: "ada-lovelace", text: "by base name" });
   check(
     "a base name lists the present full name and sends nothing",

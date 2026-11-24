@@ -400,9 +400,11 @@ export class AgentMessaging {
     const peer = await this.ep.resolvePeerAddress(target, { roster, selfId: this.id });
     const literal = address.kind === "principal" && address.value !== this.id ? address.value : undefined;
     const known = !peer && literal ? this.heldSender(literal) : undefined;
-    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : known ?? (literal ? { id: literal, name: literal } : undefined);
+    const unobserved = this.config.userAuth && literal ? { id: literal, name: literal } : undefined;
+    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : known ?? unobserved;
     if (!recipient) {
-      if (address.kind === "principal") throw new PeerAddressError(target, "USAGE_INVALID", this.noPeer(address.value));
+      if (address.kind === "principal" && address.value === this.id)
+        throw new PeerAddressError(target, "USAGE_INVALID", this.noPeer(address.value));
       if (!failure) throw new PeerAddressError(target, "TARGET_NOT_FOUND", this.noPeer(target));
       const error = this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");
       throw new PeerAddressError(target, "TARGET_UNAVAILABLE", error.message, [], { cause: failure });

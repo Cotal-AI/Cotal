@@ -96,8 +96,9 @@ async function checkDmResolution(left: MeshAgent, right: MeshAgent, caller: Mesh
   const send = (to: string, text: string) => tool.run(caller, caller.config, { to, text });
   const exact = `${otherOwner}.unobserved_dm_target`;
   const direct = await send(exact, "exact principal without presence");
-  suite.check("an unobserved exact principal reports storage without claiming it messaged the sender", !direct.isError &&
-    direct.text.includes(`for ${exact}`) && direct.text.includes("stored at sequence") && !direct.text.includes("messaged you"), direct);
+  suite.check("a signed-in mesh stores an unobserved exact principal without claiming a recipient or delivery", !direct.isError &&
+    direct.text.includes(`for ${exact}`) && /stored at sequence [1-9]\d*/.test(direct.text) &&
+    direct.text.includes("Storage does not confirm a recipient or delivery.") && !direct.text.includes("messaged you"), direct);
 
   const roster = await left.readRoster();
   assert.ok(roster.roster.some((p) => p.card.id === right.ep.card.id) && roster.roster.some((p) => p.card.id === caller.ep.card.id));
@@ -571,6 +572,11 @@ async function directoryCases(): Promise<void> {
     suite.check("an unused reservation returns not-found, like a missing key, without changing the owner's binding",
       await readUsernameOwner(nc, directory.space, "unused_alias") === undefined &&
       await readUsernameOwner(nc, directory.space, "missing_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
+    const target = "unused_alias/lister";
+    const refusal = await core.resolvePeerAddress([], target, { authority: { mode: "user", owner, actor: blank.actor, space: directory.space, nc } })
+      .catch((error: unknown) => error);
+    suite.check("a qualified DM address for an unused reservation returns TARGET_NOT_FOUND", refusal instanceof core.PeerAddressError &&
+      refusal.code === "TARGET_NOT_FOUND" && refusal.target === target, refusal);
     suite.check("startup reports both repaired and unused orphan keys with their named owners",
       [["interrupted", pending], ["unused_alias", owner]].every(([name, reservedFor]) =>
         restartLog.some((line) => line.includes(`orphan key username.${name}: owner.${reservedFor}`))), restartLog);
