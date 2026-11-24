@@ -46,12 +46,12 @@ With no name it is about this folder: the space it has registered, else the one 
 stopped, else the selected one. `space show` also finds a registration at the nearest enclosing
 root without a `.cotal` folder. If that root has several registrations, `space show` refuses with
 `TARGET_AMBIGUOUS`, exit 2, and gives a `cotal space show <name>` command for each instead of using
-the selection. This does not change what other commands target. If `cotal use`
-explicitly selected a different space, `space show` says that commands such as `cotal who` still
-target the selection here. Pass `--space <name>` to target the folder's space instead. Neither
-`space` nor `space show` writes anything. Both refuse an invalid registry record with
-`SCHEMA_INVALID`, exit 1, and name its file. If this account lacks read access to a registration,
-they refuse with `PERMISSION_DENIED`, exit 2, and tell you to restore read access.
+the selection. The retries keep `--json` or `--plain` when requested. This does not change what
+other commands target. If `cotal use` explicitly selected a different space, `space show` says
+that commands such as `cotal who` still target the selection here. Pass `--space <name>` to target
+the folder's space instead. Neither `space` nor `space show` writes anything. Both refuse an invalid
+registry record with `SCHEMA_INVALID`, exit 1, and name its file. If this account lacks read access
+to a registration, they refuse with `PERMISSION_DENIED`, exit 2, and tell you to restore read access.
 If bare `space show` needs the saved selection and its file is empty or unreadable, it refuses with
 `SCHEMA_INVALID`, exit 1, like bare `cotal use`. Clear the selection with `cotal use --clear` or
 select a known space again. The inventory still lists spaces and warns with `MESH_REGISTRY_UNREADABLE`.
@@ -529,7 +529,9 @@ by the first `up`, registration or sign-in, or when nothing is selected.
 A folder's space captures the commands run there only while it runs. Inside a project whose root has
 one registered space other than the selection, and whose broker answers, the command targets that
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
-included, says the selection applies outside the folder. A space `cotal space create` prepared there
+included, says the selection applies outside the folder. If the selection was adopted automatically,
+offline registrations do not prevent the folder's only running space from taking precedence.
+A space `cotal space create` prepared there
 and no `cotal up` started, and one whose stack there is stopped, is the target of the commands about
 the folder itself only: `cotal up`, `cotal down`, `cotal space show` and the folder part of
 `cotal status`. `cotal auth revoke-credential` also targets the stopped one, because that space's
@@ -814,7 +816,8 @@ Instances are listed by definition name, then instance ID, in the text and in
 `result.services.instances`, so their order holds from one start to the next.
 Full instance IDs and execution hosts stay visible. Process observations and historical readiness
 are separate columns; neither a saved serving state nor a supervisor receipt becomes a fresh
-endpoint response or OS unit-state check. Legacy PID-file rows are labeled separately. On a root
+endpoint response or OS unit-state check. On Linux, an exited process is gone even while its parent
+has yet to reap it. Legacy PID-file rows are labeled separately. On a root
 whose controller stack serves the selected space, its members are the `stack-` rows here, the
 legacy rows and the stored-state hint are omitted from the text report. When the stack does not
 answer or a member's
