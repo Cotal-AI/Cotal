@@ -1077,7 +1077,7 @@ require('node:module').syncBuiltinESMExports();`);
     const over = /the persona definition is \d+ bytes, over the 1 MiB limit, so it was not saved/;
     let agents = "";
     const created = cotal(["persona", "create", "big", "--from", body, "--subscribe", ""], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
-    check("persona create refuses a definition over 1 MiB and writes nothing", created.status === 1 && over.test(created.stderr) && created.stderr.includes("SCHEMA_INVALID") && readdirSync(agents).join() === "x.md", shown(created));
+    check("persona create counts the frontmatter in the 1 MiB limit and writes nothing", created.status === 1 && over.test(created.stderr) && created.stderr.includes("SCHEMA_INVALID") && created.stderr.includes("including frontmatter, to 1048576 bytes or less") && readdirSync(agents).join() === "x.md", shown(created));
     let file = "";
     const edited = cotal(["persona", "edit", "x"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, { ...noSeed, VISUAL: grow, EDITOR: grow, TMPDIR: big });
     const kept = /your edit is kept in (\S+\.md);/.exec(edited.stderr)?.[1];
@@ -1104,6 +1104,13 @@ require('node:module').syncBuiltinESMExports();`);
     check(`persona create ${flag} ${value} is USAGE_INVALID, naming the flag and the entry`,
       r.status === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && r.stdout.includes(`${flag}: invalid channel \\"${value}\\"`) && !r.stdout.includes("cotal-persona-") &&
         (value !== "#general" || r.stdout.includes("name the channel without its #, as general")), shown(r));
+  }
+  for (const args of [["persona", "create", "q", "--prompt", "body"], ["spawn", "--dry-run"]]) {
+    for (const value of ["##general", "#", "#two words"]) {
+      const r = cotal([...args, "--subscribe", value, "--json"], persona, noSeed);
+      const error = envelopes(r)[0]?.error;
+      check(`${args[0]} offers a spelling only for a valid channel`, r.status === 1 && error?.code === "USAGE_INVALID" && error.remedy === (value === "##general" ? "name the channel without its #, as general" : "provide a valid channel name or pattern without a leading #"), shown(r));
+    }
   }
   const outside = cotal(["persona", "create", "q", "--prompt", "body", "--subscribe", "general", "--allow-subscribe", "ops", "--json"], persona, noSeed);
   check("persona create with --subscribe outside --allow-subscribe is USAGE_INVALID, naming both flags",

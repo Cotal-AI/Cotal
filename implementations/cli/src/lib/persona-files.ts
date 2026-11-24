@@ -198,7 +198,7 @@ function caseTwin(path: string): string | undefined {
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
  *  A new persona whose name differs from an existing one only in case is refused. */
 export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined, target = ""): void {
-  const oversized = bytes && tooLarge(bytes, "shorten its instructions to 1 MiB or less");
+  const oversized = bytes && tooLarge(bytes, `reduce the complete definition, including frontmatter, to ${PERSONA_LIMIT} bytes or less`);
   if (oversized) throw oversized;
   const dir = dirname(path);
   assertCatalogWritable(dir);
