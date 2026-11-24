@@ -370,6 +370,10 @@ checks npm; after successful reconciliation, a newer binary is an informational 
 `cotal update --self` as the next command, not an automatic install. A refused update keeps its
 recovery guidance instead of suggesting another update that would meet the same refusal.
 
+If a connector cannot refresh its integration, update still attempts the other connector refreshes.
+It reports completed refreshes and names each failure, then exits nonzero. A Claude marketplace
+owned by another Cotal home stays unchanged, while an independent Codex marketplace can still be repaired.
+
 
 ### Manager continuity
 

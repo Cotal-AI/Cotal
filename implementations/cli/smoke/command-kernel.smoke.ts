@@ -301,7 +301,7 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
-    refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshConnectors: async () => void events.push("refresh-connectors"),
     refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
@@ -1156,10 +1156,15 @@ if (process.platform !== "win32") {
 // --- a connector refresh that fails fails the update ----------------------------------------------
 {
   const failing = updateRuntime({});
-  failing.rt = { ...failing.rt, refreshConnectors: async () => { throw new Error("plugin update failed (cotal, /p)"); } };
+  failing.rt.refreshConnectors = async (report) => {
+    report("Independent plugin: repaired");
+    throw new Error("plugin update failed (cotal, /p)");
+  };
   const code = await executeUpdate(false, failing.rt);
   assert.equal(code, 1, "a stale harness copy is not reported as a finished update");
+  assert.ok(failing.events.some((event) => event.includes("✓ Independent plugin: repaired")));
   assert.ok(failing.events.some((event) => event.includes("✗ connector installs: plugin update failed (cotal, /p)")));
+  assert.ok(!failing.events.some((event) => event.includes("✓ connector integrations refreshed")));
 }
 
 // --- a running legacy manager is reported, then blocks an update before replay --------------------
