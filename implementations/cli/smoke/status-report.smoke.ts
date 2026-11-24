@@ -560,6 +560,16 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
         && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
   }
+  const reportArgs = ["status", "--space", "component-target", "--json"];
+  const refused = run([...reportArgs, "--creds", "missing.creds"], {}, other);
+  const retry = run(reportArgs, {}, other);
+  check("infrastructure status refuses --creds and tells the caller to keep the other arguments",
+    refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused"
+      && refused.envelope.target.space === "component-target" && refused.envelope.error?.code === "UNSUPPORTED"
+      && refused.envelope.error.remedy === "remove --creds and its value, then rerun the same command with the remaining arguments unchanged", shown(refused));
+  check("removing only --creds and its value keeps the requested space and JSON output",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.outcome === "ok"
+      && retry.envelope.result?.selected.space === "component-target" && retry.envelope.result.meshes.current === "component-other", shown(retry));
   for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

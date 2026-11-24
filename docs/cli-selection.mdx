@@ -747,6 +747,9 @@ attempt and next step; `maintenance` in JSON), unsettled fresh and additive atte
 when present, owned service records and useful commands under Next. Connection state, local process
 state and service replies remain separate observations.
 
+Infrastructure status does not accept `--creds`. Remove the flag and its value when you retry.
+Keep the other arguments so the retry uses the same target and output format.
+
 Under Next, `spawn`, `who` and `ps` name the reported space or broker so a different default does not redirect them.
 When Next offers a change of space, it lists `cotal space` to see the choices and `cotal use <name>`
 to select one. Bare `cotal use` reports the current selection without changing it.
