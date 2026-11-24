@@ -17,6 +17,9 @@ export interface CommandResult {
 }
 
 export class RegistryUnavailable extends Error {}
+export class StagingTimeout extends Error {
+  constructor(readonly npmOutput: string) { super("Package staging reached its time limit"); }
+}
 
 export function parseNpmVersion(output: string): string {
   const parsed: unknown = JSON.parse(output.trim());
@@ -266,7 +269,7 @@ export async function runGlobalProcess(
     if (stopping) {
       await stopping;
       if (published) mutation.clear();
-      throw new RegistryUnavailable("target staging could not reach the registry");
+      throw new StagingTimeout(`${stderr}\n${stdout}`);
     }
     if (published) mutation.complete(
       closed.status,
@@ -277,7 +280,7 @@ export async function runGlobalProcess(
     );
     return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
-    if (e instanceof RegistryUnavailable) throw e;
+    if (e instanceof StagingTimeout) throw e;
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();

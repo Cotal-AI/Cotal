@@ -301,7 +301,7 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
-    refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshConnectors: async () => void events.push("refresh-connectors"),
     refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
@@ -1117,6 +1117,7 @@ if (process.platform !== "win32") {
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
     writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+    writeFileSync(join(installedDir, "index.js"), "");
   };
   const run = async (entry: InstalledExtension) => {
     const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
@@ -1138,6 +1139,7 @@ if (process.platform !== "win32") {
       ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
       ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
       ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+      ["missing its entry file", () => { prefixAt("0.13.1"); rmSync(join(installedDir, "index.js")); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), "entry file is missing"],
     ] as const) {
       setup();
       const stale = await run(entry);
@@ -1156,10 +1158,15 @@ if (process.platform !== "win32") {
 // --- a connector refresh that fails fails the update ----------------------------------------------
 {
   const failing = updateRuntime({});
-  failing.rt = { ...failing.rt, refreshConnectors: async () => { throw new Error("plugin update failed (cotal, /p)"); } };
+  failing.rt.refreshConnectors = async (report) => {
+    report("Independent plugin: repaired");
+    throw new Error("plugin update failed (cotal, /p)");
+  };
   const code = await executeUpdate(false, failing.rt);
   assert.equal(code, 1, "a stale harness copy is not reported as a finished update");
+  assert.ok(failing.events.some((event) => event.includes("✓ Independent plugin: repaired")));
   assert.ok(failing.events.some((event) => event.includes("✗ connector installs: plugin update failed (cotal, /p)")));
+  assert.ok(!failing.events.some((event) => event.includes("✓ connector integrations refreshed")));
 }
 
 // --- a running legacy manager is reported, then blocks an update before replay --------------------

@@ -120,15 +120,27 @@ declared file that is not a regular file. It does not hash snapshot or checkpoin
 are read-only: no staging directory, broker, restore or secret upload. A path through a linked
 folder is read at its real path, as `backup restore` reads it, and the report names that path.
 Reports omit snapshot bytes, configuration bodies and trust material. JSON retains
-the declared metadata; terminal file lists are bounded and state their omissions. When a declared
-file is missing, an undeclared file is present, a declared file is not a regular file, such as a
-symbolic link or a FIFO, or a file does not match its declared size and SHA-256, the refusal names
-that file and the fault, and its JSON target carries `file` and `fault`. A declared name that is
-not a plain file name in the folder, such as one with `../` or an absolute path, has the fault
-`invalid-name` and is not printed. A `manifest.json` that is not a regular file, is larger than
-1 MiB or is not a valid manifest has the fault `manifest-not-regular`, `manifest-too-large` or
-`manifest-invalid`. `backup restore` and `up --restore` refuse each of these `SCHEMA_INVALID` with
-the same file and fault, before they stage or change anything.
+the declared metadata; terminal file lists are bounded and state their omissions.
+
+If the operating system denies opening a declared file for reading, `backup verify`, `backup restore`
+and `up --restore` refuse `PERMISSION_DENIED` (exit 2), name the file, and ask you to restore read
+access and retry or use a readable copy. Where JSON output is available, its target names the file
+in `file` and reports `unreadable` in `fault`. If the operating system denies read access to
+`manifest.json` itself, these commands and `backup inspect` refuse `PERMISSION_DENIED` (exit 2)
+and name the manifest path.
+
+When a declared file is missing, an undeclared file is present, a declared file is not regular,
+or a file does not match its declared size and SHA-256, the refusal names that file and its JSON
+target carries `file` and `fault`. A declared name that is not a plain file name in the folder,
+such as one with `../` or an absolute path, has the fault `invalid-name` and is not printed.
+A `manifest.json` that is not a regular file, is larger than 1 MiB or is not a valid manifest
+has the fault `manifest-not-regular`, `manifest-too-large` or
+`manifest-invalid`. `backup restore` and `up --restore` refuse these schema and integrity faults
+with `SCHEMA_INVALID` and the same file and fault as `backup verify`.
+For a ready cut, these permission, schema and integrity refusals do not claim or move the
+preserved store. Restore removes any partial stage it made. If restore finds a stale earlier
+attempt, it can roll that attempt back before checking the artifact contents. This can move the
+preserved store back to its original path and update the journal even if the artifact is refused.
 A directory with no `manifest.json` that holds files a `backup create` writes is refused as an
 incomplete artifact with the fault `manifest-missing`. The refusal names the real directory even
 when the supplied path is a symbolic link. The refusal names `backup recover` only when the current
@@ -258,7 +270,8 @@ where it is until `backup cleanup-fallback` deletes it, so to keep the space on 
 new store there with `--store-dir`. `--store-dir` names a store the restore creates, so a path that
 already exists, whose parent does not resolve to an existing directory, or that contains a
 symbolic-link loop or exceeds filesystem path limits refuses `USAGE_INVALID` (exit 1) before
-anything is staged. If access
+anything is staged. A store path that overlaps the backup artifact also refuses `USAGE_INVALID`
+(exit 1) before the restore starts. Choose an absent path outside the backup artifact. If access
 is denied while checking `--store-dir`, both restore forms refuse `PERMISSION_DENIED` (exit 2), name
 the blocking directory when it can be identified and leave the preserved cut unchanged. Restore
 search access there or choose a new store path under a parent this account can search and write.

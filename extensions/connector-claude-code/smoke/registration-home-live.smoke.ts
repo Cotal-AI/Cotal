@@ -1,7 +1,7 @@
 /** Two Cotal homes must not replace one shared Claude profile's installed registrations. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,6 +73,49 @@ function resolved(environment: NodeJS.ProcessEnv, home: string): void {
   const servers = claude(environment, "mcp", "list");
   assert.ok(servers.split("\n").find((line) => line.startsWith("cotal:"))?.includes(join(home, "claude-plugin", "cotal", "dist", "seat.cjs")), servers);
 }
+
+function assertIndependentCodexRepair(): void {
+  const from = join(root, "codex-old-home");
+  const to = join(root, "codex-new-home");
+  const project = join(root, "codex-project");
+  const codexHome = join(root, "codex-profile");
+  const shared: NodeJS.ProcessEnv = { ...env("codex-move", from), CODEX_HOME: codexHome };
+  if (spawnSync("codex", ["--version"], { env: shared, timeout: 30_000 }).status !== 0) {
+    console.log("SKIP: native Codex not available for the independent connector refresh case");
+    return;
+  }
+  for (const path of [to, project, codexHome]) mkdirSync(path);
+  const installed = run(process.execPath, [cli, "setup", "--destination", "local", "--harness", "codex",
+    "--project", project, "--space", "triage-codex", "--configure-only", "--no-input"], shared, project);
+  assert.equal(installed.status, 0, installed.stdout + installed.stderr);
+  assert.match(claude(shared, "plugin", "list", "--json"), /cotal-skills@cotal-mesh/);
+  const marketplaces = join(shared.CLAUDE_CODE_PLUGIN_CACHE_DIR!, "known_marketplaces.json");
+  const original = readFileSync(marketplaces, "utf8");
+  assert.equal(JSON.parse(original)["cotal-mesh"].source.path, join(from, "claude-plugin"));
+
+  const replacement = join(to, "codex-plugin");
+  renameSync(join(from, "codex-plugin"), replacement);
+  const moved = { ...shared, COTAL_HOME: to };
+  const broken = run("codex", ["plugin", "list"], moved, project);
+  assert.equal(broken.status, 1, broken.stdout + broken.stderr);
+  assert.match(broken.stderr, /marketplace root does not contain a supported manifest/);
+  assert.ok(broken.stderr.includes(join(from, "codex-plugin")), broken.stderr);
+
+  const update = run(process.execPath, [cli, "update"], moved, project);
+  assert.equal(update.status, 1, update.stdout + update.stderr);
+  assert.match(update.stderr, /connector installs: claude: Claude marketplace cotal-mesh belongs to Cotal home/);
+  assert.ok(update.stderr.includes(from) && update.stderr.includes(to), update.stderr);
+  assert.match(update.stdout, /✓ Refresh the Codex plugin: cotal@cotal-mesh/);
+  assert.doesNotMatch(update.stdout, /connector integrations refreshed/);
+  assert.equal(readFileSync(marketplaces, "utf8"), original);
+  const repaired = run("codex", ["plugin", "list"], moved, project);
+  assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+  assert.match(repaired.stdout, /cotal@cotal-mesh\s+installed, enabled/);
+  const registered = run("codex", ["plugin", "marketplace", "list"], moved, project);
+  assert.equal(registered.status, 0, registered.stdout + registered.stderr);
+  assert.ok(registered.stdout.includes(replacement), registered.stdout);
+  console.log("PASS: update preserves the foreign Claude marketplace and repairs the moved Codex plugin");
+}
 const first = setup(envA, "project-a", "triage-a");
 assert.equal(first.status, 0, first.stdout + first.stderr);
 resolved(envA, homeA);
@@ -139,5 +182,6 @@ const identical = setup(sameParent, "project-cache-alias", "triage-cache-alias",
 assert.equal(identical.status, 0, identical.stdout + identical.stderr);
 resolved(sameParent, aliasHome);
 console.log("PASS: setup also completes when both lock parents use the same path");
+assertIndependentCodexRepair();
 assert.equal(readFileSync(serviceLog, "utf8"), "", "no native service command ran");
 console.log(`registration-home-live.smoke: evidence retained at ${root}`);

@@ -190,6 +190,19 @@ for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test
     && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
     && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
 }
+for (const flags of [["--json", "--json=false"], ["--json=false", "--json"], ["-j", "--json=false"]]) {
+  const result = run(["watch", ...flags]);
+  const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  check(`watch ${flags.join(" ")} emits the usage refusal as a watch stream`,
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.schemaVersion === 1 && record.stream === "watch" && record.target?.requestedSpace === null)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "Option '-j, --json' does not take an argument"
+    && records[0]?.data?.remedy === "run `cotal help watch`" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
+for (const flags of [["--json=false"], ["--json=false", "--", "--json"]]) {
+  const result = run(["watch", ...flags]);
+  check(`watch ${flags.join(" ")} does not select JSON`, usageShape(result, /does not take an argument/), shown(result));
+}
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
 for (const global of ["--no-input", "--no-color"]) {

@@ -399,7 +399,8 @@ so each package's registrations can be attributed and checked independently.
 Every update reads and verifies its own package closure without reusing results from an earlier command.
 On Linux and macOS, self-update stops staging if the download stops making progress or staging
 reaches its five-minute limit. Cotal leaves the installed version and running local spaces unchanged.
-When the registry is reachable again, run `cotal update --self` again.
+If npm did not report a network error, Cotal reports the staging time limit. Run `cotal update --self`
+again. If npm reported a network error, retry when the registry is reachable.
 Missing CLI release archives and missing target versions of installed first-party extensions share
 a ten-minute wait. If an installed extension's target version is still missing at the end, the
 command names it, exits with status 1 and leaves the installation unchanged. Try the update again
