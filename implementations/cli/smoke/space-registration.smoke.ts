@@ -212,6 +212,20 @@ setCurrent("keep");
   check("an add flag on another form is USAGE_INVALID", refused(await json(["space", "--server", LIVE]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "keep", "--force"]), 1, "USAGE_INVALID"));
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
   check("discovery with JSON explains why it cannot prompt and how to keep JSON output", refused(fromScript, 1, "USAGE_INVALID") && fromScript.env?.error?.message.includes("--json disables") && fromScript.env.error.remedy.includes("without --json") && fromScript.env.error.remedy.includes("replace --from <url> with --file <bundle.json>"), shown(fromScript));
+  const fromUrl = "https://127.0.0.1:37831/example";
+  const plainDiscovery = ["space", "add", "remote", "--from", fromUrl, "--plain"];
+  for (const [args, env, reason] of [
+    [["--no-input"], {}, "--no-input disables prompts"],
+    [[], {}, "stdin and stdout must both be connected to a terminal"],
+    [[], { COTAL_NO_PROMPT: "1" }, "COTAL_NO_PROMPT=1 disables prompts"],
+  ] as const) {
+    const result = await run([...plainDiscovery, ...args], env);
+    const refusal = result.stderr.split("\n\n").slice(0, 2).join("\n\n");
+    check(`plain discovery refuses before fetching: ${reason}`, result.status === 1 && result.stdout === "" &&
+      refusal.includes("USAGE_INVALID") && refusal.includes(reason) && refusal.includes("No discovery document was fetched") &&
+      ["cotal", "pnpm cotal"].some((cli) => refusal.includes(`\`${cli} space add remote --from ${fromUrl} --plain\``)) &&
+      refusal.includes("replace --from <url> with --file <bundle.json>") && !refusal.includes("--json"), shown(result));
+  }
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
   // A name that starts with - reads as an option, so use, --space and the stack's own children could not take it.
   const dashed = await json(["space", "add", "--server", LIVE, "--root", root, "--force", "--", "-x"]);

@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   CommandFailure,
   authDir,
+  brokerAddressForDisplay,
   brokerUrlKey,
   canonicalRoot,
   codeSpan,
@@ -15,6 +16,7 @@ import {
   rootControlProblem,
   clearCurrent,
   discoveryDocumentUrl,
+  explicitNoInputFlag,
   findMesh,
   findPreparedSpace,
   getCurrent,
@@ -223,7 +225,7 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
   if (v.mode === "user" && !bundled)
     throw usage("--mode user needs the space's pinned trust", "pass --file <bundle.json> exported where the space runs, or --from <https url> to fetch its discovery document");
   const prompt = presentation !== "json" && canPrompt();
-  const added = bundled ? await addFromBundle(name, v, prompt) : await addFromServer(name, v, prompt);
+  const added = bundled ? await addFromBundle(name, v, prompt, presentation) : await addFromServer(name, v, prompt);
   if (added === undefined) {
     const target = name ? { space: name } : null;
     const result: AddCancelled = { kind: "space-add-cancelled", space: name ?? null };
@@ -287,21 +289,38 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
  *  discovery document, which is fetched only after the operator agrees and is adopted only after
  *  they confirm the pins. Its checks run even under `--force`, which only replaces a record.
  *  `cotal setup --connection-file` registers a self-hosted space through it. */
-export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
+export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation = "rich"): Promise<Added> {
   const target = name ? { space: name } : null;
   let bundle: UserBundle;
   if (v.file !== undefined) {
     bundle = readConnectionFile(v.file, "--file", target);
   } else {
+    let from: URL;
     let disco: URL;
     try {
-      const from = new URL(v.from!);
+      from = new URL(v.from!);
       disco = from.pathname.endsWith("/.well-known/cotal-mesh") ? from : discoveryDocumentUrl(from);
     } catch {
       throw usage("--from is not a URL");
     }
     if (disco.protocol !== "https:") throw usage("--from must be an https:// URL: the discovery document carries the trust pins, and a plaintext fetch lets the network choose them");
-    if (!prompt) throw usage("--from needs interactive prompts, which --json disables; no discovery document was fetched", "to review the pins, retry in a terminal with prompts enabled and without --json; for scripted or JSON output, replace --from <url> with --file <bundle.json> exported where the space runs");
+    if (!prompt) {
+      const file = "replace --from <url> with --file <bundle.json> exported where the space runs";
+      if (presentation === "json") throw usage("--from needs interactive prompts, which --json disables; no discovery document was fetched", `to review the pins, retry in a terminal with prompts enabled and without --json; for scripted or JSON output, ${file}`);
+      const noInput = explicitNoInputFlag();
+      const envDisabled = process.env.COTAL_NO_PROMPT === "1";
+      const reason = noInput ? "--no-input disables prompts" : envDisabled ? "COTAL_NO_PROMPT=1 disables prompts" : "stdin and stdout must both be connected to a terminal";
+      const showCommand = !from.username && !from.password && !from.search && !from.hash &&
+        (v.server === undefined || brokerAddressForDisplay(v.server) === v.server);
+      const flags = ADD_FLAGS.flatMap((flag) => {
+        const value = v[flag];
+        return value === true ? [`--${flag}`] : typeof value === "string" ? [`--${flag}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`] : [];
+      });
+      const retry = showCommand
+        ? codeSpan([`${displayCmd()} space add`, ...(name === undefined ? [] : [shellWord(name)]), ...flags, ...(presentation === "plain" ? ["--plain"] : [])].join(" "))
+        : `the same command${noInput ? " without --no-input" : ""}`;
+      throw usage(`--from needs interactive prompts: ${reason}. No discovery document was fetched`, `with stdin and stdout connected to a terminal${envDisabled ? " and COTAL_NO_PROMPT unset" : ""}, run ${retry}. For scripts, ${file}`);
+    }
     const io = clackIO();
     if ((await io.confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false })) !== true) return undefined;
     let res: Response;
