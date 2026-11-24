@@ -621,7 +621,8 @@ it exits 0 without reconciling packages, inspecting Manager custody or creating 
 record. If self-update already repaired installation permissions or changed connector state during
 preflight, it reports that no installed packages were replaced.
 Losing registry connectivity during release checks, extension-dependency checks or target staging
-also exits 0 before replacement.
+also exits 0 before replacement. If npm reports a registry fetch timeout during staging,
+the command keeps the previous version installed and asks you to retry when the registry responds.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
 and local spaces unchanged. Unless npm reports a network error, the command reports the staging
