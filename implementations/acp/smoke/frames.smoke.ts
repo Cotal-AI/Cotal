@@ -17,7 +17,9 @@
  *  - `closeOpen` closes every tool call still open, once;
  *  - `frameOf` reads the frame part of an event-channel message and nothing else;
  *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
- *    every live manager the person may use.
+ *    every live manager the person may use;
+ *  - `managerChoices` describes a listed manager with no row under the person's principal, as the
+ *    space's own, by the host it reports, so a new thread there defaults to it on this host.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -25,7 +27,8 @@ import type { CotalMessage, Presence } from "@cotal-ai/core";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
-import { answeredReads, frameOf, managerChoice, managerPlan, namesDeregister } from "../src/live-mesh.js";
+import { answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
+import { defaultManager } from "../src/options.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -267,6 +270,27 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("on a signed-in space another owner's agent named after the manager does not describe it", d.live === false && d.local === false && d.host === undefined, d);
   const mine = managerChoice("a", roster, "here", "u_p");
   check("and the person's own manager row still does", mine.live === true && mine.host === "here" && mine.local === true, mine);
+}
+
+// A signed-in person's new thread where the only manager is the space's own, as `cotal up` starts it:
+// its card id is a bare NKey, so it has no row under the person's principal, and its own status
+// answers its host.
+{
+  const nkey = "UCJ2KVYXP6NPUGAZ4ZQ3JVJ6WQ7K5QOFM4ZQXUMOBQ5RYRYTVLRDUJAN";
+  const spaceRow = ({ card: { id: nkey, name: "manager", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
+  const asked: string[] = [];
+  const reported = async (instanceId: string) => (asked.push(instanceId), "here");
+  const [own] = await managerChoices(["space"], [spaceRow], "here", "u_p", reported);
+  check("the space's own manager, whose status answers this host, is live and local", own?.live === true && own.local === true && own.host === "here", own);
+  check("so a new thread there defaults to it", defaultManager(own ? [own] : [])?.instanceId === "space", own);
+  const [far] = await managerChoices(["space"], [spaceRow], "here", "u_p", async () => "there");
+  check("on another host's answer it is live and not local", far?.live === true && far.local === false && far.host === "there", far);
+  const [quiet] = await managerChoices(["space"], [spaceRow], "here", "u_p", async () => undefined);
+  check("a manager that answers no host is neither live nor local", quiet?.live === false && quiet.local === false && quiet.host === undefined, quiet);
+  const mineRow = ({ card: { id: "u_p.manager_a", name: "manager_a", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
+  asked.length = 0;
+  const [mine] = await managerChoices(["a"], [mineRow], "here", "u_p", reported);
+  check("the person's own manager is described by its live row and is not asked", mine?.live === true && mine.local === true && asked.length === 0, { mine, asked });
 }
 
 // Which unanswered replies name the deregister command.
