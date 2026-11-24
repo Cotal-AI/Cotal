@@ -397,15 +397,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   }
 }
 
+const envelopes = (r: Run) => {
+  try {
+    return r.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>);
+  } catch {
+    return [];
+  }
+};
+
 // ── Structured output: one envelope on stdout, the usage refusal included ────────────────────────
 {
-  const envelopes = (r: Run) => {
-    try {
-      return r.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>);
-    } catch {
-      return [];
-    }
-  };
   const text = cotal(["version"]);
   const json = cotal(["version", "--json"]);
   local("version --json writes nothing", json);
