@@ -125,11 +125,6 @@ channels:
     hasGraph(pending) && pending.stderr === "" && !existsSync(root) && !existsSync(old) && !existsSync(join(config, "seed")) &&
     existsSync(join(pkgDir, "package.json")) && existsSync(journal) && readFileSync(journal, "utf8") === promotion, shown(pending));
 
-  const resolved = run(["ext", "root"]);
-  check("ext root prints the path without completing a promotion",
-    resolved.status === 0 && resolved.stdout === `${root}\n` && resolved.stderr === "" &&
-    !existsSync(root) && existsSync(stage) && readFileSync(journal, "utf8") === promotion, shown(resolved));
-
   const list = run(["ext", "list", "--json"]);
   check("ext list still recovers the pending promotion and reports the installed package",
     list.status === 0 && JSON.parse(list.stdout).result.items.some((item: { pkg: string }) => item.pkg === pkg) &&
@@ -165,9 +160,11 @@ channels:
   const settings = JSON.parse(readFileSync(join(home, ".cotal", "update-settings.json"), "utf8"));
   check("both preferences were saved", settings.auto === false && settings.notify === false, settings);
 
-  const resolved = run(["x", "root"], offline);
-  check("ext root alias prints only the path to the corrupt manifest",
-    resolved.status === 0 && resolved.stdout === `${root}\n` && resolved.stderr === "", shown(resolved));
+  for (const words of [["ext", "root"], ["x", "root"]]) {
+    const resolved = run(words, offline);
+    check(`${words.join(" ")} prints only the path to the corrupt manifest`,
+      resolved.status === 0 && resolved.stdout === `${root}\n` && resolved.stderr === "", shown(resolved));
+  }
   for (const words of [["ext", "list", "--json"], ["--json", "x"]]) {
     const r = run(words, offline);
     const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;

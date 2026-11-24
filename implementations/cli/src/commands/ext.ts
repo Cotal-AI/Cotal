@@ -787,7 +787,7 @@ function list(presentation: Presentation): void {
   try {
     entries = loadExtensionsManifest().extensions;
   } catch (error) {
-    if (!(error instanceof CorruptExtensionsManifestError)) throw error;
+    if (presentation !== "json" || !(error instanceof CorruptExtensionsManifestError)) throw error;
     throw new CommandFailure("refused", "SCHEMA_INVALID", error.diagnosis, { remedy: error.remedy, cause: error });
   }
   const warnings = entries.flatMap((entry): OutputWarning[] => {
