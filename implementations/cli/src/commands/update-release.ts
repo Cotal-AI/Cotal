@@ -213,14 +213,22 @@ export class DependencyCheckInterrupted extends Error {}
 export class DependencyCheckNoSpace extends Error {}
 
 const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EIDLETIMEOUT|ESOCKETTIMEDOUT|EAI_AGAIN|ENOTFOUND)$/;
-const NPM_ERROR_CODE = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/;
-const NPM_FETCH_TIMEOUT = /^npm (?:error|ERR!) network timeout at: https?:\/\/\S+[ \t]*\r?$/m;
+const TARGET_STAGING_FAILURE = "target staging failed: ";
+
+function npmNetworkFailure(code: unknown, summaries: readonly unknown[]): "network" | "fetch-timeout" | undefined {
+  if (typeof code === "string" && NETWORK_ERROR_CODE.test(code)) return "network";
+  if (code === "FETCH_ERROR" && summaries.some(line => typeof line === "string" && /^network timeout at: https?:\/\/\S+[ \t]*$/.test(line))) return "fetch-timeout";
+}
+
+function npmTextNetworkFailure(output: string) {
+  const lines = Array.from(output.matchAll(/^npm (?:error|ERR!) ([^\r\n]*)/gm), ([, line]) => line!);
+  const header = lines.find(line => line.startsWith("code "));
+  const code = header && /^code ([A-Z_]+)(?:[ \t]|$)/.exec(header)?.[1];
+  return npmNetworkFailure(code, lines);
+}
 
 export function registryNetworkFailure(error: unknown): boolean {
-  if (error instanceof RegistryUnavailable) return true;
-  const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
-  const code = NPM_ERROR_CODE.exec(detail)?.[1];
-  return code !== undefined && NETWORK_ERROR_CODE.test(code);
+  return error instanceof RegistryUnavailable || npmTextNetworkFailure(message(error)) !== undefined;
 }
 
 export function offlineUpdateMessage(repaired: boolean): string {
@@ -229,12 +237,12 @@ export function offlineUpdateMessage(repaired: boolean): string {
 
 export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
   const detail = message(error);
-  const stagingFailed = detail.startsWith("target staging failed: ");
-  if (stagingFailed && NPM_ERROR_CODE.exec(detail)?.[1] === "FETCH_ERROR" && NPM_FETCH_TIMEOUT.test(detail)) {
+  const staging = detail.startsWith(TARGET_STAGING_FAILURE) ? npmTextNetworkFailure(detail.slice(TARGET_STAGING_FAILURE.length)) : undefined;
+  if (staging === "fetch-timeout") {
     const reason = "Registry fetch timed out during package staging";
     recordUpdateDeferral(version, reason, true);
     rt.out(displayRemedy(`${reason}. The previous version remains installed. Run \`cotal update --self\` again when the registry responds.`));
-  } else if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || stagingFailed) && registryNetworkFailure(error)) {
+  } else if (staging === "network" || error instanceof RegistryUnavailable || error instanceof StagingTimeout && npmTextNetworkFailure(error.npmOutput) === "network") {
     recordUpdateDeferral(version, "waiting for registry access", true);
     rt.out(offlineUpdateMessage(repaired));
   } else if (error instanceof StagingTimeout) {
@@ -250,8 +258,8 @@ export function releaseReadError(result: CommandResult, detail: string, { instal
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
       if (error?.code === "ETARGET" && [error.summary, error.detail].some(text => typeof text === "string" && /with a date before\b/i.test(text)))
         return new ReleaseDateExcluded(`${detail}: npm's min-release-age or before setting excludes this release. Adjust that date filter and run \`cotal update --self\` again`);
-      // A first-party scoped read can fail while the public registry still answers.
-      if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
+      // A first-party scoped archive read can fail while the public registry still answers.
+      if ((installedSpecs || !detail.includes("@cotal-ai/")) && npmNetworkFailure(error?.code, [error?.summary])) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
         if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
           const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
