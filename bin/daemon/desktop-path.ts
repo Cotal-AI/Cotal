@@ -66,7 +66,9 @@ export async function discoverDesktopApplicationPath(): Promise<DiscoveredApplic
   const shell = userInfo().shell;
   if (!shell || !posix.isAbsolute(shell)) throw new CommandFailure("refused", "UNSUPPORTED", "the account has no absolute login shell; no application PATH was guessed");
   const marker = `cotal_path_${randomUUID().replaceAll("-", "")}`;
-  const output = await run(shell, ["-ilc", `printf '\\n${marker}%s${marker}\\n' "$PATH"`], `the login shell ${shell}`, "check that your login shell starts successfully, then choose Check again");
+  // The login shell only builds the environment; /bin/sh prints PATH, so a non-POSIX shell such as nushell works.
+  // The flags stay separate because nushell before 0.111 refuses `-ilc` as "flag missing string argument".
+  const output = await run(shell, ["-i", "-l", "-c", `/bin/sh -c 'printf "\\n${marker}%s${marker}\\n" "$PATH"'`], `the login shell ${shell}`, "check that your login shell starts successfully, then choose Check again");
   const parts = output.split(marker);
   if (parts.length !== 3) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the login shell returned no bounded application PATH; no service was changed");
   return filterDesktopApplicationPath(parts[1]!, dirname(process.execPath));

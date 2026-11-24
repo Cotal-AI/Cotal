@@ -152,17 +152,21 @@ check("its plain report begins with Mesh: <space> and ends with a Next", conflic
 // A persona that does not exist: show and remove name where to see the ones that do.
 for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
-  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
+  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona --json`", shown(missing));
 }
 const alternate = mkdtempSync(join(home, "alternate-"));
 const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
 check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
-const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
-const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
-check("persona show in a different catalog refuses and its recovery lists that catalog",
-  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
-    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
-    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
+for (const verb of ["show", "edit", "remove"]) {
+  const miss = cotal("persona", verb, "nosuch", "--space", "alternate-catalog", "--json");
+  const list = miss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
+  check(`persona ${verb} suggests a JSON inventory of the requested catalog`, miss.status === 2
+    && miss.envelope?.error?.code === "TARGET_NOT_FOUND" && list === "cotal persona --space alternate-catalog --json"
+    && cotal(...list.split(" ").slice(1)).envelope?.target?.space === "alternate-catalog", shown(miss));
+}
+const legacyMiss = cotal("personas", "show", "nosuch", "--space", "alternate-catalog", "--creds", "unused.creds");
+check("legacy show names the selected catalog without an unused credential option", legacyMiss.status === 2
+  && legacyMiss.stderr.includes("see the personas here with `cotal persona --space alternate-catalog`"), shown(legacyMiss));
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
@@ -608,6 +612,18 @@ const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--js
 check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
   combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
     && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
+for (const mode of [["--foreground"], []]) {
+  const args = ["--dry-run", "--json", ...mode, "--live-only"];
+  const denied = cotal("spawn", ...args, "--runtime", "pty");
+  check(`spawn ${mode[0] ?? "with default placement"} and --live-only only recommends omitting --runtime`,
+    denied.status === 1 && denied.envelope?.error?.code === "USAGE_INVALID"
+      && denied.envelope.error.remedy === "omit --runtime to launch in this terminal", shown(denied));
+  const retry = cotal("spawn", ...args);
+  const result = retry.envelope?.result;
+  check(`the ${mode[0] ? "explicit" : "default"} foreground retry preserves --live-only without allocating or launching`,
+    retry.status === 0 && retry.envelope?.outcome === "ok" && result?.kind === "direct-launch-preview"
+      && result.allocated === false && result.launched === false, shown(retry));
+}
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

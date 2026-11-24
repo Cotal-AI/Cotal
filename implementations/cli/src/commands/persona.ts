@@ -71,7 +71,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === undefined) return list(catalog, presentation, target);
   const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
-    const source = requirePersonaSource(path, target);
+    const source = requirePersonaSource(path, target, presentation);
     const definition = validatePersona(source.bytes, path);
     const word = personaNameWords(name!, target);
     const jsonWords = personaNameWords(name!, `${target} --json`);
@@ -109,7 +109,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return receipt(presentation, catalog, name!, path, "created", target);
   }
   if (sub === "edit") {
-    const edit = await editPersona(path, name!, catalog, target, presentation === "json");
+    const edit = await editPersona(path, name!, catalog, target, presentation);
     if (edit.action === "saved") {
       const spawnWords = personaSpawnWords(name!, target, userMode, !!spawnNameError(edit.displayName, { userMode }));
       return receipt(presentation, catalog, name!, path, "saved", target, false, spawnWords);
@@ -117,7 +117,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
-    const expected = requirePersonaSource(path);
+    const expected = requirePersonaSource(path, target, presentation);
     // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
@@ -147,6 +147,11 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
     if (path !== "-" && (error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona input file at ${path}`, {
         remedy: `check the path or pipe the original input into the same command with --${flag} -`,
+      });
+    }
+    if (path !== "-" && (error as NodeJS.ErrnoException).code === "EISDIR") {
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `persona input path is a directory: ${oneLine(path)}`, {
+        remedy: `pass the path to a ${flag === "file" ? "complete persona file" : "persona body file"} with --${flag}`,
       });
     }
     throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`);
@@ -270,7 +275,7 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
       ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare `cotal spawn` launches. A local `cotal up` in this root, `cotal space create` or `cotal setup` writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
-      { command: "cotal p", description: "Browse the local catalog" },
+      { command: `cotal p${target}`, description: "Browse the local catalog" },
     ] : [
       { command: `cotal spawn${spawnWords}`, description: "Launch an agent from this persona" },
       { command: `cotal p show${word}`, description: "Read the saved definition" },
