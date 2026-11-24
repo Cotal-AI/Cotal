@@ -123,9 +123,21 @@ check("fixture: the space is prepared and not started", prepared.status === 0, s
   }
   for (const extra of [["--detach", "--dry-run"], ["--on", "manager", "--dry-run"], ["--json"], ["--plain"]]) {
     const removed = cotal("start", "--config", "default", "--live-only", ...extra);
+    const explanation = extra.includes("--dry-run") ? "It cannot be used with a manager launch" : "Use `--dry-run` with `--json` or `--plain`";
     check(`start with --live-only ${extra.join(" ")} explains the conflict without printing a rejected retry`,
-      removed.status === 1 && removed.stderr.includes("It cannot be used with a manager launch") &&
-      !retryFor(removed)?.includes(" spawn default ") && removed.stderr.includes("Use `--dry-run` with `--json` or `--plain`"), shown(removed));
+      removed.status === 1 && removed.stderr.includes(explanation) && !retryFor(removed)?.includes(" spawn default "), shown(removed));
+  }
+  for (const [extra, explanation, correction] of [
+    [["--space="], "--space/-s is empty", "name the space"],
+    [["-m=example"], "-m=example gives -m the value", "write -m example or --model=example"],
+    [["--server=localhost"], "--server is not a valid URL", ""],
+    [["--name", ""], "--name cannot be empty", ""],
+    [["--subscribe", "#bad"], 'invalid channel "#bad"', "pass the channel without its #"],
+  ] as const) {
+    const removed = cotal("start", "--config=default", "--live-only", "--dry-run", "--json", ...extra);
+    check(`start with --live-only and invalid ${extra[0]} reports the argument problem rather than a manager conflict`,
+      removed.status === 1 && removed.stdout === "" && removed.stderr.includes(explanation) && removed.stderr.includes(correction) &&
+      !removed.stderr.includes("It cannot be used with a manager launch") && !retryFor(removed)?.includes(" spawn default "), shown(removed));
   }
 }
 

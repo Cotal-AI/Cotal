@@ -1,6 +1,7 @@
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import { parseCommandArgs, registry, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, GLOBAL_FLAGS, isCommandFailure } from "@cotal-ai/workspace";
+import { validateSpawnRetry } from "../command.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { retryWord, spawnFlags } from "./spawn-flags.js";
 
@@ -47,15 +48,16 @@ function retryArgs(argv: readonly string[], parsed: LegacyOptions) {
   return args;
 }
 
-function startRetry(argv: readonly string[], parsed: LegacyOptions): string | undefined {
+function startRetry(argv: readonly string[], parsed: LegacyOptions): string | CommandFailure | undefined {
   const args = retryArgs(argv, parsed);
   if (!args) return undefined;
   const spawn = registry.resolve<Command>("command", "spawn");
   try {
-    spawn.validate?.(parseCommandArgs({ ...spawn, flags: retryFlags }, args));
+    validateSpawnRetry(spawn, args);
   } catch (error) {
-    if (isCommandFailure(error) || (error instanceof TypeError && "code" in error &&
-      typeof error.code === "string" && error.code.startsWith("ERR_PARSE_ARGS_"))) return undefined;
+    if (isCommandFailure(error)) return error;
+    if (error instanceof TypeError && "code" in error &&
+      typeof error.code === "string" && error.code.startsWith("ERR_PARSE_ARGS_")) return undefined;
     throw error;
   }
   return `${displayCmd({ fromAnyFolder: true })} spawn ${args.map(retryWord).join(" ")}`;
@@ -64,15 +66,25 @@ function startRetry(argv: readonly string[], parsed: LegacyOptions): string | un
 /** Refuse the removed verb during validation without launching or installing anything. */
 export function refuseRemovedStart(args: ParsedArgs): never {
   const parsed = parseLegacyOptions(args.raw);
-  const retry = parsed && startRetry(args.raw, parsed);
-  const liveOnly = parsed?.values["live-only"] === true;
-  const guidance = liveOnly
-    ? "`--live-only` requires `cotal spawn --foreground`. It cannot be used with a manager launch (`--detach` or `--on`)."
-    : "Use `cotal spawn` to launch an agent. Add `--detach` to launch through a manager.";
-  const previewHint = liveOnly ? "Use `--dry-run` with `--json` or `--plain` to preview a foreground launch. " : "";
+  const candidate = parsed && startRetry(args.raw, parsed);
+  const retry = typeof candidate === "string" ? candidate : undefined;
+  const failure = isCommandFailure(candidate) ? candidate : undefined;
+  const values = parsed?.values;
+  const liveOnly = values?.["live-only"] === true;
+  const managerOptions = values?.detach || values?.on !== undefined || values?.creds !== undefined ||
+    values?.runtime !== undefined || values?.restarts !== undefined || values?.["restart-window"] !== undefined;
+  const receipt = liveOnly && !values?.["dry-run"] && (values?.json || values?.plain);
+  const guidance = !liveOnly
+    ? "Use `cotal spawn` to launch an agent. Add `--detach` to launch through a manager."
+    : retry || managerOptions
+      ? "`--live-only` requires `cotal spawn --foreground`. It cannot be used with a manager launch (`--detach` or `--on`)."
+      : "Keep `--live-only` with `cotal spawn --foreground`.";
+  const previewHint = receipt ? "Use `--dry-run` with `--json` or `--plain` to preview a foreground launch. " : "";
   const manual = "Pass the catalog name as a positional argument or use --file for a persona file. See `cotal spawn --help` for compatible launch options.";
-  throw new CommandFailure("refused", "USAGE_INVALID", `\`cotal start\` was removed. ${guidance}`, {
-    remedy: retry ?? previewHint + manual,
+  const detail = liveOnly && failure ? ` ${failure.message}` : "";
+  const correction = liveOnly && !managerOptions && !receipt && !failure?.remedyIsCommand ? failure?.remedy : undefined;
+  throw new CommandFailure("refused", "USAGE_INVALID", `\`cotal start\` was removed. ${guidance}${detail}`, {
+    remedy: retry ?? correction ?? previewHint + manual,
     ...(retry ? { remedyIsCommand: true } : {}),
     selfContained: true,
   });

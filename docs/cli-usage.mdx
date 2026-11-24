@@ -513,7 +513,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`models`](cli-agents.mdx#models) | List connector model catalogs and variants from the manager |
 | Agents | [`mcp`](cli-messaging.mdx#mcp) | Serve Cotal tools over stdio for an MCP-only host |
 | Agents | [`app-identity`](cli-auth.mdx#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
-| Agents | [`start`](cli-agents.mdx#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`start`](cli-agents.mdx#spawn) | Removed: migrate to `cotal spawn`, with `--foreground` for `--live-only` |
 | Agents | [`stop`](cli-agent-control.mdx#managed-seats) | Ask the manager to stop a managed agent |
 | Agents | [`ps`](cli-agent-control.mdx#managed-seats) | List managed agents and their mesh status |
 | Agents | [`attach`](cli-agent-control.mdx#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
