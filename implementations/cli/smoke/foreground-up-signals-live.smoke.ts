@@ -15,7 +15,7 @@
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
  * After a root is moved, SIGHUP names a stop by space from another folder, and SIGTERM stops it.
  * A broker crash releases a controller foreground hold with a failed exit and prints a repair
- * command that keeps a broker-only stack broker-only.
+ * command that keeps a broker-only stack broker-only. A moved project still reports the crash.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
  * An external `down --yes` stops a named or folder-named legacy stack without a crash diagnostic.
  * Run: pnpm smoke:foreground-up-signals:live */
@@ -1027,7 +1027,7 @@ function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "
   return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
   const brokerOnly = kind === "broker-only-crash" || kind === "time-wait";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
@@ -1085,21 +1085,32 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       console.log(`PASS foreground-up-signals ${name}`);
       return;
     }
-    if (kind === "broker-crash" || brokerOnly) {
+    if (kind === "broker-crash" || kind === "moved-broker-crash" || brokerOnly) {
       if (brokerOnly) {
         const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--max-payload", "131072"]);
         assert.equal(conflict.code, 2, conflict.out + conflict.err);
-        assert.match(conflict.err, /run `cotal up --foreground --no-manager` again/); passed++;
+        assert.match(conflict.err, /run `(?:pnpm )?cotal up --foreground --no-manager` again/); passed++;
       }
       const broker = controllerBroker(space, machine);
       assert.ok(broker?.process && observeServiceProcess(broker) === "running", "the isolated stack owns this broker process");
+      if (kind === "moved-broker-crash") {
+        renameSync(mesh, moved);
+        await sleep(1500);
+        assert.ok(!holder.state.exited && await portOpen(port) && observeServiceProcess(broker) === "running", "moving the root alone leaves the holder and its broker running"); passed++;
+      }
       process.kill(broker.process.pid, "SIGKILL");
       brokerKilled = true;
       await until(() => holder.state.exited, 10_000, () => holder.io.err.slice(-3000));
       await waitForOwnedChild(() => holder.state.closed, 3_000, `${root}: holder streams drained`);
       assert.equal(holder.state.code, 5, "broker loss is a failed foreground run"); passed++;
       assert.match(holder.io.err, new RegExp(`nats-server exited unexpectedly \\(pid ${broker.process.pid}\\)`)); passed++;
-      assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false, "the failed launcher releases its hold"); passed++;
+      if (kind === "moved-broker-crash") {
+        assert.ok(!existsSync(mesh) && existsSync(join(moved, ".cotal", "stack-controller.json")), "the holder exits before the move is reversed and keeps the journal"); passed++;
+        assert.ok(holder.io.err.includes(`Move the project back to ${shellPath(mesh)}, then run `), holder.io.err); passed++;
+        renameSync(moved, mesh);
+      } else {
+        assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false, "the failed launcher releases its hold"); passed++;
+      }
       const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"]);
       assert.ok(status.code === 0 && status.out.includes(`nats://127.0.0.1:${port}`) && /Connection:.*unreachable/.test(status.out), status.out + status.err); passed++;
       const repairArgs = [...(brokerOnly ? ["--no-manager"] : []), "--root", mesh];
@@ -1436,6 +1447,7 @@ await controllerHoldCell();
 await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
+await controllerHoldCell("moved-broker-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");
 if (process.platform === "linux") {
