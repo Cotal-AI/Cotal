@@ -765,6 +765,8 @@ from the working directory. When local cleanup refuses these flags, it reports `
 (exit 1) and names the flags to remove. If you ran the command from the project you intend to clean,
 retry from the same working directory and remove only the named flags and their values. A relative
 `--store-dir` is resolved from the working directory, which can be a subdirectory of the project.
+If a parent of that path is not a directory, `store` and `all` refuse with `USAGE_INVALID` (exit 1),
+name the parent and remove nothing. Correct `--store-dir`, or omit it to use the recorded store.
 
 - `history` purges the retained message backlog on the **running** broker (channels, plus DMs
   with `--dms`). A stream that is not on the broker is already clear: the command purges the streams
