@@ -383,6 +383,8 @@ function notice(message: string, error = false): void {
   if (message) text("notice", message);
   el("notice-wrap").classList.toggle("expanded", Boolean(message));
   el("notice").setAttribute("aria-hidden", String(!message));
+  el("notice").tabIndex = message ? 0 : -1;
+  el("notice").scrollTop = 0;
   if (message || !window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { el("notice").hidden = !message; if (!message) text("notice", ""); }
   el("notice").classList.toggle("error", error);
   if (message) announce(message);

@@ -73,7 +73,7 @@ export function nativeStub(scenario) {
         return await new Promise(resolve => { window.__closeStatusWatch = resolve; });
       }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
-      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
+      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), ...(request.refresh ? state.refreshResult : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
       if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
       if (request.op === "logout") {
@@ -585,6 +585,17 @@ export const scenarios = [
   { name: "progress-done", state: { connecting: true }, prepare: connect, act: page => page.evaluate(() => window.__advanceSetup()) },
   { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => { assert.equal(await page.locator("#notice").isVisible(), false); assert.equal(await page.locator("#spaces-heading").isVisible(), false); assert.equal(await page.locator(".connected-spaces-scroll").isVisible(), false); assert.equal(await page.locator("#another-space").textContent(), "Add a space"); } },
   { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
+  { name: "long-conflict-notice", state: {
+    accountAfterLogin: { idpUrl: "https://cotal.cloud/api/auth", mode: "account", hostSupport: "supported", spaces: [] },
+    refreshResult: { refresh: "partial", failedProviders: [], collisions: 406, collisionDetails: Array.from({ length: 406 }, (_, i) => ({ space: `held-${i}`, origin: "manual", idp: "https://cotal.cloud/api/auth" })) },
+  }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
+    const notice = page.getByRole("region", { name: "Operation notice" });
+    assert.match(await notice.textContent(), /held-405 \(registered by hand\)/);
+    await notice.focus();
+    await notice.press("End");
+    await page.waitForFunction(() => document.getElementById("notice").scrollTop > 0);
+    assert.equal(await page.locator("#dashboard").isVisible(), true);
+  } },
   { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
   { name: "audit-service-install", state: { installWait: true }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Preparing your sign-in"); assert.match(await page.locator("#notice").textContent(), /Preparing the background service/); } },
   { name: "audit-credential-expired", state: { loginError: "CREDENTIAL_EXPIRED" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Sign in again"); assert.equal(await page.locator("#recover").textContent(), "Sign in again"); } },

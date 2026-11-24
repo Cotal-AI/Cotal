@@ -99,7 +99,7 @@ input[type=url], select { width: 100%; min-width: 0; background: var(--paper); c
 .approval strong { display: block; font: 600 32px/1.4 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: 2px; margin-bottom: 8px; }
 .approval .button { margin: 4px 0 12px; }
 .approval p:last-child { margin: 0; }
-#notice { padding: 12px; margin: 12px 0; background: var(--paper); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; }
+#notice { padding: 12px; margin: 12px 0; background: var(--paper); border-radius: 8px; font-size: 12px; overflow-wrap: anywhere; max-height: min(12rem, 30vh); overflow-y: auto; }
 #notice.error { color: var(--ink); background: var(--paper); }
 .has-refusal .connection-icon { color: var(--gold-ink); background: var(--paper); }
 .progress { list-style: none; padding: 0; margin: 16px 0 0; }

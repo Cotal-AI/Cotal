@@ -479,6 +479,8 @@ test("a sign-in with a collision reaches Connect with the unrelated space and th
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, false);
     assert.deepEqual([...a.node<HTMLSelectElement>("space").options].map(option => option.value), ["", "other"]);
     assert.equal(a.node("notice").getAttribute("aria-hidden"), "false");
+    assert.equal(a.node("notice").tabIndex, 0);
+    assert.equal(a.node("notice").getAttribute("aria-label"), "Operation notice");
     assert.match(a.node("notice").textContent ?? "", /team \(registered by hand\).*cotal space forget team/);
     assert.match(a.node("notice").textContent ?? "", /registrations could not be read/);
     assert.ok(!a.calls.some(r => r.op === "setup"), "sign-in does not connect any space");
