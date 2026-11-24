@@ -250,6 +250,8 @@ export class SeatStart {
       }
       if (opts.resume)
         return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
+      if (opts.autoName)
+        return { ok: false, error: `${delegatedBy}, so it cannot name the seat from its first message (autoName)` };
       if (opts.resolved?.continuity === "exact")
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
@@ -871,6 +873,7 @@ export class SeatStart {
         // A reopened session already had its kickoff turn, so it is not submitted again. A once
         // seat gets its prompt as its one relayed task instead.
         prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
+        ...(opts.autoName === true ? { autoName: true } : {}),
         ...(opts.once !== undefined ? { once: true } : {}),
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent

@@ -60,6 +60,9 @@ export interface StartAgentOpts {
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
   prompt?: string;
+  /** The seat names itself from its first message (`LaunchOpts.autoName`). Imperative launches only,
+   *  and only on this host: a delegated runtime refuses it. A relaunch never passes it again. */
+  autoName?: boolean;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
    *  creds AND forwarded to the connector from ONE source. Imperative-only — a manifest launch

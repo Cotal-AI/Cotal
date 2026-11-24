@@ -1314,9 +1314,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  is closed, so a revision-51 contract rejects it.
  *
  *  53 = the targeted `interrupt` command, which writes the seat's connector-declared interrupt key
- *  into its terminal. A new served command is what a revision is for. */
+ *  into its terminal. A new served command is what a revision is for.
+ *
+ *  54 = `spawn` takes `autoName`, so the seat names itself from its first message. The input schema
+ *  is closed, so a revision-53 contract rejects this field. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 53, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 54, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

@@ -148,6 +148,8 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     eventPayloads: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
+    // The seat names itself from its first message: the prompt above, else its first DM or mention.
+    autoName: { type: "boolean" },
     // An inline persona: the helper's definition, carried here instead of read from the catalog.
     // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
     persona: {
