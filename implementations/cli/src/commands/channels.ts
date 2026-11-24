@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
+  checkServer, codeSpan, CommandFailure, findMesh, jsonFlag, plainFlag, presentationOf, recordOperationWarning, targetFlags, writeResult,
   type Presentation, type Report,
 } from "@cotal-ai/workspace";
 import { connectOrThrow, userViewAuthOrExit } from "../lib/connect.js";
@@ -82,11 +82,19 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
     const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
     const word = named && rawName ? ` ${shellWord(rawName.startsWith("-") ? `#${rawName}` : rawName)}` : "";
+    const output = values.json ? " --json" : values.plain ? " --plain" : "";
+    const server = values.server === undefined ? undefined : checkServer(values.server, "--server");
+    if (server && !server.ok) throw new CommandFailure("refused", "USAGE_INVALID", server.message.replace(/^✗ /, ""), { remedy: server.remedy });
+    if (action !== "set" && action !== "defaults") {
+      const follow = action === "members" && values.follow ? " --follow" : "";
+      const retry = action === "remove" ? "remove the replay flag and its value from this command"
+        : `run ${codeSpan(`cotal channel${action === "list" ? "" : ` ${action}`}${word}${follow}${targetWords(values)}${output}`)}`;
+      throw new CommandFailure("refused", "USAGE_INVALID", "replay settings belong to channel set/defaults", { remedy: retry });
+    }
     const edits = (["window", "delivery", "desc", "instructions"] as const).map((key) => {
       const value = values[key];
       return value === undefined ? "" : ` --${key}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
     }).join("");
-    const output = values.json ? " --json" : values.plain ? " --plain" : "";
     throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${edits}${targetWords(values)}${output}`)}` });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))

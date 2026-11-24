@@ -81,8 +81,14 @@ function scriptOf(file: string | undefined): SimScript {
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
     if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
-    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
+    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item)) {
+      const shape = key === "faults" ? "an array of fault objects" : key === "clock" ? "an object of clock settings"
+        : `an object keyed by ${key === "checkpoints" ? "checkpoint" : "step"} name`;
+      const actual = item === null ? "null" : Array.isArray(item) ? "an array" : `a ${typeof item}`;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${key} in the simulation results script ${file} must be ${shape}, not ${actual}`, {
+        target: { file }, remedy: `replace ${key} in ${file} with ${shape}, then rerun the simulation`,
+      });
+    }
   }
   const clock = script.clock as Record<string, unknown> | undefined;
   const start = clock?.start;

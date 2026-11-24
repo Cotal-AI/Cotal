@@ -33,7 +33,7 @@ import {
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
   activateRun, lastActivation, writeRunStatus, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
-import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, exitCode, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, shellPath } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -796,7 +796,8 @@ const takeoverRun = startedId()!;
 // grammar refuses them as usage and the writer refuses them again before the create.
 {
   reset();
-  await wf(["start"], { file: PURE });
+  const endpoint = "revoke-smoke";
+  await wf(["start"], { file: PURE, endpoint });
   const eid = startedId() ?? "";
   const refused = await wf(["revoke", eid], { by: "", reason: "" }).then(() => undefined, (e: Error) => e);
   // The run grammar refuses the empty fields before any connection, so the command never reaches
@@ -817,21 +818,28 @@ const takeoverRun = startedId()!;
   // A run ID nothing admitted used to get its marker written and then a refusal citing the spec,
   // exit 1. It is refused as not found before anything is written, so no marker exists afterwards.
   const unadmitted = "run-0123456789abcdef0123456789abcdef";
-  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop" }).then(() => undefined, (e: Error) => e);
+  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop", endpoint }).then(() => undefined, (e: Error) => e);
   const markerAfter = await (async () => {
-    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId: unadmitted } });
+    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint, runId: unadmitted } });
     const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(EP, unadmitted)); } finally { await nc.drain().catch(() => {}); }
+    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(endpoint, unadmitted)); } finally { await nc.drain().catch(() => {}); }
   })();
-  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, and no marker is written",
+  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, exit 2, and no marker is written",
     isCommandFailure(unknownRevoke) && unknownRevoke.code === "TARGET_NOT_FOUND"
-      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${EP}, so there is nothing to revoke; nothing was written`
+      && exitCode(unknownRevoke.outcome, unknownRevoke.code) === 2
+      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`
       && markerAfter === null, { refused: unknownRevoke?.message, markerAfter });
 
+  const remedy = isCommandFailure(unknownRevoke) ? unknownRevoke.remedy : undefined;
+  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  const [, alias, ...args] = remedy === `list the recorded runs with \`${next}\``
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${next}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+    : [];
+  const run = alias && findCommand(registry.all<Command>("command"), alias);
   reset();
-  await withStderr(() => wf(["ps"])).catch(() => undefined);
-  c("...and writes no marker, so ps lists that run by its record and never as revoked",
-    stateOf(psRow(eid)) === "completed", psRow(eid));
+  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+  c("the revoke remedy lists the same broker without a manager and finds the existing completed run",
+    listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(eid)) === "completed", { remedy, out: captured() });
 }
 
 // ── 12) migrate: the check over an edited program, read-only, through the command ────────────
@@ -971,6 +979,25 @@ const takeoverRun = startedId()!;
   const filtered = (await envelopeOf(["ps"], { endpoint }))?.result as { items?: RunRowJson[] } | undefined;
   c("ps filters dotted endpoints by their name rather than their wire token",
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
+
+  const origin = join(home, "origin");
+  mkdirSync(origin);
+  recordPreparedSpace({ space: "origin", root: origin, ts: new Date().toISOString() });
+  setCurrent("origin");
+  try {
+    reset();
+    await wf(["list"], { endpoint, plain: true });
+    const hint = lines().map((line) => line.trim().split(/ {2,}/)[0]).find((line) => line?.includes(" r show <run-id>"));
+    const expected = `r show <run-id> --local --endpoint ${endpoint} --space ${SPACE} --server ${shellPath(servers)}`;
+    const command = ["cotal", "pnpm cotal"].some((cli) => hint === `${cli} ${expected}`)
+      ? hint!.replace(/^.*? r /, "r ").replace("<run-id>", rid) : undefined;
+    const [, ...showArgs] = command === undefined ? [] : execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1);
+    const replay = run && command !== undefined
+      ? await readEnvelope(() => runWorkflow(parseCommandArgs(run, [...showArgs, "--json"]))).catch((error: Error) => error) : undefined;
+    const view = replay && !(replay instanceof Error) ? (replay.result as { view?: RunStatusView } | undefined)?.view : undefined;
+    c("the local list's printed show command reads the same journal despite a different selected space",
+      view?.runId === rid && view.endpoint === endpoint && view.journal.length === detail?.view?.journal.length, { hint, replay });
+  } finally { clearCurrent(); }
 
   reset();
   await wf(["revoke", rid], { endpoint, by: "smoke-operator", reason: "dotted endpoint control" });
@@ -1117,7 +1144,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 136;
+const DECLARED = 137;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

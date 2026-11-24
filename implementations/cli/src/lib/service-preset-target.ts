@@ -198,6 +198,7 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   // dashboard keeps its --posting-creds, a pair the dashboard's launch refuses (#7589).
   if (launch.adapter === WEB_SERVICE_ADAPTER && changed.includes("read-only") && merged["read-only"] === true && typeof merged["posting-creds"] === "string")
     throw new CommandFailure("refused", "CONFLICT", `--read-only would keep the saved ${row.name} definition's --posting-creds, and the dashboard posts only with --no-read-only; nothing was changed`, { target: { space, name: row.name }, remedy: `remove it with \`cotal service remove ${row.name} --space ${space} --yes\`, then run \`cotal service add ${row.name} --preset ${preset.name} --space ${space} --read-only\`` });
+  if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, merged);
   if (running(space, row.name)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${row.name} is running with another ${shown}; nothing was changed`, { target: { space, name: row.name }, remedy: `stop it first with \`${requested === "manager" ? "cotal manager stop" : `cotal service stop ${shellWord(row.name)}`} --space ${shellWord(space)}\`, then start it again with the new ${shown}` });
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: merged } };
@@ -208,13 +209,16 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   if (launch.adapter === STACK_ADAPTER.manager && changed.includes("console-host") && typeof consoleHost === "string" && /[\u0000- \u007f]/u.test(consoleHost))
     throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; nothing was changed", { target: { space, name: row.name }, selfContained: true });
   if (launch.adapter === STACK_ADAPTER.manager) {
-    assertManagerStartOptions(space, merged);
     const path = merged.launch, digest = merged["launch-sha256"];
     if ((changed.includes("launch") || changed.includes("launch-sha256")) && typeof path === "string" && typeof digest === "string") {
       if (!/^[0-9a-f]{64}$/.test(digest)) throw new CommandFailure("refused", "USAGE_INVALID", "an owned manager launch requires an absolute private spec and its full SHA-256");
       protectedCredentialReference(path);
       const bytes = readLocalRecordSource(path, 256 * 1024, true);
-      if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new CommandFailure("refused", "CONFLICT", "the owned manager launch spec is absent or changed from its declared digest; no agent launch was selected", { target: { space, name: row.name }, selfContained: true });
+      if (!bytes || createHash("sha256").update(bytes).digest("hex") !== digest) throw new CommandFailure("refused", "CONFLICT", "the owned manager launch spec is absent or changed from its declared digest; no agent launch was selected", {
+        target: { space, name: row.name },
+        remedy: "To keep the saved launch settings, rerun the same command and omit both `--launch` and `--launch-sha256`. To apply the override, verify the launch file and rerun with its matching SHA-256 in `--launch-sha256`.",
+        selfContained: true,
+      });
     }
   }
   if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };

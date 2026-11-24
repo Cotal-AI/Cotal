@@ -730,6 +730,16 @@ try {
     members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
     operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
   });
+  for (const mode of ["--open", "--user-auth"]) {
+    for (const members of [[], ["--no-manager"]]) {
+      const mismatch = run(["up", mode, ...members, "--json"], journalRoot);
+      const keep = ["cotal up", ...members].join(" "), separate = ["cotal up", mode, ...members].join(" ");
+      const remedy = mismatch.envelope?.error?.remedy ?? "";
+      check(`a pinned-mode refusal with ${[mode, ...members].join(" ")} keeps the requested members in both retries`,
+        mismatch.status === 2 && mismatch.envelope?.error?.code === "CONFLICT" && remedy.includes(`\`${keep}\` to keep static auth`)
+          && remedy.includes(`then \`${separate}\``) && !started(journalRoot), shown(mismatch));
+    }
+  }
   writeFileSync(join(journalRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagejournal\nbroker:\n  servers: nats://127.0.0.1:${held}\nchannels:\n  general:\n    subscribe: []\n`);
   for (const args of [["up", "-f", "cotal.yaml"], ["up", "-f", "cotal.yaml", "--dry-run"]]) {
     const beside = run(args, journalRoot);

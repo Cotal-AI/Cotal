@@ -59,9 +59,10 @@ import {
 import { killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { execWords } from "../src/lib/exec-words.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 116;
+const EXPECTED = 119;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -517,10 +518,10 @@ try {
   // quoted body used to be told to choose one body, with a remedy for another destination.
   const dash = await run(["send", "-c", "general", "-", "--json"]);
   check("`cotal send -c general -` is refused, names --stdin and --file -, and suggests the same channel",
-    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run `cotal send -c general --stdin`"), dash);
+    dash.code === 1 && dash.stdout.includes('"code":"USAGE_INVALID"') && dash.stdout.includes('a lone \\"-\\" is not read as stdin; send stdin with --stdin or --file -') && dash.stdout.includes("run `cotal send -c general --json --stdin`"), dash);
   const empty = await run(["send", "-c", "general", "", "--json"]);
   check("an empty quoted body says the message is empty and suggests the same channel",
-    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run `cotal send -c general \\"<message>\\"`'), empty);
+    empty.code === 1 && empty.stdout.includes('"message":"the message is empty"') && empty.stdout.includes('run `cotal send -c general --json \\"<message>\\"`'), empty);
   // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
   const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
   check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
@@ -592,6 +593,18 @@ try {
       child.stdin!.on("error", () => {});
       feed(child.stdin!);
     });
+  for (const body of ["", " ", "-"]) {
+    const refused = await run(["send", "-c", "general", "--space", space, "--server", servers, "--json", body]);
+    const remedy = JSON.parse(refused.stdout).error?.remedy as string | undefined;
+    const command = /^run `cotal (.+)`$/.exec(remedy ?? "")?.[1];
+    const args = command ? execWords(command.replace("<message>", "corrected body")) : undefined;
+    const retried = args ? (body === "-" ? await piped(args, (stdin) => stdin.end("corrected-stdin")) : await run(args)) : undefined;
+    const receipt = retried?.stdout.startsWith("{") ? JSON.parse(retried.stdout) : undefined;
+    check(`the retry for ${JSON.stringify(body)} keeps the destination and returns a JSON storage receipt`,
+      refused.code === 1 && refused.stderr === "" && retried?.code === 0 && receipt?.outcome === "ok"
+        && receipt.target?.space === space && receipt.result?.destination === "general" && receipt.result?.stored === true
+        && receipt.result.bodySource === (body === "-" ? "stdin" : "argument"), { refused, retried });
+  }
   const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
     stdin.write("first half, ");
     setTimeout(() => stdin.end("second half after a pause"), 5_000);
