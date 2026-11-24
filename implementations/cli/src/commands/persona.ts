@@ -1,6 +1,6 @@
 import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import * as prompts from "../lib/prompts.js";
 import { parseChannelFlag } from "../lib/channel-flags.js";
@@ -14,7 +14,7 @@ import {
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas } from "../lib/personas.js";
 import {
-  assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaNameProblem, personaNameWords, personaPath, readPersonaSource,
+  assertLabels, commitPersona, editPersona, personaCatalog, personaCatalogContext, personaCreateOccupied, personaNameProblem, personaNameWords, personaPath, readPersonaSource,
   requirePersonaSource, reservedPersonaName, serializePersona, validatePersona, type PersonaCatalog, type PersonaEdit,
 } from "../lib/persona-files.js";
 import { remotePersona, validateRemotePersonaArguments } from "./persona-remote.js";
@@ -174,7 +174,13 @@ async function createSource(name: string, path: string, values: Values): Promise
       const file = `--file${values.file !== "-" && values.file.startsWith("-") ? "=" : " "}${shellWord(values.file)}`;
       const retry = `cotal persona create${personaNameWords(def.name, ` ${file}${targetWords(values)}`)}`;
       const rename = `set its name to '${name}'`;
-      const remedy = spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name) ? rename
+      const invalid = spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name);
+      // The suggested create names the file's own catalog entry, which may already be taken:
+      // suggesting it then would print a command the catalog refuses. Offer the copy instead.
+      const occupied = invalid === undefined && personaCreateOccupied(join(dirname(path), `${def.name}.md`));
+      const remedy = invalid !== undefined ? rename
+        : occupied && values.file === "-" ? `${rename} and pipe the corrected definition into the original command`
+        : occupied ? `change its name to '${name}' in a separate copy of the input file and retry with that copy`
         : values.file === "-" ? `pipe the original definition into ${codeSpan(retry)} again, or ${rename} and pipe the corrected definition into the original command`
         : `create it under its own name with ${codeSpan(retry)}, or ${rename}`;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'; ${source} names '${def.name}'`, { remedy });

@@ -906,7 +906,7 @@ try {
       check("#7565: a lifetime beyond Node's timer limit stays connected rather than overflowing to immediate expiry",
         longStarted && longStillRunning && !/TimeoutOverflowWarning/.test(longOut), longOut);
 
-      // #7563: control commands refuse --creds before dialing as UNSUPPORTED (exit 2) with Next naming without --creds,
+      // #7563: control commands refuse --creds before dialing as UNSUPPORTED (exit 2) with a remedy,
       // and status --help / bare status --creds do not advertise --creds as a working named-agent read.
       const admCreds = join(exports, "adm-ctrl.creds");
       const admMinted = await runMint(["adm_ctrl", "--profile", "admin", "--out", admCreds]);
@@ -915,8 +915,10 @@ try {
       check("#7563: status --help does not advertise --creds as a working named-agent credential",
         statusHelp.code === 0 && !/named agent: use an explicit connection credential/.test(statusHelp.out), statusHelp.out);
       const bareStatusCreds = await runCotal(["status", "--creds", admCreds]);
-      check("#7563: bare status --creds exits 2 UNSUPPORTED naming without --creds",
-        bareStatusCreds.code === 2 && /Code:\s+UNSUPPORTED/.test(bareStatusCreds.out) && /without --creds/.test(bareStatusCreds.out) && !/select a named agent read/.test(bareStatusCreds.out), bareStatusCreds);
+      check("#7563: bare status --creds exits 2 UNSUPPORTED with Next to remove only --creds and its value",
+        bareStatusCreds.code === 2 && /Code:\s+UNSUPPORTED/.test(bareStatusCreds.out)
+          && /Next\s+remove --creds and its value, then rerun the same command with the remaining arguments unchanged/.test(bareStatusCreds.out)
+          && !/select a named agent read/.test(bareStatusCreds.out), bareStatusCreds);
       for (const [label, argv] of [
         ["status <agent>", ["status", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
         ["ps", ["ps", "--space", "offlinecheck", "--creds", admCreds]],

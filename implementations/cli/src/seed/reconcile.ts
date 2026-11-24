@@ -150,9 +150,9 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
-export async function runSeed(flags: SeedFlags): Promise<void> {
+export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
-  const result = await reconcile(mode);
+  const result = await reconcile(mode, false, false, selfUpdate);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
     return;
@@ -167,7 +167,7 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
@@ -183,10 +183,10 @@ async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false)
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode, automatic, resumeFirstSeed);
+  return reconcileUnderClosure(mode, automatic, resumeFirstSeed, selfUpdate);
 }
 
-async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean, selfUpdate: boolean): Promise<ReconcileResult> {
   const generation = seedGeneration();
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
@@ -292,7 +292,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation();
         releaseMutation = () => {};
         const { refreshConnectorInstalls } = await import("../commands/setup.js");
-        for (const line of await refreshConnectorInstalls()) console.error(c.dim(`→ ${line}`));
+        for (const line of await refreshConnectorInstalls(undefined, selfUpdate)) console.error(c.dim(`→ ${line}`));
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");

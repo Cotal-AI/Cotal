@@ -1253,7 +1253,7 @@ async function reconcileOtherConnectorSkills(
 }
 
 /** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
-export async function refreshConnectorInstalls(report?: (line: string) => void): Promise<string[]> {
+export async function refreshConnectorInstalls(report?: (line: string) => void, selfUpdate = false): Promise<string[]> {
   const lines: string[] = [];
   const failures: string[] = [];
   for (const connector of await setupConnectorSurface()) {
@@ -1268,6 +1268,11 @@ export async function refreshConnectorInstalls(report?: (line: string) => void):
     try {
       detail = await refresh.run(input);
     } catch (error) {
+      if (selfUpdate && error instanceof Error && error.name === "ForeignConnectorRegistrationError") {
+        // The explicit refresh reports the skip once, even when seed migration also runs this pass.
+        if (report) console.error(`Skipped ${connector.name} integration refresh: ${error.message}`);
+        continue;
+      }
       if (!report) throw error;
       failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
