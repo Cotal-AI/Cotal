@@ -430,9 +430,9 @@ stop itself. The clock starts when the manager serves and starts again whenever 
 seconds after the period ends. The stop is the one
 `cotal manager stop` makes without `--with-agents`, so the manager also deregisters. The value is
 recorded on the instance and never in the saved definition, so a later start without it runs until
-stopped. While the manager runs, `status` shows it on the `Idle exit` row, and `cotal status` lists
-any pending work that holds the clock on its manager row, such as `pending retirements 1`. Once
-the manager stopped itself, `status` shows when on the `Stopped` row and names `cotal manager start` under Next, and the
+stopped. While the manager runs, `status` shows it on the `Idle exit` row, and
+`cotal status --components` lists any pending work that holds the clock on its manager row, such as
+`pending retirements 1`. Once the manager stopped itself, `status` shows when on the `Stopped` row and names `cotal manager start` under Next, and the
 log's last lines say why. A start with `--idle-exit` while the manager runs with another value, or
 with none, refuses `LIFECYCLE_BLOCKED`. `--idle-exit` on another service refuses before anything
 launches. [`cotal acp`](acp-clients.mdx) passes `--idle-exit 600` when it starts a manager for a thread.
