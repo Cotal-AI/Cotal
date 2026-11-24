@@ -1218,29 +1218,32 @@ try {
       setPreview.status === 0 && setPreview.env?.result?.kind === "service-set-stop-preview"
         && JSON.stringify(previewMembers.map((member) => [member.name, member.requested])) === JSON.stringify([["stack-delivery", "delivery"], ["stack-manager", "manager"]]), shown(setPreview));
     const setManager = runningPidOf(space, "stack-manager"), setDelivery = runningPidOf(space, "stack-delivery");
-    const brokerNext = "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack";
-    const unknown = cli(root, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
-    check("a broker name in the set refuses the whole set and names the bare down, not stack-broker",
+    const otherRoot = join(projects, "settle");
+    const brokerNext = (output: string) => `a set of names never stops the broker; to preview stopping the whole stack, run \`cotal down --dry-run --space=${space}${output}\` in ${realpathSync(root)}`;
+    const unknown = cli(otherRoot, "down", "stack-manager", "nats", "--space", space, "--yes", "--json");
+    check("a broker name refuses the whole set and offers a preview in the selected space's project",
       unknown.status === 2 && unknown.env?.error?.code === "TARGET_NOT_FOUND" && unknown.env.target?.name === "nats"
         && unknown.env.error.message === `nats matches no service a set of names can stop in space ${space}; no service was stopped`
-        && unknown.env.error.remedy === brokerNext
+        && unknown.env.error.remedy === brokerNext(" --json")
         && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(unknown));
     // broker and stack-broker reach the saved stack-broker, and refuse as nats does wherever they stand.
     for (const set of [["delivery", "broker", "--dry-run"], ["manager", "broker", "--yes"], ["delivery", "stack-broker", "--yes"], ["manager", "stack-broker", "--dry-run"], ["broker", "delivery", "--yes"]]) {
       const name = set.find((word) => word.endsWith("broker"))!;
       const named = cli(root, "down", ...set, "--space", space, "--json");
-      check(`down ${set.join(" ")} --json refuses as nats does, with its code, message and bare down`,
+      check(`down ${set.join(" ")} --json refuses as nats does, with its code and whole-stack preview`,
         named.status === 2 && named.env?.error?.code === "TARGET_NOT_FOUND" && named.env.target?.name === name
           && named.env.error.message === `${name} matches no service a set of names can stop in space ${space}; no service was stopped`
-          && named.env.error.remedy === brokerNext
+          && named.env.error.remedy === brokerNext(" --json")
           && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), shown(named));
     }
     const plainBroker = cli(root, "down", "delivery", "stack-broker", "--space", space, "--yes");
     const plainText = `${plainBroker.stdout}${plainBroker.stderr}`;
-    check("and its plain refusal names the same code and bare down, with no stop policy wording",
+    check("the text refusal names the same code and preview, with no stop policy wording",
       plainBroker.status === 2 && plainText.includes(`stack-broker matches no service a set of names can stop in space ${space}; no service was stopped`)
-        && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
-    const otherRoot = join(projects, "settle");
+        && plainText.includes("TARGET_NOT_FOUND") && plainText.includes(brokerNext("")) && !plainText.includes("kernel-exit") && !plainText.includes("UNSUPPORTED"), plainText);
+    const previewArgs = /`cotal (down --dry-run [^`]+)`/.exec(unknown.env?.error?.remedy ?? "")?.[1];
+    const whole = previewArgs ? cli(root, ...execWords(previewArgs)) : undefined;
+    check("the printed preview reaches the requested stack and leaves its members running", whole?.status === 0 && whole.env?.target?.space === space && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), whole && shown(whole));
     const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--dry-run", "--json");
     const unknownSet = cli(otherRoot, "down", "delivery", "nosuch", "--space", space, "--yes", "--json");
     const remedy = unknownSet.env?.error?.remedy;

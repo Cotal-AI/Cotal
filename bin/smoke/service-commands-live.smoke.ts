@@ -386,9 +386,9 @@ try {
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
     for (const name of ["nats", "broker", "stack-broker"]) {
       const brokerSet = envelope(upCotal(["down", name, "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
-      check(`cotal down ${name} delivery refuses the whole set and names the bare down that stops the broker`,
+      check(`cotal down ${name} delivery refuses the whole set and names a preview in its project`,
         brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `${name} matches no service a set of names can stop in space ${UP_SPACE}; no service was stopped`
-          && brokerSet.error.remedy === "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack", brokerSet);
+          && brokerSet.error.remedy === `a set of names never stops the broker; to preview stopping the whole stack, run \`cotal down --dry-run --space=${UP_SPACE} --json\` in ${realpathSync(upProject)}`, brokerSet);
     }
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
