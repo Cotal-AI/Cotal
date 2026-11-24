@@ -24,7 +24,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string }; warnings?: { code?: string }[] }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -129,6 +129,60 @@ check("control: __complete still completes its own words", completed.status === 
 
 const undeclared = run(["--json", "ext", "root"]), trailing = run(["ext", "root", "--json"]);
 check("a mode without that output refuses the leading flag as it does after the word", undeclared.status === 1 && /has no --json or --plain/.test(undeclared.stderr) && trailing.status === 1 && /has no --json or --plain/.test(trailing.stderr), { before: shown(undeclared), after: shown(trailing) });
+
+for (const { args, command, status, code } of [
+  { args: ["backup", "inspect", "./not-there", "--json"], command: "backup inspect", status: 2, code: "TARGET_NOT_FOUND" },
+  { args: ["--json", "backup", "verify", "./not-there"], command: "backup verify", status: 2, code: "TARGET_NOT_FOUND" },
+  { args: ["backup", "--store-dir", "", "create", "./artifact", "--json"], command: "backup create", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "restore", "--json"], command: "backup restore", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "recover", "--json"], command: "backup recover", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "cleanup-fallback", "--json"], command: "backup cleanup-fallback", status: 1, code: "USAGE_INVALID" },
+  { args: ["backup", "unknown", "--json"], command: "backup", status: 1, code: "USAGE_INVALID" },
+]) {
+  const r = run(args);
+  check(`${args.join(" ")} identifies its operation in the refusal`, r.status === status && r.stderr === "" &&
+    r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === code, shown(r));
+}
+
+const dashFlag = "\u2013\u2013no-color";
+for (const { words, command } of [
+  { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },
+  { words: [dashFlag, "verify", "./not-there"], command: "backup verify" },
+  { words: [dashFlag, "--store-dir", "--only", "inspect", "restore"], command: "backup restore" },
+  { words: ["\u2014dry-run", "\u2212y", "recover"], command: "backup recover" },
+  { words: ["\u2014store-dir=inspect", "restore"], command: "backup restore" },
+  { words: ["\u2014store-dir", "inspect", "restore"], command: "backup restore" },
+  { words: ["\u2014store-dir", "--only", "inspect", "restore"], command: "backup restore" },
+  { words: [dashFlag, "unknown", "verify"], command: "backup" },
+  { words: [dashFlag, "--", "\u2014dry-run", "recover"], command: "backup" },
+  { words: ["\u2014store-dir", "--", "inspect", "./not-there"], command: "backup inspect" },
+]) {
+  const r = run(["backup", "-j", ...words]);
+  check(`backup -j ${words.join(" ")} keeps the typed-option refusal and attributes it`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message?.startsWith(`${words[0]} starts with a typographic dash`) === true, shown(r));
+}
+
+for (const { words, command, remedy } of [
+  { words: ["--only", "inspect", "restore"], command: "backup restore", remedy: "write --store-dir <dir>" },
+  { words: ["--", "--only", "inspect", "verify"], command: "backup", remedy: "write --store-dir <dir> before --" },
+]) {
+  const r = run(["backup", "-j", "--store-dir", ...words]);
+  check(`backup -j --store-dir ${words.join(" ")} preserves the missing-value refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === "--store-dir needs a value" && r.envelope.error.remedy === remedy, shown(r));
+}
+
+const dashValue = run(["backup", "-j", "--store-dir", "\u2014only", "inspect", "./not-there"]);
+check("a typographic-looking value after an ASCII string option stays a value", dashValue.status === 1 && dashValue.stderr === "" &&
+  dashValue.envelope?.command === "backup inspect" && dashValue.envelope.outcome === "refused" &&
+  dashValue.envelope.error?.code === "USAGE_INVALID" &&
+  dashValue.envelope.error.message === "backup inspection and verification accept no creation, target or restore inputs", shown(dashValue));
+
+const dashAfterVerb = run(["backup", "verify", dashFlag, "./not-there", "-j"]);
+check("a typographic flag after the backup verb keeps the same refusal", dashAfterVerb.status === 1 && dashAfterVerb.stderr === "" &&
+  dashAfterVerb.envelope?.command === "backup verify" && dashAfterVerb.envelope.error?.code === "USAGE_INVALID" &&
+  dashAfterVerb.envelope.error.message?.startsWith(`${dashFlag} starts with a typographic dash`) === true, shown(dashAfterVerb));
 
 finish();
 process.exit(process.exitCode ?? 0);
