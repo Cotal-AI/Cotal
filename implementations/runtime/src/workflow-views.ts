@@ -32,9 +32,11 @@ export function printRunList(space: string | undefined, items: readonly RunListR
       { kind: "lines", lines: [{ text: "Recorded workflow state, not a live agent-progress report. Revoking admission is not task cancellation.", tone: "hint" }] },
       ...(open ? [{ kind: "lines" as const, lines: ["Open meshes cannot host workflow runs."] }] : []),
     ] },
-    { title: "Next", blocks: [{ kind: "commands", items: open
-      ? [{ command: "cotal r simulate <file>", description: "Test a workflow offline" }]
-      : [{ command: `cotal r show <run-id>${managerPin(values)}${runRoute(values)}`, description: "Read state, open requests and journal steps" }, { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [
+      ...(!open || values.local ? [{ command: `cotal r show <run-id>${managerPin(values)}${runRoute(values)}`, description: "Read state, open requests and journal steps" }] : []),
+      open ? { command: "cotal r simulate <file>", description: "Test a workflow offline" }
+        : { command: `cotal r start <file>${managerPin(values)}`, description: "Start a new workflow on the selected manager" },
+    ] }] },
   ] }));
 }
 
