@@ -794,6 +794,20 @@ check("endpoint describe explains the --live refusal and both available reads",
   reportShape(describeLive, /endpoint describe already reads the contract live and does not take --live/) &&
   describeLive.stderr.includes("remove --live") && describeLive.stderr.includes("cotal endpoint list --live") &&
   !describeLive.stderr.includes("--file and --yes"), shown(describeLive));
+const inventoryHelp = run(["endpoint", "--help"]);
+check("endpoint help distinguishes saved and live inventory and scopes the broker and credential options",
+  inventoryHelp.status === 0 && /(?:pnpm )?cotal endpoint \[--space <s>\]/.test(inventoryHelp.stdout)
+    && /(?:pnpm )?cotal endpoint --live \[--space <s>\]/.test(inventoryHelp.stdout)
+    && /--space <s>[^\n]*saved references without a broker/.test(inventoryHelp.stdout)
+    && /--server <url>[^\n]*requires --live/.test(inventoryHelp.stdout)
+    && /--creds <path>[^\n]*requires --live/.test(inventoryHelp.stdout), shown(inventoryHelp));
+for (const [flag, value] of [["--server", "nats://127.0.0.1:37126"], ["--creds", "inventory.creds"]] as const) {
+  const inventory = run(["endpoint", flag, value, "--json"]);
+  const error = JSON.parse(inventory.stdout).error;
+  check(`endpoint inventory tells users how to use or omit ${flag}`,
+    inventory.status === 1 && inventory.stderr === "" && error?.code === "USAGE_INVALID"
+      && error.remedy === `add --live to read native registrations, or omit ${flag} to list saved references`, shown(inventory));
+}
 const ascii = { LANG: "C" };
 const plainOwn = run(["config", "get", "bogus", "--plain"]);
 check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));

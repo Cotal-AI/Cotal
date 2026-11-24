@@ -605,6 +605,8 @@ instance. Invocation receipts attribute resolution to the native responder that 
 
 ### Native registration inventory
 
+`endpoint --space <s>` lists saved references for that space without contacting a broker.
+For inventory, `--server` and `--creds` require `--live`.
 `endpoint --live` adds authorized native service-registration metadata to the local reference
 inventory. It uses the existing scoped service-record read rows, without adding grants or reading
 message bodies. The SDK paginates the filtered metadata list; per-key spec/status reads come from

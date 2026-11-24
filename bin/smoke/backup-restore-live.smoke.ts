@@ -31,6 +31,8 @@ import {
 } from "../../implementations/cli/src/lib/isolated-broker.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
+process.env.DO_NOT_TRACK = "1";
+
 const occupy = async (port: number): Promise<ChildProcess> => {
   const child = spawn("nats-server", ["-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
   teardownOnSignal(child);
@@ -1412,6 +1414,34 @@ async function linkedStoreScenario(): Promise<void> {
   }
 }
 
+/** A prepared controller root cannot make the preserved cut that a backup needs. */
+function preparedBackupGuidance(): void {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-prepared-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-backup-prepared-home-")));
+  const { run } = sandboxRun(root, home);
+  try {
+    const space = "docs-backup-retry";
+    const prepared = run("space", "create", space, "--root", ".");
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const selected = run("use", space);
+    assert.equal(selected.status, 0, selected.stderr);
+    const backup = run("backup", "create", "./space-backup", "--only", "registry", "--plain");
+    assert.equal(backup.status, 2, backup.stderr);
+    assert.match(backup.stderr, /LIFECYCLE_BLOCKED/);
+    assert.match(backup.stderr, /run `cotal space show` to inspect this prepared space/);
+    assert.match(backup.stderr, /does not support preservation or backup in this release/);
+    assert.doesNotMatch(backup.stderr, /down --preserve-state/);
+    const shown = run("space", "show", "--json");
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.equal(JSON.parse(shown.stdout).result.kind, "prepared-space", shown.stdout);
+    assert.equal(existsSync(join(root, "space-backup")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+preparedBackupGuidance();
 await missingPidfileListenerScenario();
 await undisplayableBackupRetryScenario();
 await linkedStoreScenario();

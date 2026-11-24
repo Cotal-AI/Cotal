@@ -629,14 +629,14 @@ function retainingRow(rows: readonly ServiceInstanceSnapshot[], requestId: strin
 
 /** The `TARGET_NOT_FOUND` refusal of an `--abandon-stop` ID no member retains, naming each stop
  *  request a member's refusal offers to abandon. When no member retains any stop request, as after
- *  the stop was abandoned, it says so and names the step the stack's state takes: `cotal down` while
- *  a member runs, otherwise `cotal up`. */
+ *  the stop was abandoned, it names the stop if a member runs, or the optional restart for each
+ *  manager choice if the stack is stopped. */
 function stopNotRetained(journal: StackJournal, requestId: string, members: readonly { definition: string; rows: readonly ServiceInstanceSnapshot[] }[]): CommandFailure {
   const target = { root: journal.root, space: journal.space, requestId };
   const values = members.flatMap(({ rows }) => rows.map((entry) => entry.record.value));
   if (!values.some((value) => value.state === "stopping" || retainedStopRequest(value) !== undefined)) {
     const running = values.some((value) => observeServiceProcess(value) === "running");
-    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; start it with `cotal up`" });
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; no further stop is needed. To restart without a manager, run `cotal up --no-manager`; to restart with a manager, run `cotal up`" });
   }
   const pending = members.flatMap(({ definition, rows }) => rows.flatMap((entry) => {
     const route = memberStopRoute(entry.record.value);

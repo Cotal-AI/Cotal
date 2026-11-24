@@ -238,7 +238,7 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
 export type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[] } | undefined;
 
 async function addFromServer(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
-  if (name === undefined) throw usage("name the space to add", "cotal space add <name> --server <url>");
+  if (name === undefined) throw usage("name the space to add", `repeat the same command with the space name after \`add\`${v.server === undefined ? " and its broker address in --server <url>" : ""}`);
   const target = { space: name };
   if (v.server === undefined) throw usage("--server <url> is required: a space that runs elsewhere has no address to infer", "pass its broker URL, for example --server nats://100.90.12.34:4222");
   const server = take(checkServer(v.server, "--server"), target);
@@ -298,7 +298,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
       throw usage("--from is not a URL");
     }
     if (disco.protocol !== "https:") throw usage("--from must be an https:// URL: the discovery document carries the trust pins, and a plaintext fetch lets the network choose them");
-    if (!prompt) throw usage("--from needs a terminal to show and confirm the fetched pins", "in a script, export the bundle where the space runs and pass it with --file");
+    if (!prompt) throw usage("--from needs interactive prompts, which --json disables; no discovery document was fetched", "to review the pins, retry in a terminal with prompts enabled and without --json; for scripted or JSON output, replace --from <url> with --file <bundle.json> exported where the space runs");
     const io = clackIO();
     if ((await io.confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false })) !== true) return undefined;
     let res: Response;
@@ -745,7 +745,7 @@ async function refuseGoneFolderStack(m: MeshEntry, entries: readonly MeshEntry[]
   // A damaged record names no server, so only the usable records can name this broker address.
   if (entries.some((other) => other.space !== m.space && other.server === m.server)) return;
   const address = await listenerAt(m.server);
-  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `stop the process listening on ${address}, then run \`cotal space forget ${m.space}\` again`);
+  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `identify the listener at ${address}. If it belongs to this space, have its owner stop the stack; otherwise leave it running. Retry \`cotal space forget ${m.space}\` when the address is free or after you restore the original project folder to ${m.root}`);
 }
 
 /** The `host:port` of a broker address when something accepts a TCP connection there within half a
