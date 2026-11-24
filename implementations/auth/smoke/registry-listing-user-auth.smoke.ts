@@ -275,9 +275,8 @@ async function directoryCases(): Promise<void> {
     handle = await bootWithDiagnostics(directory, restartLog);
     suite.check("service restart completes both directions without a sign-in for the affected owner",
       await readUsername(nc, directory.space, pending) === "interrupted" && await readUsernameOwner(nc, directory.space, "interrupted") === pending);
-    await assert.rejects(() => readUsernameOwner(nc, directory.space, "unused_alias"),
-      (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
-    suite.check("startup leaves a second reservation unused and lookup distinguishes it from a missing key",
+    suite.check("an unused reservation returns not-found, like a missing key, without changing the owner's binding",
+      await readUsernameOwner(nc, directory.space, "unused_alias") === undefined &&
       await readUsernameOwner(nc, directory.space, "missing_alias") === undefined && await readUsername(nc, directory.space, owner) === supplied);
     suite.check("startup reports both repaired and unused orphan keys with their named owners",
       [["interrupted", pending], ["unused_alias", owner]].every(([name, reservedFor]) =>
@@ -287,6 +286,11 @@ async function directoryCases(): Promise<void> {
     suite.check("an unused reservation still cannot be assigned to another owner", !reserved.res.ok && /already reserved/.test(reserved.body.error ?? ""));
     suite.check("platform owner lookup has no binding on either username source",
       await readUsername(nc, directory.space, platform) === undefined && await readUsername(nc, a.space, platform) === undefined);
+    await jetstream(writer.nc).publish(`$KV.${usernameBucket(directory.space)}.owner.${rival}`, new TextEncoder().encode(supplied),
+      { expect: { lastSubjectSequence: 0 } });
+    await assert.rejects(() => readUsername(nc, directory.space, rival),
+      (error: unknown) => error instanceof UsernameRegistryReadError && error.code === "unavailable");
+    suite.check("a forward binding whose reservation names a different owner remains unavailable", true);
   } finally { await writer.close(); }
 }
 

@@ -52,7 +52,7 @@ export async function readUsername(nc: NatsConnection, space: string, owner: str
   return username;
 }
 
-/** Read the owner of an assigned username. A reservation without an owner binding is not an assignment. */
+/** Read the owner of an assigned username. A reservation without a matching owner binding is not an assignment. */
 export async function readUsernameOwner(nc: NatsConnection, space: string, username: string): Promise<string | undefined> {
   assertValidUsername(username);
   const bucket = usernameBucket(space);
@@ -62,8 +62,6 @@ export async function readUsernameOwner(nc: NatsConnection, space: string, usern
   const owner = assertValidOwnerToken(value);
   if (owner === DEV_OWNER || owner.startsWith(PLATFORM_OWNER_PREFIX)) throw new Error("the username registry cannot bind a local or platform owner");
   const forward = await readKey(jsm, bucket, `owner.${owner}`);
-  if (forward === undefined) return undefined;
-  if (assertValidUsername(forward) !== username)
-    throw new UsernameRegistryReadError("unavailable", `$KV.${bucket}.username.${username}`, new Error("reservation disagrees with the owner binding"));
+  if (forward === undefined || assertValidUsername(forward) !== username) return undefined;
   return owner;
 }
