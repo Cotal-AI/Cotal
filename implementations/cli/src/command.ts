@@ -534,6 +534,10 @@ function missingValue(flag: FlagSpec, beforeSeparator = false) {
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
 }
 
+function globalFlagValueRefusal(flag: string) {
+  return { message: `${flag} takes no value`, remedy: `omit ${flag} or pass it without a value` };
+}
+
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
  *  goes after `--` only where the command has room for an operand and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
@@ -542,6 +546,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
+    if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return globalFlagValueRefusal(option);
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
@@ -776,6 +781,21 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   }
 }
 
+/** Recover the command and output mode for a malformed leading global without dispatching it. */
+function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): never {
+  const equals = word.indexOf("=");
+  const flag = equals === -1 ? undefined : word.slice(0, equals);
+  if (!beforeSeparator || !flag || !GLOBAL_FLAG_WORDS.has(flag)) usageExit(unknownCommandMessage(commands, word));
+  const retry = leadingInvocation(args);
+  const found = findCommand(commands, retry.word);
+  const cmd = takesWordsRaw(found) ? undefined : found;
+  const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
+  const end = words.indexOf("--");
+  const plain = (end === -1 ? words : words.slice(0, end)).includes("--plain");
+  const { message, remedy } = globalFlagValueRefusal(flag);
+  usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, words), plain, remedy, words);
+}
+
 /**
  * Dispatch `argv` against the commands self-registered in a {@link Registry}. The single entry point
  * a composition root calls — no hardcoded command list.
@@ -927,7 +947,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
-  if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
+  if (!cmd && !awaitingSeed) unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
