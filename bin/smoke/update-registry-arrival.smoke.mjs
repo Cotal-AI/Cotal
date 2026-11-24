@@ -49,16 +49,17 @@ function reconciliationScratch(parent, worker) {
   return { expired, retained, live: worker && fixture('live') };
 }
 
-/** Runs real npm and the built public entry against a registry with missing archives. */
+/** Runs real npm and the built public entry against a loopback registry. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
   const reconcileOrphan = scenario === 'reconcile-orphan';
   const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
   const stagingNetwork = ['staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'].includes(scenario);
+  const stagingTimeout = scenario === 'staging-timeout';
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
   const stagingRefused = scenario === 'staging-refused';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(repairSelection || stagingNetwork || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(repairSelection || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -82,7 +83,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
-  const staged = scenario === 'staging-killed' || stagingNetwork || stagingRefused || repairSelection;
+  const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection;
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
   if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   if (stagingNetwork) writeFileSync(join(root, 'payload/package/dist/data'), randomBytes(1024 * 1024));
@@ -280,6 +281,41 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
+    if (stagingTimeout) {
+      const tools = join(root, 'staging-tools'), pidFile = join(root, 'staging.pid');
+      mkdirSync(tools, { mode: 0o700 });
+      writeFileSync(join(tools, 'npm'), `#!/bin/sh
+if [ "$1" = install ] && [ "$3" = --prefix ]; then
+  case "$4" in
+    */.installing-*) printf '%s\\n' "$$" > "$SMOKE_STAGING_PID"; exec sleep 90 ;;
+  esac
+fi
+export PATH="$SMOKE_NPM_PATH"
+exec npm "$@"
+`, { mode: 0o700 });
+      env.SMOKE_NPM_PATH = env.PATH;
+      env.SMOKE_STAGING_PID = pidFile;
+      env.PATH = `${tools}:${join(prefix, 'bin')}:${env.PATH}`;
+      const result = await run(process.execPath, [entry, 'update', '--self'], 90000);
+      const pid = Number(readFileSync(pidFile, 'utf8'));
+      assert(pid > 1, result.output);
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+      assert.equal(result.code, 0, result.output);
+      assert.match(result.output, /Package staging reached its time limit\. The previous version remains installed\. Run `(?:pnpm )?cotal update --self` again\./);
+      assert.doesNotMatch(result.output, /registry cannot be reached|recovery snapshot/i);
+      assert.equal(existsSync(marker), false);
+      assert.deepEqual(readFileSync(entry), before);
+      env.PATH = env.SMOKE_NPM_PATH;
+      const current = await run(process.execPath, [entry, '--version'], 60000);
+      assert.equal(current.output.split('\n')[0], `cotal-ai ${previous}`);
+      const available = await run('npm', ['view', `cotal-ai@${target}`, 'version', '--json'], 60000);
+      assert.equal(available.code, 0, available.output);
+      assert.equal(JSON.parse(available.output), target);
+      const retry = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert.equal(retry.code, 0, retry.output);
+      assert.match(retry.output, /cotal-ai@99\.0\.0 in use and reconciled/);
+      return { scenario, code: result.code, output: result.output, retry };
+    }
     if (stagingRefused) {
       const seed = join(env.XDG_CONFIG_HOME, 'cotal/seed/child');
       mkdirSync(seed, { recursive: true, mode: 0o700 });
@@ -415,10 +451,10 @@ exec npm "$@"
           await updates.close();
         `], 130000);
         assert.equal(result.code, 0, result.output);
-        assert.equal(result.output.trim(), 'waiting for registry access');
+        assert.equal(result.output.trim(), 'Package staging reached its time limit');
         const deferred = JSON.parse(readFileSync(attempt, 'utf8'));
         assert.equal(deferred.failures, 1);
-        assert.equal(deferred.deferred, 'waiting for registry access');
+        assert.equal(deferred.deferred, 'Package staging reached its time limit');
         assert.ok(deferred.next > Date.now() && deferred.next <= Date.now() + 3_600_000);
         result.output = readFileSync(join(root, 'cotal/update-attempt.log'), 'utf8');
       } else {
@@ -451,7 +487,12 @@ exec npm "$@"
       assert.equal(existsSync(unrelated), true);
       assert(elapsedMs < 300000, `staging must exit within five minutes: ${elapsedMs}`);
       assert.match(result.output, /installing cotal-ai@99\.0\.0 beside the running version/);
-      assert.equal(result.output.trim().split('\n').at(-1), 'The registry cannot be reached; nothing was changed.');
+      const lastLine = result.output.trim().split('\n').at(-1);
+      if (noAccept) {
+        assert.match(lastLine, /Package staging reached its time limit\. The previous version remains installed\./);
+      } else {
+        assert.equal(lastLine, 'The registry cannot be reached; nothing was changed.');
+      }
       assert.doesNotMatch(result.output, /npm error|staged pre-install check refused|recovery snapshot/);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       armed = false;
@@ -1013,7 +1054,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
