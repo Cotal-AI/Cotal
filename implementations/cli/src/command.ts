@@ -51,6 +51,7 @@ import {
 import { c, stderrLine } from "./ui.js";
 import { debugFlag } from "./lib/debug-flag.js";
 import {
+  commandSurface,
   isExtensionStub,
   materializeExtension,
   materializeExtensionCommand,
@@ -551,6 +552,11 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return globalFlagValueRefusal(option);
+    if (cmd.name === "help" && option === "--preset") {
+      const [service, verb] = metadataPositionals(cmd, rest).positionals;
+      if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
+        return { message: reason, remedy: displayRemedy("to see the preset options, use `cotal service add <name> --preset <preset> --help`") };
+    }
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);

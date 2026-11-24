@@ -123,9 +123,10 @@ The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-e
 and `@cotal-ai/web` extensions, which `cotal ext add <package>` installs. Bare `service` lists the
 presets this machine has, and a name it does not have is refused as `DEPENDENCY_UNAVAILABLE`.
 
-`cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
-fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
-manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
+`cotal service add <name> --preset <preset> --help` lists a preset's options. So does
+`cotal help -- service add <name> --preset <preset>`. The `--` passes the preset flag to service help.
+An option the preset fills itself shows `(default: ...)`, such as the space's root for `--root` and
+`pty` for the manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
 takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` shows `<url>`. A `<dir>` or `<file>` option takes the absolute path
 of one that exists, and a relative one is refused. An option the service names in camelCase takes a
 dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`

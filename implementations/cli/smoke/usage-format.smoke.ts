@@ -886,6 +886,27 @@ for (const [args, usage, foreign] of [
     /^  --config <file>/m.test(brokerRefusal.stderr) && !/^  --no-open\b/m.test(brokerRefusal.stderr),
     { start: shown(brokerStart), help: shown(brokerHelp), refused: shown(brokerRefusal) });
 
+  const addBroker = ["service", "add", "broker", "--preset", "broker"];
+  const addSuffix = run([...addBroker, "--help"]);
+  check("broker add suffix help lists both required flags", addSuffix.status === 0 && addSuffix.stderr === "" &&
+    /^  --config <file>.*\(required\)$/m.test(addSuffix.stdout) && /^  --binary <file>.*\(required\)$/m.test(addSuffix.stdout), shown(addSuffix));
+  for (const words of [addBroker, ["svc", "add", "broker", "--preset=broker"]]) {
+    const explicit = run(["help", "--", ...words]);
+    check(`explicit help shows the same preset options for ${words.join(" ")}`,
+      explicit.status === 0 && explicit.stderr === "" && explicit.stdout === addSuffix.stdout, shown(explicit));
+  }
+  const addGeneric = run(["service", "add", "--help"]);
+  for (const selector of [["--preset", "not-a-preset"], ["--preset"], ["--preset=broker", "--preset=broker"]]) {
+    const explicit = run(["help", "--", "service", "add", "broker", ...selector]);
+    check(`explicit help keeps generic add help for ${selector.join(" ")}`, addGeneric.status === 0 &&
+      explicit.status === 0 && explicit.stderr === "" && explicit.stdout === addGeneric.stdout && !/^  --config\b/m.test(explicit.stdout), shown(explicit));
+  }
+  const addUnescaped = run(["help", ...addBroker]);
+  check("explicit help with an unescaped preset flag points to suffix help",
+    usageShape(addUnescaped, /Unknown option '--preset'/) &&
+    ["cotal", "pnpm cotal"].some((cli) => addUnescaped.stderr.includes(`\`${cli} service add <name> --preset <preset> --help\``)) && !addUnescaped.stderr.includes("put -- before it"),
+    shown(addUnescaped));
+
   for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
