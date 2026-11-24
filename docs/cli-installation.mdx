@@ -766,6 +766,7 @@ leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
+An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
 Give `remove` the package name as listed by `cotal ext list`, without a version.
 For a scoped package such as `@acme/_helper`, include the scope and the leading underscore.
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
@@ -1182,7 +1183,9 @@ the linked startup file. If either exists, `uninstall` refuses the linked startu
 `completion` warns that it is a symlink and does not read it. Completion never replaces a startup
 file its owner made read-only. `install` can still write its stub and ownership record. When it
 writes either file without adding the startup line, it reports `OPERATION_PARTIAL`, exit 4, and
-names the line to add yourself.
+tells you to restore owner write permission and rerun `cotal completion install` without editing
+the startup file. A source line you add yourself is custom wiring, and managed installation does
+not adopt it. Bare `completion` does not offer a managed refresh when that wiring blocks it.
 `uninstall` refuses to remove a block from it, exit 2, and changes nothing. Restore owner write
 permission and retry without editing the startup block. On Windows, PowerShell script generation
 works but automatic profile editing remains unsupported: the guarded POSIX file writer cannot
