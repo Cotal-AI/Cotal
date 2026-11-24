@@ -85,7 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { command?: string; outcome?: string; target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -331,7 +331,8 @@ if (process.platform !== "win32") {
   const files = ["contract.json", "handler.mjs"].map((name) => join(cwd, dir, name));
   const expected = [...directories.map((path) => ({ path, kind: "directory", complete: true })), ...files.map((path) => ({ path, kind: "file", complete: true }))];
   check("endpoint init creates and reports all missing directories privately in one invocation",
-    scaffold.status === 0 && scaffold.stderr === "" && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
+    scaffold.status === 0 && scaffold.stderr === "" && receipt.command === "endpoint init"
+    && JSON.stringify(receipt.result?.changed) === JSON.stringify(expected)
     && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
@@ -344,7 +345,8 @@ if (process.platform !== "win32") {
   const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
   const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
   check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
-    conflict.status === 2 && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
+    conflict.status === 2 && conflict.stderr === "" && rejected.command === "endpoint init" && rejected.outcome === "refused"
+    && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
     && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
     && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
     && files.every((path, index) => readFileSync(path).equals(original[index]!))
@@ -449,11 +451,21 @@ if (process.platform !== "win32") {
   const json = run(["endpoint", "check", wrong, "--json"]);
   const envelope = JSON.parse(json.stdout);
   const corrected = run(["endpoint", "check", "reviews/contract.json", "--json"]);
+  const checkedReceipt = parsed(corrected);
   check("endpoint check names the missing file and asks for an existing contract in every format",
     authoring.status === 0 && json.status === 2 && json.stderr === "" && envelope.target.path === path
+    && envelope.command === "endpoint check" && envelope.outcome === "refused"
     && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
-    && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+    && corrected.status === 0 && corrected.stderr === "" && checkedReceipt?.command === "endpoint check" && checkedReceipt.outcome === "ok",
+    { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+
+  writeFileSync(join(cwd, "malformed.json"), "{invalid json\n");
+  const malformed = run(["endpoint", "check", "malformed.json", "--json"], {}, cwd);
+  const malformedReceipt = parsed(malformed);
+  check("endpoint check names the operation on a malformed contract refusal",
+    malformed.status === 1 && malformed.stderr === "" && malformedReceipt?.command === "endpoint check"
+    && malformedReceipt.outcome === "refused" && malformedReceipt.error?.code === "SCHEMA_INVALID", shown(malformed));
 
   const unknown = run(["ep", "check", "reviews/contract.json", "--json", "--no-such-option"], {}, cwd);
   check("endpoint check with a contract already supplied tells the caller to drop the unknown option",
