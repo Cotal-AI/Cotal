@@ -499,6 +499,25 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("script entries the run never reached are named", unused.length === 1 && unused[0] === "turns.verify-it", unused);
 }
 
+{
+  // A fault keyed by a step's old name never fires: the run completes, and the fault is named as
+  // unused rather than passing for a clean no-fault run. The fault that did fire is not listed.
+  const sim = new SimHandler({
+    faults: [
+      { at: "/sleep:typo#0", kind: "error", code: "L4002" },
+      { at: "sleep:other#0", kind: "error" },
+    ],
+  });
+  const s = new KeyScope();
+  await sim.sleep({ duration: "1s" }, ctxFor(s.nextEffect("sleep", "timer")));
+  let threw: unknown;
+  await sim.sleep({ duration: "1s" }, ctxFor(s.nextEffect("sleep", "other"))).catch((e: unknown) => (threw = e));
+  const unused = sim.unusedScript();
+  ok("a fault on the step that ran is injected", threw instanceof EffectError, threw);
+  ok("a fault whose step was never reached is named as unused, the injected one is not",
+    unused.length === 1 && unused[0] === "faults./sleep:typo#0", unused);
+}
+
 // ---- 10) the event queue: parked effects deliver in wake order, each stamping its own clock ----
 
 {
