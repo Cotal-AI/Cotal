@@ -23,9 +23,9 @@
     },
     {
       "name": "leading global flags are not read",
-      "file": "implementations/cli/src/command.ts",
-      "find": "    else if (takeGlobalFlag(word)) leadingGlobals.add(word);\n    else break;\n",
-      "replace": "    else break;\n",
+      "file": "implementations/cli/src/lib/leading-flags.ts",
+      "find": "  while (lead < argv.length && (OUTPUT_FLAG_WORDS.has(argv[lead]!) || GLOBAL_FLAG_WORDS.has(argv[lead]!))) lead++;\n",
+      "replace": "  while (lead < argv.length && OUTPUT_FLAG_WORDS.has(argv[lead]!)) lead++;\n",
       "expectRed": "--no-input before the command word is accepted",
       "cell": "--no-input before the command word is accepted",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
