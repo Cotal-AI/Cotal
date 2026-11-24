@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { isAbsolute, join, sep } from "node:path";
-import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
+import { agentFilePath, assertLifecycleToken, assertValidChannel, DEFAULT_SERVER, digestIdToken, EpEnvelopeError, eventChannel, eventChannelPrincipal, grantOverreach, grantParts, isIssuedCaller, issuedSpawnerStanding, MAX_SCHEDULE_MS, parsePersonaEndpoints, personaDir, personaLinkTarget, principalKey, registry, rejectionText, renderOnceTask, resolveReadAcl, runDriverCaller, shownSpawner, withIssuerSession, type AgentDef, type Connector, type ControlReply, type CotalEndpoint, type DelegatedGrant, type EpCaller, type EpCapability, type GrantOverreach, type InlinePersona, type IssuedStore, type IssuedSubjectPermissions, type LifecycleStateTransport, type RunAdmission, type RunRevocation } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, manifestExtensionNames, PersonaSourceError, resolveAgentType } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { inlinePersonaDir } from "./launch.js";
@@ -71,6 +71,12 @@ export type SpawnRun = { admission: RunAdmission; hosted: boolean } | { refused:
 /** Why a revoked run starts no helper, the same words wherever the marker is read. */
 function revokedRunRefusal(runId: string, revoked: RunRevocation): string {
   return `run ${runId} was revoked by ${revoked.by} (${revoked.reason}); a revoked run starts no helper (SPEC 14.8)`;
+}
+
+function personaPermissionProblem(path: string, error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (code === "EACCES" || code === "EPERM")
+    return `cannot read persona: ${path} (${code}) on the manager's host. Check that the manager's account can read the file and traverse its parent directories.`;
 }
 
 const INLINE_PERSONA_KEYS = ["prompt", "role", "model", "variant", "description", "subscribe", "allowSubscribe", "allowPublish", "capabilities", "endpoints", "save"];
@@ -461,14 +467,17 @@ export class SeatLaunch {
     // This runs BEFORE the spawn path resolves its connector: the file's `agent:` pin participates in
     // the harness choice (flag > file > COTAL_DEFAULT_AGENT > default, #869), which is impossible if
     // the connector is materialized first.
-    let configPath: string;
-    if (opts.config) {
-      configPath = agentFilePath(this.config.workspaceRoot, opts.config);
-      if (!existsSync(configPath)) return { error: `agent file not found: ${configPath}` };
-    } else {
-      configPath = join(personaDir(this.config.workspaceRoot), `${ref}.md`);
-      if (!existsSync(configPath))
-        return { error: `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
+    const configPath = opts.config ? agentFilePath(this.config.workspaceRoot, opts.config) : join(personaDir(this.config.workspaceRoot), `${ref}.md`);
+    try { statSync(configPath); }
+    catch (error) {
+      const permission = personaPermissionProblem(configPath, error);
+      if (permission !== undefined) return { error: permission };
+      const code = (error as NodeJS.ErrnoException).code;
+      const link = code === "ENOENT" || code === "ENOTDIR" ? personaLinkTarget(configPath) : undefined;
+      if (link !== undefined)
+        return { error: `the persona at ${configPath} is a symbolic link to a missing target: ${link}. Restore the link's target on the manager's host, or move the link aside and put a regular persona file in its place.` };
+      return { error: opts.config ? `agent file not found: ${configPath}`
+        : `no persona "${ref}" in the catalog of manager ${this.managerInstanceId} on host ${hostname()}: ${configPath} not found; create it there` };
     }
     // An inline snapshot belongs to its own seat's lifecycle, which removes it at retirement and
     // refuses a restart once it changed, so no other launch may read it. Compared after symlinks
@@ -486,7 +495,7 @@ export class SeatLaunch {
       try {
         def = loadLaunchPersonaFile(configPath);
       } catch (e) {
-        return { error: rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
+        return { error: personaPermissionProblem(configPath, e) ?? rejectionText(e), ...(e instanceof PersonaSourceError ? { code: "bad-request" as const } : {}) };
       }
       // Shared operator files remain launchable. Owned content follows the catalog's visibility
       // decision before connector loading or any allocation. A hosted run acts for its admission;

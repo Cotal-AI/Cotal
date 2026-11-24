@@ -188,6 +188,8 @@ See the [presence mapping](hermes-connector-reference.mdx#presence-mapping) for 
 
 ## Route answers to the right session [#how-an-answer-finds-its-session]
 
+Each seat uses one Hermes session per channel, shared by everyone who messages the seat there.
+Direct messages use a separate session for each peer.
 Answers to `cotal_dm` and `cotal_anycast` return to the session that asked when their correlation and sender checks pass.
 For a question asked on another Hermes platform, such as Telegram, enable gateway injection in the Hermes profile:
 

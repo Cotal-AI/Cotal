@@ -2,7 +2,7 @@ import "../../implementations/cli/smoke/update-isolation.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -306,6 +306,22 @@ console.log('LEGACY_READS=' + legacyReads);
           assert.match(repeated.output, /Registry latest:/);
           assert.doesNotMatch(repeated.output, /Set aside unreadable connector selection/);
           console.log("current self-update: verifies the repaired connector selection and preserves the damaged record");
+
+          if (process.getuid?.() !== 0) {
+            const modules = dirname(installed);
+            const staging = join(dirname(modules), ".cotal-generations", ".installing-R0ctrl");
+            mkdirSync(staging, { recursive: true, mode: 0o700 });
+            writeFileSync(join(staging, "partial"), "partial npm staging\n");
+            chmodSync(modules, 0o500);
+            try {
+              const update = await selfUpdate();
+              assert.equal(update.code, 0, update.output);
+              assert.equal(statSync(modules).mode & 0o777, 0o700);
+              assert.equal(existsSync(staging), false, "the first self-update removes abandoned staging");
+              assert.doesNotMatch(update.output, /execution store cleanup:/);
+            } finally { chmodSync(modules, 0o700); }
+            console.log("current self-update: repairs read-only npm modules before removing abandoned staging");
+          }
         } finally { await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve())); }
       } finally {
         for (const [path, bytes] of [[selection, saved], [current, savedCurrent]] as const) {

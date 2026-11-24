@@ -1,10 +1,11 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer as createRegistry } from "node:http";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
@@ -51,7 +52,7 @@ for (const code of ["ENOTCACHED", "EAI_AGAIN", "E401"]) {
   const lines: string[] = [], errors: string[] = [];
   const plain: UpdateRuntime = { ...rt,
     reportRunningManager: async () => "none", preflightReplacement: async () => {},
-    refreshConnectors: async () => [], refreshClients: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    refreshConnectors: async () => {}, refreshClients: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
     npm: () => ({ status: 1, stdout: JSON.stringify({ error: { code } }), stderr: `npm error ${code}` }),
     out: line => { lines.push(line); }, err: line => { errors.push(line); },
   };
@@ -90,6 +91,27 @@ try {
   assert.equal(direct.status, 0, direct.stdout + direct.stderr);
   assert.equal(direct.stdout.trim(), "The registry cannot be reached; nothing was changed.");
   assert.doesNotMatch(direct.stderr, /proxy refused/i);
+
+  const userConfig = join(proxyHome, "user.npmrc");
+  const contents = `https-proxy=${proxy.HTTPS_PROXY}\n`;
+  writeFileSync(userConfig, contents);
+  const configured = update({});
+  assert.equal(configured.status, 0, configured.stdout + configured.stderr);
+  assert.match(configured.stdout, /npm proxy refused the connection \(ECONNREFUSED\).*`https-proxy` in your npm configuration/);
+  assert.doesNotMatch(configured.stdout + configured.stderr, /example-user|example-password|127\.0\.0\.1/);
+  assert.equal(readFileSync(userConfig, "utf8"), contents);
+
+  const overridden = update({ npm_config_https_proxy: `http://127.0.0.1:${registryPort}` });
+  assert.equal(overridden.status, 0, overridden.stdout + overridden.stderr);
+  assert.equal(overridden.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+  const bypassed = update({ NO_PROXY: "127.0.0.1" });
+  assert.equal(bypassed.status, 0, bypassed.stdout + bypassed.stderr);
+  assert.equal(bypassed.stdout.trim(), "The registry cannot be reached; nothing was changed.");
+
+  writeFileSync(userConfig, `proxy=${proxy.HTTPS_PROXY}\n`);
+  const fallback = update({});
+  assert.equal(fallback.status, 0, fallback.stdout + fallback.stderr);
+  assert.match(fallback.stdout, /npm proxy refused the connection \(ECONNREFUSED\).*`proxy` in your npm configuration/);
 } finally { rmSync(proxyHome, { recursive: true, force: true }); }
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
@@ -125,6 +147,92 @@ const { registryArrivalCell } = await import("../../../bin/smoke/update-registry
 const cacheUpdate = await registryArrivalCell({ scenario: "cache" });
 assert.equal(cacheUpdate.code, 0, "real CLI and npm update succeed with a user-owned cache that is not writable");
 
+async function repairRuntimeEntry(): Promise<void> {
+  const home = mkdtempSync(join(tmpdir(), "cotal-update-runtime-"));
+  const repo = join(import.meta.dirname, "../../..");
+  const pkg = "@cotal-ai/tmux";
+  const version = JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")).version as string;
+  const spec = `${pkg}@${version}`;
+  const config = join(home, "config");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:cotal_|npm_config_)/i.test(key)));
+  const registry = createRegistry((request, response) => {
+    const name = decodeURIComponent(request.url ?? "");
+    if (name === "/cotal-ai" || name === `/${pkg}`) {
+      const packageName = name.slice(1);
+      response.end(JSON.stringify({ name: packageName, "dist-tags": { latest: version }, versions: {
+        [version]: { name: packageName, version, dist: { tarball: `${origin}/tmux.tgz` } },
+      } }));
+    } else if (name === "/tmux.tgz" && !refuseArchive) {
+      response.end(archive);
+    } else {
+      response.writeHead(404).end();
+    }
+  });
+  let origin: string, archive: Buffer, refuseArchive = false;
+  try {
+    const seed = join(config, "cotal", "seed");
+    mkdirSync(seed, { recursive: true });
+    for (const name of ["authority.json", "authority.bak.json"]) {
+      writeFileSync(join(seed, name), JSON.stringify({ everSeeded: SEED_BUILTINS }));
+    }
+    writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }));
+    writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }));
+    Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, "cotal"), XDG_CONFIG_HOME: config,
+      APPDATA: config, LOCALAPPDATA: config, XDG_RUNTIME_DIR: home, npm_config_cache: join(home, "cache"),
+      npm_config_userconfig: join(home, "user.npmrc"), npm_config_globalconfig: join(home, "global.npmrc"),
+      COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" });
+    mkdirSync(env.COTAL_HOME!, { mode: 0o700 });
+    const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", home], {
+      cwd: join(repo, "extensions/tmux"), env, encoding: "utf8", shell: process.platform === "win32", timeout: 30_000,
+    });
+    assert.equal(packed.status, 0, packed.stdout + packed.stderr);
+    archive = readFileSync(join(home, JSON.parse(packed.stdout)[0].filename));
+    await new Promise<void>((resolve, reject) => registry.once("error", reject).listen(0, "127.0.0.1", resolve));
+    origin = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
+    env.npm_config_registry = origin;
+    const cli = (...args: string[]) => new Promise<{ status: number | null; output: string; stdout: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...args], { cwd: home, env, timeout: 60_000 });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", data => { stdout += data; });
+      child.stderr.on("data", data => { stderr += data; });
+      child.once("error", reject);
+      child.once("close", status => resolve({ status, output: stdout + stderr, stdout }));
+    });
+    const added = await cli("ext", "add", spec);
+    assert.equal(added.status, 0, added.output);
+    const root = await cli("ext", "root");
+    assert.equal(root.status, 0, root.output);
+    const entry = join(root.stdout.trim(), "node_modules", pkg, "dist/index.js");
+    renameSync(entry, join(home, "tmux-index.saved"));
+    const broken = await cli("runtimes", "--plain");
+    assert.equal(broken.status, 4, broken.output);
+    assert.match(broken.output, /tmux\s+installed - load failed/);
+    refuseArchive = true;
+    env.npm_config_cache = join(home, "empty-cache");
+    const refused = await cli("update", "--self");
+    assert.equal(refused.status, 1, refused.output);
+    assert.match(refused.output, /extension set npm install failed/);
+    assert.doesNotMatch(refused.output, /installed package closure is current/);
+    assert.equal(existsSync(entry), false, "failed repair leaves the live extension unchanged");
+    refuseArchive = false;
+    const repaired = await cli("update", "--self");
+    assert.equal(repaired.status, 0, repaired.output);
+    assert.doesNotMatch(repaired.output, /installed package closure is current/);
+    assert.deepEqual(readFileSync(entry), readFileSync(join(home, "tmux-index.saved")));
+    const runtimes = await cli("runtimes", "--plain");
+    assert.equal(runtimes.status, 0, runtimes.output);
+    assert.doesNotMatch(runtimes.output, /tmux\s+installed - load failed/);
+    const repeated = await cli("update", "--self");
+    assert.equal(repeated.status, 0, repeated.output);
+    assert.match(repeated.output, /installed package closure is current/);
+  } finally {
+    if (registry.listening) await new Promise<void>(resolve => registry.close(() => resolve()));
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+await repairRuntimeEntry();
+
 function npmNodeEngine(): void {
   const root = mkdtempSync(join(tmpdir(), "cotal-npm-node-"));
   try {
@@ -139,9 +247,10 @@ function npmNodeEngine(): void {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
+    const cwdRecord = join(root, "npm-cwd");
     const recordedRuntimes = () => readFileSync(record, "utf8").trim().split(/\r?\n/);
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
-    writeFileSync(cli, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
+    writeFileSync(cli, `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nfs.writeFileSync(${JSON.stringify(cwdRecord)}, process.cwd());\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
     if (process.platform === "win32") writeFileSync(join(npmBin, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
     else symlinkSync(cli, join(npmBin, "npm"));
     const prefix = join(root, "prefix");
@@ -169,13 +278,13 @@ function npmNodeEngine(): void {
     mkdirSync(onlyNode);
     if (process.platform === "win32") copyFileSync(process.execPath, join(onlyNode, exe));
     else symlinkSync(process.execPath, join(onlyNode, exe));
-    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
-      cwd: root, encoding: "utf8", timeout: 60_000,
+    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin, cwd = root, node = join(onlyNode, exe)) => spawnSync(node, [entry, "update", flag], {
+      cwd, encoding: "utf8", timeout: 60_000,
       env: { ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
         COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
-        NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`,
-        PATH: [onlyNode, npmPath, ...extraPath].join(delimiter) },
+        NODE_OPTIONS: cwd === root ? `--import=${pathToFileURL(versionOverride).href}` : undefined,
+        PATH: (cwd === root ? [onlyNode, npmPath, ...extraPath] : ["."]).join(delimiter) },
     });
     const first = run("--check", posixLauncher ? [] : [dirname(alternate)]);
     assert.equal(first.status, 0, first.stdout + first.stderr);
@@ -219,6 +328,17 @@ function npmNodeEngine(): void {
     assert.deepEqual(readFileSync(entry), before);
     const projectNode = process.platform === "win32" ? join(onlyNode, exe) : process.execPath;
     assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(projectNode), "npm can succeed on the project Node even when its declared range excludes it");
+    if (process.platform !== "win32") {
+      const cwd = join(root, "native:tools"), node = join(cwd, "node");
+      mkdirSync(cwd);
+      copyFileSync(process.execPath, node);
+      symlinkSync(cli, join(cwd, "npm"));
+      const viaColon = run("--self", [], npmBin, cwd, node);
+      assert.equal(viaColon.status, 0, viaColon.stdout + viaColon.stderr);
+      assert.match(viaColon.stdout, /Registry latest:/);
+      assert.equal(recordedRuntimes().at(-1), realpathSync(node));
+      assert.equal(readFileSync(cwdRecord, "utf8"), parse(root).root, "npm still runs outside the caller's project");
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 

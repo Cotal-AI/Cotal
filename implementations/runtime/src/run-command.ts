@@ -1215,6 +1215,12 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     if (!first || !second) usage(`run ${verb} requires a run id and step key`);
   } else if (verb === "revoke" && first === undefined) {
     usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
+  } else if (verb === "resume" && !first && values.local === true) {
+    const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+    const list = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+      ? "run `cotal run list --local` with the original target options"
+      : `list the recorded runs with ${codeSpan(`cotal run list --local${target}`)}`;
+    usage("run resume takes one identifier", `${list}. Then add a run ID after \`run resume\` in the original command`);
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],

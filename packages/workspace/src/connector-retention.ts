@@ -395,9 +395,10 @@ export function connectorConfigDir(): string {
 
 /**
  * Restore write access without following managed links or touching another installation.
- * Report completed repairs and recovery, even if a later check refuses.
+ * Report completed repairs and recovery, even if a later check refuses. `onModeChange` reports
+ * only the restored directory permissions.
  */
-export function prepareConnectorConfigForUpdate(onChange?: () => void): void {
+export function prepareConnectorConfigForUpdate(onChange?: () => void, onModeChange?: () => void): void {
   const config = resolve(globalConfigDir());
   const what = "the Cotal connector configuration";
   const refuse = (path: string, reason: string): never => {
@@ -423,6 +424,7 @@ export function prepareConnectorConfigForUpdate(onChange?: () => void): void {
       try { chmodSync(path, mode); }
       catch { refuse(path, "could not be made writable by this account"); }
       onChange?.();
+      onModeChange?.();
     }
     writable(path, constants.R_OK | constants.W_OK | constants.X_OK);
     return true;

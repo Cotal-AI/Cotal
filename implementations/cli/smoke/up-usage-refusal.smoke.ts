@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { lifetimeRequest?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -149,13 +149,22 @@ for (const { args, message } of cases) {
         && !existsSync(join(manifests, ".cotal")), shown(foregroundPreview));
   }
   writeFileSync(join(manifests, "-mesh.yaml"), readFileSync(openManifest));
-  const dashPreviewRefusal = run(["up", "--file=-mesh.yaml", "--dry-run", "--foreground"], manifests);
-  const dashPreviewCommand = /preview with `(?:pnpm )?cotal ([^`]+)`/.exec(dashPreviewRefusal.stderr)?.[1];
-  const dashPreview = dashPreviewCommand && run(dashPreviewCommand.split(" "), manifests);
-  check("the printed foreground retry previews a dash-leading manifest without writes",
-    dashPreviewRefusal.status === 2 && !!dashPreview && dashPreview.status === 0
-      && /Lifetime request:\s+terminal-bound/.test(dashPreview.stdout) && !existsSync(join(manifests, ".cotal")),
-    { refusal: shown(dashPreviewRefusal), retry: dashPreview && shown(dashPreview) });
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "--file=-mesh.yaml", "--dry-run", "--foreground", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const command = /preview with `((?:pnpm )?cotal) ([^`]+)`/.exec(advice);
+    const expected = ["team", "boot", "./-mesh.yaml", "--foreground", "--dry-run", ...flags].join(" ");
+    const retry = command?.[2] === expected ? run(command[2].split(" "), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const json = flags[0] === "--json";
+    check(`the printed foreground retry with ${flags[0] ?? "default output"} previews a dash-leading manifest without writes`,
+      refusal.status === 2 && retry?.status === 0 && retry.stderr === "" && !existsSync(join(manifests, ".cotal"))
+        && (json ? command?.[1] === "cotal" && refusal.stderr === "" && refusal.envelope?.error?.code === "UNSUPPORTED"
+          && retry.envelope?.outcome === "ok" && result?.kind === "fresh-team-boot-preview"
+          && result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false
+          : /Lifetime request:\s+terminal-bound/.test(retry.stdout)),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
@@ -665,9 +674,13 @@ try {
       plainUp.status === 2 && plainUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
   }
 
-  const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
+  const bind = run(["up", "--foreground", "--open", "--no-manager", `--server=nats://127.0.0.1:${held}`], unprepared);
   check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
     bind.status === 2 && /CONFLICT/.test(bind.stderr) && new RegExp(`another process holds the broker address 127\\.0\\.0\\.1:${held}`).test(bind.stderr) && !started(unprepared), shown(bind));
+  const retry = /another address with `([^`]+)`, or .* and run `([^`]+)` again/.exec(bind.stderr);
+  const alternate = / up --foreground --open --no-manager --server nats:\/\/127\.0\.0\.1:(\d+)$/.exec(retry?.[1] ?? "");
+  check("both busy-port retries preserve the foreground open broker-only start, with only the alternate changing the port",
+    alternate !== null && Number(alternate[1]) !== held && retry?.[2]?.endsWith(` up --foreground --open --no-manager --server nats://127.0.0.1:${held}`) === true, shown(bind));
 
   // A port nothing listens on can still refuse the bind: an open client connection's local end holds
   // it, and after that client closes first, its TIME-WAIT holds it for up to a minute. The refusal
@@ -744,7 +757,8 @@ try {
   for (const mode of ["--open", "--user-auth"]) {
     for (const members of [[], ["--no-manager"]]) {
       const mismatch = run(["up", mode, ...members, "--json"], journalRoot);
-      const keep = ["cotal up", ...members].join(" "), separate = ["cotal up", mode, ...members].join(" ");
+      const keep = ["cotal up", ...members].join(" ");
+      const separate = ["cotal up", mode, ...(mode === "--user-auth" ? ["--idp <auth base URL>"] : []), ...members].join(" ");
       const remedy = mismatch.envelope?.error?.remedy ?? "";
       check(`a pinned-mode refusal with ${[mode, ...members].join(" ")} keeps the requested members in both retries`,
         mismatch.status === 2 && mismatch.envelope?.error?.code === "CONFLICT" && remedy.includes(`\`${keep}\` to keep static auth`)

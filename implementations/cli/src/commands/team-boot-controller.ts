@@ -121,14 +121,14 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     await assertManagerLogin(plan.root, plan.space, codeSpan(`cotal team boot ${shellWord(request.file)}`), "nothing was started or written");
   }
   if (readMaintenanceJournal(plan.root)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this root retains a maintenance or recovery attempt; team boot cannot substitute an ordinary startup", { target: { root: plan.root, space: plan.space } });
-  const lock = acquireMaintenanceLock(plan.root);
+  const lock = acquireMaintenanceLock(plan.root, { operation: "team boot" });
   let starting = false;
   const start = () => {
     starting = true;
     return startTeamBoot(request, plan, binding, lock);
   };
   try {
-    if (request.foreground) await holdForegroundStack(plan.root, start);
+    if (request.foreground) await holdForegroundStack(plan.root, plan.space, start);
     else await start();
   } finally {
     // A failed foreground claim never entered startTeamBoot to release the lock.

@@ -332,14 +332,21 @@ try {
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));
-  const foregroundPreview = cotal(["service", "start", "broker", "--space", PREPARED, "--config", config, "--binary", binary, "--server", fills["--server"]!, "--foreground", "--dry-run", "--json"]);
-  check("a broker foreground preview still refuses as unsupported",
-    foregroundPreview.status === 2 && JSON.parse(foregroundPreview.stdout).error?.code === "UNSUPPORTED", out(foregroundPreview));
-
   const brokerPreviewArgs = ["service", "start", "broker", "--space", PREPARED, "--dry-run", "--server", fills["--server"]!];
+  const brokerPreviewWithFiles = [...brokerPreviewArgs, "--config", config, "--binary", binary];
+  const foregroundPreview = cotal([...brokerPreviewWithFiles, "--foreground", "--json"]);
+  const foregroundError = JSON.parse(foregroundPreview.stdout).error;
+  const foregroundPlain = cotal([...brokerPreviewWithFiles, "--foreground", "--plain"]);
+  const retry = "Retry without --foreground, keeping --dry-run and the rest of the command unchanged.";
+  check("a first broker foreground preview names only the unsupported flag and keeps dry-run in its retry",
+    foregroundPreview.status === 2 && foregroundError?.code === "UNSUPPORTED" && foregroundError.message.includes(retry)
+      && !foregroundError.message.includes("--new-instance") && foregroundPlain.status === 2 && out(foregroundPlain).includes(retry)
+      && serviceDefinitionStore(PREPARED).read("broker") === undefined,
+    { json: out(foregroundPreview), plain: out(foregroundPlain) });
+
   const brokerPartial = cotal(brokerPreviewArgs);
-  const brokerCorrected = cotal([...brokerPreviewArgs, "--config", config, "--binary", binary]);
-  check("a broker preview asks to add the missing files to the original preview, which then saves and launches nothing",
+  const brokerCorrected = cotal([...brokerPreviewWithFiles, "--plain"]);
+  check("adding missing files or dropping only --foreground gives a valid broker preview that saves and launches nothing",
     brokerPartial.status === 1 && out(brokerPartial).includes(retryWith("--config <file> --binary <file>"))
       && brokerCorrected.status === 0 && out(brokerCorrected).includes("Nothing was saved, launched or loaded.")
       && serviceDefinitionStore(PREPARED).read("broker") === undefined, { refused: out(brokerPartial), corrected: out(brokerCorrected) });

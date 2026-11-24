@@ -691,7 +691,7 @@ async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResu
   return movedStackComponent("target", [`registered ${address}`, ...(reachable ? ["reachable"] : [])]);
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined): Promise<void> {
+export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string): Promise<void> {
   section("Component Health");
   if (!selected.ok) {
     const error = selected.error;
@@ -710,7 +710,7 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
       const verdict = e.code === "not-started" ? "absent" : "refused";
       const { message, remedy } = workspaceErrorParts({ kind: "target", error: e });
       const step = verdict === "absent" ? selectedHint : remedy === undefined ? undefined : displayRemedy(remedy);
-      return printComponents([{ name: "target", verdict, facts: [e.code, report.channelSeedBlocksRestart || step === undefined || step === message ? message : `${message} - ${step}`] }]);
+      return printComponents([{ name: "target", verdict, facts: [e.code, starting ?? (report.channelSeedBlocksRestart || step === undefined || step === message ? message : `${message} - ${step}`)] }]);
     }
     if (e instanceof UnregisteredRoot)
       return printComponents([{ name: "target", verdict: "refused", facts: ["unregistered-root", `no space is registered or prepared here for ${e.root}`] }]);
