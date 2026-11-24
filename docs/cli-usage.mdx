@@ -182,7 +182,9 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`. The refusal names `--` when the command takes an operand and there is no spelling suggestion.
+`--`. The refusal can suggest `--` when an operand is still available and there is no spelling
+suggestion. Once `endpoint check` has its contract file or `endpoint work lease` has its target and
+pool, the refusal tells you to drop an unknown option instead.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
 the refusal tells you to drop the unknown option instead.
@@ -197,6 +199,8 @@ value `=general`. An option such as `--help` or `-h` typed with a typographic da
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.
+For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
+`ext root` prints a path, so the refusal asks you to omit that option.
 `cotal ext seed` takes no operands. An invalid seed option or extra word shows seed help instead
 of suggesting `--` to pass an operand.
 
@@ -253,10 +257,13 @@ previous installation is a warning that names the copy, not a failed add.
 
 ## Structured output [#structured-output]
 
-A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
-one JSON document on stdout. Most commands have one, among them `cotal status`, `cotal space`,
-`cotal service`, `cotal up`, `cotal down`, `cotal ps`, `cotal history` and `cotal config`.
-`cotal help <command>` shows whether a command and each of its subcommands has one.
+A command or subcommand whose help lists `json` under Structured output takes `--json` (`-j`).
+Finite JSON output is one document on stdout. Streaming commands and modes can use the same flag
+for newline-delimited JSON (NDJSON), with one record per line. See the stream formats for
+[`history --follow`](cli-messaging.mdx#history),
+[`channel members --follow`](cli-messaging.mdx#channel) and [`watch`](cli-observation.mdx#observer-stream).
+The envelope below applies to finite JSON output.
+
 `cotal version --json` writes:
 
 ```json
@@ -273,6 +280,8 @@ installed extensions by `package` and `version`.
 If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
 version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
 corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+If a file occupies the config folder and blocks the inventory read, the report names that file
+and tells you to move it aside instead.
 The version command does not repair the manifest itself.
 
 | Field | Meaning |
@@ -287,11 +296,11 @@ The version command does not repair the manifest itself.
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
 
-Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
+Diagnostics stay on stderr. A command with finite JSON output reports a refusal or failure with the
 envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
 keeps its exit code without printing a text report. Other failures to write the envelope send the
 text report to stderr and keep the same exit code. A usage error under
-`--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
+finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies when `-j` comes before a short option that is unknown or needs a value, as in
 `cotal config get harness -jZ` or `cotal config get harness -js`.
 A word that names none of a command's subcommands and is near none of them is a usage error that
@@ -301,8 +310,7 @@ A command without a JSON output refuses `--json` as an unknown option.
 An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
 on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
 
-A subcommand's help has its own `structured output` line, and only the forms that show one write a
-document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
+Bare `cotal ext` and `cotal ext list` write a JSON document with `--json`. `ext add`, `ext remove`, `ext root` and
 `ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
 failure.
 
@@ -511,7 +519,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`models`](cli-agents.mdx#models) | List connector model catalogs and variants from the manager |
 | Agents | [`mcp`](cli-messaging.mdx#mcp) | Serve Cotal tools over stdio for an MCP-only host |
 | Agents | [`app-identity`](cli-auth.mdx#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
-| Agents | [`start`](cli-agents.mdx#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`start`](cli-agents.mdx#spawn) | Removed: migrate to `cotal spawn`, with `--foreground` for `--live-only` |
 | Agents | [`stop`](cli-agent-control.mdx#managed-seats) | Ask the manager to stop a managed agent |
 | Agents | [`ps`](cli-agent-control.mdx#managed-seats) | List managed agents and their mesh status |
 | Agents | [`attach`](cli-agent-control.mdx#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |

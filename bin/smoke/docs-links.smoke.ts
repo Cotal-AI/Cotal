@@ -65,6 +65,11 @@ try {
   const followed = pipe(["docs", daemon, "--json"]);
   const destination = JSON.parse(followed.stdout).result as { slug: string; body: string };
   check("the displayed page and anchor reference opens through the CLI", followed.status === 0 && destination.slug === "cli-processes" && destination.body.length > 0);
+
+  const workflowOps = pipe(["docs", "workflow-operations", "--plain"]);
+  const toolAvailability = workflowOps.stdout.split(/^## Tool availability\r?$/m)[1]?.split(/^## /m)[0];
+  const upgradeLink = "[upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md)";
+  check("workflow tool availability links to the upgrade guide", workflowOps.status === 0 && toolAvailability?.includes(upgradeLink) === true, toolAvailability);
 } finally {
   for (const pty of active) pty.kill();
   if (!await until(() => active.size === 0, 5_000)) throw new Error(`docs children have not exited; retained ${home}`);

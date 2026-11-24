@@ -1,5 +1,21 @@
 # @cotal-ai/lang
 
+## 0.176.4
+
+### Patch Changes
+
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+
+## 0.176.3
+
+### Patch Changes
+
+- a38ed1d: Apply scripted workflow simulation faults to the named fan-out step before any of its branches run.
+
+## 0.176.2
+
+No changes in this release.
+
 ## 0.176.1
 
 No changes in this release.

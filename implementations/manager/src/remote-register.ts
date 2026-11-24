@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
 import { UserAuthenticationExpiredError, type NatsConnection } from "@nats-io/transport-node";
 import {
@@ -26,6 +27,21 @@ import {
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 
+async function registerAfterContention<T>(register: () => Promise<T>, deadline: number): Promise<T> {
+  for (let retries = 0; ; retries++) {
+    try {
+      return await register();
+    } catch (error) {
+      // A fresh attempt re-reads the governance head and validates the registration under its gate.
+      if (foreignSlotHeldFrom(error)?.condition !== "in-flight") throw error;
+      const wait = Math.random() * Math.min(15_000, 250 * 2 ** retries);
+      if (Date.now() + wait >= deadline) throw error;
+      await delay(wait);
+      if (Date.now() >= deadline) throw error;
+    }
+  }
+}
+
 /**
  * Run registration with host-issued prepare authority, scoped to one manager instance. Fresh
  * prepare authority can resume the same frozen operation after the broker expires its executor.
@@ -51,6 +67,7 @@ export async function registerRemoteManagerAuthority(args: {
   let prepareCreds = args.prepareCreds;
   const identity = credsClaims(prepareCreds).sub;
   const account = accountFromCreds(prepareCreds);
+  let contentionDeadline: number | undefined;
   let lastProgressAt = 0;
   const onRevocationProgress: NonNullable<EpIssuanceBarrier["onRevocationProgress"]> = ({ revoked, total }) => {
     const now = Date.now();
@@ -147,7 +164,8 @@ export async function registerRemoteManagerAuthority(args: {
       });
       let registered: Awaited<ReturnType<typeof register>>;
       try {
-        registered = await register();
+        contentionDeadline ??= Date.now() + 15_000;
+        registered = await registerAfterContention(register, Math.min(contentionDeadline, (expiry ?? Infinity) * 1000));
       } catch (error) {
         // Only a holder still at the slot stamp needs guarded host reconciliation.
         const held = foreignSlotHeldFrom(error);

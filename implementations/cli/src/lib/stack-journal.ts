@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -629,14 +629,14 @@ function retainingRow(rows: readonly ServiceInstanceSnapshot[], requestId: strin
 
 /** The `TARGET_NOT_FOUND` refusal of an `--abandon-stop` ID no member retains, naming each stop
  *  request a member's refusal offers to abandon. When no member retains any stop request, as after
- *  the stop was abandoned, it says so and names the step the stack's state takes: `cotal down` while
- *  a member runs, otherwise `cotal up`. */
+ *  the stop was abandoned, it names the stop if a member runs, or the optional restart for each
+ *  manager choice if the stack is stopped. */
 function stopNotRetained(journal: StackJournal, requestId: string, members: readonly { definition: string; rows: readonly ServiceInstanceSnapshot[] }[]): CommandFailure {
   const target = { root: journal.root, space: journal.space, requestId };
   const values = members.flatMap(({ rows }) => rows.map((entry) => entry.record.value));
   if (!values.some((value) => value.state === "stopping" || retainedStopRequest(value) !== undefined)) {
     const running = values.some((value) => observeServiceProcess(value) === "running");
-    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; start it with `cotal up`" });
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", "no member of this stack retains a stop request; nothing was abandoned", { target, given: "requestId", remedy: running ? "the stack is running; stop it with `cotal down`" : "the stack is not running; no further stop is needed. To restart without a manager, run `cotal up --no-manager`; to restart with a manager, run `cotal up`" });
   }
   const pending = members.flatMap(({ definition, rows }) => rows.flatMap((entry) => {
     const route = memberStopRoute(entry.record.value);
@@ -936,6 +936,20 @@ export function foreignLocalProcesses(root: string, space: string): string[] {
   return localRecords(root, space).filter((row) => row.state === "live").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
 }
 
+/** The controller treats a legacy broker PID file as a blocker even when its PID is not a broker. */
+export function legacyBrokerPidfileBlock(root: string): { message: string; remedy: string } | undefined {
+  const path = join(root, ".cotal", NATS_PIDFILE);
+  if (!existsSync(path)) return undefined;
+  const record = readContainedRecord(root, path);
+  const pid = record.state === "content" ? parsePid(record.raw) : undefined;
+  const detail = pid === undefined ? "" : `; it records PID ${pid}${hasNonNatsExecutable(pid) ? ", whose current executable is not nats-server" : ""}`;
+  const inspect = pid === undefined ? "check whether it names a running broker" : `check the executable and command line of PID ${pid}`;
+  return {
+    message: `the legacy broker PID file ${path} blocks controller startup${detail}`,
+    remedy: `Inspect ${path} and ${inspect}. Only if you verify that the file does not belong to a running broker, set it aside outside .cotal and repeat your startup command`,
+  };
+}
+
 /** The live records under the root whose process is a running service instance of the space outside
  *  its stack, as the manager record of a `manager` preset service started at the root is. Read only:
  *  nothing is adopted. */
@@ -1066,7 +1080,12 @@ export function stackScopeRefusals(journal: StackJournal, next: string, { broker
   // to run again once the address is this stack's alone. The forget is never automatic: an active
   // shared space is not safe to stop.
   if (sharing.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registration names this stack's exact broker address; a shared broker is not stopped in this cut", { target: { server: journal.server, spaces: sharing.map((mesh) => mesh.space) }, remedy: [
-    ...sharing.map((mesh) => `read "${mesh.space}" with \`cotal space show ${mesh.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${mesh.space} --plain\``),
+    ...sharing.map(({ space }) => {
+      const name = shellWord(space);
+      const show = space.startsWith("-") ? `cotal space show -- ${name}` : `cotal space show ${name}`;
+      const forget = space.startsWith("-") ? `cotal space forget --plain -- ${name}` : `cotal space forget ${name} --plain`;
+      return `read ${JSON.stringify(space)} with ${codeSpan(show)}, stop it in its own folder, then take it off this address with ${codeSpan(forget)}`;
+    }),
     `then run ${next}`,
   ].join("; ") });
 }

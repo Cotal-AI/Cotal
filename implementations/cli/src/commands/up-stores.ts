@@ -26,9 +26,9 @@ import { Kvm } from "@nats-io/kv";
 import { CommandFailure, authDir, getSpaceAuth, brokerAddressKey, canonicalRoot, codeSpan, loadMeshes, shellPath, workspaceSecretStore } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
+import { loadChannelsFile } from "../lib/channel-seed.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
 import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
-import { loadChannelsFile } from "./up-transport.js";
 
 export function registeredAddressHolder(server: string, space: string) {
   const key = brokerAddressKey(server);
@@ -166,8 +166,9 @@ async function recreateIssuedStoresBeforeSetup(server: string, space: string, au
  *  stream. A memory-backed bucket is the exception: the broker stop that preserved the store emptied
  *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
  *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them.
- *  Only an ordinary resume that just started this listener may opt into replacing a File feed. */
-export async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }, ownedResume?: { convertMembership: boolean }): Promise<void> {
+ *  Only an ordinary resume that just started this listener may opt into replacing a File feed.
+ *  An explicit seed on an ordinary resume patches the preserved channel registry. */
+export async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }, ownedResume?: { convertMembership: boolean }, seed?: ChannelRegistryFile): Promise<void> {
   const legacy = await fileMembershipStore(server, space, setup?.creds);
   if (legacy) {
     if (!ownedResume?.convertMembership) throw membershipConversionRefusal(space, ownedResume && "retry this preserved resume with `cotal up --recreate-membership-store`");
@@ -200,21 +201,23 @@ export async function recreateMemoryBuckets(server: string, space: string, setup
   } finally {
     await drainAndClose(nc);
   }
+  if (seed) await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seed });
 }
 
 /** An adopted listener may have been bound by an `up` that stopped before {@link recreateMemoryBuckets},
  *  so the memory buckets the daemons open can be missing on it. An existing bucket is left as it is. */
-export async function recreateAdoptedMemoryBuckets(root: string, space: string, server: string, mode: "open" | "auth" | "user"): Promise<void> {
-  if (mode === "open") return recreateMemoryBuckets(server, space);
+export async function recreateAdoptedMemoryBuckets(root: string, space: string, server: string, mode: "open" | "auth" | "user", channels?: string): Promise<void> {
+  const seed = channels ? loadChannelsFile(root, channels, false) : undefined;
+  if (mode === "open") return recreateMemoryBuckets(server, space, undefined, undefined, seed);
   const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(root)}; cannot recreate its memory buckets on the adopted listener`);
-  await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  await recreateMemoryBuckets(server, space, { creds: await mintCreds(auth, newIdentity(), "provisioner") }, undefined, seed);
 }
 
 /** `cotal space delete` removes a space's streams from a broker that keeps running. When a stack
  *  reuses that broker and every canonical stream of the space is gone, create them again, empty, as
  *  a broker start does, and return true. A broker that still holds any of them is left as it is. */
-export async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; channels?: string; seed?: ChannelRegistryFile }): Promise<boolean> {
+export async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; readSeed: () => ChannelRegistryFile | undefined }): Promise<boolean> {
   let setup: { creds: string } | undefined;
   if (opts.mode !== "open") {
     const auth = await getSpaceAuth(workspaceSecretStore(opts.root), opts.space);
@@ -241,6 +244,6 @@ export async function recreateDeletedStreams(opts: { root: string; space: string
     await drainAndClose(nc);
   }
   if (held) return false;
-  await postStart(opts.server, opts.space, setup, opts.seed ?? loadChannelsFile(opts.channels));
+  await postStart(opts.server, opts.space, setup, opts.readSeed());
   return true;
 }

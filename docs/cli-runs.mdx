@@ -51,7 +51,10 @@ in the run ID the command named or the manager returned, only when it matches th
 run-token shape. Keep the pin on later status, answer and resume calls.
 
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
-on every verb that takes one, before anything is contacted.
+on every verb that takes one, before anything is contacted. When `run show` needs a valid ID,
+its list and journal commands keep the space, broker, manager or local endpoint you requested.
+A journal row limit applies only to the text journal. If you give both `--limit` and `--json`,
+choose a limited text view or the full JSON journal before looking up a missing run ID.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
 denied credential or a step in the wrong state exits 2, and a program that does not validate is
@@ -226,7 +229,9 @@ migration is admissible, every orphaned step with its verdict and code, and exit
 and non-zero on not. An edited program that does not validate is refused before the replay, with
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
-`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. Its next step is `run list --local` on the same
+space, broker, credential and endpoint. The list reads the records without a manager.
+`check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
 before mesh preparation or connection, since they decide what a commit does and the check files nothing. `--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
@@ -271,7 +276,8 @@ the full returned status and journal. The JSON and answer commands under `Next` 
 any explicit target selectors. The JSON command omits `--limit`, and a local answer requires
 `--by <who>`. Answer and amendment receipts keep the same route in their `show` command.
 If `run show --local` finds no record for the ID, it points to `cotal run list --local` on the same
-target. The local list does not need a manager.
+target. The local list does not need a manager. The list's `show` command keeps `--local` and any
+explicit target selectors so it reads from the same place.
 Revoked admission and unreadable revocation markers remain distinct from the record's state.
 Neither a record nor a receipt is a live agent-progress report.
 
@@ -343,8 +349,8 @@ time, so you cannot script it. A scripted turn result needs a `status` of `done`
 handle such as `{ "agent": "sim.reviewer", "persona": "reviewer" }` instead of an agent name.
 Invalid turn results are refused before simulation with `SCHEMA_INVALID`. This includes an invalid
 status, a non-string note, an unknown field, a scripted `at`, and a missing, malformed or
-unexpected destination. A destination refusal names the `to` field, including the array index
-for a list entry.
+unexpected destination. The refusal names the results file and the field or result to correct
+before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
@@ -371,8 +377,9 @@ exit 1. An empty file or invalid JSON is refused with `SCHEMA_INVALID`, exit 1.
 These refusals name the path, the cause and a next step. A file that is not valid UTF-8 is refused
 with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
 No invalid bytes are replaced. A repeated key is refused with `SCHEMA_INVALID`, exit 1. Use an array
-under one key to give that step multiple sequential results. Each table maps a step's name to its result: one value
-for every occurrence, or a list used in order. A step with no name is keyed by its effect, such as
+under one key to give that step multiple sequential results. Each results table is an object keyed
+by step name, with one value for every occurrence or an array used in order. If a table is not an
+object, the refusal names the results file and the expected shape. A step with no name is keyed by its effect, such as
 `ask`. `spawn`, `sleep`, `notify`, `monitor`, `observe` and conclaves need no entry, and a sleep
 moves the virtual clock forward.
 
@@ -397,8 +404,9 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
 
-To fail a race before any branch runs in `run simulate`, target the race's own step key, such as
-`/race:first#0`. To fail an effect inside the race, use that effect's step key instead.
+To fail a race or a parallel step before any branch runs in `run simulate`, target its own step key,
+such as `/race:first#0` or `/parallel:batch#0`. To fail an effect inside a branch, use that effect's
+step key instead.
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
 program does not reach that effect. The refusal names the results file and the field to correct.

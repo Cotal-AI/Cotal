@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
-import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, type InstalledExtension } from "@cotal-ai/workspace";
+import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -203,6 +203,17 @@ try {
     check("no declared range: is not reported as damaged metadata", !m.includes("is corrupt or unreadable"), m);
   }
   check("all import-remedy assertions ran", passed + failed === 40, { passed, failed });
+
+  {
+    const dir = extensionPackageDir("@third/entry-precedence");
+    mkdirSync(join(dir, "dist"), { recursive: true });
+    for (const name of ["entry", "entry.js", "export.js", "dist/index.js"]) writeFileSync(join(dir, name), "");
+    const meta = { version: "1.0.0", main: "./entry" };
+    check("entry resolution keeps an exact file ahead of a suffixed sibling", resolveExtensionEntry(dir, meta) === join(dir, "entry"));
+    check("entry resolution keeps a root import export ahead of main", resolveExtensionEntry(dir, { ...meta, exports: { ".": { import: "./export.js" } } }) === join(dir, "export.js"));
+    check("entry resolution keeps an exported directory's index", resolveExtensionEntry(dir, { ...meta, exports: "./dist" }) === join(dir, "dist", "index.js"));
+    check("entry resolution does not expand a missing explicit export", resolveExtensionEntry(dir, { ...meta, exports: "./export" }) === join(dir, "export"));
+  }
 
   // The common reader's absence/corruption policy also governs peer binding and direct entry loads.
   // These are native private files, not intercepted filesystem calls.

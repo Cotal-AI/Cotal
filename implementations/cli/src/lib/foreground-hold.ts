@@ -1,13 +1,16 @@
 /** The process record a foreground `up` writes while it holds a controller stack's lifetime. The
  *  holding process removes its own record as it exits. A whole-stack stop removes one whose process
  *  is gone, such as a holder that was killed, and leaves one that still runs or cannot be read. */
-import { readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertRecordIdentity, exitCode, findMesh, formatRecord, identityRecord, parseRecord, renderReport, shellPath } from "@cotal-ai/workspace";
-import { displayCmd } from "./self-exec.js";
+import { assertRecordIdentity, codeSpan, exitCode, findMesh, formatRecord, homeCotalDir, identityRecord, parseRecord, renderReport, shellPath, userCotalDir } from "@cotal-ai/workspace";
+import { entryScript } from "../seed/paths.js";
+import { shellWord } from "./endpoint-errors.js";
+import { displayCmd, selfArgv } from "./self-exec.js";
 import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
-import { readStackJournal, stackDefinitionsAt, type StackJournal } from "./stack-journal.js";
+import { readStackJournal, stackDefinitionsAt, stackRootGone, type StackJournal } from "./stack-journal.js";
 
 /** Where a foreground `up` records the process that holds its stack's lifetime. */
 const foregroundHoldPath = (root: string): string => join(root, ".cotal", "stack-foreground.hold");
@@ -34,6 +37,67 @@ export function releaseForegroundHold(root: string): void {
     const read = parseRecord(readFileSync(foregroundHoldPath(root), "utf8"));
     if (read.kind === "record" && read.record.pid === process.pid) unlinkSync(foregroundHoldPath(root));
   } catch { /* nothing recorded */ }
+}
+
+/** Resolve file-based preloads from the launching folder, while their original paths still exist. */
+function foregroundStopLoaders(flags: string[], inside: (path: string) => boolean): string[] | undefined {
+  const loaders: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const arg = flags[i]!;
+    const match = /^(--import|--require|-r|--(?:experimental-)?loader)(?:=(.*))?$/.exec(arg);
+    if (!match) { loaders.push(arg); continue; }
+    const specifier = match[2] ?? flags[++i];
+    if (!specifier) return undefined;
+    if (specifier.startsWith("data:") || specifier.startsWith("node:")) {
+      loaders.push(match[1]!, specifier);
+      continue;
+    }
+    const url = specifier.startsWith("file:") ? new URL(specifier) : undefined;
+    if (!url && !isAbsolute(specifier) && !/^\.\.?[/\\]/.test(specifier)) return undefined;
+    const path = realpathSync(url ?? specifier);
+    if (inside(path)) return undefined;
+    if (url) {
+      const physical = pathToFileURL(path);
+      physical.search = url.search;
+      physical.hash = url.hash;
+      loaders.push(match[1]!, physical.href);
+    } else {
+      loaders.push(match[1]!, path);
+    }
+  }
+  return loaders;
+}
+
+/** Capture the physical entry and loader before their paths can move with the project. */
+export function foregroundStopLauncher(root: string): string | undefined {
+  try {
+    const argv = selfArgv();
+    const project = realpathSync(root), node = realpathSync(process.execPath), entry = entryScript();
+    const inside = (path: string) => {
+      const rel = relative(project, path);
+      return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+    };
+    if (inside(node) || inside(entry)) return undefined;
+    const loaders = entry.endsWith(".ts") ? foregroundStopLoaders(argv.slice(1, -1), inside) : [];
+    return loaders && [node, ...loaders, entry].map(shellWord).join(" ");
+  } catch { return undefined; }
+}
+
+/** A hangup leaves the stack running. Release the hold before exiting without unwinding finally. */
+export function hangupForegroundStack(root: string, space: string, outsideCmd: string | undefined): never {
+  const stop = `down --space ${shellWord(space)} --yes`;
+  const home = homeCotalDir();
+  const prefix = home === userCotalDir() ? "" : `COTAL_HOME=${shellWord(home)} `;
+  const command = codeSpan(`${prefix}${outsideCmd ?? "cotal"} ${stop}`);
+  const remedy = !stackRootGone(space, root)
+    ? `${codeSpan(`cd ${shellWord(root)} && ` + `${displayCmd()} down`)} stops it`
+    : outsideCmd !== undefined
+      ? `run ${command} from another folder to stop it`
+      : `use a Cotal installation outside the project to run ${command} from another folder to stop it`;
+  process.stderr.write(`The terminal closed. This stack is still running; ${remedy}.\n`);
+  process.exitCode = 129;
+  releaseForegroundHold(root);
+  process.exit(129);
 }
 
 /** Remove a foreground hold whose recorded process is gone, and leave one that still runs or cannot

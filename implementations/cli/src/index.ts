@@ -500,7 +500,7 @@ const baseCommands: Command[] = [
     subcommands: [
       { name: "show", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], summary: "read one fresh boot summary or additive ownership ledger, not live state", examples: [{ command: "cotal team show <deployment-id>", note: "read one recorded deployment" }], usage: "cotal team show <deployment-id>", reads: true, prepareMeshTarget: false },
       { name: "check", flagNames: ["space", "graph", "json", "plain"], outputs: ["json", "plain"], summary: "resolve a manifest and referenced personas offline; --space must match the manifest", examples: [{ command: "cotal team check <file>", note: "check a manifest and its personas offline" }, { command: "cotal team check <file> --graph", note: "also show who can read and post where" }], usage: "cotal team check <file> [--space <name>] [--graph]", reads: true, prepareMeshTarget: false },
-      { name: "boot", flagNames: ["space", "foreground", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "boot a fresh controller-owned stack; --foreground holds its terminal lifetime", examples: [{ command: "cotal team boot <file> --dry-run", note: "preview booting a new space from a manifest" }, { command: "cotal team boot <file>", note: "boot it in the background" }], usage: "cotal team boot <file> [--dry-run | --foreground]", prepareMeshTarget: false },
+      { name: "boot", flagNames: ["space", "foreground", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "Boot a fresh controller-owned stack. A foreground preview accepts --json or --plain. A foreground apply accepts neither.", examples: [{ command: "cotal team boot <file> --dry-run", note: "preview booting a new space from a manifest" }, { command: "cotal team boot <file> --foreground --dry-run --json", note: "preview a terminal-bound boot as JSON" }, { command: "cotal team boot <file>", note: "boot it in the background" }], usage: "cotal team boot <file> [--dry-run] [--foreground]", prepareMeshTarget: false },
       { name: "deploy", flagNames: ["space", "runtime", "allow-stale", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "add all-new live channels and static/open teams through one native manager", examples: [{ command: "cotal team deploy <file> --dry-run", note: "preview what a deploy would add" }, { command: "cotal team deploy <file>", note: "add its new channels and agents" }], usage: "cotal team deploy <file> [--dry-run]", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "dry-run", "yes", "json", "plain"], outputs: ["json", "plain"], summary: "retire a recorded static agent-only team; --dry-run reads native impact", examples: [{ command: "cotal team remove <deployment-id> --dry-run", note: "preview retiring a deployed team" }, { command: "cotal team remove <deployment-id>", note: "retire it after you confirm" }], usage: "cotal team remove <deployment-id> [--dry-run] [--yes]", prepareMeshTarget: false },
       { name: "list", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], hidden: true, summary: "read available local fresh and additive deployment records", reads: true, prepareMeshTarget: false },
@@ -657,7 +657,7 @@ const baseCommands: Command[] = [
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) launch through a manager with `cotal spawn --detach`",
+    summary: "(removed) launch with `cotal spawn`",
     validate: refuseRemovedStart,
     run: async (args) => refuseRemovedStart(args),
   },
@@ -777,7 +777,7 @@ const baseCommands: Command[] = [
     positionals: "[show|add|remove|describe|invoke|watch|session|work|init|check|deregister] [target] [command-or-instance]",
     summary: "save references, author contracts offline, and inspect or invoke native endpoints",
     examples: [{ command: "cotal endpoint", note: "list the saved endpoint references" }, { command: "cotal endpoint describe <target>", note: "read an endpoint's commands" }, { command: "cotal endpoint invoke <target> <command>", note: "call one of its commands" }],
-    usage: "cotal endpoint [show | add | remove | describe | invoke | watch | session | work | init | check | deregister] [target] [command-or-instance] [options]",
+    usage: "cotal endpoint [--space <s>] [--json|--plain]\ncotal endpoint --live [--space <s>] [--server <url>] [--creds <path>] [--json|--plain]\ncotal endpoint <command> [target] [command-or-instance] [options]",
     flagNames: ["space", "live", "server", "creds", "json", "plain"],
     flags: endpointFlags, outputs: ["json", "ndjson", "plain"], reads: true, prepareMeshTarget: false,
     subcommands: ([
@@ -790,8 +790,8 @@ const baseCommands: Command[] = [
       { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "watching declared records or events is unavailable in this CLI", usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
       { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive sessions are unavailable in this CLI", usage: "cotal endpoint session <target> <command>" },
       { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools are unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
-        { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "leasing from a work pool is unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool>" },
-        { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "committing a work result is unavailable in this CLI", usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>" },
+        { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "leasing from a work pool is unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool>", outputs: ["json", "plain"] },
+        { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "committing a work result is unavailable in this CLI", usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>", outputs: ["json", "plain"] },
       ] },
       { name: "add", flagNames: ["space", "file", "json", "plain"], summary: "save a validated local reference; launch and invoke nothing", examples: [{ command: "cotal endpoint add <name> --file <reference.json>", note: "save a reference from a file" }], usage: "cotal endpoint add [name] [--file <reference.json>]" },
       { name: "remove", flagNames: ["space", "yes", "json", "plain"], aliases: ["rm"], summary: "forget only a pinned local reference", examples: [{ command: "cotal endpoint remove <name>", note: "forget a saved reference" }], usage: "cotal endpoint remove <name> [--yes]" },
