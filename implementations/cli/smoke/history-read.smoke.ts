@@ -151,6 +151,14 @@ async function checkChannelReplayRetry(): Promise<void> {
     retried?.status === 0 && retried.envelope?.outcome === "ok" && after.status === 0
       && Object.entries(changed).every(([key, value]) => saved?.[key as keyof typeof changed] === value),
     { command, retried: retried && shown(retried), after: shown(after) });
+  const show = await run(["channel", "show", name, "--replay", "off", ...scope]);
+  const read = /^run `(.+)`$/.exec(show.envelope?.error?.remedy ?? "")?.[1];
+  const shownAgain = read ? await run(execWords(read).slice(1)) : undefined;
+  check("a channel show replay refusal suggests a read without replay flags and keeps JSON",
+    show.status === 1 && show.stderr === "" && show.envelope?.error?.code === "USAGE_INVALID"
+      && read === `cotal channel show ${name} --space ${openSpace} --json`
+      && shownAgain?.status === 0 && entry(shownAgain)?.replay === false,
+    { show: shown(show), shownAgain: shownAgain && shown(shownAgain) });
 }
 
 async function checkFollowUsageRefusals(): Promise<void> {
