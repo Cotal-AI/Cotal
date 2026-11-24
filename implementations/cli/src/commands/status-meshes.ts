@@ -15,6 +15,7 @@ import {
   unsettledStackOperation,
   isMeshRegistryError,
   isWorkspaceTargetError,
+  preparedNeverStarted,
   readCurrent,
   readMeshRegistry,
   preparedRecordSkipped,
@@ -40,7 +41,7 @@ import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { serviceInstances } from "../lib/service-instances.js";
 import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, unusableStackJournal } from "../lib/stack-journal.js";
-import { linkedCotalRemedy } from "../lib/paths.js";
+import { linkedCotalRemedy, preparedRootWriteProblem } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
@@ -256,6 +257,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     };
     // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
+    const writeProblem = e.code === "not-started" && preparedNeverStarted(d) ? preparedRootWriteProblem(d.root) : undefined;
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
     // So does a service instance record of its space that no command can read, which is also a warning.
     const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
@@ -265,6 +267,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // settles from its members' processes when it starts.
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
     else if (instances) hints.push(instances.remedy ?? instances.message);
+    else if (writeProblem) hints.push(`First start blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (restartRoot !== undefined) {
       const block = channelSeedRestartBlock(restartRoot);
