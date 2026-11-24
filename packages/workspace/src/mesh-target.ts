@@ -1040,8 +1040,12 @@ export function folderSpaceOverSelection(cwd: string, current: string | null, of
  *  name the tenants and refuse instead (the same posture as `soleSpaceOf` for an unrecorded
  *  multi-space root). The names ride along as `spaces`: `update` replaces the one binary they all
  *  share, so it reads each of them in turn rather than refusing the machine-wide question. */
-function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry | undefined {
+function registrationAt(root: string, meshes: readonly MeshEntry[], offline?: ReadonlySet<string>): MeshEntry | undefined {
   const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
+  if (rootMatches.length > 1 && offline?.size) {
+    const running = rootMatches.filter((m) => !offline.has(m.space));
+    if (running.length === 1) return running[0];
+  }
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
@@ -1246,7 +1250,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // recorded project as UNRECORDED — discarding the recorded server and mode and falling through
     // to `DEFAULT_SERVER` below, silently. `mesh-registry.ts` states the rule on `meshesForRoot`:
     // "a raw `===` silently misses". This is the same rule, one predicate, not a second spelling.
-    const recorded = registrationAt(root, meshes);
+    // An adopted selection yields to the one registration here that the liveness sweep kept.
+    const recorded = registrationAt(root, meshes, selection?.source === "adopted" ? offline : undefined);
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
     // A root whose own stack recorded a broker is not given the default address: with no
     // registration that stack is not running here, and the default port may hold another mesh. The

@@ -435,11 +435,18 @@ setCurrent("keep");
 
   const secondAtEmptyRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", emptyRoot, "--mode", "open", "--force"]);
   const ambiguous = await json(["space", "show"], leaf);
-  const named = await json(["space", "show", "open4"], leaf);
+  const ambiguousPlain = await run(["space", "show", "--plain"], {}, leaf);
   check("bare show refuses two registrations at the enclosing root and names both explicit choices",
-    secondAtEmptyRoot.status === 0 && refused(ambiguous, 2, "TARGET_AMBIGUOUS") &&
-      ["open4", "open5"].every((name) => ambiguous.env?.error?.remedy.includes(` space show ${name}\``)) &&
-      named.status === 0 && named.env?.result.space === "open4" && getCurrent() === "keep", shown(ambiguous));
+    secondAtEmptyRoot.status === 0 && refused(ambiguous, 2, "TARGET_AMBIGUOUS") && ambiguousPlain.status === 2 && getCurrent() === "keep", shown(ambiguous));
+  for (const [format, refusal] of [["--json", ambiguous.env?.error?.remedy], ["--plain", ambiguousPlain.stderr]] as const) {
+    const choices = [...String(refusal).matchAll(/ (space show (open[45]) (--json|--plain))`/g)];
+    check(`both retry commands keep ${format}`, choices.map((choice) => `${choice[2]} ${choice[3]}`).join(", ") === `open4 ${format}, open5 ${format}`, refusal);
+    for (const [, args, name] of choices) {
+      const retry = await run(args!.split(" "), {}, leaf);
+      check(`following the ${format} retry reports ${name}`, retry.status === 0 && (format === "--json"
+        ? JSON.parse(retry.stdout).result.space === name : retry.stdout.includes(`Mesh: ${name}`)), shown(retry));
+    }
+  }
   const secondAtNestedRoot = await json(["space", "add", "open5", "--server", LIVE, "--root", nested, "--mode", "open", "--force"]);
   const nearest = await json(["space", "show"], leaf);
   check("bare show uses the nearer registered root when both ancestors have registrations",
@@ -1014,12 +1021,31 @@ if (process.platform === "linux") {
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
   await run(["down", "--yes"], {}, first);
   const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
-  const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
+  const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--max-payload", "131072"], {}, second);
   check("with another space selected, up keeps it and says it stays selected outside this folder",
     kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays automatically selected outside this folder`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+  const added = await json(["space", "add", "seloffline", "--force", "--server", DEAD, "--root", second], second);
+  const who = await json(["who"], second);
+  const show = await json(["space", "show"], second);
+  check("the only running registration in this folder takes precedence over an adopted selection",
+    added.status === 0 && who.status === 0 && who.env?.target?.space === "selsecond" &&
+      readCurrentSelection()?.source === "adopted" && getCurrent() === "selfirst" && findMesh("seloffline")?.server === DEAD, shown(who));
+  check("space show still refuses to choose among the folder's registrations", refused(show, 2, "TARGET_AMBIGUOUS"), shown(show));
+  check("forget the offline registration", (await json(["space", "forget", "seloffline"], second)).status === 0);
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
   const stopped = await run(["down", "--yes"], {}, second);
   check("and down stops it", stopped.status === 0, shown(stopped));
+  const identity = await run(["whoami", "--space", "selsecond", "--plain"], {}, second);
+  const restart = /start it again with `(?:pnpm )?cotal (up --no-manager)`/.exec(identity.stdout);
+  check("whoami names the stopped space and tells how to restart the broker without a Manager",
+    identity.status === 0 && /^  server: +stopped$/m.test(identity.stdout) && identity.stdout.includes('"selsecond" is stopped') &&
+      restart !== null && identity.stdout.includes(`in ${second}`), shown(identity));
+  if (restart?.[1]) {
+    const restarted = await json(restart[1].split(" "), second);
+    check("the printed restart works with the saved payload below the Manager minimum", restarted.status === 0, shown(restarted));
+    assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
+    check("down stops the restarted broker", (await json(["down", "--yes"], second)).status === 0);
+  }
   if (selected === undefined) clearCurrent(); else setCurrent(selected);
 } else console.log("  - up selection cells skipped: a controller stack needs Linux machine and boot identity");
 
