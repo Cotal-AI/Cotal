@@ -12,6 +12,7 @@ import { controlSession } from "./control-session.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
 import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerStartState } from "./manager-start-state.js";
 
 const SESSION_RESTART_LIMIT = 3;
@@ -41,7 +42,6 @@ export interface SessionRecoveryDeps {
   watchExit: (agent: ManagedAgent) => void;
   tail: (session: AttachSession) => Promise<string>;
   stopHandle: (agent: ManagedAgent, graceful: boolean, cause: FreeSlotCause) => void;
-  trackStoppedHandle: (agent: ManagedAgent, floor: boolean, cause: FreeSlotCause) => void;
 }
 
 /** Builds the {@link SessionRecoveryDeps} for a Manager. It reads Manager members by name at each use, so a
@@ -68,13 +68,12 @@ export function sessionRecoveryDeps(m: Manager): SessionRecoveryDeps {
     watchExit: (agent) => m["watchExit"](agent),
     tail: (session) => m["tail"](session),
     stopHandle: (agent, graceful, cause) => m["stopHandle"](agent, graceful, cause),
-    trackStoppedHandle: (agent, floor, cause) => m["trackStoppedHandle"](agent, floor, cause),
   };
 }
 
 /** Session-state proof, transcript provenance, continuity assignments and bounded crash recovery. */
 export class SessionRecovery {
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SessionRecoveryDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatStop">) {}
   private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   readSessionStatePath(path: string):
@@ -181,7 +180,7 @@ export class SessionRecovery {
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
     this.deps.stopHandle(a, false, "carried-fork-refused");
-    this.deps.trackStoppedHandle(a, true, "carried-fork-refused");
+    this.parts.seatStop.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
   readManagedSession(a: ManagedAgent): string {

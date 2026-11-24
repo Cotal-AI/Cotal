@@ -140,6 +140,21 @@ try {
     report.effects.length === 1 && report.effects[0]?.step === "/race:first#0" && report.effects[0].status === "failed", report.effects);
 }
 
+{
+  const source = `
+const seats = [{ id: "missing-first" }, { id: "missing-second" }];
+await fanOut(seats, async (seat) => { return await spawn(seat.id, { name: "member" }); }, { name: "seats" });
+`;
+  const step = "/fanOut:seats#0";
+  const message = "test agent unavailable";
+  const outcome = await dryRunOutcome(source, { faults: [{ at: step, kind: "unavailable", code: "L4002", message }] });
+  ok("a scripted fan-out fault is reported with its code and message",
+    "fault" in outcome && outcome.fault.code === "L4002" && outcome.fault.message === message, outcome.effects);
+  ok("the fan-out itself fails without running either branch",
+    outcome.effects.length === 1 && outcome.effects[0]?.step === step && outcome.effects[0].status === "failed" &&
+      outcome.agents.length === 0, outcome.effects);
+}
+
 // ---- 4) the plan is the run: checked against a real execution, not against an expectation --------
 
 /**

@@ -2,7 +2,9 @@
  * A session's config options, built from what the managers offer.
  *
  * The model select lists `<agent>/<model>` grouped by agent, with a `<agent>/default` choice for
- * the application's own default. A client must be able to select the default again after a named
+ * the application's own default. Each choice's name starts with its agent, because a client may
+ * flatten the groups and drop their names (T3 Code does), and the model choice is the only place a
+ * thread picks its application. A client must be able to select the default again after a named
  * model ran, so it is a real choice rather than an absent value. Applications without an event
  * plane are not offered: the bridge reads a seat's turns from that plane and has nothing to show
  * without it. A model the catalog does not list is accepted as a custom id, as a client's own model
@@ -146,12 +148,12 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
     options: usable(offer.catalogs).map((c) => {
       // A seat-only thread offers the model its agent runs, and the default only when it names none.
       const choices = [
-        ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` }]),
-        ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: m.name ?? m.id })),
+        ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
+        ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
       ];
       // The current value is always a choice, a custom id included.
       if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))
-        choices.push({ value: selection.model, name: selection.model.slice(c.agent.length + 1) });
+        choices.push({ value: selection.model, name: `${c.agent}: ${selection.model.slice(c.agent.length + 1)}` });
       return { group: c.agent, name: c.agent, options: choices };
     }),
   }];

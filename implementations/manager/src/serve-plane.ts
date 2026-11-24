@@ -62,8 +62,6 @@ export interface ServePlaneDeps {
   remoteStandingBudgetMs: number;
   dial: (opts: Parameters<ReturnType<typeof dialerFor>>[0]) => Promise<NatsConnection>;
   dialRemoteStanding: (opts: Parameters<ReturnType<typeof dialerFor>>[0], deadline: number) => Promise<NatsConnection>;
-  trackTransport: (nc: NatsConnection) => void;
-  discardServeCandidate: (nc: NatsConnection, handle?: EpServeHandle) => Promise<void>;
   managerServiceDefs: () => EpCommandDef[];
   omitClassCommands: () => readonly string[] | undefined;
   resolveTarget: (target: { owner: string; actor: string }) => { lifecycleUid: string; mappingRevision: number } | undefined;
@@ -71,7 +69,6 @@ export interface ServePlaneDeps {
   withOpenServeConnection: <T>(fn: (kvs: ExecutorStores) => Promise<T>) => Promise<T>;
   boundedReconnect: (label: string, attempt: () => Promise<boolean>, expired?: boolean) => Promise<boolean>;
   renewRemoteBeforeRedial: (label: string, read: () => string | undefined) => Promise<void>;
-  scheduleServeRenewal: (creds: string) => void;
   stop: () => Promise<void>;
   healFrozenRegistrationGate: (authKv: KV, instanceId: string, auth: SpaceAuth, recordsKv: KV) => Promise<void>;
   mintAndStageGoalWriter: (authKv: KV) => Promise<string>;
@@ -91,8 +88,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     remoteStandingBudgetMs: REMOTE_STANDING_BUDGET_MS,
     dial: (...args) => m["dial"](...args),
     dialRemoteStanding: (...args) => m["dialRemoteStanding"](...args),
-    trackTransport: (...args) => m["trackTransport"](...args),
-    discardServeCandidate: (...args) => m["discardServeCandidate"](...args),
     managerServiceDefs: (...args) => m["managerServiceDefs"](...args),
     omitClassCommands: (...args) => m["omitClassCommands"](...args),
     resolveTarget: (target) => m["resolveServeTarget"](target),
@@ -100,7 +95,6 @@ export function servePlaneDeps(m: Manager): ServePlaneDeps {
     withOpenServeConnection: (...args) => m["withOpenServeConnection"](...args),
     boundedReconnect: (...args) => m["boundedReconnect"](...args),
     renewRemoteBeforeRedial: (...args) => m["renewRemoteBeforeRedial"](...args),
-    scheduleServeRenewal: (...args) => m["scheduleServeRenewal"](...args),
     stop: (...args) => m["stop"](...args),
     healFrozenRegistrationGate: (...args) => m["healFrozenRegistrationGate"](...args),
     mintAndStageGoalWriter: (...args) => m["mintAndStageGoalWriter"](...args),
@@ -144,7 +138,7 @@ export class ServePlane {
   serviceServe?: ServiceServe;
   sessionLedgerCreds?: string;
 
-  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
   private get userMode() { return this.state.userMode; }
 
   private get auth(): SpaceAuth | undefined { return this.state.auth; }
@@ -177,7 +171,7 @@ export class ServePlane {
       maxReconnectAttempts: -1,
     };
     const nc = await (deadline === undefined ? this.deps.dial(opts) : this.deps.dialRemoteStanding(opts, deadline));
-    this.deps.trackTransport(nc);
+    this.parts.brokerTransport.trackTransport(nc);
     let handle: EpServeHandle | undefined;
     try {
       // The typed surface + the derived `describe`. The descriptor stays PUBLIC in static
@@ -192,7 +186,7 @@ export class ServePlane {
       else await this.deps.withTimeout(nc.flush(), this.deps.remoteStandingTimeLeft(deadline),
         "remote manager standing serve flush exceeded its 10000ms aggregate budget");
     } catch (e) {
-      await this.deps.discardServeCandidate(nc, handle);
+      await this.parts.brokerTransport.discardServeCandidate(nc, handle);
       throw e;
     }
     // Wired only once the connection serves: a candidate this method closes after a
@@ -263,7 +257,7 @@ export class ServePlane {
         "remote manager closed-serve renewal wait exceeded its 10000ms aggregate budget");
       else if (inspectCredHealth(s.creds ?? "").state !== "healthy" && s.creds !== undefined) {
         s.creds = await this.remintServeCreds(s);
-        this.deps.scheduleServeRenewal(s.creds);
+        this.parts.credentialRenewal.scheduleServeRenewal(s.creds);
       }
       if (this.leaseStopping || this.serviceServe !== s || s.nc !== closed) return true;
       const { nc, handle } = await this.dialServeConnection(s, undefined, deadline);
@@ -490,7 +484,7 @@ export class ServePlane {
     // #2073: arm the serve credential's own renewal now, from ITS window, instead of leaving it to
     // `credRenewTimer`'s boot-phased TTL/4 tick. Open mesh mints no credential (`creds` is
     // undefined) and has nothing to schedule.
-    if (state.creds !== undefined) this.deps.scheduleServeRenewal(state.creds);
+    if (state.creds !== undefined) this.parts.credentialRenewal.scheduleServeRenewal(state.creds);
   }
 
   /** Mint the standing `session-ledger` credential and STAGE it into this instance's
@@ -547,7 +541,7 @@ export class ServePlane {
       maxReconnectAttempts: -1,
     });
     nc.closed().then((err) => { void this.onSessionLedgerConnectionClosed(err ?? undefined); });
-    this.deps.trackTransport(nc);
+    this.parts.brokerTransport.trackTransport(nc);
     sw.nc = nc;
   }
 

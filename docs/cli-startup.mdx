@@ -59,7 +59,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--tls-cert <path>` | none | PEM certificate to serve TLS with. Must be given together with `--tls-key`. Before starting the broker, Cotal checks readability, private-key mode, key/certificate match, the validity window, and host coverage. `nats-server` accepts an expired certificate and leaves the failure to clients, so Cotal performs these checks first. The decision is recorded; a later bare `cotal up` keeps serving TLS. Cotal's own clients, `up` included, check the certificate against Node's trusted CAs and the address they dial. For a self-signed certificate or a local CA, set `NODE_EXTRA_CA_CERTS` to that certificate or CA file (PEM) for `cotal up` and every other `cotal` command of the space; the stack's delivery daemon and manager inherit it from `up`. A manager or other service that `cotal manager start` or `cotal service start` launches inherits it from that command. The stack's address is `tls://`, so every dial checks the certificate against the address it names: an address `up` chooses, the default or the one a stopped folder last ran at, becomes `tls://`, and the `TLS: serving` line of the receipt names it. A root prepared with `cotal space create`, or one whose stack the service controller owns, has no route that serves TLS: there `--tls-cert`, `--tls-key` or a `tls://` `--server` refuses `UNSUPPORTED`, exit 2, before anything starts. On a prepared root that refusal names `cotal up -f <cotal.yaml> --tls-cert <cert.pem> --tls-key <key.pem>` with a `tls://` address in the manifest's `broker.servers`, which serves TLS there. Elsewhere a `--server nats://` with `--tls-cert` refuses `USAGE_INVALID` before anything starts and names the `tls://` form, and so does `up -f` whose manifest `broker.servers` names a `nats://` address. A `--server nats://` on a root whose recorded policy serves TLS refuses the same way, naming `.cotal/broker-policy.json` and the `tls://` address to pass, because the broker it would start serves TLS while the address it would record is dialed in cleartext. When this client refuses the certificate in the handshake, `up`, with or without `-f`, stops the broker, records nothing and fails `OPERATION_FAILED`, naming the native error and the step to take |
 | `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest. An empty or whitespace-only value refuses `USAGE_INVALID`, exit 1, before any write or start |
-| `--dry-run` | off | With `-f`: preflight the declared applications before printing the plan. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. To see the plan, supply the manifest and omit `--json` or `--plain` if you passed it. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
+| `--dry-run` | off | With `-f`: preflight the declared applications before printing the plan. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. To preview a foreground launch, use `cotal team boot cotal.yaml --foreground --dry-run`. For the `up -f` preview, omit `--json` or `--plain` if you passed it. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
 | `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime. An empty value, as an unset variable gives, names no runtime and refuses `USAGE_INVALID` (exit 1) |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it. On a controller stack, a different ceiling refuses `LIFECYCLE_BLOCKED`, exit 2, naming the running value and leaving the saved definition unchanged. A matching ceiling or a bare refresh reuses the manager. Run `cotal down --yes` first, then `cotal up --max-sessions <n>` |
 | `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this root's manager admits for one owner. The manager records an explicit cap once it starts serving, so a bare `up` after `down`, a repair or a resume keeps it. A refresh that names the running cap reuses the manager, including `--seat-cap unlimited` when there is no saved cap. To change a running manager's cap, run `cotal down` first, then `cotal up --seat-cap <n>`. A refused start leaves the saved cap unchanged. Cannot be combined with `--restore`, `--file` or `--no-manager` |
@@ -164,7 +164,9 @@ provide. A manager that stops on such a gate says this in its log, including tha
 `cotal manager reconcile` refuses the gate. Keep that store intact; upgrading alone does not recover that state.
 `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
-pidfile to leave stale. Authenticated starts and refreshes warn that no local process re-signs the
+pidfile to leave stale. If the requested broker settings conflict with the recorded ones, the retry
+keeps `--no-manager`, including when restarting to apply new log settings.
+Authenticated starts and refreshes warn that no local process re-signs the
 daemon credentials and list their stored expiry times. A manager must renew the same secret store;
 the daemon only adopts re-signed credentials. `cotal doctor auth` inspects their local health.
 A refresh under the flag of a mesh whose manager is live refuses rather
@@ -432,7 +434,8 @@ controller. It records its mode, definitions and full instance IDs in the privat
 `--user-auth` that names another mode refuses `CONFLICT`, exit 2, whether the stack runs or not.
 `reset store`, `reset space`, `clean all` and `space forget` all keep the journal, so none of them
 changes the mode. To run another mode, run `cotal space create <space>` in another folder, then
-`cotal up --open` or `cotal up --user-auth` there.
+`cotal up --open` or `cotal up --user-auth` there. If you requested `--no-manager`, both suggested
+starts keep it so the retry does not add a Manager.
 Static-auth startup prepares trust and configuration, starts
 the broker, initializes native streams, then starts delivery and the optional manager. Open startup
 prepares an unauthenticated broker and streams, then the optional manager; it creates no delivery
@@ -578,7 +581,8 @@ conflicting `--server` or `--open` refuses before effects. With no journal and n
 after a damaged journal was removed, `up` starts at the address the saved `stack-broker` definition
 names and warns `STACK_ADDRESS_RECOVERED`. It also keeps the open mode and JetStream store path
 from the broker configuration that definition names. With no definition either, a root that holds the space's
-trust or a store from an earlier start refuses `USAGE_INVALID`, exit 1, and asks for `--server`.
+trust or a store from an earlier start refuses `USAGE_INVALID`, exit 1. Repeat the same startup command
+with `--server` set to the original address. Keep `--no-manager` for a broker-only start.
 Only a fresh prepared root starts at the default address. A journal whose stack never launched a
 member pins neither, as when its first `up` was refused because another broker answers at the
 address or another program holds it. The next `up` plans it as a first start, with that address or
@@ -684,7 +688,8 @@ The stop command refuses
 sent it. It looks the ID up before it asks for `--yes`, so that refusal comes with or without
 `--yes`. That refusal names the stop request each member retains and, when there is one, its
 `--abandon-stop` command as Next. When no member retains a stop request, as after that stop was
-abandoned, the refusal says so and names `cotal up` as Next, or `cotal down` while the stack runs.
+abandoned, no further stop is needed if the stack is stopped. To restart a broker-only stack, use
+`cotal up --no-manager`. To restart one with its manager, use `cotal up`. A running stack still names `cotal down`.
 Its fields show the ID it was given as `Given ID`, and `--json` carries it as `target.requestId`.
 Either way nothing changes. Otherwise it
 removes the request, the stop reservation and a `--with-agents` shutdown intent that the same stop
@@ -988,8 +993,12 @@ Two things to know before you run it:
   `server.conf` on some other port writes none of them and will not be seen. Do not run one.
 - **It invalidates earlier full backups.** A full artifact binds to the trust chain it was taken
   against, and that commitment covers the operator JWT and the system account. Every full backup
-  taken before a rotation refuses to restore afterwards, so take a fresh `cotal backup` once the
-  rotated mesh is up. `cotal up --restore` names this case when the data account still matches.
+  taken before a rotation refuses to restore afterwards. `cotal up --restore` names this case when
+  the data account still matches. If your stack supports preservation, wait for the rotated mesh
+  to boot successfully. When ready to stop it, follow the
+  [preserve-and-backup sequence](backup-a-mesh.mdx).
+  From the stopped, preserved project root, run `cotal backup create ./space-backup` to take a
+  fresh full backup. Keep the stack stopped until the backup completes.
 
 The commit is not atomic (a trust-record write plus two credential writes), so an interrupted
 rotation leaves the record ahead of the creds. That split is detected rather than silent: every
@@ -1079,8 +1088,9 @@ saved as UTF-16 is refused with `USAGE_INVALID`, saying to save it as UTF-8:
 or `d`) and `deliveryClass` (`live` or `durable`). Each key under `channels` is one concrete channel
 name, as `channel set` takes it, and its object takes those three fields plus `description` (up to
 200 characters) and `instructions` (up to 2000). Each field in the file overwrites that field in the
-registry, and fields the file leaves out keep their values. Any other key, a wildcard or invalid
-channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
+registry, and fields the file leaves out keep their values. An explicit `--channels` file also
+patches the retained registry when `up` resumes a preserved stack. Any other key, a wildcard or
+invalid channel name, or an invalid value refuses `SCHEMA_INVALID` before anything starts, naming the file
 and the entry. A default file that is invalid refuses the same way, with a remedy to fix or remove
 it. A manifest start (`-f`) seeds from the manifest's own channels and defaults instead. Preview
 and apply warn if you pass `--channels` with `-f` and do not read that file. Set channels and defaults

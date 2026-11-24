@@ -113,7 +113,7 @@ process.on("exit", () => {
 });
 
 // Asynchronous, so the stand-in exchange in this process can answer while the binary runs.
-const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 const launcher = resolveOnPath("cotal", runEnv) ? "cotal" : "pnpm cotal";
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) =>
   new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
@@ -191,7 +191,14 @@ setCurrent("keep");
 // ── Usage refusals, before anything is read or dialed ─────────────────────────────────────────────────
 {
   const before = registryFiles();
-  check("add with no name and no bundle is USAGE_INVALID, exit 1", refused(await json(["space", "add", "--server", LIVE]), 1, "USAGE_INVALID"));
+  const options = ["--server", LIVE, "--root", root, "--mode", "open"];
+  const missingName = await json(["space", "add", ...options], userRoot);
+  check("a missing name asks to insert it into the same registration command", refused(missingName, 1, "USAGE_INVALID") && missingName.env?.error?.remedy === "repeat the same command with the space name after `add`", shown(missingName));
+  const missingBoth = await json(["space", "add", "--root", root]);
+  check("without a name or server the remedy asks for both", refused(missingBoth, 1, "USAGE_INVALID") && missingBoth.env?.error?.remedy?.includes("--server <url>"), shown(missingBoth));
+  const retry = await run(["space", "add", "open1", ...options, "--json"], { COTAL_HOME: join(home, "name-retry-home") }, userRoot);
+  const registered = JSON.parse(retry.stdout).result;
+  check("inserting the name returns a verified JSON registration for the requested root and broker", retry.status === 0 && registered?.verified === true && registered.space?.root === root && registered.space?.server === LIVE, shown(retry));
   const noServer = await json(["space", "add", "x", "--root", root]);
   check("add with no --server is USAGE_INVALID with an example remedy", refused(noServer, 1, "USAGE_INVALID") && /--server nats:\/\//.test(noServer.env?.error?.remedy ?? ""), shown(noServer));
   check("--file with --from is USAGE_INVALID", refused(await json(["space", "add", "--file", file, "--from", "https://x.test", "--root", userRoot]), 1, "USAGE_INVALID"));

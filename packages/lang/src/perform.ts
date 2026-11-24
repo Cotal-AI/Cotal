@@ -810,7 +810,9 @@ export async function performScope(
   // branches all succeeded and whose settling append was refused must not be recorded as failed.
   let outcome: ScopeOutcome;
   try {
-    if (scopeKey.kind === "race" && !ctx.signal.cancelled) simScopeFaults.get(host.options.handler)?.(ctx);
+    if ((scopeKey.kind === "race" || scopeKey.kind === "fanOut" || scopeKey.kind === "parallel") && !ctx.signal.cancelled) {
+      simScopeFaults.get(host.options.handler)?.(ctx);
+    }
     outcome = await body(ctx);
   } catch (raw) {
     // The interpreter's facts come out of the envelope; the program's thrown value comes out

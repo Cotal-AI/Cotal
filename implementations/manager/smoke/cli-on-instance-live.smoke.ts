@@ -331,7 +331,7 @@ try {
     const out = strip(r.out);
     check(site.what,
       r.status !== 0
-        && /--on wants the manager INSTANCE id as `cotal ps` prints it/.test(out)
+        && out.includes(`--on wants the manager INSTANCE id as \`cotal ps${site.argv[0] === "ps" ? ` --space ${space}` : ""}\` prints it`)
         && /not the roster's principal id/.test(out)
         && /is a principal id/.test(out)
         && !/no describe reply|did not answer/i.test(out),

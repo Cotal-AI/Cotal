@@ -33,6 +33,7 @@ import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { resolveSpace } from "../lib/status.js";
 import { cotalRoot, homeHoldsStack, linkedCotalRefusal } from "../lib/paths.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
@@ -97,6 +98,11 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts", { remedy: "drop --max-sessions, or drop --no-manager to set the manager session ceiling" });
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
   // Only a manifest launch has a plan to print; without -f every route would start the stack.
+  if (args.values["dry-run"] === true && !args.values.file && args.values.foreground === true) {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const boot = `${cli} team boot cotal.yaml --foreground --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`;
+    throw new CommandFailure("refused", "USAGE_INVALID", "up cannot preview a terminal-bound launch. Nothing was started or written.", { remedy: `preview the manifest with ${codeSpan(boot)}` });
+  }
   if (args.values["dry-run"] === true && !args.values.file)
     throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run previews a manifest launch and needs -f <cotal.yaml>; nothing was started or written", { remedy: `pass -f <cotal.yaml>${presentation === "rich" ? "" : ` and omit --${presentation}`} to print that manifest's plan; \`cotal status\` shows what this folder records` });
   // The stack passes its space to its own children as `--space <name>`, which a leading - breaks.

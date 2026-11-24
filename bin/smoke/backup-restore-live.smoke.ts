@@ -32,6 +32,8 @@ import {
 } from "../../implementations/cli/src/lib/isolated-broker.js";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 
+process.env.DO_NOT_TRACK = "1";
+
 const occupy = async (port: number): Promise<ChildProcess> => {
   const child = spawn("nats-server", ["-p", String(port), "-a", "127.0.0.1", "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
   teardownOnSignal(child);
