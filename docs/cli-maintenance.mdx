@@ -352,8 +352,10 @@ characters. If no manager is saved yet, the refusal suggests retrying with `--co
 and keeping the other flags unchanged. An invalid `--name`, malformed `--console-host`,
 or launch digest override that does not match its file leaves the saved definition and stopped
 instance unchanged. After a digest mismatch, omit both launch flags to keep the saved launch settings,
-or verify the override file and retry with its matching SHA-256. A running manager refuses
-`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
+or verify the override file and retry with its matching SHA-256. With a manager running, start checks
+the replacement's runtime and broker before recommending a stop. If those checks pass and the start
+would change the running manager's options, it refuses with `LIFECYCLE_BLOCKED` and names
+`cotal manager stop`.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
