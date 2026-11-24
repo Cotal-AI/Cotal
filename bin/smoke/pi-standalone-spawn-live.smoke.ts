@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -58,14 +58,17 @@ export default function (pi) {
   pi.on("session_start", ({ reason }) => appendFileSync(${JSON.stringify(projectMarker)}, reason + "\\n"));
 }
 `);
-writeFileSync(join(extensionDir, "unrelated.js"), `
+writeFileSync(join(extensionDir, "unrelated.ts"), `
 import { appendFileSync } from "node:fs";
 import { basename } from "node:path";
 export default function (pi) {
   const nameAtLoad = process.env.COTAL_NAME;
   const agentFileAtLoad = process.env.COTAL_AGENT_FILE;
-  let nameAtTrust;
-  pi.on("project_trust", () => { nameAtTrust = process.env.COTAL_NAME; });
+  let nameAtTrust: string | undefined;
+  pi.on("project_trust", () => {
+    nameAtTrust = process.env.COTAL_NAME;
+    return { trusted: "undecided" };
+  });
   pi.on("session_start", ({ reason }, ctx) => {
     const owners = pi.getAllTools().filter(({ name }) => name === "cotal_orientation")
       .map(({ sourceInfo }) => basename(sourceInfo.path));
@@ -79,9 +82,9 @@ export default function (pi) {
 const sessions = () => existsSync(marker) ? readFileSync(marker, "utf8").trimEnd().split("\n") : [];
 const idleLine = (who: string, name: string) => who.split("\n").find((line) => line.includes(`${name}/default`) && /\bidle\b/.test(line));
 
-async function spawnPi(name: string, reload: boolean) {
+async function spawnPi(name: string, reload: boolean, path = env.PATH) {
   const start = sessions().length;
-  const terminal = nodePty([cli, "spawn", "--harness", "pi", "--name", name], { cwd, env });
+  const terminal = nodePty([cli, "spawn", "--harness", "pi", "--name", name], { cwd, env: { ...env, PATH: path } });
   let stdout = "";
   let exitCode: number | undefined;
   const exited = new Promise<number>((resolve) => terminal.onExit(({ exitCode: code }) => { exitCode = code; resolve(code); }));
@@ -131,6 +134,18 @@ async function checkSpawn(name: string, label: string, reload = false) {
     JSON.stringify(report.sessions) === JSON.stringify(expected), report.sessions);
 }
 
+async function checkReleaseBinary(directory: string): Promise<void> {
+  const release = spawnSync(join(directory, "pi"), ["--version"], { cwd, env, encoding: "utf8", timeout: 10_000 });
+  assert.equal(release.status, 0, release.stderr);
+  assert.equal(release.stdout.trim(), "0.79.10");
+  const name = "pi-release";
+  const report = await spawnPi(name, false, [directory, env.PATH].join(delimiter));
+  check("the Pi release binary refuses with the supported-host diagnostic", report.exitCode === 1 &&
+    report.output.includes("cannot isolate standalone extension discovery; use the supported npm-installed Pi host") &&
+    !/registerHooks.*(?:undefined|not a function)/.test(report.output), report);
+  check("an unsupported Pi host does not join the mesh", !requireCotal("who", "--all").includes(`${name}/default`));
+}
+
 console.log(`Cotal CLI: ${requireCotal("--version").split("\n")[0]}`);
 const version = spawnSync("pi", ["--version"], { cwd, env, encoding: "utf8" });
 assert.equal(version.status, 0, version.stderr);
@@ -141,15 +156,23 @@ const server = `nats://127.0.0.1:${await freePort()}`;
 const started = cotal("up", "--open", "--no-manager", "--server", server, "--store-dir", join(scratch, "store"));
 assert.equal(started.status, 0, started.output);
 try {
+  if (process.env.COTAL_SMOKE_PI_RELEASE_DIR) await checkReleaseBinary(process.env.COTAL_SMOKE_PI_RELEASE_DIR);
   await checkSpawn("pi-control", "without a standalone copy");
   const source = process.env.COTAL_SMOKE_PI_COPY ?? join(pi, "dist", "standalone.js");
+  const current = join(pi, "dist", "standalone.js");
   const copies = [
     { path: join(extensionDir, "cotal.js"), source },
-    { path: join(projectExtensions, "renamed-mesh.js"), source: join(pi, "dist", "standalone.js") },
+    { path: join(projectExtensions, "copied.ts"), source },
+    { path: join(extensionDir, "legacy-bom.js"), source, bom: true },
+    { path: join(projectExtensions, "marked-bom.js"), source: current, bom: true },
   ];
-  for (const copy of copies) copyFileSync(copy.source, copy.path);
+  const bytesFor = (copy: typeof copies[number]): Buffer => {
+    const bytes = readFileSync(copy.source);
+    return copy.bom ? Buffer.concat([Buffer.from("\uFEFF"), bytes]) : bytes;
+  };
+  for (const copy of copies) writeFileSync(copy.path, bytesFor(copy));
   await checkSpawn("pi-copy", "with user and project standalone copies", true);
-  check("the installed standalone copies were left intact", copies.every(({ path, source }) => existsSync(path) && readFileSync(path).equals(readFileSync(source))));
+  check("the installed standalone copies were left intact", copies.every((copy) => existsSync(copy.path) && readFileSync(copy.path).equals(bytesFor(copy))));
   check("trusted project discovery keeps unrelated extensions named cotal.js", existsSync(projectMarker) &&
     readFileSync(projectMarker, "utf8") === "startup\nstartup\nreload\n");
 } finally {

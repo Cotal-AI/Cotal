@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
-import { registerHooks } from "node:module";
+import * as nodeModule from "node:module";
 import type { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 
 const RESOURCE_LOADER = "/dist/core/resource-loader.js";
@@ -21,7 +21,6 @@ function isPiResourceLoader(url: string | undefined): boolean {
 }
 
 function isStandaloneCopy(path: string): boolean {
-  if (!path.endsWith(".js") && !path.endsWith(".mjs")) return false;
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -33,10 +32,10 @@ function isStandaloneCopy(path: string): boolean {
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return false;
-    const header = Buffer.alloc(STANDALONE_MARKER.length + BUNDLE_HEADER.length);
-    const bytes = header.toString("utf8", 0, readSync(fd, header, 0, header.length, 0));
-    if (bytes.startsWith(STANDALONE_MARKER + BUNDLE_HEADER)) return true;
-    if (!bytes.startsWith(BUNDLE_HEADER)) return false;
+    const header = Buffer.alloc(Buffer.byteLength("\uFEFF" + STANDALONE_MARKER + BUNDLE_HEADER));
+    const sourceHeader = header.toString("utf8", 0, readSync(fd, header, 0, header.length, 0)).replace(/^\uFEFF/, "");
+    if (sourceHeader.startsWith(STANDALONE_MARKER + BUNDLE_HEADER)) return true;
+    if (!sourceHeader.startsWith(BUNDLE_HEADER)) return false;
     // Older releases have no marker. Their factory and export are near the end of the bundle.
     const tail = Buffer.alloc(64 * 1024);
     const read = readSync(fd, tail, 0, tail.length, Math.max(0, stat.size - tail.length));
@@ -64,11 +63,13 @@ export function withStandaloneFilter(manager: typeof DefaultPackageManager): typ
 }
 
 function installDiscoveryFilter(): void {
+  // The extension entry refuses the launch if this host has no compatible loader hooks.
+  if (typeof nodeModule.registerHooks !== "function") return;
   const adapter = new URL("?adapter", import.meta.url).href;
   let packageManager: string;
   // Pi's CLI has no path filter. Substitute a subclass only for its resource loader,
   // before the native trust and discovery passes. Other consumers keep Pi's own class.
-  const hook = registerHooks({
+  const hook = nodeModule.registerHooks({
     resolve(specifier, context, nextResolve) {
       if (specifier !== PACKAGE_MANAGER || !isPiResourceLoader(context.parentURL)) return nextResolve(specifier, context);
       packageManager = nextResolve(specifier, context).url;
