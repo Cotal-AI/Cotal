@@ -248,13 +248,12 @@ function pluginCacheDir(): string {
   return process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR?.trim() || join(config, "plugins");
 }
 
-/** Refuse before either shared registration moves, including a profile with only its MCP entry left. */
-function assertRegistrationHome(): void {
+/** Report the same ownership conflict for status and for writes to the shared profile. */
+function registrationHomeConflict(): string | undefined {
   const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
-  const check = (home: string, registration: string) => {
-    if (canonical(home) !== canonical(cotalHome()))
-      throw new Error(`${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`);
-  };
+  const current = cotalHome();
+  const conflict = (home: string, registration: string) => canonical(home) === canonical(current) ? undefined
+    : `${registration} belongs to Cotal home ${home}, not ${current}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`;
   const result = command("plugin", "marketplace", "list", "--json");
   if (result.status !== 0) throw new Error(`plugin marketplace list failed:\n${result.output}`);
   const entries: unknown = JSON.parse(result.output);
@@ -262,13 +261,21 @@ function assertRegistrationHome(): void {
   const market = entries.find((entry) => entry?.name === MARKETPLACE);
   if (market?.source === "directory") {
     if (typeof market.path !== "string" || !market.path) throw new Error("Claude's cotal-mesh marketplace has no directory path");
-    check(dirname(market.path), "Claude marketplace cotal-mesh");
+    const problem = conflict(dirname(market.path), `Claude marketplace ${MARKETPLACE}`);
+    if (problem) return problem;
   }
   const server = claudeUserMcpServers().cotal as { args?: unknown } | undefined;
   if (Array.isArray(server?.args)) for (const arg of server.args) {
-    if (typeof arg === "string" && /[\\/]claude-plugin[\\/]cotal[\\/]dist[\\/](?:seat|mcp)\.cjs$/.test(arg))
-      check(dirname(dirname(dirname(dirname(arg)))), "Claude user MCP entry cotal");
+    if (typeof arg !== "string" || !/[\\/]claude-plugin[\\/]cotal[\\/]dist[\\/](?:seat|mcp)\.cjs$/.test(arg)) continue;
+    const problem = conflict(dirname(dirname(dirname(dirname(arg)))), "Claude user MCP entry cotal");
+    if (problem) return problem;
   }
+}
+
+/** Refuse before either shared registration moves, including a profile with only its MCP entry left. */
+function assertRegistrationHome(): void {
+  const conflict = registrationHomeConflict();
+  if (conflict) throw new Error(conflict);
 }
 
 /** Keep materialization, native registration and verification in one cross-process transaction. */
@@ -614,18 +621,23 @@ function pluginList(): PluginEntry[] | undefined {
   }
 }
 
-/** The skills plugin vs the running CLI release, by the SAME predicate `verify` enforces after an
- *  install (id, scope, enabled, errors, version), so status never blesses a plugin the installer would
- *  reject. Stale, missing and broken all name the scoped remedy. */
+/** Check ownership before recommending a repair to the shared profile. */
 function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput): ConnectorStatusRow {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
   if (entries === undefined) return row("off", "unknown");
+  try {
+    const conflict = registrationHomeConflict();
+    if (conflict) return row("warn", conflict);
+  } catch (error) {
+    return row("error", (error as Error).message);
+  }
   const match = entries.find((entry) => entry.id === `cotal-skills@${MARKETPLACE}` && entry.scope === "user");
   if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
   const errors = (match.errors ?? match.error) as unknown;
   if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
   if (resolvedPluginCurrent(match, version, "cotal-skills")) return row("ok", "current");
-  return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
+  const mismatch = typeof match.version === "string" && match.version !== version ? `v${match.version} ≠ v${version} · ` : "";
+  return row("warn", `${mismatch}stale · ${skillsRemedy}`);
 }
 
 /** The `cotal` plugin against the installed payload Claude resolves, including older cached installs. */

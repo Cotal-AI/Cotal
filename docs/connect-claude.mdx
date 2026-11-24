@@ -133,6 +133,8 @@ Running sessions keep the code they already loaded.
 To refresh installed plugins after upgrading Cotal, run `cotal update`.
 Updates preserve disabled installations.
 If the skills plugin is missing or stale, run `cotal setup --skills`.
+If `cotal status` says the Claude profile belongs to another Cotal home, use the named
+`COTAL_HOME` or give the second home a separate `CLAUDE_CONFIG_DIR` and plugin cache.
 See [Setup internals](setup-internals.md) for installation and update checks.
 
 After an npm upgrade, the first regular command refreshes the plugin copies before accepting the new release.

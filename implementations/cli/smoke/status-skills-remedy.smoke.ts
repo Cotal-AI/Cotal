@@ -49,6 +49,10 @@ if [ "$1" = plugin ] && [ "$2" = list ]; then
   printf '%s\\n' "[{\\"id\\":\\"cotal-skills@cotal-mesh\\",\\"scope\\":\\"user\\",\\"enabled\\":true,\\"version\\":\\"$ver\\"}]"
   exit 0
 fi
+if [ "$*" = 'plugin marketplace list --json' ]; then
+  echo '[]'
+  exit 0
+fi
 if [ "$1" = plugin ] && { [ "$2" = install ] || [ "$2" = update ] || [ "$2" = marketplace ]; }; then
   printf '%s\\n' "$current" > "$state"
   echo already installed
@@ -86,6 +90,7 @@ exit 0
       ...ambientEnv,
       HOME: home,
       USERPROFILE: home,
+      CLAUDE_CONFIG_DIR: join(home, ".claude"),
       COTAL_HOME: join(home, ".cotal"),
       XDG_CONFIG_HOME: join(home, ".config"),
       COTAL_SKIP_CONNECTOR_SEED: "1",

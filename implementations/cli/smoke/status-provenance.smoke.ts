@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { status } from "../src/commands/status.js";
@@ -27,10 +27,20 @@ writeFileSync(join(installedRoot, "package.json"), JSON.stringify({ name: "cotal
 writeFileSync(installedEntry, "// installed-entry fixture\n");
 symlinkSync(installedEntry, installedShim);
 const claude = join(sandbox, "bin", "claude");
-writeFileSync(claude, `#!/bin/sh\nprintf '%s\\n' '[{"id":"cotal-skills@cotal-mesh","scope":"user","enabled":true,"version":"${pluginVersion}"}]'\n`);
-chmodSync(claude, 0o755);
+function mockSkills(version: string): void {
+  const list = JSON.stringify([{ id: "cotal-skills@cotal-mesh", scope: "user", enabled: true, version }]);
+  writeFileSync(claude, `#!/bin/sh
+if [ "$*" = 'plugin marketplace list --json' ]; then
+  echo '[]'
+elif [ "$*" = 'plugin list --json' ]; then
+  printf '%s\\n' '${list}'
+fi
+`, { mode: 0o755 });
+}
+mockSkills(pluginVersion);
 process.env.COTAL_HOME = join(sandbox, "home");
 process.env.XDG_CONFIG_HOME = join(sandbox, "xdg");
+process.env.CLAUDE_CONFIG_DIR = join(sandbox, "claude");
 process.env.PATH = join(sandbox, "bin");
 process.chdir(project);
 
@@ -71,6 +81,12 @@ try {
     const out = await statusText(installedShim);
     assert.match(out, new RegExp(`cotal-ai:\\s+v9\\.9\\.9 \\(installed: ${escapeRegex(realpathSync(installedRoot))}\\)`));
     assert.match(out, new RegExp(`Claude skills:\\s+v${pluginVersion} ≠ v9\\.9\\.9 · stale`));
+  });
+
+  await check("stale skills with a matching recorded version omit the version comparison", async () => {
+    mockSkills(sourceVersion);
+    const out = await statusText(sourceEntry);
+    assert.match(out, /Claude skills:\s+stale · pnpm cotal setup --skills/);
   });
 } finally {
   process.argv[1] = realArgv1;
