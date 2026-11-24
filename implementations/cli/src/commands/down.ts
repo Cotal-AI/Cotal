@@ -37,6 +37,7 @@ import {
   type Report,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
+  readBrokerPolicy,
   readContainedRecord,
   keepsRegistration,
   recordMesh,
@@ -52,6 +53,7 @@ import {
 } from "@cotal-ai/workspace";
 import {
   isReachable,
+  MANAGER_START_PAYLOAD_FLOOR,
   realDirNoSymlink,
 } from "@cotal-ai/core";
 import { localProcessSurface } from "../ext-loader.js";
@@ -159,6 +161,24 @@ export function validateDownArguments(args: ParsedArgs): void {
         ...(sessionStores ?? []).map((path) => `--session-store=${shellWord(path)}`)].join(" ");
       throw new CommandFailure("refused", "UNSUPPORTED", "this stack's preserved cut does not support --json or --plain, and nothing was stopped", {
         remedy: `run ${codeSpan(retry)} from this root`,
+      });
+    }
+    const { space, ...flags } = args.values;
+    if (typeof space === "string" && bareStop(flags) && flags["with-agents"] === undefined) {
+      let prepared: string | undefined, project: string | undefined;
+      try {
+        prepared = preparedSpaceAt(canonicalRoot(cotalRoot()))?.space;
+        if (prepared !== undefined && prepared !== space) project = findPreparedSpace(space)?.root;
+      } catch { /* A project lookup is only for the diagnostic. */ }
+      if (prepared !== undefined && prepared !== space) {
+        throw new CommandFailure("refused", "UNSUPPORTED", `--space ${JSON.stringify(space)} does not match the space ${JSON.stringify(prepared)} prepared in this folder; nothing was stopped`, {
+          remedy: project === undefined ? `locate the project root for space ${JSON.stringify(space)} before retrying` : `retry from the project root for space ${JSON.stringify(space)} at ${oneLine(project)}`,
+        });
+      }
+    }
+    if (args.values["dry-run"] === true && (args.values.file !== undefined || args.values.run !== undefined)) {
+      throw new CommandFailure("refused", "UNSUPPORTED", "a legacy deployment preview does not support --json or --plain", {
+        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep --dry-run and the same deployment selection`, selfContained: true,
       });
     }
     const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
@@ -462,7 +482,10 @@ function guardLegacyBareDown(): { space: string; server: string; mode?: string }
   // is named with its own `space forget`, which `cotal space show` reads first and which refuses
   // while that space runs, and the stop to run again once the address is this stack's alone.
   if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: [
-    ...other.map((row) => `read "${row.space}" with \`cotal space show ${row.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${row.space}\``),
+    ...other.map(({ space }) => {
+      const name = `${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`;
+      return `read ${JSON.stringify(space)} with ${codeSpan(`cotal space show ${name}`)}, stop it in its own folder, then take it off this address with ${codeSpan(`cotal space forget ${name}`)}`;
+    }),
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");
@@ -782,7 +805,12 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     console.error(c.red("Nothing running for the local stack (no recorded pidfiles)."));
     process.exit(1);
   }
-  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} up`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
+  let payload: number | undefined;
+  // The retained policy determines the restart, not whether the stop succeeded.
+  try { if (guarded.mode === "open") payload = readBrokerPolicy(folderCtx().root)?.maxPayload; }
+  catch { return; }
+  const restart = payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR ? "up --no-manager" : "up";
+  console.log(`\n${renderReport({ sections: [{ title: "Next", blocks: [{ kind: "commands", items: [{ command: `${displayCmd()} ${restart}`, description: "Start it again" }] }] }] }, "rich", process.stdout)}`);
 }
 
 /** What an interrupted bare down of a legacy stack left: the members it stopped, the ones still

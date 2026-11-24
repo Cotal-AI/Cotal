@@ -75,6 +75,7 @@ import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTe
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { retryStackAddress } from "../lib/up-broker-address.js";
+import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
 import { readStoreIdentity, stackStoreWarnings } from "../lib/store-identity.js";
@@ -172,6 +173,7 @@ export interface StackUpRequest {
   /** How the broker resolves space accounts (`--account-resolver`). Absent: the recorded one. */
   accountResolver?: "memory" | "full";
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
@@ -283,9 +285,10 @@ const MODE_NAME: Record<StackMode, string> = { auth: "static auth", open: "open"
 /** The next step when an explicit mode is not the one a root's first whole-stack `up` recorded.
  *  Nothing converts a root's mode: `reset`, `clean` and `space forget` keep the stack journal that
  *  records it. So the step keeps that mode, or starts the requested one in another folder. */
-function pinnedModeRemedy(recorded: StackMode, requested: StackMode): string {
+function pinnedModeRemedy(recorded: StackMode, requested: StackMode, noManager: boolean): string {
   const flag = requested === "open" ? " --open" : requested === "user" ? " --user-auth" : "";
-  return `run bare \`cotal up\` to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run \`cotal space create <space>\`, then \`cotal up${flag}\`, in another folder`;
+  const members = noManager ? " --no-manager" : "";
+  return `run \`cotal up${members}\` to keep ${MODE_NAME[recorded]} here, or for ${MODE_NAME[requested]} run \`cotal space create <space>\`, then \`cotal up${flag}${members}\`, in another folder`;
 }
 
 /** The mode an invocation explicitly asks for, or none for a bare `up`. */
@@ -313,7 +316,7 @@ export function controllerStackApplies(root: string, space: string, values: Pars
     if (refused.length) throw controllerUnsupported(canonical, refused, false);
     // A stack that never launched a member pins no mode; its next up plans a first start.
     if (stackNeverStarted(recorded.journal)) return true;
-    if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${MODE_NAME[recorded.journal.mode]}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: pinnedModeRemedy(recorded.journal.mode, requested) });
+    if (requested !== undefined && requested !== recorded.journal.mode) throw new CommandFailure("refused", "CONFLICT", `this root's controller stack is pinned to ${MODE_NAME[recorded.journal.mode]}; the requested mode does not convert it`, { target: { root: canonical, recorded: recorded.journal.mode, requested }, remedy: pinnedModeRemedy(recorded.journal.mode, requested, values["no-manager"] === true) });
     if (values.idp !== undefined && recorded.journal.mode !== "user") throw new CommandFailure("refused", "USAGE_INVALID", "--idp belongs to a user-auth stack", { target: { root: canonical } });
     return true;
   }
@@ -353,7 +356,7 @@ export function refuseForegroundStackHolder(root: string, space: string, holderP
 }
 
 /** Returns a settled active restore of the recorded stack that was admitted, for the result to name. */
-function stackPreflight({ root, space, noManager, invokedRoot, manifest }: StackUpRequest, recorded: StackJournal | undefined): string | undefined {
+function stackPreflight({ root, space, noManager, invokedRoot, foreground, manifest }: StackUpRequest, recorded: StackJournal | undefined): string | undefined {
   // Its members' own pidfiles would read as legacy processes under a Cotal home with no record of them.
   if (recorded && stackRunsUnderOtherHome(root, recorded)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack has missing member records in this Cotal home; nothing was started, adopted or replaced", { target: { root, space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy(recorded.recovery?.home) });
   const maintenance: { fenced: boolean; admittedRestore?: string } = recorded ? stackMaintenanceFence(root, recorded) : { fenced: readMaintenanceJournal(root) !== undefined };
@@ -366,9 +369,10 @@ function stackPreflight({ root, space, noManager, invokedRoot, manifest }: Stack
     const cmd = displayCmd();
     const retryRoot = invokedRoot !== undefined && invokedRoot !== root ? ` --root ${shellWord(root)}` : "";
     const retry = noManager || retryRoot ? `${cmd} up --space ${shellWord(space)}${noManager ? " --no-manager" : ""}${retryRoot}` : `${cmd} up`;
+    const next = foreground ? "repeat your original foreground startup command from the same folder with the same options" : `run ${codeSpan(retry)} again`;
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${held.map((row) => `the ${row.definition} service of this space runs this root's ${row.record.name} (pid ${row.record.pid}, instance ${row.instanceId})`).join("; ")}, outside the controller stack, which neither adopts nor replaces it`, {
       target: { root, space, processes: legacy, services: held.map((row) => ({ definition: row.definition, instanceId: row.instanceId })) },
-      remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then run ${codeSpan(retry)} again`,
+      remedy: `stop ${held.length === 1 ? "it" : "each"} with ${held.map((row) => codeSpan(`${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`)).join(", ")}, then ${next}`,
     });
   }
   if (legacy.length || existsSync(join(root, ".cotal", NATS_PIDFILE))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "legacy pidfile-owned processes or records remain under this root; the controller stack neither adopts nor replaces them", { target: { root, space, processes: legacy } });
@@ -729,7 +733,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // Each member's start is recorded under the space's service records. A folder there this account
   // cannot write refuses here, naming it, instead of an unknown outcome after a member started.
   const unwritable = serviceRecordsWriteProblem(space, ["definitions", "instances"]);
-  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+w ${unwritable}, then run \`cotal up\` again` });
+  if (unwritable) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${unwritable}, where up records the stack's services; nothing was started or written`, { target: { root, space, path: unwritable }, remedy: `make it writable with chmod u+wx ${shellWord(unwritable)}, then run \`cotal up\` again` });
   const recorded = readStackJournal(root);
   if (request.expectPriorDown && (!recorded || recorded.sha256 !== request.expectPriorDown.journalSha256 || recorded.journal.operation.id !== request.expectPriorDown.operationId))
     throw new CommandFailure("refused", "CONFLICT", "the stopped stack changed after the team boot checked it; nothing was started", { target: { root, space, expected: request.expectPriorDown.operationId } });
@@ -784,8 +788,10 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     request.logfileSizeLimit !== undefined && request.logfileSizeLimit !== recordedBroker.logfileSizeLimit ? `--logfile-size-limit ${request.logfileSizeLimit} (recorded: ${recordedBroker.logfileSizeLimit ?? "none"})` : undefined,
     request.logfileMaxNum !== undefined && request.logfileMaxNum !== recordedBroker.logfileMaxNum ? `--logfile-max-num ${request.logfileMaxNum} (recorded: ${recordedBroker.logfileMaxNum ?? "none"})` : undefined,
   ].filter((input) => input !== undefined) : [];
-  if (changedInputs.length)
-    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run bare \`cotal up\` from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with \`cotal down --yes\`` : ""}${newLog ? `; new native log settings apply once the broker is stopped with \`cotal down --yes\`, then \`cotal up\` with the requested log flags` : ""}` });
+  if (changedInputs.length) {
+    const up = codeSpan(request.noManager ? "cotal up --no-manager" : "cotal up");
+    throw new CommandFailure("refused", "CONFLICT", `${changedInputs.join(", ")} ${changedInputs.length === 1 ? "differs" : "differ"} from this stack's recorded broker inputs; nothing was prepared`, { target: { root, space, recorded: recordedBroker }, remedy: `run ${up} from ${root} to start it with its recorded inputs${newCap ? `; a new --max-file-store applies once the broker is stopped with \`cotal down --yes\`` : ""}${newLog ? `; new native log settings apply once the broker is stopped with \`cotal down --yes\`, then ${up} with the requested log flags` : ""}` });
+  }
   // A journal written before broker inputs were recorded cannot tell which store, cap or bind host
   // its stopped broker used: `cotal down` removed the registration that held them, and broker
   // preparation would otherwise fall back to the default `.cotal/nats` store with no cap. Such a
@@ -834,7 +840,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // The mode is pinned by the first whole-stack up. A conflicting explicit request refuses here,
   // before any preflight write, preparation or launch.
   if (previous && request.mode !== undefined && request.mode !== previous.journal.mode)
-    throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode) });
+    throw new CommandFailure("refused", "CONFLICT", "this root's controller stack is pinned to another auth mode; a running or stopped stack is not converted", { target: { root, space, recorded: previous.journal.mode, requested: request.mode }, remedy: pinnedModeRemedy(previous.journal.mode, request.mode, request.noManager) });
   // An adopted journal has no started members here, but a bare up still uses its recorded mode.
   const mode: StackMode = previous?.journal.mode ?? request.mode ?? unstarted?.mode ?? (savedConfig === join(root, ".cotal", "server-open.conf") ? "open" : "auth");
   if (mode === "open" && holdsBrokerAccount(root))
@@ -1202,7 +1208,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
         options["launch-sha256"] = launch.sha256;
       }
       const manager = ensureDefinition(space, "manager", adapterDefinition(space, STACK_ADAPTER.manager, options, 60000), root, replace("manager"));
-      await start("manager", manager);
+      await withManagerName({ root, space }, request.managerName, () => start("manager", manager));
     }
     if (!loginBlock) settle("completed");
   } catch (caught) {

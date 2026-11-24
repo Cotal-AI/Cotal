@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
 interface Envelope {
   outcome: string;
   target: { space?: string | null } | null;
-  result: { selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
+  result: { kind?: string; selected?: { resolved: boolean; code?: string; message?: string; space?: string; recordedRoot?: string }; hints?: string[] } | null;
   error?: { code: string; message: string; remedy?: string };
   warnings?: { code: string; message: string }[];
 }
@@ -127,6 +127,31 @@ for (const mode of ["--json", "--plain"]) {
   check(`down ${mode} keeps the missing-stack diagnosis and next step`, missing.status === 2 && (mode === "--json"
     ? missing.envelope?.error?.code === "TARGET_NOT_FOUND" && JSON.stringify(missing.envelope.target) === JSON.stringify({ root }) && missingText.stderr.includes(missing.envelope.error.message) && missingText.stderr.includes(missing.envelope.error.remedy ?? "missing remedy")
     : missing.stderr === missingText.stderr), shown(missing));
+}
+
+const prepared = realpathSync(mkdtempSync(join(home, "prepared-")));
+const other = realpathSync(mkdtempSync(join(home, "other-")));
+check("space create prepares the first project", run(["space", "create", "example", "--root", "."], prepared).status === 0);
+sandbox(prepared);
+const mismatch = '--space "other" does not match the space "example" prepared in this folder; nothing was stopped';
+for (const mode of ["--json", "--plain"]) {
+  const wrong = runDown(["down", "--space", "other", mode], prepared);
+  check(`down ${mode} names the mismatched space and does not suggest stopping this project`,
+    refusedWith(wrong, "UNSUPPORTED", mismatch, 'locate the project root for space "other" before retrying') &&
+      (mode !== "--json" || wrong.envelope?.target === null), shown(wrong));
+  const match = runDown(["down", "--space", "example", mode], prepared);
+  check(`down ${mode} still treats the matching prepared space as stopped`, match.status === 0 && (mode === "--json"
+    ? match.envelope?.outcome === "no-op" && match.envelope.target?.space === "example" && match.envelope.result?.kind === "stack-not-running"
+    : match.stdout.includes("is not running")), shown(match));
+}
+check("space create prepares the other project", run(["space", "create", "other", "--root", "."], other).status === 0);
+for (const mode of ["--json", "--plain"]) {
+  const known = runDown(["down", "--space", "other", mode], prepared);
+  check(`down ${mode} names the other space's recorded project root`,
+    refusedWith(known, "UNSUPPORTED", mismatch, `retry from the project root for space "other" at ${other}`), shown(known));
+}
+for (const space of ["example", "other"]) {
+  check(`remove the ${space} fixture registration`, run(["space", "forget", space], root).status === 0);
 }
 
 const now = new Date().toISOString();

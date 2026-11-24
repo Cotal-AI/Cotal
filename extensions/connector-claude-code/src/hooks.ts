@@ -187,6 +187,8 @@ interface ClaudeHandleDeps {
    *  every session start (startup, resume, fork, clear, compact), so the model has its bearings
    *  without asking for them; a card not ready at the start is owed to the next prompt. */
   orientation?: () => Promise<string | undefined>;
+  /** Told each time the main turn ended and the seat reads idle. */
+  idle?: () => void;
 }
 
 /** Prefixed to a batch containing anything whose previous delivery went unconfirmed. */
@@ -212,6 +214,10 @@ export interface ClaudeHooks {
   onReply: (ev: HookEvent, delivered: boolean, handoff?: boolean) => void;
   /** Receipt for an empty inbox after a confirmed hook handoff. Contains no peer content. */
   inboxDeliveryNote(): string | undefined;
+  /** Mark a remote interrupt of the main turn open now. Claude Code fires no hook and writes no
+   *  transcript record when a mod stops a turn, so the call returned ends that turn as `Stop` ends
+   *  one. A turn that ended, or opened, since the mark is left as it is. */
+  interrupting(agent: MeshAgent): () => Promise<void>;
 }
 
 /**
@@ -379,19 +385,27 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
   };
 
-  /** The interrupt ends the turn as `Stop` would. Its record closes the run on the event plane, so
-   *  this flushes it and reports no terminal. The prompt the turn may have been waiting on is gone,
-   *  so its condition is cleared too. */
-  const endInterruptedTurn = async (agent: MeshAgent, path: string): Promise<void> => {
+  /** The interrupt ends the turn as `Stop` would. A user's interrupt leaves a record that closes the
+   *  run on the event plane, and a mod's leaves none, so it closes here. The prompt the turn may have
+   *  been waiting on is gone, so its condition is cleared too. */
+  const endInterruptedTurn = async (agent: MeshAgent, path: unknown, recorded: boolean): Promise<void> => {
     if (!turnOpen) return;
     sealAwaiting();
     turnOpen = false;
+    unwatchTurn();
     promptOpen = false;
     pendingTool = undefined;
     flushEvents(path);
+    if (!recorded) await closeEvents(Date.now());
     await safeCondition(agent, null);
     await safeStatus(agent, "idle");
     if (agent.pendingWake() > 0) agent.requestWake();
+    deps.idle?.();
+  };
+  let turn = { path: undefined as unknown };
+  const interrupting = (agent: MeshAgent): (() => Promise<void>) => {
+    const mark = turn;
+    return () => (turnOpen && mark === turn ? endInterruptedTurn(agent, mark.path, false) : Promise.resolve());
   };
 
   /** Stops the interrupt watch of the open main-agent turn. Claude Code fires no hook when its user
@@ -404,11 +418,12 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   };
   const watchTurn = (agent: MeshAgent, path: unknown): void => {
     unwatchTurn();
+    turn = { path };
     if (typeof path !== "string" || !path) return;
     const stop = watchForInterrupt(path, () => {
       if (stopInterruptWatch !== stop) return;
       stopInterruptWatch = undefined;
-      void endInterruptedTurn(agent, path);
+      void endInterruptedTurn(agent, path, true);
     });
     stopInterruptWatch = stop;
   };
@@ -671,6 +686,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // per-channel `quiet` wake only for held DIRECTED items (quiet ambient remains pull-only).
           // This runs after a presence write that can fail; it must NOT be sequenced behind one.
           if (agent.pendingWake() > 0) agent.requestWake();
+          deps.idle?.();
           return {};
         }
         case "SessionEnd":
@@ -744,7 +760,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   };
 
   return {
-    handle, onReply, adoptTranscript: adoptEvents,
+    handle, onReply, adoptTranscript: adoptEvents, interrupting,
     inboxDeliveryNote: () => lastDelivery
       ? `No unread messages remain. The most recent confirmed Claude Code hook handoff carried ${lastDelivery.count} message${lastDelivery.count === 1 ? "" : "s"} as additionalContext (${lastDelivery.event}). This is a delivery receipt, not a new message.`
       : undefined,

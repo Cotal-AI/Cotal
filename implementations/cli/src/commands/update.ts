@@ -11,7 +11,6 @@ import {
   renderReport,
   writeResult,
   type OutputWarning,
-  cmdSpawnSpec,
   oneLine,
   claimUpdateClosureAccess,
   updateClosureOwner,
@@ -60,7 +59,7 @@ import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState, readSeedRepairRefusal } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
-import { refreshConnectorInstalls } from "./setup.js";
+import { refreshClientInstalls, refreshConnectorInstalls } from "./setup.js";
 import { c } from "../ui.js";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
@@ -158,6 +157,9 @@ export interface UpdateRuntime {
   automaticGenerationWait?: boolean;
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
+  /** Bring the entries client setup wrote in ACP clients to this release, once the operator
+   *  extensions that provide them are current; one line per client. */
+  refreshClients(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
   /** Authenticate and retain an installed same-version repair before its connector writes. */
   prepareReconciliation?(target: Record<string, unknown>): Promise<void>;
@@ -224,6 +226,7 @@ export const updateRuntime: UpdateRuntime = {
   },
   preflightReplacement: async () => { assertReadableSeedState(); },
   refreshConnectors: refreshConnectorInstalls,
+  refreshClients: refreshClientInstalls,
   reconcile: async () => {
     await runSeed({ verify: true });
     const completion = refreshOwnedCompletions();
@@ -483,8 +486,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           entry = execution.entry;
         } else {
           await checkReleaseArchives(record.previous, rt);
-          const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
-          const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+          const installed = await rt.spawnGlobal(root, "install", "npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`], rt.env, true);
           if (installed.status !== 0) throw new Error(failure(installed));
           entry = rt.verifyGlobalEntry(root, record.previous);
         }
@@ -766,72 +768,96 @@ async function reconcileCurrent(
     return finish(false);
   }
 
+  let code: number;
   try {
-    let ok = true;
-    rt.out(c.bold("Operator extensions"));
-    let entries: readonly InstalledExtension[];
-    try {
-      // Exclude every seeded built-in (the connectors AND the bundled web dashboard) — runSeed already
-      // reconciled them from the bundled store; letting web fall through here reinstalls it from npm on
-      // top of the seed, drops its seeded marker, and makes `cotal update` fail offline on a bundled pkg.
-      const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg));
-      entries = rt.extensions().filter((entry) => !builtIns.has(entry.pkg));
-    } catch (e) {
-      rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));
-      return finish(false);
-    }
-    if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
-
-    for (const entry of entries) {
-      if (!entry.pkg.startsWith("@cotal-ai/")) {
-        rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
-        continue;
-      }
-      let differs: string | undefined;
-      try {
-        differs = rt.verifyExtension(entry, current);
-      } catch (e) {
-        rt.err(c.red(`✗ ${entry.pkg}: ${message(e)}`));
-        ok = false;
-        continue;
-      }
-      if (differs === undefined) {
-        rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
-        continue;
-      }
-      rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
-      const spec = `${entry.pkg}@${current}`;
-      const [bin, ...argv] = rt.selfArgv();
-      const env: NodeJS.ProcessEnv = {
-        ...rt.env,
-        COTAL_SKIP_CONNECTOR_SEED: "1",
-        [EXT_UPDATE_PARENT_ENV]: String(rt.pid),
-      };
-      delete env[UPDATE_TARGET_ENV];
-      delete env[UPDATE_PARENT_ENV];
-      delete env[UPDATE_PARENT_WAITS_ENV];
-      const extensionStarted = Date.now();
-      const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
-      rt.out(`✓ extension ${entry.pkg} install finished (${((Date.now() - extensionStarted) / 1000).toFixed(1)} s)`);
-      writeChildOutput(result);
-      if (result.status !== 0) {
-        rt.err(c.red(`✗ ${entry.pkg}: ${failure(result)}`));
-        ok = false;
-        if (result.status === null) {
-          rt.err(c.red("✗ extension replay process ended abnormally; refusing to start another package mutation"));
-          break;
-        }
-        continue;
-      }
-      rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
-    }
+    const ok = await updateOperatorExtensions(rt, current);
     if (ok && rt.env.COTAL_AUTO_UPDATE !== "1") {
       rt.out("Cotal updates the managed pi connector, not your standalone pi extension. If you copied it, wait for the update to succeed, then reinstall `@cotal-ai/pi` at the version shown by `cotal --version` and repeat the copy. See https://docs.cotal.ai/docs/connect-pi/#load-the-extension-into-your-own-host");
     }
-    return finish(ok);
+    code = finish(ok);
   } finally {
     releaseMutation();
   }
+  return code === 0 ? refreshClients(rt) : code;
+}
+
+/** Point the ACP clients' Cotal entries at this Cotal, and return the exit status. A client provider
+ *  ships in an operator extension, so this runs once the pass has made them current, and after the
+ *  pass is released, because loading a provider takes the extension lock the pass holds. */
+async function refreshClients(rt: UpdateRuntime): Promise<number> {
+  try {
+    const lines = await rt.refreshClients();
+    if (lines.length > 0) rt.out(c.bold("Client integrations"));
+    for (const line of lines) rt.out(c.green(`✓ ${line}`));
+    return 0;
+  } catch (e) {
+    rt.err(c.red(`✗ client integrations: ${message(e)}`));
+    return 1;
+  }
+}
+
+/** Bring every first-party operator extension to `current`, under the update pass the caller holds,
+ *  and say whether all of them are. */
+async function updateOperatorExtensions(rt: UpdateRuntime, current: string): Promise<boolean> {
+  let ok = true;
+  rt.out(c.bold("Operator extensions"));
+  let entries: readonly InstalledExtension[];
+  try {
+    // Exclude every seeded built-in (the connectors AND the bundled web dashboard) — runSeed already
+    // reconciled them from the bundled store; letting web fall through here reinstalls it from npm on
+    // top of the seed, drops its seeded marker, and makes `cotal update` fail offline on a bundled pkg.
+    const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((e) => e.pkg));
+    entries = rt.extensions().filter((entry) => !builtIns.has(entry.pkg));
+  } catch (e) {
+    rt.err(c.red(`✗ could not read installed extensions: ${message(e)}`));
+    return false;
+  }
+  if (!entries.length) rt.out(c.dim("operator extensions: none installed"));
+
+  for (const entry of entries) {
+    if (!entry.pkg.startsWith("@cotal-ai/")) {
+      rt.out(c.dim(`${entry.pkg}@${entry.version} - not auto-updated in v1 (recorded spec: ${entry.spec})`));
+      continue;
+    }
+    let differs: string | undefined;
+    try {
+      differs = rt.verifyExtension(entry, current);
+    } catch (e) {
+      rt.err(c.red(`✗ ${entry.pkg}: ${message(e)}`));
+      ok = false;
+      continue;
+    }
+    if (differs === undefined) {
+      rt.out(c.green(`✓ verified ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+      continue;
+    }
+    rt.err(c.dim(`${entry.pkg}: ${differs}; reinstalling`));
+    const spec = `${entry.pkg}@${current}`;
+    const [bin, ...argv] = rt.selfArgv();
+    const env: NodeJS.ProcessEnv = {
+      ...rt.env,
+      COTAL_SKIP_CONNECTOR_SEED: "1",
+      [EXT_UPDATE_PARENT_ENV]: String(rt.pid),
+    };
+    delete env[UPDATE_TARGET_ENV];
+    delete env[UPDATE_PARENT_ENV];
+    delete env[UPDATE_PARENT_WAITS_ENV];
+    const extensionStarted = Date.now();
+    const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
+    rt.out(`✓ extension ${entry.pkg} install finished (${((Date.now() - extensionStarted) / 1000).toFixed(1)} s)`);
+    writeChildOutput(result);
+    if (result.status !== 0) {
+      rt.err(c.red(`✗ ${entry.pkg}: ${failure(result)}`));
+      ok = false;
+      if (result.status === null) {
+        rt.err(c.red("✗ extension replay process ended abnormally; refusing to start another package mutation"));
+        break;
+      }
+      continue;
+    }
+    rt.out(c.green(`✓ ${entry.pkg}@${current}`) + c.dim(` - current generation (recorded spec: ${entry.spec})`));
+  }
+  return ok;
 
   function writeChildOutput(result: CommandResult): void {
     if (result.stderr) rt.stderr(result.stderr);
@@ -1066,7 +1092,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   }
   recordUpdateReplacement(targetVersion);
   writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path, ...(execution ? { execution: execution.journal } : {}) });
-  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"]);
+  const npmInstall = ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"];
   const installStarted = Date.now();
   const installed: CommandResult = execution ? (() => {
     execution.publish();
@@ -1074,11 +1100,10 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   })() : await rt.spawnGlobal(
     root,
     "install",
-    npmInstall.file,
-    npmInstall.args,
+    "npm",
+    npmInstall,
     rt.env,
     false,
-    npmInstall.windowsVerbatimArguments,
   );
   if (!execution) rt.out(`✓ global package install finished (${((Date.now() - installStarted) / 1000).toFixed(1)} s)`);
   if (latestNotAvailable(installed, targetVersion)) {
@@ -1190,8 +1215,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
         execution.restore();
       } else {
         await checkReleaseArchives(current, rt);
-        const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
-        const restored = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+        const restored = await rt.spawnGlobal(root, "install", "npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`], rt.env, true);
         if (restored.status !== 0) throw new Error(failure(restored));
         rt.verifyGlobalEntry(root, current);
       }

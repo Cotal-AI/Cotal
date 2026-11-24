@@ -287,6 +287,36 @@ function follow(args: string[]) {
   return { child, lines, exited, until, stderr: () => stderr };
 }
 
+async function checkWatchHistoryHint(watchedSpace: string): Promise<void> {
+  const channel = "general";
+  const scope = ["--space", watchedSpace];
+  const text = "x".repeat(16_384) + "END OF LONG POST";
+  const file = join(shell, "long.txt");
+  writeFileSync(file, text);
+  const set = await run(["channel", "set", channel, "--replay", "--delivery", "live", ...scope]);
+  const sent = await run(["send", "-c", channel, "--file", file, ...scope]);
+  check("watch history fixture stores a long post in the observed space", set.status === 0 && sent.status === 0, { set: shown(set), sent: shown(sent) });
+
+  const observer = follow(["watch", "--plain", ...scope]);
+  const marker = /\[16 text code units not shown; `((?:pnpm )?cotal history [^`]+)` carries the whole text\]$/;
+  let hint: string | undefined;
+  try {
+    const isHint = (line: string) => line.startsWith(`[${watchedSpace}]`) && marker.test(line);
+    await observer.until(isHint);
+    hint = observer.lines.find(isHint)?.match(marker)?.[1];
+    check("the truncated watch line prints a history command", hint !== undefined, observer.stderr());
+  } finally {
+    await killAndAwaitExit(observer.child, "SIGINT");
+  }
+  const unscoped = await run(["history", `#${channel}`, "--json"]);
+  const targetSpace = (r: typeof unscoped) => (r.envelope?.target as { space?: string } | null)?.space;
+  check("positive control: unscoped history targets the saved selection", targetSpace(unscoped) === space, shown(unscoped));
+  if (!hint) return;
+  const history = await run(execWords(hint.replace(/^(?:pnpm )?cotal /, "")));
+  check("the printed history command returns the full post from the watched space",
+    history.status === 0 && targetSpace(history) === watchedSpace && texts(history).includes(text), shown(history));
+}
+
 async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
   const args = ["history", "general", "--follow", "--json", "--grep", "resume boundary"];
   const parse = (line: string) => JSON.parse(line) as { type: string; data: Item & { items?: Item[] } };
@@ -354,6 +384,8 @@ try {
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" }, ops: { replay: false } } } });
   await setupSpaceStreams({ servers: openServers, space: openSpace });
+  const watchedSpace = `histwatch-${randomUUID().slice(0, 8)}`;
+  await setupSpaceStreams({ servers: openServers, space: watchedSpace });
   saveSpaceAuth(authDir(meshRoot), auth);
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
@@ -361,10 +393,20 @@ try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: bareSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: watchedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;
+  }
+  try { await checkWatchHistoryHint(watchedSpace); }
+  finally {
+    process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+    try { removeMesh(watchedSpace); }
+    finally {
+      if (priorHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = priorHome;
+    }
   }
   provisioner = new CotalEndpoint({ space, servers, creds: provisionerCreds, card: { name: "history-provisioner", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   await provisioner.start();
@@ -892,18 +934,31 @@ try {
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
   }
 
-  // `channel show` recommends a scoped read even when the channel name is a history verb.
+  // Channel receipts and reads recommend scoped commands even when the channel name is a history verb.
   {
     const channels = ["clear", "limit", "ordinary"];
+    const scope = ["--space", openSpace, "--server", openServers];
+    const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
     for (const channel of channels) {
-      const saved = await run(["channel", "set", channel, "--desc", "History hint test", "--space", openSpace]);
+      const saved = await run(["channel", "set", channel, "--desc", "History hint test", ...scope, "--plain"]);
       const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
       if (saved.status !== 0 || posted.status !== 0)
         throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+      if (channel !== "clear") continue;
+      const suggestion = (verb: string) => printedLines(saved.stdout).find((line) => line.startsWith(`cotal ${verb} `))?.split(/  +/)[0];
+      const inventory = suggestion("ch");
+      const history = suggestion("history");
+      const target = scope.join(" ");
+      const listed = inventory === `cotal ch ${target}` ? await run([...execWords(inventory).slice(1), "--plain"]) : undefined;
+      const read = history === `cotal history '#clear' ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
+      check("channel set receipt inventory keeps the explicit target when another space is selected",
+        listed?.status === 0 && listed.stdout.includes(`Mesh: ${openSpace}`) && listed.stdout.includes("#clear"), { receipt: shown(saved), listed });
+      check("channel set receipt history reads the quoted channel instead of the history verb",
+        read?.status === 0 && texts(read).includes("retained in clear"), { receipt: shown(saved), read });
     }
     for (const channel of channels) {
       const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
-      const [, word, targetSpace] = card.stdout.match(/^\s+cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      const [, word, targetSpace] = card.stdout.match(/^\s+(?:pnpm )?cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
       // Only execute the quoted channel form. An unexpected administrative command is a test failure.
       const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
       const messages = read?.envelope?.result?.items;
@@ -911,6 +966,17 @@ try {
         card.status === 0 && read?.status === 0 && messages?.length === 1
           && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
         { card: shown(card), read: read && shown(read) });
+    }
+    const writer = join(home, "channel writer.creds");
+    writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
+    const credentialScope = ["--space", space, "--server", servers, "--creds", writer];
+    const saved = await run(["channel", "set", "receipt-test", "--desc", "Scoped credential", ...credentialScope, "--plain"]);
+    const commands = printedLines(saved.stdout).filter((line) => line.startsWith("cotal ")).map((line) => execWords(line.split(/  +/)[0]!));
+    check("both receipt commands retain the explicit credential path as one argument", saved.status === 0 &&
+      JSON.stringify(commands) === JSON.stringify([["cotal", "ch", ...credentialScope], ["cotal", "history", "#receipt-test", ...credentialScope]]), shown(saved));
+    if (saved.status === 0) {
+      const removed = await run(["channel", "remove", "receipt-test", "--space", space, "--yes", "--json"]);
+      check("the credential receipt fixture is removed", removed.status === 0, shown(removed));
     }
   }
 
@@ -1059,10 +1125,10 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
-    // The command a missing --yes names keeps the --space and --server it was given (#7564).
+    // The confirmation keeps the requested target, purge scope and output format.
     const asked = await run(["channel", "remove", "general", "--purge", "--space", space, "--server", servers, "--json"]);
-    check("channel remove without --yes names a confirming command that keeps --space and --server",
-      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes\``, shown(asked));
+    check("channel remove without --yes names a confirming command that keeps --space, --server, --purge and --json",
+      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes --json\``, shown(asked));
   }
 
   // Channel policy labels describe each field's source, including explicit values equal to defaults.
@@ -1088,6 +1154,11 @@ try {
       listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
     const defaultsCard = await channel("defaults");
     check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    // The defaults report's Next command acts on the space it just inspected, keeping the broker
+    // it was read from, so running it as printed cannot edit another space.
+    const defaultsNext = await run(["channel", "defaults", "--space", space, "--server", servers, "--plain"]);
+    check("the channel defaults report names a Next command that keeps the inspected space and broker",
+      defaultsNext.status === 0 && defaultsNext.stdout.includes(`cotal ch defaults --replay --window 24h --space ${space} --server ${servers}`), shown(defaultsNext));
     const observerDefaults = await run(["channel", "defaults", "--creds", observer, "--server", servers, "--space", space, "--json"]);
     const observerRegistry = (observerDefaults.envelope?.result as { registry?: ChannelRegistryRead })?.registry;
     check("channel defaults JSON scopes the registry read with an observer credential",

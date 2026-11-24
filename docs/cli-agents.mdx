@@ -76,6 +76,13 @@ with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, b
 and the connector refusal names the `cotal ext add` that installs it. `--file` (`-f`) names a
 persona file, never a manifest: manifests deploy with `cotal team deploy <file>`, and a manifest
 passed to `--file` is refused with that command. An invalid persona file is refused with `SCHEMA_INVALID` (exit 1), naming the field or YAML position without echoing YAML source excerpts.
+Foreground spawn and its preview refuse an unreadable persona file with `PERMISSION_DENIED` (exit 2).
+On POSIX, if you own the regular file and it lacks owner read permission, the refusal suggests
+`chmod u+r <path>` and a retry. The CLI does not change the file's permissions.
+If a named persona is a symbolic link with a missing target, both commands name the link and its target.
+Restore the target, or move the link aside and put a regular persona file in its place.
+A persona path with a symbolic-link loop also refuses with `SCHEMA_INVALID`, naming the path.
+Correct the link's target, or move the link aside and put a regular persona file in its place.
 
 On a terminal, a bare `spawn` uses this terminal without asking where to run. When several of
 your Managers are live, one line lists them with the `--on <name>` selectors that launch there.
@@ -252,7 +259,9 @@ If the installed connector supports direct preview validation, it checks resume,
 native options without creating launch files or checking its binary or login. Otherwise the preview
 reports connector arguments as not checked.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
-selected manager checks its own connectors at launch.
+selected manager checks its own connectors at launch. On an open or static space, a managed
+preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
+(exit 1). On a user-auth space, a manager name or host stays a valid pin.
 Both launch and preview reject a blank `--resume` value with `USAGE_INVALID` (exit 1) before preparing the launch.
 
 With `-d --json`, an invalid agent name or a local resume that needs `--on` produces a
@@ -318,7 +327,10 @@ persona `default`. Add `--space <name>` if the target space is not selected. If 
 or `--from` instead of `--file`, pass `--subscribe` explicitly (use `--subscribe ""` for no channels).
 For an ordinary launch in this terminal, a missing catalog default is written from the shipped
 template when the persona is omitted or named as `default`. The preview uses that template and
-reports the planned write without creating the file. A direct preview refuses other missing
+reports the planned write without creating the file. If `default.md` is a symbolic link to a
+missing target, the preview warns that the launch cannot write the default and exits 0. The
+launch refuses with `TARGET_NOT_FOUND` (exit 2). Restore the target or move the link aside before
+retrying. Neither command replaces the link. A direct preview refuses other missing
 personas with `TARGET_NOT_FOUND` (exit 2).
 When a managed launch is refused because the chosen
 manager's catalog has no such persona, the refusal names that manager, its host and the catalog file
@@ -352,11 +364,11 @@ sent. Any provisioning failure after the request, an endpoint 401 or 403 include
 `OPERATION_UNKNOWN` (exit 3): the endpoint belongs to the deployment, and nothing says what its
 refusal left behind. A `--share-tools` selection that names a server the config does not declare is
 refused before anything is provisioned; on a managed spawn the manager refuses it before accepting.
-A managed spawn is an
-**action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
-(the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see
-[the control surface](control-surface.mdx)). On a user-auth mesh the manager enrolls the agent with
-the host first. When the host refuses that enrollment, for example for a role or a channel your grant
+A managed spawn is an **action**: the manager accepts it and allocates the identity. The CLI waits
+for the manager's readiness result before it reports or attaches. The readiness window can vary by
+connector. See [the control surface](control-surface.mdx).
+On a user-auth mesh the manager enrolls the agent with the host first. When the host refuses that
+enrollment, for example for a role or a channel your grant
 does not carry, and the manager removes the secrets it staged for the agent, the spawn is refused
 with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or does not answer leaves
 `OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.mdx) and
@@ -473,7 +485,7 @@ and launch can still refuse one.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
 the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be
-read, or that the manager could not load, makes the read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. The
+read, or that the manager could not load, makes an all-catalog read `partial` (exit 4) with one `MODEL_CATALOG_UNREADABLE` warning naming its cause. When `--harness` names that one catalog, the read fails instead (exit 5, `OPERATION_FAILED`) with the connector's reason. The
 screen points to that warning without repeating it inline. The remedy is to correct the stated
 cause before retrying; a refresh cannot repair missing connector configuration. A manager-level
 refusal is reported separately. When the space's service registry lists no live manager, an
@@ -488,7 +500,8 @@ application its install names, so an empty list says the answering manager has n
 application installed. A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
-printed it. OpenCode and Codex ids are the full `provider/model`, and pi ids are `provider/id`;
+printed it. Codex ids are bare (`gpt-6.2-sol`, not `openai/gpt-6.2-sol`). Do not prepend the
+separately reported provider. OpenCode ids are `provider/model`, and pi ids are `provider/id`.
 Jcode ids are bare (`opus-5`, not `cliproxy/opus-5`), because the provider is selected by the
 operator's Jcode config and a prefixed id is refused at launch with the bare form named.
 
@@ -511,7 +524,9 @@ completion does not offer it.
 `p` aliases `persona`; `persona rm` aliases `persona remove`. These commands manage the
 selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog
 or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
-space has an offline catalog before it is started. Failed target resolution never falls back
+space has an offline catalog before it is started. If you name that space with `--space`, you can
+also pass a planned `--server` address while the project has no recorded stack or broker. The
+catalog read does not dial that address. Failed target resolution never falls back
 to the current directory: a `--server` that no registration names reads the project in this
 folder, under the space prepared there, as launch does, and outside one it refuses with `TARGET_NOT_FOUND` and writes nothing. With
 no space selected and no project here, the refusal says so. With `--on <manager>`, list, show and
@@ -520,12 +535,16 @@ create work on that manager's catalog instead, and edit and remove refuse there,
 belongs to `persona create --on`; without `--on` it refuses with `USAGE_INVALID` and changes no file.
 
 Persona names for create, edit and remove use letters, digits, `_` and `-`, up to 128 characters.
-A local `persona show` also accepts periods and internal spaces in a catalog name.
+A local `persona show` takes the exact filename stem from the catalog, including punctuation,
+Unicode and spaces. It refuses paths, control characters and blank stems.
+The local listing marks a file with an empty or whitespace-only stem as an invalid selector.
+Rename that file or pass its path to `cotal spawn --file <persona.md>`.
 Quote a name with spaces: `cotal persona show 'a b'` reads `.cotal/agents/a b.md`.
 `cotal persona show review.md` reads `.cotal/agents/review.md.md` in the selected space,
 not `review.md` in the project root.
 If a catalog name starts with `-`, put options before `--` and the name after it, as in `cotal persona show --json -- -reviewer`.
 Local create and show reports use that form in their follow-up commands and keep explicit `--space` and `--server` selectors.
+If `persona show` cannot find the name, its suggested list command keeps those selectors too.
 Local creation uses the catalog name as the default agent name. Choose a name that starts with a
 letter, digit or `_`. A leading hyphen is refused with `USAGE_INVALID` before anything is written.
 Creation accepts one of `--file/-f` (a complete [agent file](agent-files.mdx)), `--prompt`, or
@@ -575,14 +594,17 @@ file it links to. `spawn` can read that file, but `persona show`, `edit` and `re
 with `PERMISSION_DENIED`. If the target is a readable regular file, the refusal suggests copying it
 in place of the link. If the target is missing, restore it if you still need it, or move the broken
 link aside and put a regular persona file in its place.
-A `.cotal/agents` that is a file or a link that loops holds no personas, so the listings, `show`,
-`create`, `edit` and `remove` refuse it with `CONFLICT`, naming it and what it is, and the next step
-is to move it out of the way.
+If `.cotal/agents` is a file or a link that loops, catalog operations refuse it with `CONFLICT`.
+Move it aside. To read or edit existing definitions, restore their folder at `.cotal/agents`.
+To create a persona, retry the original create command with its source and target options.
 Both listings refuse a dangling catalog link with `CONFLICT`, naming the link and its missing target.
 Restore the target or move the broken link aside. A catalog path that is absent still lists as empty.
 Show and edit accept a definition whose `name` is not its catalog name. The seeded `default`
 persona is one: its file is `default.md` and its agents launch as `default_agent`. That name is
 reserved, so a create under it is refused with `USAGE_INVALID`.
+If a definition's frontmatter `name` cannot be used to launch the agent, `persona show` and the
+successful `persona edit` receipt suggest a launch with `--name`. If `persona show` cannot read an owned
+regular file that lacks owner read permission, it gives the same `chmod` guidance as foreground spawn.
 
 Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
 preferences). You can open a draft to repair invalid frontmatter in an existing persona file.
@@ -604,9 +626,10 @@ saved, an unchanged draft is removed, a changed one is kept and named, and the C
 129. An editor such as vim that takes Ctrl-C as a key keeps the edit going. A draft left as it was
 saves nothing and says the persona is unchanged. A changed
 or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. The
-refusal says which one happened and keeps your edited draft in its private folder, naming it, so
-the edit is not lost. Local
-CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
+refusal says which one happened and names the private draft it kept. If the source was removed,
+copy the draft back to the original catalog path without replacing any file there. This restores
+the saved bytes under the original catalog name, even when the definition names a different agent.
+Local CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
 editor or confirmation is open. Manager and external writes do not participate in that lock.
 Create, edit and remove refuse a catalog folder you cannot write, such as one set to mode 0500,
 with `PERMISSION_DENIED`, and leave it and its files as they were. An edit whose save fails for
@@ -663,7 +686,10 @@ when its output is piped or redirected, so
 name no persona can have with the codes `persona show` uses. Only its explicit `--running` overlay
 connects to the mesh.
 That overlay checks the mesh even if the local catalog is empty and refuses if the mesh cannot be reached.
-It heads the list with the mesh it read and marks each persona `running` or `not running`.
+It heads the list with the mesh it read and marks each persona `running` when a live presence entry
+matches the file's `name:` field, or `not running` when none matches. The list shows the catalog
+filename as the selector. The match does not verify which persona a session loaded or track a session
+launched under a different display name.
 
 
 ### Personas on an exact manager [#personas-on-an-exact-manager]

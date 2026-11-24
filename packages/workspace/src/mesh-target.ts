@@ -656,7 +656,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   if (existsSync(stackJournalPath(recordedRoot))) return { kind: "copy", message: `${recordedRoot} still holds the stack journal of "${space}", so this folder is a copy of a stack that runs from there`, remedy: `use the stack from ${recordedRoot}, which holds it` };
   const instances = new ProtectedRecordStore("services", space, (value) => value, "instances");
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
-  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
+  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot, "use the stack there without adopting it") };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
   if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with ${codeSpan(`cotal space forget ${shellPath(space)}`)}, then run ${codeSpan(`cotal space create ${shellPath(space)} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
@@ -1125,9 +1125,12 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     if (!m) {
       notStarted(flags.space, cwd);
       const root = findCotalRoot(cwd);
-      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
+      if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
-        if (retained && !legacyStackOtherHome(root)) {
+        // A --server naming the retained broker is the same target, not another mesh: the
+        // file-only mint for the stopped space may use it. Any other address stays refused.
+        if (retained && !legacyStackOtherHome(root)
+          && (flags.server === undefined || (!retained.open && brokerUrlKey(flags.server) === brokerUrlKey(retained.server)))) {
           const spaces = retained.open ? [retainedOpenSpace(root)] : rootInventory(root).spaces;
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
             if (flags.allowStoppedLocal && !retained.open) return localTarget(root, retained.server, "local-space", flags.readOnly);

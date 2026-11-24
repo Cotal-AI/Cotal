@@ -159,6 +159,39 @@ const QUESTION = "Which one?";
       const added = run(["endpoint", "add", "probe", "--space", space, "--file", join(home, `${space}-ref.json`), "--plain"], root);
       check(`saving probe in ${space} succeeds`, added.status === 0, shown(added));
     }
+    for (const format of ["--plain", "--json"]) {
+      const missing = run(["endpoint", "show", "prob", "--space", "beta", format], root);
+      const receipt = envelope(missing);
+      const guidance = receipt?.error?.remedy ?? missing.stderr.split("\nNext\n")[1] ?? "";
+      const command = /`([^`]+)`/.exec(guidance)?.[1];
+      check(`missing endpoint show ${format} offers the exact inventory command for beta`, missing.status === 2 &&
+        (format === "--json" ? receipt?.error?.code === "TARGET_NOT_FOUND" && receipt.target?.space === "beta" && receipt.target?.name === "prob"
+          : /Code:\s+TARGET_NOT_FOUND/.test(missing.stderr)) && command === `cotal endpoint --space beta ${format}`, shown(missing));
+      if (command === `cotal endpoint --space beta ${format}`) {
+        const inventory = run(command.split(" ").slice(1), root);
+        check(`the suggested ${format} inventory finds beta's saved reference without live reads`, inventory.status === 0 &&
+          inventory.stdout.includes("example.beta") && !inventory.stdout.includes("example.gamma") && inventory.stdout.includes("not-checked"), shown(inventory));
+      }
+    }
+    const betaRef = join(home, "beta-ref.json");
+    const alphaRef = join(home, "alpha-ref.json");
+    writeFileSync(alphaRef, JSON.stringify({ schemaVersion: 1, space: "alpha", endpoint: "example.alpha" }));
+    const imported = run(["endpoint", "add", "from-file", "--file", betaRef, "--plain"], root);
+    const saved = run(["endpoint", "show", "from-file", "--space", "beta", "--json"], root);
+    check("an ambiguous folder imports into the matching space pinned by the file without selecting it",
+      imported.status === 0 && imported.stdout.startsWith("Mesh: beta\n") && envelope(saved)?.result?.reference?.endpoint === "example.beta" && getCurrent() === undefined, shown(imported));
+    const unrelated = run(["endpoint", "add", "elsewhere", "--file", alphaRef, "--json"], root);
+    check("an import cannot choose a registration outside the ambiguous candidates",
+      unrelated.status === 2 && envelope(unrelated)?.error?.code === "TARGET_AMBIGUOUS" &&
+        run(["endpoint", "show", "elsewhere", "--space", "alpha", "--json"], root).status === 2, shown(unrelated));
+    const explicit = run(["endpoint", "add", "wrong-space", "--file", betaRef, "--space", "gamma", "--json"], root);
+    setCurrent("gamma");
+    try {
+      const selected = run(["endpoint", "add", "wrong-selection", "--file", betaRef, "--json"], work);
+      check("an import still refuses to override an explicit or resolved selection",
+        explicit.status === 1 && envelope(explicit)?.error?.code === "SCHEMA_INVALID" &&
+        selected.status === 1 && envelope(selected)?.error?.code === "SCHEMA_INVALID", { explicit: shown(explicit), selected: shown(selected) });
+    } finally { clearCurrent(); }
     for (const flags of [["--plain"], ["--json"]]) {
       const show = run(["endpoint", "show", "probe", ...flags], root);
       const error = envelope(show)?.error;
@@ -174,6 +207,30 @@ const QUESTION = "Which one?";
           retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint reference") && retry.stdout.includes(`example.${space}`) && getCurrent() === undefined, shown(retry));
       }
     }
+    for (const [verb, selector, flags, format] of [
+      ["remove", "probe", ["--plain"], "--plain"],
+      ["remove", "probe", ["-y", "-j"], "--json"],
+      ["describe", "manager", ["--plain"], "--plain"],
+      ["describe", "manager", ["--json"], "--json"],
+    ] as const) {
+      const refused = run(["endpoint", verb, selector, ...flags], root);
+      const error = envelope(refused)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check(`ambiguous endpoint ${verb} ${format} names both spaces and prints unconfirmed retries`,
+        refused.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? refused.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? refused.stderr) &&
+        retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint ${verb} ${selector} ${format} --space ${space}`)), shown(refused));
+      if (verb === "remove" && format === "--plain" && process.platform !== "win32") {
+        const retry = spawnSync("sh", ["-c", retries[0] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check("the printed remove retry still requires confirmation and keeps the reference",
+          retry.status === 1 && retry.stderr.includes("--yes") && run(["endpoint", "show", "probe", "--space", "beta"], root).status === 0, shown(retry));
+      }
+    }
+    const typo = run(["endpoint", "describe", "manager", "--space", "space-typo", "--json"], root);
+    const typoError = envelope(typo)?.error;
+    check("endpoint describe names an unknown explicit space and points to the space list",
+      typo.status === 2 && typoError?.code === "TARGET_NOT_FOUND" && typoError.message.includes('"space-typo"') && typoError.remedy?.includes("`cotal space`"), shown(typo));
     for (const space of ["beta", "gamma"]) {
       const picked = run(["who", "--plain", "--space", space], root);
       check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
@@ -292,6 +349,18 @@ const QUESTION = "Which one?";
     check("bare who and use give the same refusal for an empty selection, without a roster",
       use.status === 1 && who.status === 1 && who.stdout === "" && who.stderr === use.stderr &&
       who.stderr.includes(`${pointer} is empty`) && who.stderr.includes("SCHEMA_INVALID") && who.stderr.includes("`cotal use --clear`"), shown(who));
+    const show = run(["space", "show", "--plain"]);
+    check("bare space show outside a project gives the same refusal as use for an empty selection",
+      show.status === 1 && show.stdout === "" && show.stderr === use.stderr, shown(show));
+    const inventory = run(["space", "--json"]), spaces = envelope(inventory);
+    check("space still lists prepared spaces and flags the unreadable selection",
+      inventory.status === 0 && spaces?.result?.current === null && spaces.result.currentRecorded === false &&
+      spaces.result.prepared.some((p: { space: string }) => p.space === "planned") &&
+      spaces.warnings.some((w: { code: string; target?: { file: string }; message: string }) => w.code === "MESH_REGISTRY_UNREADABLE" &&
+        w.target?.file === pointer && w.message.includes(`${pointer} is empty`) && w.message.includes("`cotal use --clear`")), shown(inventory));
+    const named = run(["space", "show", "planned", "--json"]);
+    check("named space show does not need the damaged selection",
+      named.status === 0 && envelope(named)?.target?.space === "planned", shown(named));
     const local = run(["who", "--json"], join(home, "alpha"));
     check("an empty selection does not fall back to the running project either",
       local.status === 1 && envelope(local)?.error?.code === "SCHEMA_INVALID" && envelope(local)?.target?.file === pointer && envelope(local)?.target?.space === undefined, shown(local));
@@ -308,6 +377,9 @@ const QUESTION = "Which one?";
     const unreadable = run(["who", "--json"]);
     check("an unreadable selection marker is named and does not permit fallback",
       unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
+    const showUnreadable = run(["space", "show", "--json"]);
+    check("bare space show also names the unreadable selection marker",
+      showUnreadable.status === 1 && envelope(showUnreadable)?.error?.code === "SCHEMA_INVALID" && envelope(showUnreadable)?.target?.file === marker, shown(showUnreadable));
     const reselected = run(["use", "planned", "--json"]);
     check("selecting again repairs an unreadable marker without losing its directory contents",
       reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&

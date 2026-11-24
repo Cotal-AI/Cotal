@@ -44,7 +44,8 @@ export class LineFramer {
     if (this.buffer.length) {
       const line = this.buffer;
       this.buffer = "";
-      this.onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+      if (line.length > MAX_REQUEST_LINE) this.onOversize();
+      else this.onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
     }
   }
 
@@ -58,17 +59,20 @@ export class LineFramer {
         this.buffer = "";
         continue;
       }
-      const line = this.buffer + piece;
+      const framed = this.buffer + piece;
       this.buffer = "";
+      const line = framed.endsWith("\r") ? framed.slice(0, -1) : framed;
       if (line.length > MAX_REQUEST_LINE) {
         this.onOversize();
         continue;
       }
-      this.onLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+      this.onLine(line);
     }
     if (this.discarding) return;
     this.buffer += text.slice(start);
-    if (this.buffer.length > MAX_REQUEST_LINE) {
+    // A single extra CR may be part of a CRLF split across chunks.
+    if (this.buffer.length > MAX_REQUEST_LINE &&
+      (this.buffer.length !== MAX_REQUEST_LINE + 1 || !this.buffer.endsWith("\r"))) {
       this.buffer = "";
       this.discarding = true;
       this.onOversize();

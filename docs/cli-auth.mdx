@@ -156,7 +156,8 @@ credential, are recorded under `credentials/` in the Cotal home so `doctor auth`
 native credential matching the nkey deliberately supplied through `--identity`; unrelated files
 and identities refuse. New outputs use create-only publication. Invalid `--allow-subscribe` or
 `--allow-publish` channel patterns refuse before output folders are created, naming the flag, the
-channel and a corrected example. The output's directories follow
+channel and a corrected example. If the corrected pattern starts with `-`, the example attaches it
+with `=`, as in `--allow-subscribe=-general`. The output's directories follow
 the [`space create`](cli-selection.mdx#selecting-a-space) path rule, which also accepts a root-owned sticky directory
 such as `/tmp`, and the file is owner-only. Unsupported platforms refuse rather than weakening it.
 Mint checks the existing parent folders before creating any missing ones. An unsafe parent leaves
@@ -439,15 +440,22 @@ cotal doctor auth [--space <space>] [--fix] [--json|--plain]
 This inspects the current root's local credential claims and recorded renewal state. It does not
 prove current broker authorization, daemon adoption, connected agents or task progress. The shared
 report keeps full credential paths and public issue/expiry metadata; JSON retains all diagnostic
-rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. On a root that holds several
+rows without JWTs, seeds, fingerprints or raw parser/renewal error bodies. JSON reports, including
+refusals, set `command` to `doctor auth`. On a root that holds several
 spaces, `--space` names one; it defaults to the sole space. An invalid `--space` value such as `.`
 refuses with `USAGE_INVALID` (exit 1) before reading local signing trust. Run `cotal space` to
-find the registered name. Without `--space`, a root with several
+find the registered name. If a damaged registration prevents the diagnostic from determining the
+space's mode, it refuses with `SCHEMA_INVALID` (exit 1) with or without `--space`. The refusal
+names the file and provides a recovery step.
+
+Without `--space`, a root with several
 spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. This includes multiple open spaces
 registered at the same root. With or without `--fix`, stay in that folder and pass `--space` with
 one of the listed names. In a folder whose root holds no space,
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
-lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
+lists. If the diagnostic cannot establish the project's space and finds unreadable prepared records,
+it names those records and their recovery steps without assuming which folder they belong to.
+Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
 space registered as open, with or without `--fix`, the local credential check is a no-op (exit 0).
 Name the open space with `--space` to run the same check from a subfolder of its project.
@@ -456,8 +464,9 @@ If `space add --force` recorded the mode without checking it, `doctor auth` warn
 about what that broker enforces. A checked open space has no credentials to inspect. After
 `cotal down`, the same no-op applies when the stack journal or the foreground stack's retained
 `.cotal/server-open.conf` records the named space as open. The check works with or without
-`--space` and does not start the broker or prepare the root. If the foreground stack has no usable
-record, the diagnostic points to that file instead of assuming open mode. This is a local mode
+`--space` and does not start the broker or prepare the root. If the retained broker configuration
+identifies an open broker but lacks its space name, the diagnostic asks for the configuration with
+the recorded name. This is a local mode
 observation, not proof that a broker is running or accepts connections. With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. If the name is neither registered nor prepared, the next step identifies it as

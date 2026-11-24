@@ -9,6 +9,7 @@ import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
 import { displayCmd, displayRemedy } from "./lib/self-exec.js";
+import { serviceStartAllowsNoOpen } from "./lib/service-start-options.js";
 import { recordTelemetryFailure } from "./telemetry.js";
 import { c, hang } from "./ui.js";
 
@@ -334,7 +335,14 @@ export function printHelpPath(cmd: Command, words: readonly string[], out: (line
     path.push(sub.name); selected = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
-  if (cmd.name === "service" && selected?.name === "start" && words[1] === "broker")
-    selected = { ...selected, flagNames: selected.flagNames?.filter((flag) => flag !== "no-open") };
+  if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined) {
+    const manager = words[1] === "manager", broker = words[1] === "broker";
+    selected = {
+      ...selected,
+      usage: broker ? "cotal service start broker [<preset options>] [--instance <id>] [--dry-run]" : manager ? selected.usage?.replace("|--new-instance]", "]") : selected.usage,
+      ...(broker ? { examples: [{ command: "cotal service start broker --config <file> --binary <file> --server <url>", note: "start the broker in the background" }] } : {}),
+      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || serviceStartAllowsNoOpen(words[1])) && (flag !== "new-instance" || !(manager || broker)) && (flag !== "foreground" || !broker)),
+    };
+  }
   printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
 }

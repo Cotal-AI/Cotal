@@ -69,6 +69,10 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   });
 }
 
+function channelOptionExample(flag: string, pattern: string): string {
+  return `${flag}${pattern.startsWith("-") ? "=" : " "}${shellPath(pattern)}`;
+}
+
 function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", entry: string, error: unknown): CommandFailure {
   const shown = oneLine(boundedValue(entry, SHOWN_VALUE_MAX));
   if (entry.startsWith("#")) {
@@ -81,7 +85,7 @@ function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", en
       `the ${flag} channel "${shown}" starts with "#", which is not part of a channel name`,
       {
         remedy: validStripped
-          ? `drop the leading "#", for example \`${flag} ${shellPath(stripped)}\``
+          ? `drop the leading "#", for example \`${channelOptionExample(flag, stripped)}\``
           : `pass channel names or patterns without a leading "#", such as \`${flag} general\` or \`${flag} 'team.>'\``,
         selfContained: true,
       },
@@ -102,7 +106,7 @@ function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", en
     `the ${flag} channel "${shown}" is not a valid channel pattern: ${oneLine(boundedValue(reason, SHOWN_VALUE_MAX))}`,
     {
       remedy: validFixed
-        ? `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} ${shellPath(fixed)}\``
+        ? `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${channelOptionExample(flag, fixed)}\``
         : `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} general\` or \`${flag} 'team.>'\``,
       selfContained: true,
     },

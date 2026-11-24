@@ -66,7 +66,7 @@ import { cliVersion, cliProvenance, readExtensionVersions } from "../lib/version
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, webInstalled, type HarnessStatus } from "../lib/status.js";
+import { clientStatusRows, connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, webInstalled, type HarnessStatus } from "../lib/status.js";
 import { legacyManagerStopped, statusRuntimeSpace } from "./status-legacy.js";
 import { deliveryResponderState, deliveryRowSuffix, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { brokerStoreWrite, storeFull } from "../lib/broker-store-health.js";
@@ -125,7 +125,7 @@ import {
   managerServiceHealth,
   printComponentHealth,
 } from "./status-health.js";
-import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected } from "./status-meshes.js";
+import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldStoreProblem } from "./status-meshes.js";
 
 export { managerNoService, deliveryLeaseAbsent } from "./status-health.js";
 
@@ -161,7 +161,12 @@ async function folderSpacesOffline(cwd: string, values: FlagValues<typeof status
 
 /** Named-agent and infrastructure inputs choose different reads. */
 export function validateStatusArguments(args: ParsedArgs): void {
-  presentationOf(args.values as FlagValues<typeof statusFlags>);
+  const values = args.values as FlagValues<typeof statusFlags>;
+  if (!args.positionals.length && values.components && (values.json || values.plain || values.all))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
+      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
+    });
+  presentationOf(values);
   if (args.positionals.length > 1 || args.positionals.length && !args.positionals[0]?.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
@@ -185,10 +190,6 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (args.positionals.length) return agentStatus(args);
   const values = args.values as FlagValues<typeof statusFlags>;
   const presentation = presentationOf(values);
-  if (values.components && (presentation !== "rich" || values.all))
-    throw new CommandFailure("refused", "USAGE_INVALID", "--components checks the selected mesh and writes its own records - it takes no --json, --plain or --all", {
-      remedy: `run ${values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? "the same command" : codeSpan(onRerun(`${displayCmd()} status --components`, values, [...(values.wide ? ["--wide"] : []), ...(values.verbose ? ["--verbose"] : [])]))} without --json, --plain or --all`,
-    });
   const cwd = process.cwd();
   const root = findCotalRoot(cwd);
   const checks = await registryFallbackChecks(root, values);
@@ -276,13 +277,12 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (!blocked) readStackStoreWarnings(root, gaps, hints);
   if (selected.ok && selected.target.origin === "up" && !sameDir(root, selected.target.root))
     readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
-  // The note under the heading sends here for this folder's own stack cut off with no recorded
-  // outcome under another selection. A blocked one is named with its block under `This folder's
-  // space` and its step first in Next, so that note is left out here, with its --json warning. One
-  // that neither blocks nor stays part way settles from its members' processes when it starts.
+  // Replace the folder banner with the repair when startup is blocked under another selection.
+  // `This folder's space` names any unsettled stack work, with the recovery step in Next.
+  const heldStoreBlocked = !blocked && reportHeldStoreProblem(root, hints);
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (!recovery && held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && !heldStoreBlocked && held && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;
@@ -327,7 +327,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0]);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -470,6 +470,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   } else if (connectors) {
     const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
     for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
+    for (const r of await clientStatusRows(signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text, client: true });
   }
   let installed: boolean | null = null;
   let installedError: string | null = null;

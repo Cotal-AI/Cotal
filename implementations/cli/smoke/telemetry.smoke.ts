@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { telemetryErrorText } from "../src/telemetry.js";
@@ -109,6 +110,42 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("a stale lastInstallEventAt sends the install event again", nextDay.sent.length === 2 && nextDay.sent[0]!.event === "install", nextDay.sent.map((b) => b.event));
 }
 
+// The desktop metadata request waits for stdin after reading the settings. A second command
+// can finish first and claim today's install event without changing the desktop request's outcome.
+{
+  const s = sandbox();
+  const before = received.length;
+  const desktop = spawn(process.execPath, [BIN, "daemon", "desktop"], { cwd: s.project, env: s.env, stdio: ["pipe", "ignore", "ignore"], timeout: 30_000 });
+  const exited = new Promise<number | null>((resolve, reject) => { desktop.once("error", reject); desktop.once("close", resolve); });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(s.settingsPath) && desktop.exitCode === null && Date.now() < deadline) await wait(10);
+    check("the pending desktop request read a fresh telemetry identity", existsSync(s.settingsPath) && s.settings().lastInstallEventAt === undefined && desktop.exitCode === null);
+    const version = await s.run(["version"]);
+    check("version claims the daily report while desktop is waiting", version.status === 0 && version.sent.some((body) => body.event === "install"));
+  } finally { desktop.stdin.end('{"op":"about"}\n'); }
+  const code = await exited;
+  const rows = received.slice(before);
+  check("overlapping commands send one install and both command events for the same id", code === 0 && rows.length === 3 && rows.filter((body) => body.event === "install").length === 1 && rows.some((body) => body.command === "version") && rows.some((body) => body.command === "daemon" && body.subcommand === "desktop") && rows.every((body) => body.installId === s.settings().installId), rows.map((body) => body.event));
+}
+
+{
+  const s = sandbox();
+  const firstUse = acquireLock(`${s.settingsPath}.lock`);
+  try {
+    const busy = await s.run(["version"]);
+    check("a busy first-use identity does not fail the command or mint a second id", busy.status === 0 && busy.sent.length === 0 && !existsSync(s.settingsPath));
+  } finally { firstUse.release(); }
+  await s.run(["telemetry", "regular"]);
+  const held = acquireLock(`${s.settingsPath}.lock`);
+  try {
+    const busy = await s.run(["version"]);
+    check("a busy daily claim leaves the command event and exit unchanged", busy.status === 0 && busy.sent.length === 1 && busy.sent[0]?.command === "version" && s.settings().lastInstallEventAt === undefined);
+  } finally { held.release(); }
+  const next = await s.run(["version"]);
+  check("the next eligible command can claim the deferred day", next.status === 0 && next.sent.length === 2 && next.sent[0]?.event === "install");
+}
+
 {
   const s = sandbox();
   const docs = await s.run(["docs", "--json"]);
@@ -170,9 +207,15 @@ for (const level of ["regular", "minimal"]) {
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
   check("…whose message masks the unknown word the user typed", typeof usage.sent[0]?.errorMessage === "string" && !(usage.sent[0]!.errorMessage as string).includes("frobnicate") && (usage.sent[0]!.errorMessage as string).includes("<value>"), usage.sent[0]?.errorMessage);
-  const help = await s.run(["help", "ext", "frobnicate"]);
-  await settled();
-  check("unknown nested help reports a usage refusal without the requested topic", help.status === 1 && help.stderr.includes('no subcommand "frobnicate"') && help.sent.length === 1 && help.sent[0]?.command === "help" && help.sent[0]?.outcome === "refused" && help.sent[0]?.errorCode === "USAGE_INVALID" && help.sent[0]?.errorMessage === null && help.sent[0]?.errorStack === null && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
+  for (const path of [[], ["ext"]]) {
+    const help = await s.run(["help", ...path, "frobnicate"]);
+    await settled();
+    const event = help.sent[0];
+    check(`unknown ${path.length ? "subcommand" : "command"} in help keeps the requested topic local`,
+      help.status === 1 && help.stderr.includes(path.length ? 'no subcommand "frobnicate"' : "unknown command: frobnicate") && help.sent.length === 1
+      && event?.command === "help" && event.outcome === "refused" && event.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null
+      && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
+  }
   const prompt = "private `prompt` text";
   const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
   await settled();

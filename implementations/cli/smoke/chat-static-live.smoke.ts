@@ -88,6 +88,8 @@ try {
       return false;
     };
     check("the chat establishes a durable membership", await membersUntil((members) => members.some((m) => m.name === "static-chat" && m.durable)));
+    const initialJoin = await say("/join general");
+    check("/join reports the channel the chat opened on as already joined", initialJoin.includes("already on #general"), initialJoin);
     check("general switches to live", cli("channel", "set", "general", "--delivery", "live").status === 0);
     const left = await say("/leave general");
     check("/leave of its own channel leaves it", left.includes("left #general"), left);
@@ -97,6 +99,8 @@ try {
     check("a post is accepted while chat has left", cli("send", "-c", "general", gap).status === 0);
     const back = await say("/join general");
     check("/join returns to the channel it left", back.includes("joined #general") && !back.includes("denied"), back);
+    const repeatJoin = await say("/join general");
+    check("a repeated /join reports that the chat is already on the channel", repeatJoin.includes("already on #general"), repeatJoin);
     const family = await say("/join family.>");
     check("/join refuses a channel family without suggesting an unusable chat command",
       family.includes("/join denied (USAGE_INVALID): name one concrete channel, without wildcards") && !family.includes("cotal chat"), family);

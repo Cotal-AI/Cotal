@@ -1,6 +1,6 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import { JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { DeliverPolicy, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { isPublishPermissionDenied } from "./endpoint.js";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
@@ -152,7 +152,12 @@ export async function liveKvEntries(
   } else {
     opts = options;
   }
+  const { entries } = await scanKvEntries(kv, filter, opts);
+  return entries.filter((e) => e.operation !== "DEL" && e.operation !== "PURGE");
+}
 
+/** Complete ordered KV pass including deletion markers, optionally starting at a stream revision. */
+export async function scanKvEntries(kv: KV, filter?: string | string[], opts?: LiveKvEntriesOptions, from?: number): Promise<{ entries: KvEntry[]; lastDelivered: number }> {
   if (opts?.signal?.aborted) {
     throw opts.signal.reason ?? new Error("scan aborted");
   }
@@ -175,6 +180,7 @@ export async function liveKvEntries(
     );
   const bucket: Bucket = kv;
   const cc = bucket._buildCC(filter ?? ">", KvWatchInclude.AllHistory, { headers_only: false });
+  if (from !== undefined) { cc.deliver_policy = DeliverPolicy.StartSequence; cc.opt_start_seq = from; }
   // Only this temporary scan's cursor is volatile. The backing KV records keep their storage;
   // an interrupted pass still has to prove completeness or throw before returning any result.
   cc.mem_storage = true;
@@ -206,6 +212,7 @@ export async function liveKvEntries(
   // the broker for no reason.
   const latest = new Map<string, KvWatchEntry>();
   let received = 0;
+  let lastDelivered = 0;
   let sawTerminal = false;
   let bucketName = bucket.bucket;
   let expected = 0;
@@ -236,6 +243,7 @@ export async function liveKvEntries(
           if (opts?.signal?.aborted) break;
           const e = bucket.jmToWatchEntry(m, false);
           received++;
+          lastDelivered = e.revision;
           bucketName = e.bucket;
           const prior = latest.get(e.key);
           if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
@@ -285,15 +293,13 @@ export async function liveKvEntries(
   }
   // No original scan error was caught or replaced; only a successful empty result waits for
   // cleanup and this final abort check before it can be returned.
-  if (expected === 0) return [];
+  if (expected === 0) return { entries: [], lastDelivered };
   // Fell out without the terminal message: the connection dropped, the consumer was removed, or the
   // stream stalled past the heartbeat. Whatever the cause, this is a PARTIAL view and saying so is
   // the whole point. Filtered and unfiltered obey the same rule, including zero-received.
   if (!sawTerminal) throw new IncompleteKvScan(bucketName, received, expected);
 
-  const out: KvEntry[] = [];
-  for (const e of latest.values()) if (e.operation !== "DEL" && e.operation !== "PURGE") out.push(e);
-  return out;
+  return { entries: [...latest.values()], lastDelivered };
 }
 
 /**

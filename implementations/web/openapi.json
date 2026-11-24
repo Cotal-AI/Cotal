@@ -157,11 +157,11 @@
             "in": "query",
             "required": false,
             "allowEmptyValue": true,
-            "description": "Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "description": "Maximum requested messages. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.",
             "schema": {
               "type": "integer",
               "minimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2000,
               "default": 200
             },
             "example": 20
@@ -210,11 +210,11 @@
             "in": "query",
             "required": false,
             "allowEmptyValue": true,
-            "description": "Maximum requested messages. Absent or empty uses 500. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "description": "Maximum requested messages. Absent or empty uses 500. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.",
             "schema": {
               "type": "integer",
               "minimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2000,
               "default": 500
             },
             "example": 20
@@ -281,11 +281,11 @@
             "in": "query",
             "required": false,
             "allowEmptyValue": true,
-            "description": "Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "description": "Maximum requested messages. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.",
             "schema": {
               "type": "integer",
               "minimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2000,
               "default": 200
             },
             "example": 20
@@ -724,11 +724,11 @@
             "in": "query",
             "required": false,
             "allowEmptyValue": true,
-            "description": "Maximum requested frames. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.",
+            "description": "Maximum requested frames. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.",
             "schema": {
               "type": "integer",
               "minimum": 0,
-              "maximum": 9007199254740991,
+              "maximum": 2000,
               "default": 200
             },
             "example": 20

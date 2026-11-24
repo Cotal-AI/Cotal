@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -21,17 +22,18 @@ import {
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
-  meshesForRoot,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
   preparedLifecycle,
   presentationOf,
+  readCurrent,
   readCurrentSelection,
   recordOperationSpaceNote,
   spaceKey,
   stackElsewhereRemedy,
   stackJournalRoot,
+  stoppedStack,
   writeResult,
   type Cell,
   type BrokerCheck,
@@ -203,8 +205,9 @@ export async function space(args: ParsedArgs): Promise<void> {
 }
 
 function spaceShownAt(cwd: string): string | undefined {
-  if (!isGenuineSpace(cwd)) {
-    const matches = meshesForRoot(cwd);
+  const registeredRoots = loadMeshes().map((mesh) => ({ mesh, root: canonicalRoot(mesh.root) }));
+  for (let root = canonicalRoot(cwd); !isGenuineSpace(root); root = dirname(root)) {
+    const matches = registeredRoots.filter((entry) => entry.root === root).map((entry) => entry.mesh);
     if (matches.length > 1) {
       const spaces = matches.map((m) => m.space);
       throw new MeshTargetError("ambiguous-target", `this folder has ${spaces.length} registered spaces: ${spaces.join(", ")}`, {
@@ -212,6 +215,7 @@ function spaceShownAt(cwd: string): string | undefined {
       });
     }
     if (matches[0]) return matches[0].space;
+    if (dirname(root) === root) break;
   }
   return folderSpace(cwd, { refuseAmbiguous: true });
 }
@@ -225,17 +229,23 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not identify a moved project. */ }
   }
   if (sub === undefined) {
-    const current = getCurrent() ?? null;
+    let current: string | null = null;
+    let selectionWarning: OutputWarning | undefined;
+    try { current = readCurrent() ?? null; }
+    catch (e) {
+      if (!isMeshRegistryError(e)) throw e;
+      const { message, remedy } = registryFailure(e);
+      selectionWarning = { code: "MESH_REGISTRY_UNREADABLE", target: { file: e.file }, message: `${message}; ${remedy}` };
+    }
     const items = await Promise.all(loadMeshes().map(async (m) => row(m, current, m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired))));
     const offline = items.filter((m) => m.check !== "reachable" && m.check !== "not-checked").map((m) => m.space);
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current, moved?.recordedRoot === p.root && moved.journal.space === p.space ? project : undefined));
     const folder = folderSpaceOverSelection(process.cwd(), current, offline) ?? null;
-    const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
-    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, (rows) => spacesView(rows, project, moved));
+    const result: SpacesResult = { kind: "spaces", current, currentRecorded: !selectionWarning && (current === null || items.some((s) => s.current)), folder, items, prepared };
+    writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarning ? [selectionWarning] : selectionWarnings(result) }, (rows) => spacesView(rows, project, moved));
     return;
   }
   if (sub === "show") {
-    const current = getCurrent() ?? null;
     // With no name it is about this folder: the space it has registered, or the one it holds
     // prepared or stopped, which `show` names even though every other command here targets the
     // selection. Then the selection.
@@ -244,7 +254,6 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
     const held = rest[0] === undefined && registered === undefined ? folderSpaceHeld(process.cwd()) : undefined;
     const recorded = held !== undefined && (findMesh(held.space) ?? findPreparedSpace(held.space)) !== undefined ? held : undefined;
     const folder = registered ?? recorded?.space;
-    const explicit = folder !== undefined && current !== null && folder !== current && readCurrentSelection()?.source === "explicit";
     let movedSpace: string | undefined;
     if (rest[0] === undefined && folder === undefined && moved !== undefined) {
       const { journal, recordedRoot } = moved;
@@ -253,7 +262,10 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
         ? mesh.origin !== "manual" && mesh.origin !== "catalog" && mesh.root === recordedRoot && mesh.server === journal.server
         : findPreparedSpace(journal.space)?.root === recordedRoot) movedSpace = journal.space;
     }
-    const name = rest[0] ?? folder ?? movedSpace ?? current;
+    const shown = rest[0] ?? folder ?? movedSpace;
+    const current = (shown === undefined ? readCurrent() : getCurrent()) ?? null;
+    const explicit = folder !== undefined && current !== null && folder !== current && readCurrentSelection()?.source === "explicit";
+    const name = shown ?? current;
     if (name === null) {
       if (moved !== undefined) {
         const { journal, recordedRoot } = moved;
@@ -437,7 +449,9 @@ function preparedView(p: PreparedDetail, project: string, moved: ReturnType<type
   } else if (p.state === "unsettled") {
     hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {
-    hints.push({ text: `start it${p.state === "stopped" ? " again" : ""} with ${codeSpan(`${cmd} up`)} in ${p.root}`, tone: "hint" });
+    const stopped = p.state === "stopped";
+    const up = `${cmd} up${stopped && stoppedStack(p.root, p.space)?.noManager ? " --no-manager" : ""}`;
+    hints.push({ text: `start it${stopped ? " again" : ""} with ${codeSpan(up)} in ${p.root}`, tone: "hint" });
   }
   if (!p.current && !p.rootMissing) hints.push({ text: `select it with ${codeSpan(`${cmd} use ${shellWord(p.space)}`)}`, tone: "hint" });
   return {

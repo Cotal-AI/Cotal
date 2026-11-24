@@ -69,10 +69,9 @@ type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: { identity: Identity; creds?: string }, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
   renewRemoteStandingBundle(force?: boolean): Promise<void>;
-  serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
   ep: { refreshCredsRequestSafe(): Promise<void> };
   credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
-  servePlane: { sessionLedgerCreds?: string; sessionLedgerConn?: { nc: NatsConnection; creds?: string }; };
+  servePlane: { sessionLedgerCreds?: string; sessionLedgerConn?: { nc: NatsConnection; creds?: string }; serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string }; };
   goalWriterComponent: { goalWriterCreds?: string; goalWriter?: { nc: NatsConnection; creds?: string }; };
 };
 
@@ -131,7 +130,7 @@ try {
         assert.equal(processEpoch, 7);
         if (mode === "fail") throw new Error("injected issuer outage");
         if (mode === "foreign") return family(foreign, 3600);
-        if (mode === "fenced") { const f = await family(auth, 3600); m.serviceServe!.grant.epoch = 8; return f; }
+        if (mode === "fenced") { const f = await family(auth, 3600); m.servePlane.serviceServe!.grant.epoch = 8; return f; }
         const candidate = await family(auth, 3600);
         if (mode === "slow") {
           holds.add(jwtFromCreds(candidate.supervisor)!);
@@ -163,15 +162,15 @@ try {
   const supNc = await live(() => m.credentialRenewal.remoteSupervisorCreds!, held.supervisor);
   const execNc = await live(() => m.credentialRenewal.remoteExecutorCreds!, held.executor);
   m.ep = { refreshCredsRequestSafe: async () => { await supNc.reconnect(); await execNc.reconnect(); } };
-  m.serviceServe = { nc: undefined as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
-  m.serviceServe.nc = await live(() => m.serviceServe!.creds!, held.serve);
-  Object.assign(m.serviceServe, { handle: { stop: async () => {} } });
+  m.servePlane.serviceServe = { nc: undefined as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
+  m.servePlane.serviceServe.nc = await live(() => m.servePlane.serviceServe!.creds!, held.serve);
+  Object.assign(m.servePlane.serviceServe, { handle: { stop: async () => {} } });
   // This fixture tests family adoption, not branded endpoint authorization or dispatch.
   // Keep its transport-only seam explicit. The continuity smoke covers native serving.
   m.dialServeConnection = async (_state, readCreds) => {
     const nc = await live(readCreds, held.serve);
     await nc.flush();
-    conns[conns.indexOf(m.serviceServe!.nc)] = nc;
+    conns[conns.indexOf(m.servePlane.serviceServe!.nc)] = nc;
     conns.pop();
     return { nc, handle: { stop: async () => {} } };
   };
@@ -182,7 +181,7 @@ try {
   m.goalWriterComponent.goalWriter.nc = await live(() => m.goalWriterComponent.goalWriter!.creds!, held.goalWriter);
   m.servePlane.sessionLedgerConn = { nc: undefined as never, creds: initial.sessionLedger };
   m.servePlane.sessionLedgerConn.nc = await live(() => m.servePlane.sessionLedgerConn!.creds!, held.sessionLedger);
-  const holders = () => ({ supervisor: m.credentialRenewal.remoteSupervisorCreds, executor: m.credentialRenewal.remoteExecutorCreds, serve: m.serviceServe!.creds,
+  const holders = () => ({ supervisor: m.credentialRenewal.remoteSupervisorCreds, executor: m.credentialRenewal.remoteExecutorCreds, serve: m.servePlane.serviceServe!.creds,
     goalWriter: m.goalWriterComponent.goalWriter!.creds, sessionLedger: m.servePlane.sessionLedgerConn!.creds });
   const flushAll = () => Promise.all(conns.map((nc) => Promise.race([nc.flush().then(() => true, () => false), wait(1500).then(() => false)])));
 
@@ -217,7 +216,7 @@ try {
     await m.renewRemoteStandingBundle();
     assert.deepEqual(holders(), initial);
     assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /serve epoch/);
-    m.serviceServe!.grant.epoch = 7;
+    m.servePlane.serviceServe!.grant.epoch = 7;
   });
   await cell("forced renewal surfaces a refused candidate to its caller", async () => {
     mode = "fail";

@@ -73,6 +73,17 @@ try {
   const refusedCap = conflictingStore("2");
   check("a conflicting store refuses without saving the requested seat cap",
     refusedCap.status === 2 && refusedCap.env?.error?.code === "CONFLICT" && refusedCap.env.error.message.includes("recorded broker inputs") && cap() === undefined, { refused: shown(refusedCap), seatCap: cap() });
+  for (const flags of [[], ["--no-manager"]]) {
+    const conflict = cotal("up", ...flags, "--max-file-store", "536870912", "--log-file", join(root, "broker.log"), "--json");
+    const restart = ["up", ...flags], step = codeSpan(`cotal ${restart.join(" ")}`), remedy = conflict.env?.error?.remedy ?? "";
+    check(`broker input conflict with ${step} keeps the same startup in both suggestions`,
+      conflict.status === 2 && conflict.env?.error?.code === "CONFLICT" && remedy.includes(`${step} from ${root}`)
+        && remedy.includes(`then ${step} with the requested log flags`), shown(conflict));
+    if (flags.length && remedy.includes(`${step} from ${root}`)) {
+      const retried = cotal(...restart, "--json");
+      check("keeping the recorded inputs leaves the broker running without a manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+    }
+  }
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
   const started = cotal("service", "start", "mgr", "--space", space);
   const mgr = running("mgr");
@@ -100,6 +111,9 @@ try {
   check("an ordinary retry from another folder names the requested stack",
     rooted.status === 2 && rooted.env?.error?.code === "LIFECYCLE_BLOCKED" && launcher !== undefined
       && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)}`)} again`, shown(rooted));
+  const foreground = cotal("up", "--foreground", "--server", server);
+  check("a blocked foreground start keeps its service stop and retries the original invocation",
+    foreground.status === 2 && foreground.stderr.replace(/\s+/g, " ").includes(`${stop}, then repeat your original foreground startup command from the same folder with the same options`), shown(foreground));
   const brokerOnly = cotal("up", "--no-manager", "--json");
   const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
   const expectedRetry = `${launcher} up --space ${space} --no-manager`;
