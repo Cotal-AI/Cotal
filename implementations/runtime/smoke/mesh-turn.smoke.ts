@@ -969,14 +969,18 @@ if (!placedHostOnly) {
     JSON.stringify({ well, accepts: spawnAccepts.size, before }));
 }
 
-// Stop only the owned broker, once the first result read proves the turn is already bound.
-async function recoverTurnAfterBrokerPause(): Promise<void> {
-  console.log("• 20a: six real result-read timeouts leave the workflow resumable");
-  const runId = "tn-result-outage";
+// Stop only the owned broker, once the selected read proves the turn is already bound.
+async function recoverTurnAfterBrokerPause(read: "readGoalResult" | "expired"): Promise<void> {
+  console.log(`• 20a: six real ${read} timeouts leave the workflow resumable`);
+  const runId = `tn-outage-${read}`;
   const handler = pollingHandler(runId, []);
-  const seam = handler as unknown as { actionCtx(): Promise<ActionContext> };
+  const seam = handler as unknown as {
+    actionCtx(): Promise<ActionContext>;
+    expired(...args: unknown[]): Promise<unknown>;
+  };
   const streams = (await seam.actionCtx()).jsm.streams;
   const original = streams.getMessage;
+  const originalExpired = seam.expired;
   const before = turnInvokes.length;
   let stopped = false, timeouts = 0;
   let recovery: ReturnType<typeof setTimeout> | undefined;
@@ -989,34 +993,40 @@ async function recoverTurnAfterBrokerPause(): Promise<void> {
   const request = {
     space: SPACE, endpoint: EP, kv, runId, lease: lease(), statusConnection: nc, handler,
     source: `const seat = await spawn("builder");
-      await parallel({ review: async () => { await turn(seat, { name: "review", deadline: "2m" }); } });`,
+      const replies = await parallel({ review: async () => await turn(seat, { name: "review", deadline: "2m" }) });
+      log(replies.review.note);`,
   };
   let firstRead = true;
-  streams.getMessage = async function (stream, query) {
-    const goalId = turnInvokes[before]?.goalId;
-    if (goalId === undefined || !("last_by_subj" in query) || !query.last_by_subj?.endsWith(`.${goalId}.result`)) {
-      return await original.call(this, stream, query);
-    }
+  const pauseOnRead = async <T>(realRead: () => Promise<T>): Promise<T> => {
     if (firstRead) {
       firstRead = false;
       if (!broker.kill("SIGSTOP")) throw new Error("could not stop the private broker");
       stopped = true;
     }
-    try { return await original.call(this, stream, query); }
+    try { return await realRead(); }
     catch (error) {
       if (error instanceof TimeoutError && ++timeouts === POLL_ATTEMPTS) recovery = setTimeout(resumeBroker, 250);
       throw error;
     }
   };
+  if (read === "expired") {
+    seam.expired = (...args) => pauseOnRead(() => originalExpired.apply(handler, args));
+  } else {
+    streams.getMessage = function (stream, query) {
+      const goalId = turnInvokes[before]?.goalId;
+      return goalId !== undefined && "last_by_subj" in query && query.last_by_subj?.endsWith(`.${goalId}.result`)
+        ? pauseOnRead(() => original.call(this, stream, query)) : original.call(this, stream, query);
+    };
+  }
   try {
     const initial = await withDeadline(driven(request), 60_000, "workflow across six real broker timeouts");
     resumeBroker();
     const state = (await readRunRecord(kv, EP, runId))?.status?.value.state;
     const pending = (await journalEntries(runId, "turn")).at(-1);
     const turn = turnInvokes[before];
-    c("six broker timeouts release the run with its diagnostic and leave the original turn pending",
+    c(`${read}: six broker timeouts release the run with its diagnostic and leave the original turn pending`,
       timeouts === POLL_ATTEMPTS && initial?.status === "released" && state === "released"
-      && initial.reason.message.includes("L4026: ") && initial.reason.message.includes("readGoalResult could not be served: the plane did not answer 6 reads")
+      && initial.reason.message.includes("L4026: ") && initial.reason.message.includes(`${read} could not be served: the plane did not answer 6 reads`)
       && pending?.state === "pending" && turn !== undefined && pending.external?.goalId === turn.goalId,
       { timeouts, initial, state, pending });
     if (turn === undefined || state !== "released") throw new Error("expected a released run with a bound turn");
@@ -1024,28 +1034,32 @@ async function recoverTurnAfterBrokerPause(): Promise<void> {
     const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: turn.goalId });
     const ref = { endpoint: EP, caller: CALLER, goalId: turn.goalId };
     const { fact } = await commitGoalResult(goalCtx, {
-      ref, now: Date.now(), cause: "complete", state: "succeeded", data: { status: "done", at: Date.now() },
+      ref, now: Date.now(), cause: "complete", state: "succeeded", data: { status: "done", note: "original yield", at: Date.now() },
       committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH },
       executor: { lifecycleUid: turn.target.lifecycleUid, epoch: 0 }, resolveCurrentEpoch: () => 0,
     });
+    const notes: unknown[] = [];
     const resumed = await withDeadline(driveRun(js, jsm, {
       ...request, lease: { ...lease(), epoch: 2 }, handler: mk(runId),
+      onLog: (line) => notes.push(...line.values),
     }), 20_000, "resume of the original turn after broker recovery");
-    c("the original timer and relay survive release, and resume consumes the yield without another submission",
-      timer === undefined && fact.state === "succeeded" && resumed?.status === "completed" && turnInvokes.length === before + 1,
-      { timer, fact, resumed, invokes: turnInvokes.length - before });
+    c(`${read}: the timer and relay survive release, and resume reads the original yield without another submission`,
+      timer === undefined && fact.state === "succeeded" && resumed?.status === "completed"
+      && notes[0] === "original yield" && turnInvokes.length === before + 1,
+      { timer, fact, resumed, notes, invokes: turnInvokes.length - before });
   } finally {
     resumeBroker();
     clearTimeout(recovery);
     streams.getMessage = original;
+    seam.expired = originalExpired;
   }
 }
 
-await recoverTurnAfterBrokerPause();
+for (const read of ["readGoalResult", "expired"] as const) await recoverTurnAfterBrokerPause(read);
 
 // Each seam delegates to the real plane unless the selected poll is being faulted.
 {
-  console.log("• 20: turn poll reads recover, fail bounded by name, and retire abandoned relays");
+  console.log("• 20: turn poll reads recover or release, and failed turns retire abandoned relays");
   type PollSeam = {
     actionCtx(): Promise<ActionContext>;
     expired(...args: unknown[]): Promise<unknown>;
@@ -1093,15 +1107,14 @@ await recoverTurnAfterBrokerPause();
     });
     try {
       const got = await withDeadline(safe(handler.turn({ agent: a, deadline: "5m" }, stepCtx(persistentId).ctx)), 30_000, `the ${read} retry budget`);
-      const retryError = got as { name?: string; code?: string; message?: string } | undefined;
-      const release = read === "readGoalResult";
-      c(`${read}: repeated timeouts stop at the retry bound and name the read`,
-        attempts === POLL_ATTEMPTS && (release ? retryError?.name === "RunReleased" : retryError?.code === "L4026")
-        && String((got as { message?: string })?.message).includes(read), got);
+      const retryError = got as { name?: string; message?: string } | undefined;
+      c(`${read}: repeated timeouts release at the retry bound and name the read`,
+        attempts === POLL_ATTEMPTS && retryError?.name === "RunReleased"
+        && retryError.message?.includes("L4026: ") === true && retryError.message.includes(read), got);
       const fact = await import("@cotal-ai/core").then(({ readGoalResult }) => readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: persistentId }));
-      c(`${read}: only an abandoned turn's relay is cancelled`, release ? fact === undefined : fact?.state === "cancelled", fact);
+      c(`${read}: release leaves the relay pending`, fact === undefined, fact);
       const timer = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: persistentId });
-      c(`${read}: only an abandoned turn's primary timer is claimed`, release ? timer === undefined : timer?.settle === "resumed", timer);
+      c(`${read}: release leaves the primary timer unclaimed`, timer === undefined, timer);
     } finally { restorePersistent(); }
   }
 
@@ -1176,7 +1189,7 @@ await recoverTurnAfterBrokerPause();
     cleanup.withdrawCancelledRelay = originalWithdraw;
   }
 
-  for (const [code, kind] of [["L4026", "pause-unanswered"], ["L4025", "host-starved"]] as const) {
+  for (const [code, kind] of [["L4016", "handler-fault"], ["L4025", "host-starved"]] as const) {
     for (const failedCleanup of ["relay withdrawal", "primary timer claim"]) {
       const runId = `tn-cleanup-${code}-${failedCleanup.split(" ")[0]}`;
       const handler = pollingHandler(runId, []);
@@ -1395,7 +1408,7 @@ async function readGoalResultData(goalId: string): Promise<Record<string, unknow
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = placedHostOnly ? 18 : 106;
+const EXPECTED_CELLS = placedHostOnly ? 18 : 108;
 const ran = ok + fail;
 console.log(`mesh-turn.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

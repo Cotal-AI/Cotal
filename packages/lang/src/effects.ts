@@ -328,19 +328,16 @@ export class Cancelled extends Error {
  * A driver holds a run under a lease with an absolute horizon, and it may be asked to hand the run
  * back. Neither is a fact about the workflow: it has not failed and it has not finished, it is
  * exactly where its journal says it is. The language raises this before beginning an effect if the
- * host asks to stop. A handler may also raise it while waiting on bound work it can reattach to,
- * leaving the entry pending. It travels like {@link Cancelled} and `JournalAppendRejected`:
- * a workflow's `try` cannot catch it. A program that could catch its host's shutdown could carry on
- * performing effects after the horizon it was granted, which is the thing the stop exists to end.
- *
- * A host that supplies `shouldStop` only reports a reason. The language raises the release itself
- * so the program cannot catch it.
+ * host's boundary check returns a reason to stop. A turn handler can also raise it after binding
+ * the turn's goal and deadline. The interpreter leaves that turn pending for reattachment and
+ * records a handler fault if any other handler dispatch throws it. A workflow cannot catch an
+ * accepted release.
  */
 export class RunReleased extends Error {
   readonly code = "L5012";
 
   constructor(readonly reason: string) {
-    super(`this run was released before its next effect: ${reason}`);
+    super(`this run was released: ${reason}`);
     this.name = "RunReleased";
   }
 }

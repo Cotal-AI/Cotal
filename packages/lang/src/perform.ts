@@ -154,8 +154,7 @@ function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerd
   // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
   // driver holds its run under an absolute work horizon and may be asked to hand it back, and
   // neither is a fact about the program, so the place to stop is here, where no entry has been
-  // written and no handler dispatched. One step later would mean a pending entry for work nobody
-  // performed; inside the handler would mean settling a failure for work that really happened.
+  // written and no handler dispatched. The boundary check does not interrupt in-flight work.
   // Replays are deliberately unaffected: replaying a recorded prefix performs nothing, and a run
   // that stopped mid-journal has to be able to walk back to where it stopped.
   const stop = host.options.shouldStop?.();
@@ -364,8 +363,14 @@ export async function settleDispatchThrown(host: EffectHost, key: StepKey, frame
  * refusal rule so an at-most-once step stays pending.
  */
 async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
-  // A refused append or a host release says nothing about the step's outcome. Leave it pending.
-  if (e instanceof JournalAppendRejected || e instanceof RunReleased) throw e;
+  if (e instanceof JournalAppendRejected) throw e;
+  if (e instanceof RunReleased && key.kind === "turn") {
+    const entry = host.journal.get(key);
+    // Resume can attach only to a turn whose binding names its own goal and deadline.
+    if (entry?.state === "pending" && entry.requestId !== undefined
+      && entry.external?.goalId === entry.requestId && typeof entry.external.deadlineAt === "number"
+      && Number.isFinite(entry.external.deadlineAt)) throw e;
+  }
   if (e instanceof Cancelled) {
     await host.journal.settle(key, { status: "cancelled" }, endedAt);
     throw e;
@@ -1064,9 +1069,9 @@ export async function runScope(
         // A HOST-SIDE UNWIND IS NOT A BRANCH FAILURE. A release or a refused append must leave
         // the run exactly where the journal says it is: cancelling siblings would settle their
         // in-flight entries `cancelled`, a durable fact about a run that was merely stopped, and
-        // a resume then replays that cancellation into a healthy run. So the siblings run to
-        // their own boundary (each releases there in turn, or finishes work already in flight)
-        // and the unwind propagates bare, with nothing cancelled and nothing settled. A
+        // a resume then replays that cancellation into a healthy run. A boundary stop also stops
+        // siblings at their next live effect. A release from one turn leaves siblings running.
+        // The unwind propagates without cancelling siblings or settling the scope. A
         // divergence is the same non-fact about the branches: it says the program is not the one
         // that wrote this journal, so cancelling a sibling would record a consequence of the
         // disagreement on a run the program has no standing to speak for.
@@ -1330,7 +1335,13 @@ export async function runScope(
     const channel = option(bag, "channel") as string | undefined;
     const req: ConclaveRequest = { members, ...(channel !== undefined ? { channel } : {}) };
     const handler = host.options.handler;
-    const handle = deepFreeze(await handler.openConclave(req, ctx)) as ChannelHandleValue;
+    let handle: ChannelHandleValue;
+    try {
+      handle = deepFreeze(await handler.openConclave(req, ctx));
+    } catch (e) {
+      if (e instanceof RunReleased) throw new EffectError(e.code, "handler-fault", e.message);
+      throw e;
+    }
 
     // One body, one branch, and the branch key is the fixed literal `in` rather than the channel
     // name. The channel is HANDLER-DERIVED (the simulator and the mesh mint different ones), so
@@ -1380,6 +1391,7 @@ export async function runScope(
     try {
       await handler.closeConclave(req, ctx);
     } catch (e) {
+      if (e instanceof RunReleased) throw new ScopeFailed(new EffectError(e.code, "handler-fault", e.message), { closed: false });
       // THE CLOSE DID NOT ACKNOWLEDGE, so the scope does not settle at all. A pending entry IS
       // the durable "a close is still owed" (re-entry retries it), and settling anything here
       // would be the journal claiming a disposition the world never confirmed. The body's own

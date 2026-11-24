@@ -226,11 +226,11 @@ second time.
 
 While a turn waits, a NATS client timeout reading its result, deadline or presence is retried
 with bounded backoff. The diagnostic names `readGoalResult`, `expired` or `presenceDeath`.
-Six unanswered `readGoalResult` attempts release the run with the L4026 diagnostic and leave
-the turn and its deadline in place. Once the broker answers, resume the run to read that same
-turn's result. Six unanswered deadline or presence reads fail with L4026, and six attempts
-affected by measured host starvation fail with L4025. The counters are separate and neither
-resets during a read's retries. Other read errors are not retried.
+Six unanswered attempts on any of these reads release the run with the L4026 diagnostic and
+leave the turn and its deadline in place. Once the broker answers, resume the run to read that
+same turn's result. In `parallel` and `fanOut`, sibling branches can continue while the run waits
+for them to finish. Six attempts affected by measured host starvation fail with L4025. The counters
+are separate and neither resets during a read's retries. Other read errors are not retried.
 A turn that fails on a read claims its primary timer and
 withdraws its relay before returning, so a later yield cannot report that it continued an
 abandoned turn. A cleanup failure reports both errors without replacing L4025 or L4026 with

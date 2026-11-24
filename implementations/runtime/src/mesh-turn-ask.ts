@@ -292,12 +292,12 @@ export class TurnAsk {
     const poll = <T>(what: string, read: () => Promise<T>): Promise<T> => servedDespiteStarvation(async () => {
       if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
       return await read();
-    }, this.lag, `turn(${name}#${uid}) ${what}`, this.onStarved);
-    const result = () => poll("readGoalResult", () => readGoalResult(actx, ref)).catch((e: unknown) => {
+    }, this.lag, `turn(${name}#${uid}) ${what}`, this.onStarved).catch((e: unknown) => {
       if (!(e instanceof EffectError) || e.code !== "L4026") throw e;
       if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
       throw new RunReleased(`${e.code}: ${e.message}`);
     });
+    const result = () => poll("readGoalResult", () => readGoalResult(actx, ref));
     const expired = () => poll("expired", () => this.expired(primary));
     const decided = async (): Promise<boolean> =>
       ctx.signal.cancelled || (await result()) !== undefined || (await expired()) !== undefined;
