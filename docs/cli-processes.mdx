@@ -717,7 +717,9 @@ replies include an optional `failedProviders` list of provider URLs. The desktop
 other providers' failures as a notice when the active provider refreshed successfully.
 When a catalog name is already registered, the refresh keeps that registration and skips the
 conflicting catalog row. The daemon reports the space, its existing registration's `origin`,
-and the provider (`idp`) of the skipped row in `collisionDetails`. A row with `unavailable: true`
+and the provider (`idp`) of the skipped row in `collisionDetails`. An `origin` of `free` means a
+later account released the name during this refresh. Refresh again to import that row. An origin
+of `unreadable` means the daemon could not verify who owns the name. A row with `unavailable: true`
 cannot be imported even if the name is freed. Desktop sign-in continues, keeps usable saved spaces
 when a refresh reports a refusal, and shows what you can do about each conflict. Leave an
 unavailable space's existing registration in place and ask the catalog provider about access.
@@ -1261,6 +1263,13 @@ The daemon replies with a `status` event carrying the request `id` and the statu
 `result`. The daemon pushes another snapshot when its computer name, account state, hosted
 Manager state, hosted agent inventory, update status or pending generation changes. The stream
 ends when the connection closes.
+
+When status advertises `spacesStream: true`, a client can request `spaces` with `stream: true`.
+A large reply then sends numbered `spaces-part` events whose `text` fields form the serialized
+JSON result, followed by a `spaces-stream` result with the part count. Each line stays within
+64 KiB. Small replies still use a single result. Clients validate the count and sequence before
+using the assembled result. The daemon refuses an assembled result over 8 Mi UTF-16 code units
+rather than dropping spaces or conflicts. Clients without `stream` keep the single-reply contract.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,

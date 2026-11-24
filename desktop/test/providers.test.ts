@@ -36,6 +36,15 @@ test("an unavailable catalog collision never suggests releasing the existing nam
   assert.match(message, /foreign \(from another account’s catalog\): The catalog space is unavailable/);
   assert.doesNotMatch(message, /forget|sign out/);
 });
+test("a freed name needs only refresh and a damaged record does not hide a valid collision", () => {
+  const { message } = catalogRefreshView({ refresh: "partial", failedProviders: [], unreadable: 1, collisions: 2, collisionDetails: [
+    { space: "moving", origin: "free", idp: own }, { space: "held", origin: "manual", idp: own },
+  ] }, own);
+  assert.match(message, /registrations could not be read/);
+  assert.match(message, /moving: The name is free now\. Refresh spaces to import it/);
+  assert.match(message, /held \(registered by hand\).*cotal space forget held/);
+  assert.doesNotMatch(message, /sign out|forget moving/);
+});
 test("account follows active provider or the only supported account, not the last saved account", () => {
   const good = { idpUrl: own, mode: "account", hostSupport: "supported", spaces: [] };
   const dead = { idpUrl: other, mode: "account", hostSupport: "unknown", spaces: [] };

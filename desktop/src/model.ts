@@ -97,7 +97,7 @@ export function activeComputerAccount(account: ComputerAccount & { accounts?: Co
 
 interface SpaceCollision {
   space: string;
-  origin: "manual" | "up" | "catalog";
+  origin: "manual" | "up" | "catalog" | "free" | "unreadable";
   idp: string;
   unavailable?: true;
 }
@@ -107,7 +107,7 @@ function spaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
   if (collisionDetails === undefined && !(Number(collisions) > 0)) return [];
   if (!Array.isArray(collisionDetails) || collisionDetails.length !== collisions || !collisionDetails.every(item =>
     item && typeof item.space === "string" && item.space.length > 0 && item.space.length <= 64 && !/[^A-Za-z0-9_-]/.test(item.space) &&
-    (item.origin === "manual" || item.origin === "up" || item.origin === "catalog") && typeof item.idp === "string" &&
+    ["manual", "up", "catalog", "free", "unreadable"].includes(item.origin) && typeof item.idp === "string" &&
     (item.unavailable === undefined || item.unavailable === true))) {
     throw new Error("The background service did not identify the space name conflicts. Run cotal sync to see the names, then cotal space show <name> to check each registration.");
   }
@@ -115,6 +115,9 @@ function spaceCollisions(result: Record<string, unknown>): SpaceCollision[] {
 }
 
 function collisionNotice({ space, origin, unavailable }: SpaceCollision): string {
+  if (origin === "unreadable") return `${space}: Its registration could not be read. Check it with cotal space show -- ${space} before refreshing.`;
+  if (origin === "free") return unavailable ? `${space}: The name is free, but the catalog space is unavailable. Ask the catalog provider about access.` :
+    `${space}: The name is free now. Refresh spaces to import it.`;
   const source = origin === "catalog" ? "from another account’s catalog" : origin === "manual" ? "registered by hand" : "started on this computer";
   const label = `${space} (${source})`;
   if (unavailable) return `${label}: The catalog space is unavailable. Keep this registration and ask the catalog’s provider about access.`;
@@ -133,13 +136,14 @@ export function catalogRefreshView(result: Record<string, unknown>, provider?: s
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }
-  if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
   const collisions = spaceCollisions(result);
+  const unreadable = Number(result.unreadable) > 0 ? "Some local space registrations could not be read. They were not changed." : "";
+  if (unreadable && !collisions.length) throw new Error(unreadable);
   const active = provider && canonicalProvider(provider);
   const blockedSpaces = new Set(collisions.filter(item => !active || canonicalProvider(item.idp) === active).map(item => item.space));
-  const messages = [];
+  const messages = unreadable ? [unreadable] : [];
   if (failed?.length) messages.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
-  if (collisions.length) messages.push("These space names are already in use. You can keep your existing registrations.", ...new Set(collisions.map(collisionNotice)), "After resolving a conflict, choose Refresh spaces if available, or run cotal sync and reopen Cotal.");
+  if (collisions.length) messages.push("Some catalog spaces could not be imported.", ...new Set(collisions.map(collisionNotice)), "Choose Refresh spaces if available, or run cotal sync and reopen Cotal.");
   return { message: messages.join(" "), blockedSpaces };
 }
 

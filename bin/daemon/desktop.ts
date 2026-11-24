@@ -15,6 +15,7 @@ import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
+import { readSpacesReply, spacesReplyLines } from "./spaces-reply.js";
 
 export type DesktopRequest =
   | { readonly op: "update-policy"; readonly auto?: boolean }
@@ -379,10 +380,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const status = await queryDaemon(client);
     if (!status.ok) { emit({ ...status, event: "result" }); return; }
     if (req.op === "status") { emit({ ...status, event: "result" }); return; }
-    if (req.op === "spaces" && !req.refresh && status.result.protocol === DAEMON_PROTOCOL_VERSION) {
-      emit({ ...await exchangeDesktopRequest(client, req), event: "result" }); return;
-    }
-    if (status.result.version !== opts.version) {
+    const savedSpaces = req.op === "spaces" && !req.refresh && status.result.protocol === DAEMON_PROTOCOL_VERSION;
+    if (status.result.version !== opts.version && !savedSpaces) {
       emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
       return;
     }
@@ -394,7 +393,14 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ...result });
       return;
     }
-    const reply = await exchangeDesktopRequest(client, req);
+    const reply = await exchangeDesktopRequest(client, req, status.result.spacesStream === true);
+    if (req.op === "spaces" && reply.ok && !("event" in reply) && "kind" in reply.result && reply.result.kind === "spaces") {
+      const lines = spacesReplyLines(reply.result, data => ({ v: reply.v, id: reply.id, ok: true, ...("event" in data ? data : { event: "result", ...data }) }));
+      if (!lines) {
+        emit({ v: 1, event: "result", ok: false, error: { code: "SPACES_UNAVAILABLE", message: "The space list exceeds the reply size limit. Run cotal sync to inspect catalog conflicts." } });
+      } else for (const line of lines) await new Promise<void>((resolve, reject) => output.write(line, error => error ? reject(error) : resolve()));
+      return;
+    }
     emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
@@ -424,10 +430,17 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
   request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "spaces" } | { readonly op: "logout" } | { readonly space: string }>, { readonly op: "setup" }>,
+  streamSpaces?: boolean,
 ): Promise<DaemonResponse> {
+  if (request.op === "spaces" && streamSpaces === undefined) {
+    const status = await queryDaemon(opts);
+    if (!status.ok) return status;
+    streamSpaces = status.result.spacesStream === true;
+  }
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     const id = randomUUID().replaceAll("-", "");
+    if (request.op === "spaces" && streamSpaces) return await readSpacesReply(sock, id, request.refresh);
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
     // Service connection includes the same cold-readiness exchange as the ordinary CLI client.
     const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;

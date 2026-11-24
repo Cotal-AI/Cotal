@@ -37,7 +37,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-stop": { required: [], optional: [] },
   "managers-prepare-restart": { required: [], optional: [] },
   "managers-abort-restart": { required: [], optional: [] },
-  spaces: { required: [], optional: ["refresh"] },
+  spaces: { required: [], optional: ["refresh", "stream"] },
   "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins"] },
   logout: { required: ["idp"], optional: [] },
   "login-cancel": { required: ["attempt"], optional: [] },
@@ -68,7 +68,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-prepare-restart" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-abort-restart" }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean; readonly stream?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status-watch" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string } }
@@ -98,6 +98,7 @@ export interface DaemonUpdateStatus {
 }
 
 export interface DaemonStatus {
+  readonly spacesStream?: true;
   readonly vitals?: import("@cotal-ai/manager").ComputerVitals;
   readonly vitalsError?: string;
   readonly computer?: string;
@@ -215,19 +216,26 @@ export interface DaemonSpaces {
   readonly refresh: "not-requested" | "not-signed-in" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
-  /** Each skipped catalog row, with the source of the registration that kept the name. */
-  readonly collisionDetails?: readonly (CatalogCollision & { readonly idp: string })[];
+  /** Each skipped row and the name's owner at the end of the refresh, if still held. */
+  readonly collisionDetails?: readonly (Omit<CatalogCollision, "origin"> & {
+    readonly origin: CatalogCollision["origin"] | "free" | "unreadable";
+    readonly idp: string;
+  })[];
   readonly failedProviders?: readonly string[];
   readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
 }
 
+export interface SpacesPart { readonly event: "spaces-part"; readonly index: number; readonly text: string }
+export interface SpacesStream { readonly kind: "spaces-stream"; readonly parts: number }
+
 type Envelope = { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string | null };
 export type DaemonResponse =
-  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
+  | (Envelope & { readonly ok: true; readonly result: HostedManager | DaemonSpaces | SpacesStream | DaemonStatus | LogoutResult | CancelResult | ConnectCheckResult | RegisterResult | ServiceConnectionResult })
   | (Envelope & { readonly ok: false; readonly error: { readonly code: ProtocolErrorCode; readonly message: string; readonly remedy?: string; readonly outcome?: "failed" | "refused" | "unknown" | "partial"; readonly changed?: readonly LogoutChange[] } })
   | (Envelope & { readonly ok: true; readonly event: "login-prompt"; readonly attempt: string; readonly prompt: LoginPrompt })
   | (Envelope & { readonly ok: true; readonly event: "login-result"; readonly attempt: string; readonly result: LoginResult })
+  | (Envelope & { readonly ok: true } & SpacesPart)
   | (Envelope & { readonly ok: true; readonly event: "status"; readonly result: DaemonStatus });
 
 const ENVELOPE_KEYS = new Set(["v", "id", "op"]);
@@ -283,7 +291,8 @@ export function parseRequest(line: string): ParsedRequest {
   }
   if (op === "spaces") {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
-    return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}) } };
+    if (obj.stream !== undefined && typeof obj.stream !== "boolean") return bad(id, "stream must be a boolean");
+    return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}), ...(obj.stream !== undefined ? { stream: obj.stream } : {}) } };
   }
   if (op === "daemon-stop") {
     if (obj.commit !== undefined && typeof obj.commit !== "boolean") return bad(id, "commit must be a boolean");

@@ -471,6 +471,7 @@ test("another provider failure does not block successful sign-in", async () => {
 test("a sign-in with a collision reaches Connect with the unrelated space and the recovery notice", async () => {
   const a = await app({ installed: true, collision: true, count: 2, personal: true });
   try {
+    a.options.unreadable = 1;
     await a.click("login"); await a.login();
     assert.equal(a.node("step-caption").textContent, "Step 3 of 4");
     assert.equal(a.node("recovery-panel").hidden, true);
@@ -479,6 +480,7 @@ test("a sign-in with a collision reaches Connect with the unrelated space and th
     assert.deepEqual([...a.node<HTMLSelectElement>("space").options].map(option => option.value), ["", "other"]);
     assert.equal(a.node("notice").getAttribute("aria-hidden"), "false");
     assert.match(a.node("notice").textContent ?? "", /team \(registered by hand\).*cotal space forget team/);
+    assert.match(a.node("notice").textContent ?? "", /registrations could not be read/);
     assert.ok(!a.calls.some(r => r.op === "setup"), "sign-in does not connect any space");
   } finally { a.dom.window.close(); }
 });

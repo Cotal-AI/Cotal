@@ -29,6 +29,7 @@ import { createServiceConnections } from "./service.js";
 import { findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
+import { spacesReplyLines } from "./spaces-reply.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
@@ -175,6 +176,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     ...(account.nameWarning() ? { computerNameWarning: account.nameWarning() } : {}),
     state: "ready",
     protocol: DAEMON_PROTOCOL_VERSION,
+    spacesStream: true,
     version: opts.version,
     pid: process.pid,
     startedAt: startedAt.toISOString(),
@@ -258,9 +260,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     // requester that went away. Once the result is delivered the attempt is no longer here, so a
     // close after it changes nothing.
     const owned = new Set<string>();
-    const write = (r: DaemonResponse): Promise<void> => new Promise((resolve) => {
+    const write = (r: DaemonResponse | string): Promise<void> => new Promise((resolve) => {
       if (sock.destroyed || !sock.writable) return resolve();
-      sock.write(encode(r), () => resolve());
+      sock.write(typeof r === "string" ? r : encode(r), () => resolve());
     });
     const pendingReplies = new Set<Promise<unknown>>();
     const replyTask = (task: Promise<unknown>): void => {
@@ -386,9 +388,19 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "spaces") {
-        replyTask(desktopSpaces(machineHome, req.refresh === true).then((result) => {
+        replyTask(desktopSpaces(machineHome, req.refresh === true).then(async (result) => {
+          const reply = { v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result } as const;
+          if (!req.stream) {
+            counters.spacesAnswered++;
+            return write(reply);
+          }
+          const lines = spacesReplyLines(result, data => ({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, ...data }));
+          if (!lines) {
+            counters.requestsRefused++;
+            return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "SPACES_UNAVAILABLE", message: "the space list exceeds the reply size limit; run cotal sync to inspect catalog conflicts" } });
+          }
           counters.spacesAnswered++;
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+          for (const line of lines) await write(line);
         }, (error: unknown) => {
           counters.requestsRefused++;
           if (isCommandFailure(error) && error.code === "DEPENDENCY_UNAVAILABLE")

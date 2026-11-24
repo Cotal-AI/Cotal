@@ -1,6 +1,7 @@
 use crate::{browser_url, daemon_env_key, DesktopRequest, NODE_SIDECAR};
 use crate::native_presence;
 use crate::first_paint::{FirstPaint, ShowAction};
+use crate::spaces_reply::{SpacesReply, MAX_SPACES_OUTPUT};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tauri::{
@@ -44,6 +45,7 @@ async fn daemon_request(
 
 pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: DesktopRequest, on_event: Option<Channel<Value>>) -> Result<Value, String> {
     let is_watch = request.is_watch();
+    let is_spaces = matches!(&request, DesktopRequest::Spaces { .. });
     let _permit = if is_watch {
         None
     } else {
@@ -117,13 +119,16 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     let read_events = async {
         let mut result = None;
         let mut output_bytes = 0usize;
+        let mut diagnostic_bytes = 0usize;
+        let mut spaces = SpacesReply::default();
+        let max_output = if is_spaces { MAX_SPACES_OUTPUT } else { 4 * MAX_FRAME };
         while let Some(event) = events.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
                     if !is_watch {
                         output_bytes += line.len();
                     }
-                    if line.len() > MAX_FRAME || output_bytes > 4 * MAX_FRAME { return Err("The daemon client exceeded its response limit.".to_string()); }
+                    if line.len() > MAX_FRAME || output_bytes + diagnostic_bytes > max_output { return Err("The daemon client exceeded its response limit.".to_string()); }
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
@@ -136,13 +141,14 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                             }
                             on_event.as_ref().ok_or("Unexpected status stream without an event channel.")?.send(frame).map_err(|_| "The application closed its status view.")?;
                         }
-                        Some("result") if result.is_none() => result = Some(frame),
+                        Some("spaces-part") if is_spaces && result.is_none() => spaces.push(&frame)?,
+                        Some("result") if result.is_none() => result = Some(if is_spaces { spaces.finish(frame)? } else { frame }),
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }
                 }
                 CommandEvent::Stderr(bytes) => {
-                    output_bytes += bytes.len();
-                    if output_bytes > 4 * MAX_FRAME { return Err("The daemon client exceeded its diagnostic limit.".into()); }
+                    diagnostic_bytes += bytes.len();
+                    if diagnostic_bytes > 4 * MAX_FRAME || output_bytes + diagnostic_bytes > max_output { return Err("The daemon client exceeded its diagnostic limit.".into()); }
                     // No raw CLI diagnostics, provider output or paths are copied into the webview.
                 }
                 CommandEvent::Error(_) => return Err("The daemon client transport failed.".into()),
