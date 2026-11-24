@@ -586,6 +586,15 @@ try {
       try { envelope = JSON.parse(json.out); } catch { /* not one envelope; the check below shows it */ }
       check("  and --json carries the same message and Next", json.code === 1 && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === said && envelope.error.remedy === next && !existsSync(out), json.out);
     }
+    const dashRole = await runMint(["reader", "--role=-review!", "--out", out, "--json"]);
+    const dashError = JSON.parse(dashRole.out).error;
+    const roleOption = /such as `(--role=[^`]+)`/.exec(dashError?.remedy ?? "")?.[1];
+    check("auth mint gives the corrected dash-leading role as one option word",
+      dashRole.code === 1 && dashError?.code === "USAGE_INVALID" && roleOption === "--role=-review_" && !existsSync(out), dashRole.out);
+    const dashOut = join(root, "dash-role.creds");
+    const dashRetry = await runMint(["reader", roleOption!, "--out", dashOut, "--json"]);
+    check("the printed role option mints a credential with the corrected role",
+      dashRetry.code === 0 && JSON.parse(dashRetry.out).result?.grants?.role === "-review_" && existsSync(dashOut), dashRetry.out);
     for (const flag of [["--expires-in", "3600"], ["--expires-at", "2000000000"]]) {
       const r = await runMint(["x", "--profile", "observer", "--no-expiry", ...flag, "--out", out]);
       check(`--no-expiry with ${flag[0]} exits 1 with the reason and mints nothing`, r.code === 1 && /--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at/.test(r.out) && !existsSync(out) && !existsSync(`${out}.no-expiry.json`), r.out);

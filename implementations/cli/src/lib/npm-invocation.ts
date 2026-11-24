@@ -7,6 +7,22 @@ import { logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 
+let updatePath: { value: string; directories: string[] } | undefined;
+
+export function preserveUpdatePath(): void {
+  const path = process.env.PATH;
+  if (path === undefined || path === updatePath?.value) return;
+  const windows = process.platform === "win32";
+  const directories = path.split(delimiter)
+    .map(dir => isAbsolute(dir) || (dir === "" && windows) ? dir : resolve(dir));
+  // An empty POSIX entry resolves like `.`. A resolved directory with a colon can be
+  // searched as a literal path, but cannot be represented in the child's PATH.
+  const serializable = windows ? directories : directories.filter(dir => !dir.includes(delimiter));
+  const value = serializable.join(delimiter);
+  updatePath = serializable.length === directories.length ? undefined : { value, directories };
+  process.env.PATH = value;
+}
+
 function npmEngine(file: string): { entry: string; range: string } | undefined {
   try {
     let entry = realpathSync(file);
@@ -42,18 +58,28 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
     ? Object.keys(env).find(key => key.toLowerCase() === "path") ?? "PATH" : "PATH";
   const path = env[pathKey];
   if (path === undefined) return { file: "npm", args, env, cwd };
-  const directories = path.split(delimiter).map(dir => resolve(cwd, dir));
-  const lookup = { ...env, [pathKey]: directories.join(delimiter) };
-  const file = resolveOnPath("npm", windows ? env : lookup);
+  const literal = updatePath?.value === path ? updatePath.directories : undefined;
+  const directories = literal ?? path.split(delimiter).map(dir => resolve(cwd, dir));
+  const lookup = literal ? env : { ...env, [pathKey]: directories.join(delimiter) };
+  const inDirectory = (dir: string, bin: string) => literal
+    ? resolveOnPath(join(dir, bin)) : resolveOnPath(bin, { ...env, [pathKey]: dir });
+  let file: string | undefined;
+  if (literal) {
+    for (const dir of literal) {
+      file = inDirectory(dir, "npm");
+      if (file) break;
+    }
+  } else file = resolveOnPath("npm", windows ? env : lookup);
   if (!file) return { file: "npm", args, env, cwd };
   const engine = npmEngine(file);
-  const withNode = (node: string) => ({ ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` });
+  const withNode = (node: string) => literal && dirname(node).includes(delimiter) ? env
+    : { ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` };
   if (engine && !satisfies(process.version, engine.range)) {
     const current = realpathSync(process.execPath);
     const seen = new Set<string>();
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
-    for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => resolveOnPath("node", { ...env, [pathKey]: dir }))]) {
+    for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => inDirectory(dir, "node"))]) {
       if (!candidate || seen.has(candidate)) continue;
       seen.add(candidate);
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
@@ -65,6 +91,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   }
   if (windows) return { file: "npm", args, env, cwd };
   const node = resolveOnPath("node", lookup);
-  if (node && realpathSync(node) === realpathSync(process.execPath)) return { file: "npm", args, env, cwd };
+  if (node && realpathSync(node) === realpathSync(process.execPath))
+    return { file: literal ? file : "npm", args, env, cwd };
   return { file, args, env: withNode(process.execPath), cwd };
 }

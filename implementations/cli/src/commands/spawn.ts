@@ -3,7 +3,6 @@ import { realpathSync, rmSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
-  assertValidChannel,
   assertValidRole,
   connectorServers,
   spawnEnvAllow,
@@ -42,7 +41,6 @@ import {
   type CleanupFailure,
 } from "@cotal-ai/core";
 import {
-  parseCommaList,
   CommandFailure,
   loadLaunchPersonaFile,
   personaFileReference,
@@ -73,6 +71,7 @@ import {
   seatExpiryAt,
 } from "@cotal-ai/workspace";
 import { c, stderrLine } from "../ui.js";
+import { parseChannelFlag } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -103,8 +102,8 @@ import {
   registerEnrollmentMesh,
   noExchangeEndpoint,
 } from "./spawn-enrollment.js";
-import { spawnFlags, spawnRerun } from "./spawn-flags.js";
-import { connectorListed, refuseUnmintableName, launchManagedPersona, reportAlreadyRunning } from "./spawn-managed-launch.js";
+import { refuseDirectSpawnName, spawnFlags, spawnRerun } from "./spawn-flags.js";
+import { connectorListed, launchManagedPersona, reportAlreadyRunning } from "./spawn-managed-launch.js";
 import { uniqueMeshName, provisionFreshForeground, provisionRemoteUserForeground, provisionUserForeground } from "./spawn-foreground.js";
 export { runBearerPreflight } from "./spawn-foreground.js";
 export { launchServedHere, managedLaunchView, launchManagedPersona } from "./spawn-managed-launch.js";
@@ -249,21 +248,10 @@ export function validateSpawnArguments(args: ParsedArgs) {
     parseShareSelection(values["share-tools"]);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "invalid launch options, native role or tool-sharing selection; use declared keys and unique key=value option pairs"); }
   const channels = {
-    subscribe: parseCommaList(values.subscribe),
-    "allow-subscribe": parseCommaList(values["allow-subscribe"]),
-    "allow-publish": parseCommaList(values["allow-publish"]),
+    subscribe: parseChannelFlag("--subscribe", values.subscribe, true),
+    "allow-subscribe": parseChannelFlag("--allow-subscribe", values["allow-subscribe"], true),
+    "allow-publish": parseChannelFlag("--allow-publish", values["allow-publish"], true),
   };
-  for (const [flag, list] of Object.entries(channels)) {
-    for (const channel of list ?? []) {
-      try { assertValidChannel(channel); }
-      catch (error) {
-        throw new CommandFailure("refused", "USAGE_INVALID", `--${flag}: ${oneLine((error as Error).message)}`, {
-          selfContained: true,
-          ...(channel.startsWith("#") ? { remedy: `pass the channel without its #, as ${JSON.stringify(channel.slice(1))}` } : {}),
-        });
-      }
-    }
-  }
   if (channels.subscribe !== undefined && channels["allow-subscribe"] !== undefined) {
     try { resolveReadAcl(channels.subscribe, channels["allow-subscribe"]); }
     catch (error) {
@@ -294,6 +282,19 @@ export function validateSpawnArguments(args: ParsedArgs) {
  *  the hook stays root-free exactly as it was before #869. */
 export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRef[] {
   return [];
+}
+
+function reportDirectPersonaReadFailure(path: string, code: string | undefined, space: string, error: unknown): void {
+  const target = { space, path };
+  const broken = code === "ENOTDIR" ? brokenPersonaLink(path, target) : undefined;
+  if (broken) {
+    stderrLine("✗ ", broken.message, c.red);
+    stderrLine("  ", broken.remedy!, c.dim);
+    return;
+  }
+  const unreadable = unreadablePersona(path, code, target);
+  if (unreadable) throw unreadable;
+  stderrLine("✗ ", (error as Error).message, c.red);
 }
 
 /**
@@ -559,9 +560,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
           target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
         });
       } else {
-        const unreadable = unreadablePersona(path, code, { space, path });
-        if (unreadable) throw unreadable;
-        stderrLine("✗ ", `${(e as Error).message}`, c.red);
+        reportDirectPersonaReadFailure(path, code, space, e);
       }
       process.exit(1);
     }
@@ -600,7 +599,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   // #867: same door as the detached path — the effective identity (flag or file) must be mintable
   //  before any provision work; core's own refusal names the offender and the `_` remedy.
-  refuseUnmintableName(requested, target.mode === "user");
+  refuseDirectSpawnName(requested, target.mode === "user", path, values, positionals);
   // #581: the same per-role model allowlist the manager enforces on a detached spawn, judged on the
   // effective role, model (flag over file) and launch options before anything is provisioned or launched.
   let cotalConfig: CotalConfig;

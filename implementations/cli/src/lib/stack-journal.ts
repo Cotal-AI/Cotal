@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
-import { CommandFailure, MANAGER_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
+import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, processServiceHost, serviceInstances, type ServiceInstance, type ServiceInstanceSnapshot } from "./service-instances.js";
@@ -934,6 +934,20 @@ export const localRecordLine = (row: LocalRecord): string => `${row.name} at ${r
  *  `reused` record fronts nothing, and `up` removes it instead. */
 export function foreignLocalProcesses(root: string, space: string): string[] {
   return localRecords(root, space).filter((row) => row.state === "live").map((row) => `${row.name}${row.pid === undefined ? " (unattributable record)" : ` (pid ${row.pid})`}`);
+}
+
+/** The controller treats a legacy broker PID file as a blocker even when its PID is not a broker. */
+export function legacyBrokerPidfileBlock(root: string): { message: string; remedy: string } | undefined {
+  const path = join(root, ".cotal", NATS_PIDFILE);
+  if (!existsSync(path)) return undefined;
+  const record = readContainedRecord(root, path);
+  const pid = record.state === "content" ? parsePid(record.raw) : undefined;
+  const detail = pid === undefined ? "" : `; it records PID ${pid}${hasNonNatsExecutable(pid) ? ", whose current executable is not nats-server" : ""}`;
+  const inspect = pid === undefined ? "check whether it names a running broker" : `check the executable and command line of PID ${pid}`;
+  return {
+    message: `the legacy broker PID file ${path} blocks controller startup${detail}`,
+    remedy: `Inspect ${path} and ${inspect}. Only if you verify that the file does not belong to a running broker, set it aside outside .cotal and repeat your startup command`,
+  };
 }
 
 /** The live records under the root whose process is a running service instance of the space outside

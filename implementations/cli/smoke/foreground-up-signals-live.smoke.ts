@@ -13,6 +13,7 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * After a root is moved, SIGHUP names a stop by space from another folder, and SIGTERM stops it.
  * A broker crash releases a controller foreground hold with a failed exit and prints a repair
  * command that keeps a broker-only stack broker-only.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
@@ -22,15 +23,17 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
 import { readStackJournal } from "../src/lib/stack-journal.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
@@ -928,11 +931,13 @@ async function checkMovedRootStop(moved: string, home: string, env: NodeJS.Proce
   assert.equal(await portOpen(port), false, "the stopped stack's broker is gone"); passed++;
 }
 
-async function movedRootSignalCell(): Promise<void> {
-  const root = join(base, "controller-moved-root-signal"), mesh = join(root, "project"), moved = `${mesh} moved`;
+async function movedRootSignalCell(mode: "sigterm" | "relative-path" | "absolute-path"): Promise<void> {
+  const signal = mode === "sigterm" ? "SIGTERM" : "SIGHUP";
+  const name = `controller-moved-root-${mode}`;
+  const root = join(base, name), mesh = join(root, "project"), moved = `${mesh} moved`, outside = join(root, "outside");
   const home = join(root, "home"), space = "foreground-moved-root-signal", port = await freePort();
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  for (const dir of [mesh, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const env = { ...cleanEnv, PATH: process.env.PATH, HOME: home, COTAL_HOME: join(home, "owner's machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", "."]);
   assert.equal(created.code, 0, created.out + created.err);
@@ -942,8 +947,9 @@ async function movedRootSignalCell(): Promise<void> {
     return foregroundCliProbe(cliEntry, tsx, mesh, env, args, 120_000);
   };
   const children: { child: ChildProcess; state: ReturnType<typeof observeOwnedChild> }[] = [];
-  const start = async (...args: string[]) => {
-    const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const cli = [process.execPath, "--import", tsx, cliEntry] as const;
+  const start = async ([program, ...prefix]: readonly [string, ...string[]], ...args: string[]) => {
+    const child = spawn(program, [...prefix, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     const state = observeOwnedChild(child);
     children.push({ child, state });
     let out = "", err = "";
@@ -959,24 +965,43 @@ async function movedRootSignalCell(): Promise<void> {
   };
   let confirmed = false;
   try {
-    const initial = await start("--server", `nats://127.0.0.1:${port}`);
+    const initial = await start(cli, "--server", `nats://127.0.0.1:${port}`);
     const stopped = await down();
     assert.equal(stopped.code, 0, stopped.out + stopped.err);
     await until(() => initial.state.closed, 10_000, initial.log);
     assert.equal(initial.state.code, 0, initial.log());
-    const holder = await start("--root", mesh);
+    if (mode !== "sigterm") env.PATH = projectHangupPath(mesh, root, mode, env.PATH);
+    const holder = await start(signal === "SIGHUP" ? ["cotal"] : cli, "--root", mesh);
     const pins = readStackJournal(mesh)?.journal.members.flatMap(({ process }) => process ? [process] : []);
     assert.ok(pins?.length === 3 && pins.every(live), holder.log());
     assert.equal(await portOpen(port), true, holder.log());
     renameSync(mesh, moved);
-    assert.ok(holder.child.kill("SIGTERM"), holder.log());
+    assert.ok(holder.child.kill(signal), holder.log());
     await until(() => holder.state.closed, 120_000, holder.log);
-    assert.equal(holder.state.code, 143, holder.log()); passed++;
-    assert.match(holder.log(), /Stack stopped; its folder was gone/); passed++;
+    assert.equal(holder.state.code, signal === "SIGHUP" ? 129 : 143, holder.log()); passed++;
+    let stopOutput = holder.log();
+    if (signal === "SIGHUP") {
+      const command = /The terminal closed\. This stack is still running; run `([^`\n]+)` from another folder to stop it\./.exec(stopOutput)?.[1];
+      assert.ok(pins.every(live) && await portOpen(port), "the hangup left every stack member running"); passed++;
+      const args = ["down", "--space", space, "--yes"];
+      assert.ok(command, stopOutput);
+      const loaderPath = realpathSync(fileURLToPath(tsx));
+      const loader = mode === "relative-path" ? loaderPath : pathToFileURL(loaderPath).href;
+      const launcher = [realpathSync(process.execPath), "--import", loader, realpathSync(cliEntry), ...args];
+      assert.equal(command, `COTAL_HOME=${shellWord(env.COTAL_HOME)} ${launcher.map(shellWord).join(" ")}`, stopOutput); passed++;
+      const outsideSandbox = recordSmokeSandbox({ root: outside, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+      const shellEnv: NodeJS.ProcessEnv = { ...env };
+      delete shellEnv.COTAL_HOME;
+      assertSmokeSandboxDown(outsideSandbox, args, { cwd: outside, env });
+      const stopped = spawnSync("/bin/sh", ["-c", command], { cwd: outside, env: shellEnv, encoding: "utf8", timeout: 120_000 });
+      assert.equal(stopped.status, 0, stopped.error?.message ?? stopped.stdout + stopped.stderr); passed++;
+      stopOutput = stopped.stdout;
+    }
+    assert.match(stopOutput, /Stack stopped; its folder was gone/); passed++;
     assert.ok(pins.every((pin) => !live(pin)), holder.log()); passed++;
     assert.equal(await portOpen(port), false, holder.log()); passed++;
     confirmed = true;
-    console.log("PASS foreground-up-signals controller-moved-root-signal");
+    console.log(`PASS foreground-up-signals ${name}`);
   } finally {
     for (const { child, state } of children) if (!state.exited) child.kill("SIGKILL");
     if (!confirmed) {
@@ -987,6 +1012,19 @@ async function movedRootSignalCell(): Promise<void> {
       await down();
     }
   }
+}
+
+function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "absolute-path", path: string | undefined): string {
+  const tools = join(mesh, "tools"), other = join(root, "other-bin");
+  for (const dir of [tools, other]) mkdirSync(dir, { mode: 0o700 });
+  const entryLink = join(tools, "entry.ts");
+  symlinkSync(cliEntry, entryLink);
+  const loader = mode === "relative-path" ? join(tools, "local tsx.mjs") : tsx;
+  if (mode === "relative-path") symlinkSync(fileURLToPath(tsx), loader);
+  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", loader, entryLink].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
+  writeFileSync(join(other, "cotal"), "#!/bin/sh\necho 'wrong cotal' >&2\nexit 99\n", { mode: 0o700 });
+  const inherited = (path ?? "").split(":").filter((dir) => dir.startsWith("/"));
+  return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");
 }
 
 async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
@@ -1067,6 +1105,8 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
         if (taker!.state.exited) throw new Error(`the repair exited: ${taker!.io.err}`);
         return /Operation: +up completed/.test(taker!.io.out);
       }, 120_000, () => taker!.io.err.slice(-3000));
+      assert.match(taker.io.out, /This terminal holds the stack's lifetime/);
+      assert.doesNotMatch(taker.io.out, /This stack is already running/); passed++;
       assert.equal(await portOpen(port), true, "the next foreground up repairs the recorded listener"); passed++;
       if (brokerOnly) {
         const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--json"]);
@@ -1259,9 +1299,10 @@ async function userAuthRestartCell(): Promise<void> {
   await listening;
   try {
     const space = "restart-user-auth", port = await freePort(), server = `nats://127.0.0.1:${port}`;
-    const restart = ["--user-auth", "--space", space, "--server", server];
     const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
-    const invalid = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager", ...restart,
+    const restart = ["--user-auth", "--space", space, "--server", server];
+    const foreground = ["--foreground", "--no-manager", ...restart];
+    const invalid = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground,
       "--idp", idpUrl, "--exchange-public-port", String(await freePort()), "--exchange-public-url", "http://127.0.0.1"]);
     assert.equal(invalid.code, 1, invalid.out + invalid.err);
     assert.match(invalid.err, /--exchange-public-url must be an https:\/\/ URL/);
@@ -1277,7 +1318,9 @@ async function userAuthRestartCell(): Promise<void> {
         await until(async () => {
           if (state.error) throw state.error;
           if (state.exited) throw new Error(output);
-          return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+          return output.includes("Press Ctrl-C to stop.") && /✓ user-auth service up - sign in with: `(?:pnpm )?cotal login --idp /.test(output) &&
+            output.includes(`--idp ${idpUrl}\``) &&
+            !existsSync(join(mesh, ".cotal", "maintenance", "lock.json")) && await portOpen(port);
         }, 90_000, () => output);
       } finally {
         if (!state.exited) child.kill("SIGTERM");
@@ -1286,12 +1329,27 @@ async function userAuthRestartCell(): Promise<void> {
       assert.equal(state.code, 143, output);
       assert.equal(await portOpen(port), false, output);
     };
-    await bootAndStop(["--foreground", "--no-manager", ...restart, "--idp", idpUrl]);
+    await bootAndStop([...foreground, "--idp", idpUrl]);
+    const pinPath = join(userAuthStateDir(mesh, space, { readOnly: true }), "idp.json");
+    const pin = readFileSync(pinPath);
+    const otherIdp = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/different`;
+    const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground, "--idp", otherIdp]);
+    const conflictText = (conflict.out + conflict.err).replace(/\s+/g, " ");
+    assert.equal(conflict.code, 2, conflictText);
+    assert.match(conflictText, /AUTH_PREFLIGHT_CONFLICT/);
+    assert.match(conflictText, /retry the same start without `--idp`/);
+    assert.match(conflictText, /keep `--user-auth` and the other startup options/);
+    assert.ok(!conflictText.includes(otherIdp), conflictText);
+    assert.doesNotMatch(conflictText, /run bare `(?:pnpm )?cotal up`/);
+    assert.equal(await portOpen(port), false, conflictText);
+    assert.deepEqual(readFileSync(pinPath), pin);
+    await bootAndStop(foreground);
+    assert.deepEqual(readFileSync(pinPath), pin);
     for (const args of [["whoami"], ["send", "--server", server, "-c", "general", "test message"]]) {
       const r = await foregroundCliProbe(cliEntry, tsx, mesh, env, [...args, "--space", space, "--plain"]);
       const text = (r.out + r.err).replace(/\s+/g, " ");
       assert.equal(r.code, 2, text);
-      assert.ok(text.includes(`cotal up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}`), text);
+      assert.ok(["cotal", "pnpm cotal"].some((cli) => text.includes(`\`${cli} up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}\``)), text);
     }
     const downArgs = ["down", "--yes", "--plain"];
     assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
@@ -1348,6 +1406,10 @@ await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");
-if (process.platform === "linux") await movedRootSignalCell();
+if (process.platform === "linux") {
+  await movedRootSignalCell("sigterm");
+  await movedRootSignalCell("relative-path");
+  await movedRootSignalCell("absolute-path");
+}
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

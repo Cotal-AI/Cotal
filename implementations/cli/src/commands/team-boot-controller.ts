@@ -128,7 +128,7 @@ export async function controllerTeamBoot(request: ControllerTeamBootRequest): Pr
     return startTeamBoot(request, plan, binding, lock);
   };
   try {
-    if (request.foreground) await holdForegroundStack(plan.root, start);
+    if (request.foreground) await holdForegroundStack(plan.root, plan.space, start);
     else await start();
   } finally {
     // A failed foreground claim never entered startTeamBoot to release the lock.

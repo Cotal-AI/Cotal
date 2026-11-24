@@ -351,6 +351,18 @@ if (process.platform !== "win32") {
     && envelope.error.code === "TARGET_NOT_FOUND" && /existing endpoint contract file/.test(envelope.error.remedy)
     && text.every((r) => r.status === 2 && r.stdout === "" && r.stderr.includes(path) && r.stderr.includes(envelope.error.remedy))
     && corrected.status === 0 && JSON.parse(corrected.stdout).outcome === "ok", { text: text.map(shown), json: shown(json), corrected: shown(corrected) });
+
+  const unknown = run(["ep", "check", "reviews/contract.json", "--json", "--no-such-option"], {}, cwd);
+  check("endpoint check with a contract already supplied tells the caller to drop the unknown option",
+    unknown.status === 1 && parsed(unknown)?.error?.remedy === "drop the unknown option"
+    && corrected.status === 0, { refusal: shown(unknown), retry: shown(corrected) });
+  const dashContract = "--no-such-option";
+  writeFileSync(join(cwd, dashContract), readFileSync(join(cwd, "reviews/contract.json")));
+  const unfilled = run(["endpoint", "check", "--json", dashContract], {}, cwd);
+  const afterSeparator = run(["endpoint", "check", "--json", "--", dashContract], {}, cwd);
+  check("endpoint check still suggests the separator when the contract operand is missing",
+    unfilled.status === 1 && parsed(unfilled)?.error?.remedy?.includes("put -- before it") === true && afterSeparator.status === 0,
+    { refusal: shown(unfilled), retry: shown(afterSeparator) });
 }
 
 const referenceProject = join(home, "endpoint-reference");
@@ -757,6 +769,9 @@ for (const [args, usage, foreign] of [
       refused.status === 2 && receipt.schemaVersion === 1 && receipt.command === "endpoint" && receipt.outcome === "refused" &&
       receipt.target?.capability === "work" && receipt.target.operation === operation && receipt.error?.code === "UNSUPPORTED", shown(refused));
   }
+  const badLeaseFlag = run(["endpoint", "work", "lease", "ep:example", "review", "--no-such-option", "--json"]);
+  check("endpoint work lease does not suggest an extra operand when given an unknown option",
+    badLeaseFlag.status === 1 && parsed(badLeaseFlag)?.error?.remedy === "drop the unknown option", shown(badLeaseFlag));
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
   // in the folder of a space prepared there, which needs no stack. Without --subscribe the refusal
