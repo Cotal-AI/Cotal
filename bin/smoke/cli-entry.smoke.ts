@@ -1377,13 +1377,13 @@ require('node:module').syncBuiltinESMExports();`);
   const noLedger = cotal(["down", "-f", manifest, "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
-  for (const [file, code, remedy] of [["absent.yaml", "TARGET_NOT_FOUND", "check the file path"], ["old.yaml/child", "TARGET_NOT_FOUND", "check the file path"], [".", "USAGE_INVALID", "name the manifest file in it"]] as const) {
+  for (const [file, code, remedy] of [["absent.yaml", "TARGET_NOT_FOUND", "check the file path"], [`${manifest}/child`, "TARGET_NOT_FOUND", "check the file path"], [".", "USAGE_INVALID", "name the manifest file in it"]] as const) {
     const r = cotal(["down", "-f", file, "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
     const error = envelopes(r)[0]?.error;
     check(`no-ledger preview classifies the manifest path ${file} before reading its contents`, error?.code === code && error.remedy?.includes(remedy) === true && r.status !== 0, shown(r));
   }
   if (process.platform !== "win32" && process.getuid?.() !== 0) {
-    const r = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => { prepare(home, false); chmodSync(join(dirname(home), "old.yaml"), 0o000); }, noSeed);
+    const r = cotal(["down", "-f", manifest, "--dry-run", "--json"], (home) => { prepare(home, false); chmodSync(join(dirname(home), manifest), 0o000); }, noSeed);
     check("no-ledger preview reports an unreadable manifest before persona validation", r.status === 2 && envelopes(r)[0]?.error?.code === "PERMISSION_DENIED", shown(r));
   }
   // A new project records no stack and no ledger, so there is no run ID to offer.
