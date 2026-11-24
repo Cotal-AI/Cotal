@@ -155,7 +155,7 @@ try {
     await wait(3_300); // the previous notice auto-clears after 3 s; a stale one must not match
     m = s.mark();
     await s.command(`status ${seat}`);
-    if (await s.waitFor(new RegExp(`${seat} \\(role: worker\\) · seat · pty · running`), 20_000, m)) hits++;
+    if (await s.waitFor(`${seat} (role: worker) · seat · pty · running`, 20_000, m)) hits++;
     else console.log(`    status ${seat} answered: ${clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? "(nothing)"}`);
   }
   await wait(3_300);

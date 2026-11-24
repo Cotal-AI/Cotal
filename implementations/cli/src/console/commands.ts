@@ -4,7 +4,7 @@
 // they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
-import { mentionsIn, resolvePeer, AmbiguousPeerError, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { mentionsIn, AmbiguousPeerError, PeerAddressError, type CotalEndpoint, type ResolvedPeerAddress } from "@cotal-ai/core";
 import { consoleLabel } from "./label.js";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
@@ -70,13 +70,13 @@ export function formatManagedRow(a: ManagedRow): string {
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:
  *  an exact id or a unique name resolves; a same-name collision throws `AmbiguousPeerError`
  *  (the caller renders {@link ambiguityNote}). */
-function idOf(snap: MeshSnapshot, name: string): string | undefined {
-  return peerOf(snap, name)?.card.id;
+async function idOf(ctx: CommandCtx, name: string): Promise<string | undefined> {
+  return (await peerOf(ctx, name))?.card.id;
 }
 
 /** {@link idOf}, keeping the roster row so a caller can read its status. */
-function peerOf(snap: MeshSnapshot, name: string): Presence | undefined {
-  return resolvePeer([...snap.agents, ...snap.endpoints], name.replace(/^@/, ""));
+function peerOf({ ep, snapshot }: CommandCtx, name: string): Promise<ResolvedPeerAddress | undefined> {
+  return ep.resolvePeerAddress(name.replace(/^@/, ""), { roster: [...snapshot.agents, ...snapshot.endpoints] });
 }
 
 /** One-line note for the transient status bar when a name matched several peers. */
@@ -119,16 +119,18 @@ export const COMMANDS: ConsoleCommand[] = [
     run: async (ctx, rest) => {
       const m = rest.match(/^@?(\S+)\s+([\s\S]+)/);
       if (!m) return ctx.notify("usage: dm <@agent> <text>");
-      let peer: Presence | undefined;
+      let peer: ResolvedPeerAddress | undefined;
       try {
-        peer = peerOf(ctx.snapshot, m[1]);
+        peer = await peerOf(ctx, m[1]);
       } catch (e) {
         if (e instanceof AmbiguousPeerError) return ctx.notify(ambiguityNote(e));
+        if (e instanceof PeerAddressError) return ctx.notify(e.message);
         throw e;
       }
       if (!peer) return ctx.notify(`no agent "${m[1]}"`);
       if (!(await ctx.ensureParticipant())) return;
-      await ctx.ep.unicast(peer.card.id, m[2]);
+      const { ack } = await ctx.ep.unicastAttributed(peer.card.id, m[2]);
+      if (m[1].includes("/")) return ctx.notify(`DM stored at sequence ${ack.seq} for ${peer.card.id}.`);
       const name = m[1].replace(/^@/, "");
       ctx.notify(peer.status === "offline" ? `→ ${name}  ${offlineRecipientNotice(peer.card.name)}` : `→ ${name}`);
     },
@@ -142,16 +144,17 @@ export const COMMANDS: ConsoleCommand[] = [
       const name = rest.replace(/^@/, "").trim().split(/\s+/)[0] ?? "";
       let id: string | undefined;
       try {
-        id = idOf(ctx.snapshot, name);
+        id = await idOf(ctx, name);
       } catch (e) {
         if (e instanceof AmbiguousPeerError) return ctx.notify(ambiguityNote(e));
+        if (e instanceof PeerAddressError) return ctx.notify(e.message);
         throw e;
       }
       if (!id) return ctx.notify(`no agent "${name}"`);
       if (!(await ctx.ensureParticipant())) return;
-      await ctx.ep.unicast(id, "👋 ping");
+      const { ack } = await ctx.ep.unicastAttributed(id, "👋 ping");
       ctx.setMode("dm");
-      ctx.notify(`called ${name}`);
+      ctx.notify(name.includes("/") ? `DM stored at sequence ${ack.seq} for ${id}.` : `called ${name}`);
     },
   },
   {

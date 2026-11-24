@@ -77,6 +77,11 @@ try {
   if (back && !("refused" in back)) await publish(session, back, "yes");
   const dmAnswer = await heardText("yes");
   check("a reply to the agent's DM goes back as a DM with the DM's id", dmAnswer !== undefined && dmAnswer.channel === undefined && dmAnswer.replyTo === dm.id, dmAnswer);
+
+  const bare = await session.dm("PLANNER", "open bare address");
+  check("the no-login open space still reaches a bare name case-insensitively", bare.outcome === "stored" && !!await heardText("open bare address"), bare);
+  const qualified = await session.dm("someone/planner", "not sent on open");
+  check("the open space refuses a qualified target with its sign-in requirement", qualified.outcome === "refused" && qualified.code === "USAGE_INVALID" && qualified.message.includes("signed-in space"), qualified);
 } finally {
   for (const stop of stops) await stop().catch(() => undefined);
   await killAndAwaitExit(srv, "SIGKILL");

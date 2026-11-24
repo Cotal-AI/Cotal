@@ -41,6 +41,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { assertValidKind } from "./agent-file.js";
 import { assertValidName } from "./resolve.js";
+import { PeerAddressError, requireQualifiedDmVersion, resolvePeerAddress, type ResolvedPeerAddress } from "./peer-address.js";
 import { readUsername } from "./username-registry.js";
 import {
   JetStreamApiCodes,
@@ -315,10 +316,6 @@ export class CotalEndpoint extends EventEmitter {
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
     this.identity.space = opts.space;
-    // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
-    // (the future owner/name separator) and surrounding whitespace at the one identity choke
-    // point every join/spawn path flows through. A role is an address too, refused here before
-    // presence can advertise it.
     assertValidName(opts.card.name);
     assertValidKind(opts.card.kind);
     if (opts.card.role !== undefined) assertValidRole(opts.card.role);
@@ -787,14 +784,8 @@ export class CotalEndpoint extends EventEmitter {
 
   private stopOnce(): Promise<void> { return this.connection.stopOnce(); }
 
-  /** The native binding of every connection this endpoint holds. A host compares the list with a
-   *  complete native census of the account to show that no other connection uses it. The list
-   *  proves neither liveness nor the absence of other connections. A stopped endpoint whose
-   *  connections all closed reports none. It throws while there is no settled answer: before
-   *  start, during a start, rebuild or stop, while a credential transaction or its connection swap
-   *  is pending, and while the connection is down or redialing. */
+  /** Native bindings for an account census. Throws while a connection transition is unsettled. */
   nativeConnections(): NativeConnectionBinding[] { return this.connection.nativeConnections(); }
-
   /** An owner's reciprocal username registry binding on this connection. */
   readUsername(owner: string): Promise<string | undefined> { return this.conn.nc ? readUsername(this.conn.nc, this.space, owner) : Promise.reject(new Error(this.notLiveMsg())); }
 
@@ -1195,6 +1186,15 @@ export class CotalEndpoint extends EventEmitter {
 
   getRoster(): Presence[] {
     return this.presence.getRoster();
+  }
+
+  /** Resolve a typed address with this endpoint's bound messaging authority. */
+  async resolvePeerAddress(target: string, { roster = this.getRoster(), selfId }: { roster?: readonly Presence[]; selfId?: string } = {}): Promise<ResolvedPeerAddress | undefined> {
+    if (!this.identity.userMode) return resolvePeerAddress(roster, target, { authority: { mode: this.authed ? "static" : "open" }, selfId });
+    const nc = this.conn.nc;
+    if (!nc || !this.conn.nativeBound) throw new PeerAddressError(target, "TARGET_UNAVAILABLE", this.notLiveMsg());
+    const peer = await resolvePeerAddress(roster, target, { authority: { mode: "user", ...this.principal, space: this.space, nc }, selfId });
+    return requireQualifiedDmVersion(target, peer, () => this.liveness.probeLiveness("delivery"));
   }
 
   /**
@@ -2425,8 +2425,8 @@ export class CotalEndpoint extends EventEmitter {
    *  and stood down — a responder that reports its intent instead of its state, which is the whole
    *  family of bug this issue is about. */
   serveDeliveryLiveness(shardIndex = 0): void {
-    this.serveLiveness("delivery", async () =>
-      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id));
+    this.liveness.serveLiveness("delivery", async () =>
+      responderFromLease(await this.readDeliveryLease(shardIndex), this.card.id), 1);
   }
 
   /** Ask whether a responder is bound for `plane`, as a credentialed peer that need not own it.

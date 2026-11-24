@@ -171,10 +171,21 @@ The dashboard marks stale presence when its own poll fails.
 `mesh unknown (manager's presence view not yet populated)` instead of a peer liveness verdict when the manager's view is unsafe.
 The [CLI reference](cli.mdx) describes the command.
 
-The shared connector checks DM targets and mentioned names against a fresh presence read.
-An unknown name after a failed read refuses the DM or the whole channel send, naming the read failure.
-It does not call the peer absent. A name known from a previous successful read remains usable.
-An authenticated sender retained by the connector can still receive a reply without a roster row.
+The shared connector reads presence for bare DM targets and mentioned names. It classifies DM targets before looking up a recipient.
+An unknown bare target after a failed read refuses the DM, naming the read failure rather than calling the peer absent.
+A bare target already known from a successful presence read remains usable under the same owner rule.
+In a signed-in space, an exact principal does not need a roster row. Open and static meshes require
+an exact principal to be in the roster or to have sent the session a message. If the roster read succeeds
+but neither condition holds, the send returns `TARGET_NOT_FOUND` and does not publish.
+In a signed-in space, `user/agent` resolves from the username registry without reading presence.
+The username is case-insensitive and the actor is case-sensitive.
+A denied registry read returns `PERMISSION_DENIED`, an unavailable read returns `TARGET_UNAVAILABLE`,
+and a successful lookup for an unknown username or unused reservation returns `TARGET_NOT_FOUND`. None publishes a DM.
+In a signed-in space, a qualified send or a send to an unobserved exact principal returns the
+stored sequence without claiming that a recipient exists or read the message.
+The connector refuses qualified input before publishing if the delivery responder does not advertise support.
+An address refusal reports its code in the text and carries `code`, `target`, and `addresses` in the structured result.
+Reply to an authenticated sender by its exact principal, not its remembered display name.
 An unknown name after a successful read receives the ordinary unknown-peer refusal.
 
 ## Send receipts [#send-receipts]

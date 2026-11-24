@@ -4,13 +4,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   normalizeMentions,
-  parsePrincipalKey,
   isConcreteChannel,
-  resolvePeer as resolvePeerInRoster,
-  shownPeerName,
+  parsePeerAddress,
+  parsePrincipalKey,
+  PeerAddressError,
   type AnycastStatus,
   assertValidRole,
   type Presence,
+  type ResolvedPeerAddress,
   type CotalMessage,
 } from "@cotal-ai/core";
 import { attributionSafe } from "./framing.js";
@@ -20,6 +21,7 @@ import type { Correlation, MeshAgent } from "./agent.js";
 /** How many unanswered directed messages, asked questions, and DM or anycast senders one session
  *  remembers for reply correlation. */
 const MAX_CORRELATIONS = 1024;
+const directedKey = (sender: string, id: string): string => JSON.stringify([sender, id]);
 /** How many present names a DM miss lists before it starts counting them instead. */
 const NAMED_SIMILAR = 5;
 
@@ -74,6 +76,7 @@ export interface AgentMessagingDeps {
   readRoster: (...args: Parameters<MeshAgent["readRoster"]>) => ReturnType<MeshAgent["readRoster"]>;
   requireConnected: (...args: Parameters<MeshAgent["requireConnected"]>) => ReturnType<MeshAgent["requireConnected"]>;
   roleHolders: (...args: Parameters<MeshAgent["roleHolders"]>) => ReturnType<MeshAgent["roleHolders"]>;
+  warn: (error: Error) => void;
   unanswered: () => MeshAgent["unanswered"];
 }
 
@@ -101,7 +104,7 @@ export class AgentMessaging {
   private readonly senders = new Map<string, string>();
   /** By `contextId`, the questions this seat asked inside a {@link withCorrelation} scope, and whom
    *  they went to (bounded). See {@link answersQuestion}. */
-  private readonly asked = new Map<string, { peerId?: string; role?: string }>();
+  private readonly asked = new Map<string, { peerId?: string; role?: string; request?: { seq: number; id: string } }>();
 
   /** Correlates outgoing messages to the host agent's current context/window. */
   setContextId(contextId: string | undefined): void {
@@ -125,12 +128,17 @@ export class AgentMessaging {
 
   /** Whether `item` is a live DM answering a question this seat asked inside a
    *  {@link withCorrelation} scope: it copies that question's `contextId`, and its authenticated
-   *  sender is the peer the question went to, or has the role an anycast question went to. A
+   *  sender is the peer the question went to or the daemon's recorded anycast taker. A
    *  `contextId` is a string any peer can set, so the copy alone proves nothing. */
-  answersQuestion(item: InboxItem): boolean {
+  async answersQuestion(item: InboxItem): Promise<boolean> {
     if (item.kind !== "dm" || item.historical || !item.contextId) return false;
     const q = this.asked.get(item.contextId);
-    return !!q && (q.peerId === item.fromId || (!!q.role && q.role === item.fromRole));
+    if (!q) return false;
+    if (q.peerId === item.fromId) return true;
+    if (!this.config.userAuth && !this.config.creds) return !!q.role && q.role === item.fromRole;
+    if (!q.request || item.replyTo !== q.request.id) return false;
+    const status = await this.ep.anycastStatus(q.request.seq, q.request.id);
+    return status.state === "taken" && status.taker.id === item.fromId;
   }
 
   /** The correlation a send carries, and the question it asks (a `contextId` the caller's scope
@@ -148,7 +156,7 @@ export class AgentMessaging {
   }
 
   /** Remember a question this seat asked, so {@link answersQuestion} can recognize its answer. */
-  private recordQuestion(contextId: string | undefined, to: { peerId?: string; role?: string }): void {
+  private recordQuestion(contextId: string | undefined, to: { peerId?: string; role?: string; request?: { seq: number; id: string } }): void {
     if (!contextId) return;
     this.asked.delete(contextId);
     this.asked.set(contextId, to);
@@ -164,41 +172,48 @@ export class AgentMessaging {
    *  caller with its own `contextId` answers only in the conversation its scope names. */
   private answering(peerId: string, replyTo?: string): { id: string; contextId?: string } | undefined {
     if (replyTo) {
-      const e = this.unanswered.get(replyTo);
+      const e = this.unanswered.get(directedKey(peerId, replyTo));
       if (!e || e.fromId !== peerId)
         throw new Error(`replyTo "${attributionSafe(replyTo)}" is not a message from this peer that is waiting for an answer`);
       return { id: replyTo, contextId: e.contextId };
     }
     const c = this.correlation.getStore();
     if (c?.replyTo) {
-      const e = this.unanswered.get(c.replyTo);
+      const e = this.unanswered.get(directedKey(peerId, c.replyTo));
       return e && e.fromId === peerId ? { id: c.replyTo, contextId: e.contextId } : undefined;
     }
     if (c?.contextId && c.peerId !== peerId) return undefined;
     // One a DM in flight is answering still waits until that DM is published, so it still counts.
     const waiting = [...this.unanswered].filter(([, e]) => e.fromId === peerId);
     if (new Set(waiting.map(([, e]) => e.contextId)).size > 1) {
-      const list = waiting.map(([id, e]) => `  • replyTo: ${attributionSafe(id)} — "${attributionSafe(e.text ?? "")}"`);
+      const list = waiting.map(([, e]) => `  • replyTo: ${attributionSafe(e.id)} — "${attributionSafe(e.text ?? "")}"`);
       throw new Error(
         `this peer has messages from more than one conversation waiting for an answer. Re-send with ` +
           `"replyTo" set to the id of the one this answers:\n${list.join("\n")}`,
       );
     }
     const first = waiting.find(([, e]) => !e.pending);
-    return first && { id: first[0], contextId: first[1].contextId };
+    return first && { id: first[1].id, contextId: first[1].contextId };
   }
 
-  /** Record a DM or role request as a peer's message to us: its sender becomes addressable by name,
+  /** Record a DM or role request as a peer's message to us: its sender becomes addressable by principal,
    *  and it waits for an answer unless it answers our own question. */
   noteDirected(item: InboxItem): void {
     if (item.kind !== "dm" && item.kind !== "anycast") return;
     this.senders.delete(item.fromId);
     this.senders.set(item.fromId, item.fromName);
     if (this.senders.size > MAX_CORRELATIONS) this.senders.delete(this.senders.keys().next().value!);
-    if (!item.historical && item.id !== "" && !this.answersQuestion(item)) {
+    if (!item.historical && item.id !== "") {
       // A DM back to this peer answers it (see dm()). An answer to our own question needs none.
-      this.unanswered.set(item.id, { fromId: item.fromId, contextId: item.contextId, text: item.text.slice(0, 80) });
+      const key = directedKey(item.fromId, item.id);
+      const entry = { id: item.id, fromId: item.fromId, contextId: item.contextId, text: item.text.slice(0, 80) };
+      this.unanswered.set(key, entry);
       if (this.unanswered.size > MAX_CORRELATIONS) this.unanswered.delete(this.unanswered.keys().next().value!);
+      void this.answersQuestion(item).then((matches) => {
+        if (matches && this.unanswered.get(key) === entry) this.unanswered.delete(key);
+      }, (error: unknown) => {
+        this.deps.warn(new Error(`Could not verify the recorded anycast taker: ${String(error)}`, { cause: error }));
+      });
     }
   }
 
@@ -292,8 +307,8 @@ export class AgentMessaging {
     // when we hold the role.
     const holdersAtSend = await this.roleHolders(role);
     const { stamp, own } = this.stamp();
-    this.recordQuestion(own, { role });
     const { msg, ack } = await this.ep.anycastAttributed(role, text, stamp);
+    this.recordQuestion(own, { role, request: { seq: ack.seq, id: msg.id } });
     this.rememberSent(ack.seq, msg.id);
     return { msg, ack, holdersAtSend };
   }
@@ -332,34 +347,16 @@ export class AgentMessaging {
     return this.ep.cancelAnycast(seq, this.sentRequestId(seq));
   }
 
-  /** Resolve a peer by instance id (exact) or display name against the roster of the last
-   *  {@link readRoster}. Deterministic and fail-loud: returns
-   *  one peer, `undefined` if none match, or throws `AmbiguousPeerError` on a same-name collision —
-   *  it never silently picks. See `resolvePeer` in @cotal-ai/core. */
-  resolvePeer(target: string): Presence | undefined {
-    return resolvePeerInRoster(this.ep.getRoster(), target, { selfId: this.id });
+  /** Resolve an address against the last roster with this session's authenticated principal. */
+  resolvePeer(target: string): Promise<ResolvedPeerAddress | undefined> {
+    return this.ep.resolvePeerAddress(target, { selfId: this.id });
   }
 
-  /** #384: a peer that sent us a DM or anycast and has no roster row, by its exact id or, when the
-   *  roster read succeeded, by a display name only one such sender carried. A one-shot
-   *  `cotal send` never registers presence, so without this a reply to it could not be addressed. */
-  private heldSender(target: string, byName: boolean, peer?: Presence): { id: string; name: string } | undefined {
+  /** Exact principal of a sender the session received a message from. */
+  private heldSender(target: string): { id: string; name: string } | undefined {
+    if (target === this.id) return undefined;
     const name = this.senders.get(target);
-    if (name !== undefined) return { id: target, name };
-    if (!byName || this.config.userAuth) return undefined;
-    const want = target.trim().toLowerCase();
-    // A sender rostered again under a new name has a row now, so its old name must not collide here.
-    const rostered = new Set(this.ep.getRoster().map((p) => p.card.id));
-    const matches = [...this.senders].filter(([id, n]) => !rostered.has(id) && n.toLowerCase() === want);
-    // A roster row cannot hide another authenticated sender that has no presence row.
-    if (peer) matches.unshift([peer.card.id, peer.card.name]);
-    if (matches.length > 1)
-      throw new Error(
-        `"${target}" is ambiguous - ${matches.length} known peers share that name; ` +
-          `DM by instance id instead: ${matches.map(([id, n]) => `${shownPeerName(n, id)} (${id})`).join("; ")}`,
-      );
-    const match = matches[0];
-    return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
+    return name === undefined ? undefined : { id: target, name };
   }
 
   /** Why a DM target resolved to no one, under a roster read that succeeded. A target that names this
@@ -367,13 +364,17 @@ export class AgentMessaging {
    *  the target are listed for the caller to choose from; none of them is ever picked. */
   private noPeer(target: string): string {
     const want = target.trim().toLowerCase();
-    if (target === this.id || want === this.ep.card.name.toLowerCase())
+    const own = this.ep.principal;
+    if (target === this.id || (this.config.userAuth ? target.trim() === own.actor : want === this.ep.card.name.toLowerCase()))
       return `"${target}" is this session: a DM goes to another peer, so nothing was sent. cotal_roster lists who is present.`;
     const missing = `no peer "${target}" in space "${this.config.space}"`;
     if (!want) return missing;
-    const names = [...new Set(this.ep.getRoster()
-      .filter((p) => p.card.id !== this.id && p.card.name.toLowerCase().startsWith(want))
-      .map((p) => p.card.name))];
+    const names = [...new Set(this.ep.getRoster().flatMap((p) => {
+      if (p.card.id === this.id) return [];
+      if (!this.config.userAuth) return p.card.name.toLowerCase().startsWith(want) ? [p.card.name] : [];
+      const key = parsePrincipalKey(p.card.id);
+      return key?.owner === own.owner && key.actor.startsWith(target.trim()) ? [key.actor] : [];
+    }))];
     if (!names.length) return missing;
     const shown = names.slice(0, NAMED_SIMILAR).map((n) => JSON.stringify(n)).join(", ");
     const more = names.length > NAMED_SIMILAR ? ` and ${names.length - NAMED_SIMILAR} more` : "";
@@ -386,50 +387,44 @@ export class AgentMessaging {
     opts: { replyTo?: string } = {},
   ): Promise<{
     msg: CotalMessage;
-    /** The roster row the target resolved to; absent when it resolved to an unrostered sender. */
+    /** The roster row the target resolved to, if any. */
     peer?: Presence;
     recipient: { id: string; name: string };
     ack: { seq: number; duplicate: boolean };
-    /** `unrostered`: the recipient is a peer that messaged us and has no roster row (#384). */
-    recipientStatusAtSend: Presence["status"] | "unrostered";
+    /** `unrostered` is a known sender with no roster row. `unobserved` is a routing-only principal. */
+    recipientStatusAtSend: Presence["status"] | "unrostered" | "unobserved";
   }> {
+    const address = parsePeerAddress(target);
     await this.requireConnected();
-    // #384: a sender's exact id is as unambiguous as a roster id, so it is never read as a roster
-    // display name; a peer that took that id as its name would otherwise receive the reply.
-    // #1229: a miss is only a real "no peer" when the roster read succeeded; under a failed read the
-    // target refuses naming the read's error (never "no peer"), and the DM does not go out.
-    const { roster, failure } = await this.readRoster();
-    const address = target;
-    const peer = this.senders.has(address) || (this.config.userAuth && parsePrincipalKey(address))
-      ? roster.find((p) => p.card.id !== this.id && p.card.id === address)
-      : this.config.userAuth ? roster.find((p) => p.card.id !== this.id && p.card.id === `${this.ep.principal.owner}.${address.trim()}`)
-        : this.resolvePeer(address);
-    // #384: a target with no roster row may still be a peer that messaged us (its id is
-    // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
-    // space's DM stream keeps it, instead of refusing a reply nothing could ever deliver.
-    const held = peer?.card.id === address
-      ? undefined
-      : this.heldSender(address, !failure, peer);
-    if (!peer && !held) {
-      if (!failure) throw new Error(this.noPeer(target));
-      throw this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");
+    const { roster, failure } = address.kind === "qualified" ? { roster: [], failure: undefined } : await this.readRoster();
+    const peer = await this.ep.resolvePeerAddress(target, { roster, selfId: this.id });
+    const literal = address.kind === "principal" && address.value !== this.id ? address.value : undefined;
+    const known = !peer && literal ? this.heldSender(literal) : undefined;
+    const unobserved = this.config.userAuth && literal ? { id: literal, name: literal } : undefined;
+    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : known ?? unobserved;
+    if (!recipient) {
+      if (address.kind === "principal" && address.value === this.id)
+        throw new PeerAddressError(target, "USAGE_INVALID", this.noPeer(address.value));
+      if (!failure) throw new PeerAddressError(target, "TARGET_NOT_FOUND", this.noPeer(target));
+      const error = this.cannotVerify(`peer "${target}"`, failure, "The DM was not sent.");
+      throw new PeerAddressError(target, "TARGET_UNAVAILABLE", error.message, [], { cause: failure });
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
-    const recipientStatusAtSend = peer ? peer.status : "unrostered";
-    const recipient = peer ? { id: peer.card.id, name: peer.card.name } : held!;
+    const recipientStatusAtSend = peer?.status ?? (known ? "unrostered" : "unobserved");
     // A DM back to a peer answers the message `replyTo` names, or the oldest one it sent us that no
     // DM has answered yet (see answering()). It counts as answered only once the DM is published,
     // so a failed send leaves it to the retry.
     const answered = this.answering(recipient.id, opts.replyTo?.trim() || undefined);
-    const entry = answered && this.unanswered.get(answered.id);
+    const key = answered && directedKey(recipient.id, answered.id);
+    const entry = key && this.unanswered.get(key);
     const { stamp, own } = this.stamp(answered);
     this.recordQuestion(own, { peerId: recipient.id });
     if (entry) entry.pending = true;
     try {
       const { msg, ack } = await this.ep.unicastAttributed(recipient.id, text, stamp);
-      if (answered) this.unanswered.delete(answered.id);
-      return { msg, peer, recipient, ack, recipientStatusAtSend };
+      if (key) this.unanswered.delete(key);
+      return { msg, peer: peer && !("routingOnly" in peer) ? peer : undefined, recipient, ack, recipientStatusAtSend };
     } finally {
       if (entry) entry.pending = false;
     }

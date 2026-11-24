@@ -154,7 +154,7 @@ async function askManagerEp(
     const name = String(args?.name ?? "").trim();
     if (!name) return { ok: false, code: "bad-request", error: `${op} requires a name` };
     try {
-      const seat = presenceSeat(await client.roster({ space, server }), name);
+      const seat = await presenceSeat(await client.roster({ space, server }), name);
       instanceId ??= seat.instanceId;
       selected = seat.expectedSeat;
     } catch (error) {

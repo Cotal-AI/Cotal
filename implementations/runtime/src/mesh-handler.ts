@@ -1234,7 +1234,7 @@ export class MeshHandler {
     jsm: () => this.jsm,
     nc: () => this.nc,
     now: (...args) => this.now(...args),
-    presenceRows: (...args) => this.presenceRows(...args),
+    recordedMember: (name) => this.roster.get(name),
     services: () => this.services,
   });
 

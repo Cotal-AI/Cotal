@@ -17,18 +17,21 @@
  */
 import {
   EpEnvelopeError,
+  AmbiguousPeerError,
+  PeerAddressError,
   channelInAllow,
   isConcreteChannel,
   isConsumerNotFound,
   isPublishPermissionDenied,
   parsePrincipalKey,
   partsToText,
-  resolvePeer,
+  resolvePeerAddress,
   type CotalEndpoint,
   type CotalMessage,
   type Delivery,
   type MessageMeta,
   type Presence,
+  type ResolvedPeerAddress,
   type PresenceStatus,
   type PresenceView,
 } from "@cotal-ai/core";
@@ -122,19 +125,17 @@ function dmName(name: string | undefined, id: string): string {
 /**
  * Resolve a DM target before any effect. A `{ principal }` target, or a typed string that parses as
  * a principal `<owner>.<actor>`, goes to that principal as is, whether or not it is present or was
- * heard from. It is never matched against display names, so a peer whose display name spells a
- * principal cannot capture it; that peer is reached by its own principal or `/reply`. Any other
- * string is a display name, which must name one principal across the roster and the heard senders:
- * a name both carry refuses and lists them instead of picking the present one. Absence is a verdict
- * only on a current roster (endpoint.ts:2816-2823).
+ * heard from. It is never matched against display names. Other targets use the shared address resolver.
  */
-export function resolveDmTarget(
+export async function resolveDmTarget(
   to: DmTarget,
   roster: readonly Presence[],
   rosterState: PresenceView["state"],
   engine: ParticipantEngine,
-  self: { readonly principal: string; readonly name?: string; readonly answerOne: string; readonly mode?: SessionIdentity["mode"] },
-): { readonly id: string; readonly name: string } | Refused {
+  self: { readonly principal: string; readonly name?: string; readonly answerOne?: string },
+  resolve: (target: string, roster: readonly Presence[]) => Promise<ResolvedPeerAddress | undefined> =
+    (target, peers) => resolvePeerAddress(peers, target, { authority: { mode: "open" } }),
+): Promise<{ readonly id: string; readonly name: string; readonly status?: PresenceStatus } | Refused> {
   if (typeof to !== "string" || parsePrincipalKey(to)) {
     const principal = typeof to === "string" ? to : to.principal;
     if (!parsePrincipalKey(principal)) return refusedUsage(`"${principal}" is not a principal <owner>.<actor>`);
@@ -143,38 +144,20 @@ export function resolveDmTarget(
     const heard = cardName === undefined ? engine.senderName(principal) : undefined;
     return { id: principal, name: dmName(cardName ?? heard, principal) };
   }
-  const peers = roster.filter((p) => p.card.id !== self.principal);
-  if (self.mode === "user") {
-    const owner = parsePrincipalKey(self.principal)?.owner;
-    const peer = owner && peers.find((p) => p.card.id === `${owner}.${to.trim()}`);
-    return peer ? { id: peer.card.id, name: dmName(peer.card.name, peer.card.id) }
-      : { outcome: "refused", code: rosterState === "current" ? "TARGET_NOT_FOUND" : "TARGET_UNAVAILABLE", message: `No own agent could be verified for ${JSON.stringify(to)}. Reply to a message or use its full principal.` };
-  }
-  let peer: Presence | undefined;
+  const peers = rosterState === "current" ? roster.filter((p) => p.card.id !== self.principal) : [];
+  let peer: ResolvedPeerAddress | undefined;
   try {
-    peer = resolvePeer(peers, to);
+    peer = await resolve(to, peers);
   } catch (e) {
-    // core resolvePeer throws AmbiguousPeerError or a roster-label refusal: both are pre-effect.
-    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: (e as Error).message };
+    const code = e instanceof PeerAddressError ? e.code : e instanceof AmbiguousPeerError ? "TARGET_AMBIGUOUS" : "USAGE_INVALID";
+    return { outcome: "refused", code, message: (e as Error).message };
   }
-  const named = new Map<string, { id: string; name: string }>();
-  if (peer) named.set(peer.card.id, { id: peer.card.id, name: dmName(peer.card.name, peer.card.id) });
-  for (const sender of engine.sendersNamed(to)) if (!named.has(sender.id)) named.set(sender.id, { id: sender.id, name: dmName(sender.name, sender.id) });
-  if (named.size > 1) {
-    const ids = [...named.keys()];
-    // Each one-shot `cotal send` signs with its own principal and exits once it has sent, so a
-    // reply by its name can reach none of them.
-    const present = new Set(roster.filter((p) => p.status !== "offline").map((p) => p.card.id));
-    if (rosterState === "current" && !ids.some((id) => present.has(id)))
-      return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names ${ids.length} senders that are no longer present (${ids.join(", ")}), such as one-shot senders, which exit once they have sent; ${self.answerOne}` };
-    return { outcome: "refused", code: "TARGET_AMBIGUOUS", message: `"${to}" names more than one principal (${ids.join(", ")}); use the full principal` };
-  }
-  const only = [...named.values()][0];
-  if (only) return only;
+  if (peer) return { id: peer.card.id, name: dmName(peer.card.name, peer.card.id), status: peer.status };
   if (self.name !== undefined && to.trim().toLowerCase() === self.name.trim().toLowerCase())
     return refusedUsage(`"${to}" is this session's own name; a direct message needs another participant`);
   if (rosterState !== "current") return { outcome: "refused", code: "TARGET_UNAVAILABLE", message: `cannot verify "${to}": the roster is ${rosterState}` };
-  return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space` };
+  const reply = self.answerOne ? ` To reply to a message, ${self.answerOne}.` : "";
+  return { outcome: "refused", code: "TARGET_NOT_FOUND", message: `no peer "${to}" in this space.${reply}` };
 }
 
 /** Inputs the admission adapter supplies with the endpoint whose start it owns. */
@@ -337,22 +320,30 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async resolveDm(to: DmTarget): Promise<Result<{ readonly id: string; readonly name: string }>> {
+    const recipient = await this.resolveAddress(to);
+    return "outcome" in recipient ? recipient : { outcome: "ok", value: { id: recipient.id, name: recipient.name } };
+  }
+
+  private resolveAddress(to: DmTarget): ReturnType<typeof resolveDmTarget> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.self());
-    return "outcome" in recipient ? recipient : { outcome: "ok", value: recipient };
+    const self = this.self();
+    return resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, self,
+      (target, roster) => ep.resolvePeerAddress(target, { roster, selfId: self.principal }));
   }
 
   async dm(to: DmTarget, text: string, replyTo?: string): Promise<PublishResult> {
     const ep = this.inputs.endpoint;
-    const recipient = resolveDmTarget(to, ep.getRoster(), ep.presenceView().state, this.engine, this.self());
-    if ("outcome" in recipient) return recipient;
+    const resolved = await this.resolveAddress(to);
+    if ("outcome" in resolved) return resolved;
+    const { status, ...recipient } = resolved;
     const gone = await this.beforePublish();
     if (gone) return gone;
-    const recipientStatusAtSend: PresenceStatus | "unrostered" = ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
+    const qualified = typeof to === "string" && to.includes("/");
+    const recipientStatusAtSend: PresenceStatus | "unrostered" = status ?? ep.getRoster().find((p) => p.card.id === recipient.id)?.status ?? "unrostered";
     try {
       const { msg, ack } = await ep.unicastAttributed(recipient.id, text, replyTo !== undefined ? { replyTo } : {});
       this.streamsGone = undefined;
-      return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, recipientStatusAtSend };
+      return { outcome: "stored", messageId: msg.id, seq: ack.seq, duplicate: ack.duplicate, recipient, ...(qualified ? {} : { recipientStatusAtSend }) };
     } catch (e) {
       return this.afterPublish(e);
     }

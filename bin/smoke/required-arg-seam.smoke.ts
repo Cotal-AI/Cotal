@@ -575,7 +575,7 @@ const SEAMS: Seam[] = [
   // 467/374 -> 468/375: up-resume-render-lock adds one loopback connection factory to
   // seed and verify the preserved membership bucket. It states `tls: false` explicitly.
   // The run-host-live history writer uses a run-pinned credential and explicit loopback TLS policy.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 470, untypecheckedSites: 377 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 471, untypecheckedSites: 378 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

@@ -31,7 +31,7 @@ import { cotalToolSpecs } from "../src/tool-specs.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 14;
 const PORT = await pickFreePort();
 const MONITOR = await pickFreePort();
 const servers = `nats://127.0.0.1:${PORT}`;
@@ -109,6 +109,11 @@ try {
   const tool = (name: string) => specs.find((s) => s.name === name)!;
   const info = async (channel: string) => (await Promise.resolve(tool("cotal_channel_info").run(agent, cfg, { channel }))).text;
   const listed = async () => (await Promise.resolve(tool("cotal_channels").run(agent, cfg, {}))).text;
+
+  const unseen = `local.${newIdentity().id}`;
+  const exact = await tool("cotal_dm").run(agent, cfg, { to: unseen, text: "unobserved exact ID in static mode" });
+  check("a static mesh refuses an unobserved exact principal", exact.isError === true && exact.structured?.code === "TARGET_NOT_FOUND" &&
+    exact.text.includes(`no peer "${unseen}"`), exact);
 
   // ── 1. registered channels reach the seat before any traffic ─────────────────────────────────
   {

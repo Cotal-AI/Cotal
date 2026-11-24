@@ -75,7 +75,7 @@ function log(msg: string): void {
 }
 
 /** The inbox item, flattened for the Python side (handle_message builds a MessageEvent from it). */
-function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
+async function wireItem(agent: MeshAgent, i: InboxItem): Promise<Record<string, unknown>> {
   return {
     id: i.id,
     // #624: the opaque per-delivery receive key. The sidecar echoes this back on `delivered`, so
@@ -104,7 +104,7 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
     notice: i.notice,
     // The DM answers a question this seat asked, from the peer it asked: only then may the adapter
     // route it by its contextId (see MeshAgent.answersQuestion).
-    answersQuestion: agent.answersQuestion(i),
+    answersQuestion: await agent.answersQuestion(i),
   };
 }
 
@@ -162,6 +162,16 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     }
   };
 
+  const defer = (key: string): void => {
+    deferred.add(key);
+    awaitingId = undefined;
+    setTimeout(() => {
+      deferred.delete(key);
+      pump();
+    }, DEFER_MS).unref();
+    pump();
+  };
+
   /** Push the oldest buffered message to the adapter, one at a time. Acks happen only on the
    *  adapter's `delivered` (see below), so a turn that never surfaces a message redelivers it. A
    *  deferred one waits out its delay while the messages behind it go first. A role request is
@@ -174,14 +184,21 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
     const to = adapter;
     const push = ++pushes;
     awaitingId = next.recvKey;
-    void agent.takeChosen("automatic", () => [next]).then(([shown]) => {
+    void agent.takeChosen("automatic", () => [next]).then(async ([shown]) => {
       if (push !== pushes || adapter !== to) return;
       if (!shown) {
         awaitingId = undefined;
         pump();
         return;
       }
-      sendFrame(to, { t: "incoming", msg: wireItem(agent, shown) });
+      let msg: Record<string, unknown>;
+      try { msg = await wireItem(agent, shown); }
+      catch (error) {
+        log(`Could not verify the recorded anycast taker: ${String(error)}. The reply stays buffered for retry.`);
+        if (push === pushes && adapter === to) defer(shown.recvKey);
+        return;
+      }
+      if (push === pushes && adapter === to) sendFrame(to, { t: "incoming", msg });
     });
   };
 
@@ -252,16 +269,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
         return;
       case "deferred":
         // The host would not run it where it belongs (see adapter.py). It stays buffered and unacked.
-        if (typeof frame.recvKey === "string" && frame.recvKey !== "" && frame.recvKey === awaitingId) {
-          const key = awaitingId;
-          deferred.add(key);
-          awaitingId = undefined;
-          setTimeout(() => {
-            deferred.delete(key);
-            pump();
-          }, DEFER_MS).unref();
-          pump();
-        }
+        if (typeof frame.recvKey === "string" && frame.recvKey !== "" && frame.recvKey === awaitingId) defer(frame.recvKey);
         return;
       case "reply":
         try {

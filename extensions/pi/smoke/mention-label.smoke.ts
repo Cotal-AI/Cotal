@@ -105,7 +105,7 @@ try {
   check("the wake is still one line", linesOf(wake).length === 1, wake);
   check("exactly one line speaks in the connector's voice", voiceLines(wake).length === 1, voiceLines(wake));
   check("the sender's line breaks are spaces inside the label with its whole unverified marker",
-    wake.includes(`by eve ${FORGED} (role: worker `) && wake.includes(" (unverified name) while focused."), wake);
+    wake.includes(`by eve ${FORGED} (role: worker `) && wake.includes("… (unverified name) while focused."), wake);
   endTurn();
 
   console.log("\nPI MENTION LABEL SMOKE OK");

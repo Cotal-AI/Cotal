@@ -197,7 +197,7 @@ async function establishAttachSession(
   // a fresh selection on reconnect could attach another incarnation under the same alias.
   // Picker and spawn targets already carry their own immutable principal/lifecycle fence.
   if (!t.auth.bearer && !v.expectedSeat && !v.expectedTarget) {
-    try { v.expectedSeat = presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name).expectedSeat; }
+    try { v.expectedSeat = (await presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name)).expectedSeat; }
     catch (error) {
       if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
       const info = await askManager(v.control, t.space, t.server, "status", { name: v.name }, t.auth, reach, undefined, { instanceId: on });

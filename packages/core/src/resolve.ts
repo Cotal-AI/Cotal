@@ -6,9 +6,8 @@
  * fail-loud: it returns exactly one peer or throws {@link AmbiguousPeerError} — it never
  * silently picks among same-named peers. The id is authoritative; the name is best-effort.
  *
- * `owner/name` handles (per-owner namespaces) land with the accounts/auth feature; until then
- * `/` is reserved in a name ({@link assertValidName}) so they slot in without a migration.
- * See .internal/plans/peer-addressing.md.
+ * The legacy display-name lookup has no owner authority. Typed peer addresses are handled by
+ * `resolvePeerAddress`.
  */
 import type { Presence, PresenceStatus } from "./types.js";
 import { LINE_BREAK } from "./peer-label.js";
@@ -55,7 +54,7 @@ function candidate(p: Presence): PeerCandidate {
  * - otherwise a case-insensitive name match, preferring live peers over stale offline ghosts:
  *   one live match resolves; **2+ live matches throw**; with no live match a unique offline peer
  *   resolves (best-effort), but **2+ offline duplicates throw**;
- * - a target that is a peer's display label with a role throws, naming the bare name;
+ * - a target that is a peer's roster label throws, naming the bare name;
  * - no match → `undefined` (the caller renders "no such peer").
  *
  * `opts.selfId`, when given, is excluded (you don't DM yourself). Throws
@@ -75,7 +74,7 @@ export function resolvePeer(
   if (!want) return undefined;
   const matches = peers.filter((p) => p.card.name.toLowerCase() === want);
   if (matches.length === 0) {
-    // A decorated roster label is not an address. Trim its sanitized edge like the target.
+    // A copied role label is display text, not an address.
     const labelled = peers.find((p) => p.card.role && peerLabel(p.card).trim().toLowerCase() === want);
     if (labelled)
       throw new Error(
@@ -135,8 +134,8 @@ export { LINE_BREAK } from "./peer-label.js";
 
 /**
  * Validate a display name. A name must be non-empty, single-line, and free of surrounding
- * whitespace; `/` is reserved as the future `owner/name` separator (and already means "a path"
- * to the agent-file loader). Throws — no silent rewrite (per AGENTS.md, no fallbacks). Internal
+ * whitespace; `/` is reserved as the `user/agent` separator and means "a path"
+ * to the agent-file loader. Throws without rewriting. Internal
  * spaces are allowed (human display names like "Ada Lovelace").
  */
 export function assertValidName(name: string): void {
@@ -150,7 +149,7 @@ export function assertValidName(name: string): void {
   if (LINE_BREAK.test(name))
     throw new Error(`invalid name ${JSON.stringify(name)}: must be a single line`);
   if (name.includes("/"))
-    throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);
+    throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the user/agent separator)`);
   if (name.includes("\\"))
     throw new Error(`invalid name ${JSON.stringify(name)}: "\\" is reserved (a Windows path separator)`);
   // A name must be well-formed UTF-16 — no unpaired surrogate. This is an IDENTITY rule, not a

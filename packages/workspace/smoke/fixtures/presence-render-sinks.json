@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1135,
+    "total": 1134,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 913
+    "non-render/control": 912
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -4450,13 +4450,6 @@
     {
       "path": "packages/workspace/src/chat/native-session.ts",
       "kind": "status-token",
-      "anchor": "ter((p) => p.status !== \"offline\").map((p) => p.card.id))",
-      "class": "non-render/control",
-      "rationale": "Chat session roster: keeps present participants to tell joins from leaves; the status is a filter predicate, not rendered."
-    },
-    {
-      "path": "packages/workspace/src/chat/native-session.ts",
-      "kind": "status-token",
       "anchor": "rn;\n    if (ev.type === \"offline\") this.rows.delete(row.i",
       "class": "non-render/control",
       "rationale": "Chat session presence handler: drops a participant's row on its offline event; the event type is control flow, not rendered."
@@ -5378,7 +5371,7 @@
     {
       "path": "implementations/cli/src/commands/send.ts",
       "kind": "status-token",
-      "anchor": "    if (peer.status === \"offline\") warnings.push({ code: ",
+      "anchor": "    if (peer.status === \"offline\" && parsePeerAddress(inp",
       "class": "non-render/control",
       "rationale": "Comparison that chooses whether the send result carries the RECIPIENT_OFFLINE warning; the token itself is not rendered."
     },
@@ -7348,7 +7341,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "ilter(p => p.status !== \"offline\" &&\n        (!this.confi",
+      "anchor": "ilter(p => p.status !== \"offline\");\n      let peer: Prese",
       "class": "non-render/control"
     },
     {
@@ -7415,7 +7408,7 @@
     {
       "path": "packages/workspace/src/control/seat-presence.ts",
       "kind": "derived-output",
-      "anchor": "resolvePeer(live, address)",
+      "anchor": "resolvePeerAddress(live, address, { authority: { mode: \"static\" } })",
       "class": "non-render/control"
     },
     {
@@ -7851,10 +7844,10 @@
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
-      "kind": "derived-output",
-      "anchor": "resolvePeerInRoster(live, args!.name as string)",
+      "kind": "status-token",
+      "anchor": "   if (peer?.status === \"offline\") peer = undefined;\n    ",
       "class": "non-render/control",
-      "rationale": "Names the one live seat a named manager.inspect targets; the roster is a routing input and no peer status is rendered."
+      "rationale": "Rejects an offline target for manager.inspect; the status is routing data and is not rendered."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",

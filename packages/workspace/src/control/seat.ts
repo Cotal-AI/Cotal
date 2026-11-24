@@ -148,7 +148,7 @@ export async function locateSeat(
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
   const roster = await client.roster({ space: probe.space, server: probe.server });
-  try { return { kind: "pin", ...presenceSeat(roster, name) }; }
+  try { return { kind: "pin", ...await presenceSeat(roster, name) }; }
   catch (error) {
     if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
   }

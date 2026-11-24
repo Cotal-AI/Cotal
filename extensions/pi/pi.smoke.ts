@@ -635,7 +635,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(wake({ fromName: "" }).includes("by local.blank while"), "an empty mention sender is named by id");
   const broken = wake({ fromName: "\n" });
   ok(broken.includes("by local.blank while") && !broken.includes("\n"), "a newline mention sender is named by id on one line");
-  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank/worker (unverified role) while"), "a whitespace mention sender keeps its unverified role beside the id");
+  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank (role: worker) (unverified role) while"), "a whitespace mention sender keeps its unverified role beside the id");
   ok(wake({ fromName: " ada" }).includes("by  ada (unverified name) while"), "a mention sender with a leading space keeps that unverified name");
 }
 

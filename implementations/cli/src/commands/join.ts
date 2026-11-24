@@ -4,7 +4,6 @@ import {
   CotalEndpoint,
   assertValidChannel,
   parseJoinLink,
-  resolvePeer,
   AmbiguousPeerError,
   mintLifecycleUid,
   assertLifecycleToken,
@@ -665,13 +664,16 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           const target = rest.slice(0, sp);
           const text = rest.slice(sp + 1);
           try {
-            const peer = resolvePeer(ep.getRoster(), target, { selfId: me });
+            const peer = await ep.resolvePeerAddress(target, { selfId: me });
             if (!peer) print(c.red(`no peer named "${target}" present`));
             else {
-              await ep.unicast(peer.card.id, text);
+              const { ack } = await ep.unicastAttributed(peer.card.id, text);
               const label = joinPeerLabel({ name: peer.card.name, id: peer.card.id });
-              print(`${c.magenta("(DM)")} ${c.dim("you →")} ${c.bold(label)}: ${text}`);
-              if (peer.status === "offline") print(c.yellow(offlineRecipientNotice(label)));
+              if (target.includes("/")) print(`DM stored at sequence ${ack.seq} for ${peer.card.id}.`);
+              else {
+                print(`${c.magenta("(DM)")} ${c.dim("you →")} ${c.bold(label)}: ${text}`);
+                if (peer.status === "offline") print(c.yellow(offlineRecipientNotice(label)));
+              }
             }
           } catch (e) {
             if (!(e instanceof AmbiguousPeerError)) throw e;

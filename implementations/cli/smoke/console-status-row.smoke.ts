@@ -39,7 +39,7 @@ const exited = formatManagedRow(row({ status: "exited", mesh: "working" }));
 check("an exited process with a working presence still reports both, each qualified as its own fact", exited.includes(" · exited · ") && exited.includes("mesh working · progress unknown"), exited);
 
 console.log("4. the rest of the row");
-check("the row leads with the peer's name/role label", formatManagedRow(row()).startsWith("w1 (role: worker) · claude · seat · "), formatManagedRow(row()));
+check("the row leads with the peer's role label", formatManagedRow(row()).startsWith("w1 (role: worker) · claude · seat · "), formatManagedRow(row()));
 check("a seat with no role leads with its bare name", formatManagedRow(row({ role: undefined })).startsWith("w1 · claude · "), formatManagedRow(row({ role: undefined })));
 check("uptime is rounded to whole minutes", formatManagedRow(row({ uptimeMs: 5 * 60_000 })).endsWith("up 5m"), formatManagedRow(row({ uptimeMs: 5 * 60_000 })));
 

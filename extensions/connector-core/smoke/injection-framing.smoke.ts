@@ -409,7 +409,7 @@ const columnZeroLines = (block: string): string[] =>
     && peerLabel({ name: "left\x1b\x07[]\nright" }) === "left right");
   check("shared scrub does not add trimming",
     attributionSafe("  Ada  ") === "  Ada  " && peerLabel({ name: "  Ada  " }) === "  Ada  ");
-  check("ordinary Unicode and slash remain data",
+  check("ordinary Unicode remains data and a role uses the display delimiter",
     attributionSafe("Ada/é雪😀") === "Ada/é雪😀" && peerLabel({ name: "Ada", role: "é雪😀" }) === "Ada (role: é雪😀)");
   check("repeated neutralization has no shared regex cursor",
     Array.from({ length: 4 }, () => attributionSafe("a\x1bb")).every((value) => value === "a b"));

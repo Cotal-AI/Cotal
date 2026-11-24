@@ -195,14 +195,6 @@ export class ParticipantEngine {
     return this.senders.get(id);
   }
 
-  /** Every sender this session received a DM, an anycast or a channel message from whose last
-   *  display name is `name`, both sides trimmed and compared case-insensitively. */
-  sendersNamed(name: string): { id: string; name: string }[] {
-    const want = name.trim().toLowerCase();
-    if (!want) return [];
-    return [...this.senders].filter(([, n]) => n.trim().toLowerCase() === want).map(([id, n]) => ({ id, name: n }));
-  }
-
   /** Release everything on close without acking: undelivered durable copies redeliver to the
    *  next reader of this lifecycle's durable, which, after retirement, is nobody. */
   clear(): void {

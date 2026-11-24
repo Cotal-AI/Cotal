@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import {
-  resolvePeer as resolvePeerInRoster,
+  PeerAddressError,
+  AmbiguousPeerError,
+  parsePrincipalKey,
   peerLabel,
   CotalEndpoint,
   DmDurableMissingError,
@@ -19,6 +21,7 @@ import {
   type AnycastStatus,
   type MessageMeta,
   type Presence,
+  type ResolvedPeerAddress,
   type PresenceCondition,
   type PresenceStatus,
   type TransportState,
@@ -136,7 +139,7 @@ export class MeshAgent extends EventEmitter {
    *  its body, to name it when a DM must say which one it answers. */
   private readonly unanswered = new Map<
     string,
-    { fromId: string; contextId?: string; text?: string; pending?: boolean }
+    { id: string; fromId: string; contextId?: string; text?: string; pending?: boolean }
   >();
   private _stopping = false;
 
@@ -971,9 +974,18 @@ export class MeshAgent extends EventEmitter {
     let dropBearer: (() => void) | undefined;
     if (seatRead) {
       const roster = await this.ep.readPresence();
-      const live = roster.filter(p => p.status !== "offline" &&
-        (!this.config.userAuth || p.card.id.startsWith(`${this.config.userAuth.owner}.`)));
-      const peer = resolvePeerInRoster(live, args!.name as string);
+      const live = roster.filter(p => p.status !== "offline");
+      let peer: Presence | undefined;
+      try {
+        const match = await this.ep.resolvePeerAddress(args!.name as string, { roster: live });
+        peer = match && ("routingOnly" in match ? live.find((p) => p.card.id === match.card.id) : match);
+      }
+      catch (error) {
+        if (error instanceof PeerAddressError || error instanceof AmbiguousPeerError)
+          throw new EpEnvelopeError(error instanceof AmbiguousPeerError ? "failed-precondition" : error.code === "TARGET_NOT_FOUND" ? "not-found" : error.code === "USAGE_INVALID" ? "bad-request" : "unavailable", error.message, undefined, "not-executed");
+        throw error;
+      }
+      if (peer?.status === "offline") peer = undefined;
       if (!peer) throw new EpEnvelopeError("not-found", `no agent ${JSON.stringify(args!.name)} is held in live presence`, undefined, "not-executed");
       const instance = peer.card.meta?.["ai.cotal.manager.instance"];
       if (typeof instance !== "string")
@@ -982,8 +994,10 @@ export class MeshAgent extends EventEmitter {
       catch { throw new EpEnvelopeError("failed-precondition", `agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`, undefined, "not-executed"); }
       selected = peer;
       opts = { ...opts, instanceId: ownerInstance };
-      // Presence resolves the alias, but the manager's name lookup remains exact.
-      args = { ...args, name: peer.card.name };
+      const actor = parsePrincipalKey(peer.card.id)?.actor;
+      if (this.config.userAuth && actor === undefined)
+        throw new EpEnvelopeError("failed-precondition", "the selected seat has no valid launch principal", undefined, "not-executed");
+      args = { ...args, name: this.config.userAuth ? actor : peer.card.name };
     }
     try {
       let reply: EpAttributedReply;
@@ -1247,12 +1261,13 @@ export class MeshAgent extends EventEmitter {
     readRoster: (...args) => this.readRoster(...args),
     requireConnected: (...args) => this.requireConnected(...args),
     roleHolders: (...args) => this.roleHolders(...args),
+    warn: (error) => this.handleEndpointWarning(error),
     unanswered: () => this.unanswered,
   });
 
   setContextId(contextId: string | undefined): void { return this.messaging.setContextId(contextId); }
   withCorrelation<T>(correlation: Correlation, fn: () => T): T { return this.messaging.withCorrelation(correlation, fn); }
-  answersQuestion(item: InboxItem): boolean { return this.messaging.answersQuestion(item); }
+  answersQuestion(item: InboxItem): Promise<boolean> { return this.messaging.answersQuestion(item); }
   private noteDirected(item: InboxItem): void { return this.messaging.noteDirected(item); }
   async send(text: string, channel?: string, mentions?: string[]): Promise<CotalMessage> { return this.messaging.send(text, channel, mentions); }
   async describeSendChannel(channel: string): Promise<{ known: boolean; hints: string[]; unchecked?: string }> { return this.messaging.describeSendChannel(channel); }
@@ -1265,16 +1280,8 @@ export class MeshAgent extends EventEmitter {
   }> { return this.messaging.anycast(role, text); }
   async anycastStatus(seq: number): Promise<AnycastStatus> { return this.messaging.anycastStatus(seq); }
   async cancelAnycast(seq: number): Promise<AnycastStatus> { return this.messaging.cancelAnycast(seq); }
-  resolvePeer(target: string): Presence | undefined { return this.messaging.resolvePeer(target); }
-  async dm(target: string, text: string, opts: { replyTo?: string } = {}): Promise<{
-    msg: CotalMessage;
-    /** The roster row the target resolved to; absent when it resolved to an unrostered sender. */
-    peer?: Presence;
-    recipient: { id: string; name: string };
-    ack: { seq: number; duplicate: boolean };
-    /** `unrostered`: the recipient is a peer that messaged us and has no roster row (#384). */
-    recipientStatusAtSend: Presence["status"] | "unrostered";
-  }> { return this.messaging.dm(target, text, opts); }
+  resolvePeer(target: string): Promise<ResolvedPeerAddress | undefined> { return this.messaging.resolvePeer(target); }
+  async dm(target: string, text: string, opts: { replyTo?: string } = {}): ReturnType<AgentMessaging["dm"]> { return this.messaging.dm(target, text, opts); }
 
   /** Run turns: the native lease, the turn relay and pull, surfacing, once claims and yields. Every dependency reads through at its use. */
   private readonly turns = new AgentTurns({

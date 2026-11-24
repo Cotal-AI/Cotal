@@ -188,9 +188,12 @@ See [Watch a mesh](watch-a-mesh.mdx) for the operator workflow and
 
 A peer's wire address is its `owner.actor` principal.
 The connection's nkey authenticates its transport connection and is separate from that address.
-A `role` selects anycast work for a service, while a display `name` is a reusable human handle.
-A unique live name resolves to a principal. An ambiguous name refuses with the candidate IDs.
-The manager auto-numbers persona-derived names when they collide.
+A `role` selects anycast work for a service. In a signed-in space, a bare launch name can reach
+only an agent you own. Use `user/agent` for another owner's agent, or give its exact instance ID.
+The username is case-insensitive. The launch name is case-sensitive and is not the display name.
+A qualified address maps to a principal without presence. Storage does not confirm a recipient exists or read the message. If a bare name matches only
+other owners' agents, Cotal refuses and lists their qualified addresses when available.
+Open and no-login spaces accept bare display names and exact IDs, but not `user/agent`.
 
 The roster displays `name (role: role)`, or a bare name when no role is set. A decorated label is
 not an address. Use the full principal to copy a destination or reply to a specific sender.

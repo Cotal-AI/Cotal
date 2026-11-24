@@ -655,7 +655,7 @@ try {
     await waitForPrompts2(beforeMute + 2);
     check(
       "a DM turn that ends with no reply sent is re-prompted, naming the sender",
-      prompts2.length === beforeMute + 2 && prompts2[beforeMute + 1]?.text === replyCheckPrompt(["watch2/watcher (unverified name)"]),
+      prompts2.length === beforeMute + 2 && prompts2[beforeMute + 1]?.text === replyCheckPrompt(["watch2 (role: watcher) (unverified name)"]),
       prompts2.slice(beforeMute),
     );
     mute.turn("succeeded");

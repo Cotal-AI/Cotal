@@ -288,7 +288,7 @@ console.log("6. every topology lens labels a peer as the roster does");
         variant={variant as TopoVariant} width={200} height={20} blocked={false}
         onFocus={() => {}} onOpenAgent={() => {}} onOpenMessage={() => {}} />,
     );
-    check(`the ${lens} prints each peer's shared label after its status dot`,
+    check(`the ${lens} prints each peer's shared label within its column budget`,
       labels.every((l) => out.includes("○ " + l)), out.slice(0, 800));
     check(`...and never the bracketed role`, !out.includes("ops]x[y"), out.slice(0, 800));
   }
