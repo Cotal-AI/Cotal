@@ -1018,7 +1018,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         cachedPreferences();
       } catch (e) {
         if (!isCommandFailure(e)) throw e;
-        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
       }
     }
   }
