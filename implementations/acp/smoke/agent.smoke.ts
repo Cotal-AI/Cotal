@@ -23,7 +23,8 @@
  *    launch lists the caller may not read loads with only its own model and cannot start another
  *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
  *    and deleting it fails;
- *  - with no manager registered, list and load say so, start none, and list nothing in its place;
+ *  - with no manager registered, list, load, /open and delete say so, start none, and list nothing
+ *    in its place;
  *  - with only another computer's manager live, a new session starts this machine's manager and
  *    defaults to it, and uses the other computer only when Machine names it; a failed start, or one
  *    whose manager is still not listed here, fails the session;
@@ -361,7 +362,14 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const loaded = await errorOf(c.agent.request(methods.agent.session.load, { sessionId: "kept", cwd: dir, mcpServers: [] }));
   check("and session/load refuses the same way, naming the thread",
     loaded?.code === -32603 && loaded.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", loaded);
-  check("neither starts a manager", space.starts === 0, space.starts);
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const open = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: opened.sessionId, prompt: [{ type: "text", text: "/open kept" }] }));
+  check("/open refuses the same way, naming the agent it asked for",
+    open?.code === -32603 && open.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", open);
+  const deleted = await errorOf(c.agent.request(methods.agent.session.delete, { sessionId: "kept" }));
+  check("deleting a thread that is not open refuses the same way, naming it",
+    deleted?.code === -32603 && deleted.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", deleted);
+  check("none of them starts a manager", space.starts === 0, space.starts);
   c.conn.close();
 }
 {

@@ -30,7 +30,7 @@ Threads that open at the same time share one start, and the later ones say the m
 That manager stops itself once it has held no agents for 10 minutes, so nothing runs while you use no agents.
 Until then, a bare `cotal down` for the space refuses and names the command that stops that manager first.
 A thread's first prompt checks again when its Machine is this machine's, so a thread left open past that time starts the manager again.
-When no manager is registered for the space, as after that manager stopped itself, listing threads or loading one fails with a message that says so and that a new thread starts this machine's manager. Neither starts a manager.
+When no manager is registered for the space, as after that manager stopped itself, listing threads, loading or deleting one, and `/open` fail with a message that says so and that a new thread starts this machine's manager. None of them starts a manager.
 If the start fails, the new thread fails with the start's reason. It also fails when the start succeeds but the space does not list a manager on this machine yet; open the thread again.
 
 ## Add Cotal to the client [#add-to-a-client]

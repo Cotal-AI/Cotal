@@ -199,9 +199,9 @@ function notListed(m: Mesh, name: string, listed: SeatList): RequestError {
   return RequestError.internalError(undefined, `${name} was not listed, and ${silent.length === 1 ? "manager" : "managers"} ${silent.join(", ")} did not answer, so it may run there. Try again once ${silent.length === 1 ? "it answers" : "they answer"}.${removable.length ? ` ${deregisterRemedy(m.space, removable)}` : ""}`);
 }
 
-/** The space's agents, for a list or a load. With no live manager registered none runs there, so the
- *  reply says so in place of a list, names the thread a load asked for, and says that a new thread
- *  starts this machine's manager. Neither starts one: a list is passive. */
+/** The space's agents, for a list, a load, `/open` or a delete. With no live manager registered none
+ *  runs there, so the reply says so in place of a list, names the thread or agent asked for, and says
+ *  that a new thread starts this machine's manager. None of them starts one: a list is passive. */
 async function listedSeats(m: Mesh, thread?: string): Promise<SeatList> {
   try {
     return await m.seats();
@@ -751,7 +751,7 @@ function openCommand(b: Bridge, offers: Offers) {
     if (!want) return "Name the agent to open: /open <name>.";
     const current = session.seat?.name ?? (session.spawning ? session.name ?? session.id : undefined);
     if (current) return `This session already drives ${current}. Open ${want} in a new session.`;
-    const listed = await m.seats();
+    const listed = await listedSeats(m, want);
     const exact = listed.rows.filter((row) => row.name === want);
     const lower = want.toLowerCase();
     const rows = exact.length > 0 ? exact : listed.rows.filter((row) => row.name.toLowerCase() === lower || row.display?.toLowerCase() === lower);
@@ -945,7 +945,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
         return {};
       }
       const m = await mesh();
-      const listed = await m.seats();
+      const listed = await listedSeats(m, params.sessionId);
       const rows = threadRows(options.links, m, listed, params.sessionId);
       if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed);
       for (const row of rows) options.hidden.add(row.lifecycleUid);
