@@ -55,9 +55,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const reconcileInterrupted = reconcileOrphan || scenario === 'reconcile-killed';
   const stagingNetwork = ['staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto'].includes(scenario);
   const noAccept = ['staging-no-accept', 'staging-auto'].includes(scenario);
+  const stagingRefused = scenario === 'staging-refused';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  assert(repairSelection || stagingNetwork || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
+  assert(repairSelection || stagingNetwork || stagingRefused || extensionMissing || reconcileInterrupted || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
   const closureNoSpace = scenario === 'closure-nospace';
@@ -81,7 +82,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
-  const staged = scenario === 'staging-killed' || stagingNetwork || repairSelection;
+  const staged = scenario === 'staging-killed' || stagingNetwork || stagingRefused || repairSelection;
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
   if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   if (stagingNetwork) writeFileSync(join(root, 'payload/package/dist/data'), randomBytes(1024 * 1024));
@@ -131,6 +132,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     join(root, 'config/cotal/extensions/node_modules', extension, 'package.json')];
   const readInstallation = () => installedFiles.map(path => readFileSync(path, 'utf8'));
   let blackhole, blockedPort, networkChild, networkStarted, trickle, cacheWorker;
+  let stagingDenied = false;
   const backlog = [];
   const server = createServer((request, response) => {
     requests.push({ at: Date.now(), path: request.url });
@@ -194,6 +196,10 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const version = request.url.slice(1, -4);
       if (armed && version === target) {
         missing++;
+        if (stagingRefused && readMarker()?.operation === 'global install') {
+          stagingDenied = true;
+          return response.writeHead(403).end('target staging forbidden');
+        }
         if (holdStaging && readMarker()?.operation === 'global install') { heldArchive = response; return; }
         if (scenario === 'archive-interrupted' && missing === 1) { heldArchive = response; return; }
         if (scenario === 'reset' && missing === 1) return request.socket.destroy();
@@ -274,6 +280,24 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
     writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
     armed = true;
+    if (stagingRefused) {
+      const seed = join(env.XDG_CONFIG_HOME, 'cotal/seed/child');
+      mkdirSync(seed, { recursive: true, mode: 0o700 });
+      chmodSync(seed, 0o500);
+      const manifestPath = join(packageRoot, 'package.json'), manifest = readFileSync(manifestPath);
+      const started = Date.now();
+      const result = await run(process.execPath, [entry, 'update', '--self'], 60000);
+      assert(stagingDenied, result.output);
+      assert.equal(result.code, 1, result.output);
+      assert.match(result.output, /staged pre-install check refused:[\s\S]*E403[\s\S]*; no installed packages were replaced/);
+      assert.doesNotMatch(result.output, /connector state were changed|nothing was changed/);
+      assert.equal(statSync(seed).mode & 0o777, 0o700);
+      assert.deepEqual(readFileSync(manifestPath), manifest);
+      assert.deepEqual(readFileSync(entry), before);
+      assert.equal(existsSync(marker), false);
+      assert.equal(existsSync(join(env.COTAL_HOME, 'update-recovery.json')), false);
+      return { scenario, code: result.code, elapsedMs: Date.now() - started, selected: previous, missing, requests, output: result.output };
+    }
     if (repairSelection) {
       const rollback = scenario === 'selection-rollback';
       const sets = join(env.XDG_CONFIG_HOME, 'cotal/installs', createHash('sha256').update(realpathSync(entry)).digest('hex'), 'sets');
@@ -970,7 +994,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
