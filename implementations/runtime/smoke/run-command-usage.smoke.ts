@@ -957,7 +957,10 @@ if (process.platform !== "win32") {
     && !(gate(["show", "run-0"], { limit: "1000" }) instanceof Error), ok50);
   for (const limit of ["0", "1001", "x"])
     c(`run show --limit ${limit} is refused`, usageRefusal(gate(["show", "run-0"], { limit }), "--limit must be between 1 and 1000"), limit);
-  c("run journal --limit with --json is refused", usageRefusal(gate(["journal", "run-0"], { limit: "5", json: true }), "--json returns the whole journal"));
+  for (const ids of [["run-0"], [], ["bad/id"], ["one", "two"]]) {
+    const got = gate(["journal", ...ids], { limit: "5", json: true });
+    c("run journal resolves --limit with --json before suggesting an ID retry", isCommandFailure(got) && usageRefusal(got, "--json returns the whole journal") && got.remedy === "omit --json for a limited text view, or omit --limit for the full JSON journal", got);
+  }
   const cursor = gate(["show", "run-0"], { cursor: "AAAAAAAA", limit: "1" });
   c("run show refuses an inventory cursor even with a journal limit", isCommandFailure(cursor) && cursor.code === "USAGE_INVALID" && cursor.remedy?.includes("remove --cursor") === true, cursor);
   c("run ps --limit without --page is still refused", usageRefusal(gate(["ps"], { limit: "5" }), "diagnostic paging requires run --page"));
