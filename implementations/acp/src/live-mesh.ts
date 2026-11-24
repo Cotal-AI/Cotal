@@ -89,23 +89,27 @@ export function managerChoices(ids: readonly string[], roster: readonly Presence
 /** One connector row of a manager's `status`. */
 type ConnectorRow = { agent: string; state: string; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; reason?: string };
 /** One application's row of a manager's `models` reply. */
-type ModelsRow = { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] };
+type ModelsRow = { agent: string; error?: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] };
 
 /** The applications a manager's `status` reports, each with the models its `models` reply lists. */
 export function agentCatalogs(rows: readonly ConnectorRow[], catalogs: readonly ModelsRow[]): AgentCatalog[] {
-  return rows.map((row): AgentCatalog => ({
-    agent: row.agent,
-    available: row.state === "available",
-    eventPlane: row.eventPlane,
-    ...(row.askPermissions && row.prompts ? { askPermissions: true } : {}),
-    ...(row.reasoningEvents && row.eventPlane ? { reasoningEvents: true } : {}),
-    ...(row.reason ? { reason: row.reason } : {}),
-    models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
-      id: m.id,
-      ...(m.name ? { name: m.name } : {}),
-      variants: (m.variants ?? []).map((v) => v.name),
-    })),
-  }));
+  return rows.map((row): AgentCatalog => {
+    const catalog = catalogs.find((c) => c.agent === row.agent);
+    return {
+      agent: row.agent,
+      available: row.state === "available",
+      eventPlane: row.eventPlane,
+      ...(row.askPermissions && row.prompts ? { askPermissions: true } : {}),
+      ...(row.reasoningEvents && row.eventPlane ? { reasoningEvents: true } : {}),
+      ...(row.reason ? { reason: row.reason } : {}),
+      ...(catalog?.error ? { modelsUnread: catalog.error } : {}),
+      models: (catalog?.models ?? []).map((m) => ({
+        id: m.id,
+        ...(m.name ? { name: m.name } : {}),
+        variants: (m.variants ?? []).map((v) => v.name),
+      })),
+    };
+  });
 }
 
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */

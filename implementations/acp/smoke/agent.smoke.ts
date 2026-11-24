@@ -266,6 +266,30 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   down.conn.close();
 }
 
+// An application whose models the manager could not read is refused with the read's reason.
+{
+  const why = "Database is not empty and has no session table";
+  const unread: AgentCatalog = { agent: "opencode", available: true, eventPlane: true, models: [], modelsUnread: why };
+  const only = new FakeMesh();
+  only.catalogList = [unread];
+  const alone = connect(async () => only);
+  await alone.init;
+  const e = await errorOf(alone.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("a new thread whose only application's models could not be read fails with the read's reason",
+    e?.code === -32603 && (e as { data?: { details?: string } }).data?.details?.includes(why) === true, e);
+  alone.conn.close();
+  const beside = new FakeMesh();
+  beside.catalogList = [...CATALOGS, unread];
+  const both = connect(async () => beside);
+  await both.init;
+  const s = await both.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const select = s.configOptions?.find((o) => o.id === "model") as { options: { group: string }[] } | undefined;
+  check("beside another application, it is not offered", select?.options.some((g) => g.group === "opencode") === false, select?.options.map((g) => g.group));
+  const chosen = await errorOf(both.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: "opencode/default" }));
+  check("and choosing it fails with the read's reason", chosen?.message?.includes(why) === true, chosen);
+  both.conn.close();
+}
+
 // session/new, options, delete of an unspawned session
 const mesh = new FakeMesh();
 const { agent, conn, updates, hidden, init } = connect(async () => mesh);

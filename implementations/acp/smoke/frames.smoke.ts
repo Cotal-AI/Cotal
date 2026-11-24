@@ -21,7 +21,8 @@
  *  - `managerChoices` describes a listed manager with no row under the person's principal, as the
  *    space's own, by the host it reports, so a new thread there defaults to it on this host;
  *  - the model select and model state list `<agent>/default` once when the catalog names a model
- *    `default`.
+ *    `default`;
+ *  - `agentCatalogs` carries a failed models read, so the application is refused with its reason.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -29,8 +30,8 @@ import type { CotalMessage, Presence } from "@cotal-ai/core";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
-import { answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
-import { configOptions, defaultManager, initialSelection, modelState, type Offer } from "../src/options.js";
+import { agentCatalogs, answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
+import { configOptions, defaultManager, initialSelection, modelState, refusal, type Offer } from "../src/options.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -306,6 +307,19 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("a catalog model named default does not list <agent>/default twice", values.filter((v) => v === "hermes/default").length === 1, values);
   const listed = modelState(offer, selection).availableModels.map((m) => m.modelId);
   check("nor does the session's model state", listed.filter((v) => v === "hermes/default").length === 1, listed);
+}
+
+// A manager whose read of an application's models failed, as OpenCode 1.19.6 refusing its database:
+// the models row carries the error, and the application is refused with it.
+{
+  const row = (agent: string) => ({ agent, state: "available", eventPlane: true });
+  const why = "Database is not empty and has no session table";
+  const catalogs = agentCatalogs([row("opencode"), row("pi")], [
+    { agent: "opencode", supported: true, models: [], error: why },
+    { agent: "pi", supported: false, models: [] },
+  ] as never);
+  check("an application whose models could not be read is refused with the read's reason", refusal(catalogs, "opencode")?.includes(why) === true, catalogs);
+  check("one with no model list to read is not, and keeps its default alone", refusal(catalogs, "pi") === undefined && catalogs[1]?.models.length === 0, catalogs);
 }
 
 // Which unanswered replies name the deregister command.

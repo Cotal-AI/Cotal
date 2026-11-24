@@ -68,9 +68,9 @@ export function parseModel(value: string): { agent: string; model?: string } {
   return { agent, ...(model === DEFAULT_MODEL ? {} : { model }) };
 }
 
-/** The applications a session can run: available and with an event plane. */
+/** The applications a session can run: available, with an event plane, and with models read. */
 export function usable(catalogs: readonly AgentCatalog[]): AgentCatalog[] {
-  return catalogs.filter((c) => c.available && c.eventPlane);
+  return catalogs.filter((c) => c.available && c.eventPlane && c.modelsUnread === undefined);
 }
 
 /** Why `agent` cannot run a session, or undefined when it can. */
@@ -79,6 +79,7 @@ export function refusal(catalogs: readonly AgentCatalog[], agent: string): strin
   if (!catalog) return `the manager offers no application named "${agent}"`;
   if (!catalog.available) return `${agent} is not available on the manager's host${catalog.reason ? `: ${catalog.reason}` : ""}`;
   if (!catalog.eventPlane) return `${agent} publishes no event plane, so its turns cannot be shown here`;
+  if (catalog.modelsUnread !== undefined) return `the manager could not read ${agent}'s models: ${catalog.modelsUnread}`;
   return undefined;
 }
 
