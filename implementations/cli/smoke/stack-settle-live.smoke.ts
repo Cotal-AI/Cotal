@@ -196,7 +196,7 @@ import { createServer } from "node:net";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
@@ -235,7 +235,8 @@ type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Re
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  if (args[0] === "down" && args[1] === "web") assertSmokeSandboxTargetDown(anchors.get(cwd), args, options);
+  else assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const began = Date.now();
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
@@ -1326,8 +1327,9 @@ try {
         && memberPlan.env?.result?.kind === "service-operation-preview" && memberPlan.env.target?.space === space
         && memberPlan.env.target.name === "stack-broker" && setManager !== null && alive(setManager), shown(alias));
     for (const names of [["web"], ["nosuch"], ["manager", "nosuch"]]) {
-      const missing = cli(otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
+      const missing = cli(names[0] === "web" ? root : otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
       check(`missing ${names.join(" ")} preview stays a scoped inventory read`, missing.status === 2
+        && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.target?.space === space
         && missing.env?.error?.remedy === `list this space's saved definitions with \`cotal service --space ${space} --json\``, shown(missing));
     }
     const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--yes", "--json");
@@ -2036,9 +2038,13 @@ try {
   // 13. An up interrupted before it registers the space leaves its broker running unregistered.
   {
     const space = "stranded";
-    const root = prepare(space);
-    const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    const root = prepare(space), caller = mkdtempSync(join(projects, "caller-"));
+    const launcher = mkdtempSync(join(home, "launcher-"));
+    writeFileSync(join(launcher, "cotal"), `#!/bin/sh\nexec ${shellPath(process.execPath)} --import ${shellPath(TSX_IMPORT)} ${shellPath(CLI)} "$@"\n`, { mode: 0o700 });
+    const childEnv = { ...env, PATH: `${launcher}${delimiter}${process.env.PATH ?? ""}` };
+    const port = await freePort(), args = ["up", "--root", `../${space}`, "--space", space, "--server", `nats://127.0.0.1:${port}`, "--json"];
+    const stop = codeSpan(`cd ${shellPath(root)} && cotal down --yes`);
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: caller, env: childEnv, stdio: ["ignore", "ignore", "pipe"] });
     let upErr = "";
     child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
     // Freeze the broker once its process is pinned, so the up is provably waiting on it when it dies.
@@ -2049,15 +2055,18 @@ try {
     check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
     child.kill("SIGINT");
     await exited(child);
-    check("the interrupted up exits 130 naming its unregistered broker's pid, cotal down --yes and then cotal up", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run \`cotal down --yes\`, then \`cotal up\`.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    check("the interrupted up from another folder exits 130 and scopes its stop to the owning project", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}`) && upErr.includes(stop), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
     const blocked = cli(root, "up", "--json");
     check("the next up refuses LIFECYCLE_BLOCKED naming the broker's pid and down --yes, and starts nothing",
       blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(blocked.env.error.message.includes(`pid ${broker}`)) && Boolean(blocked.env.error.remedy?.includes("cotal down --yes")) && pidOf(space, "stack-delivery") === null && broker !== null && alive(broker), shown(blocked));
+    const retry = cliAs(childEnv, caller, ...args);
+    check("the same retry from the invoking folder names the same project-scoped stop", retry.status === 2 && retry.env?.error?.code === "LIFECYCLE_BLOCKED" && retry.env.error.remedy?.includes(stop) === true, shown(retry));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops that broker", stopped.status === 0 && await until(() => broker === null || !alive(broker), 10_000), shown(stopped));
-    const started = cli(root, "up", "--json");
+    const started = cliAs(childEnv, caller, ...args);
+    check("restarting from the invoking folder leaves it untouched", readdirSync(caller).length === 0);
     track(space);
     check("up then starts the whole stack", started.status === 0 && pidOf(space, "stack-manager") !== null, shown(started));
     // A frozen manager holds the down in its impact read, which holds the root's maintenance lock.

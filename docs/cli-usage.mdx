@@ -469,6 +469,11 @@ remedy without the command's help, because the command itself was not mistyped. 
 exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
 contains relative entries.
 
+If `COTAL_HOME` points to a file, the command refuses with `SCHEMA_INVALID` and exits 1. With
+`--json`, `watch`, `history --follow` and `channel members --follow` report this as an `error`
+record followed by an `end` record with reason `setup-failed`, without a snapshot.
+Without `--follow`, `history --json` still writes one refusal envelope.
+
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
 143. This holds for `watch`, `chat`, `console`, `history --follow`, `channel members --follow` and

@@ -284,9 +284,10 @@ semantics remain opaque to the native parser, so a file declaring them produces 
 exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
 names the path and asks you to retry with an existing contract file. If you pass a directory,
 `check` names it and asks for a contract file. If the directory contains a regular `contract.json`,
-the refusal shows how to check that file. On Windows, for paths containing a backslash, or when a
-terminal report must escape characters in the path, use shell completion to enter the directory and run
-`cotal endpoint check contract.json` there. `check` never selects a file for you.
+the refusal shows how to check that file and keeps `--json` or `--plain` if you requested it.
+On Windows, for paths containing a backslash, or when a terminal report must escape characters
+in the path, use shell completion to enter the directory and run the suggested command there.
+`check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
 endpoint. Authoring takes no space, broker, caller or invocation flags.

@@ -98,6 +98,19 @@ const ansi = /\x1b\[/;
     s.shadowed.length === 1 && !("name" in s.shadowed[0]!), s);
   const again = run(["config", "set", "harness", "opencode", "--json"]);
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
+  const before = fileText();
+  for (const operands of [["unset", "harness"], ["set", "harness", "claude"]]) {
+    const unknown = run(["config", ...operands, "--user", "--json", "--wibble"]);
+    const error = unknown.envelope?.error;
+    check(`config ${operands.join(" ")} tells the caller to drop an unknown option without writing`,
+      unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.outcome === "refused" && error?.code === "USAGE_INVALID"
+      && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option" && fileText() === before, shown(unknown));
+  }
+  for (const operands of [["unset"], ["set", "harness"]]) {
+    const missing = run(["config", ...operands, "--space", "demo", "--json", "--wibble"]);
+    check(`config ${operands.join(" ")} does not count a space option's value as an operand`,
+      missing.status === 1 && missing.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(missing));
+  }
   // A per-space value is saved only for a space this machine knows, so prepare demo first.
   mkdirSync(join(home, "demo"), { recursive: true });
   const prepared = run(["space", "create", "demo", "--root", join(home, "demo"), "--json"]);

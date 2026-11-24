@@ -179,7 +179,7 @@ export function validateStatusArguments(args: ParsedArgs): void {
     if (space !== undefined) recordOperationSpace(space);
     throw new CommandFailure("refused", "UNSUPPORTED", "status does not accept --creds: infrastructure status reads local and registered meshes, and named agent status mints its own control caller", {
       ...(space !== undefined ? { target: { space } } : {}),
-      remedy: "run `cotal status` or `cotal status <agent>` without --creds",
+      remedy: "remove --creds and its value, then rerun the same command with the remaining arguments unchanged",
     });
   }
 }

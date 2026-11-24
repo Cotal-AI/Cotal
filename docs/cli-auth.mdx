@@ -481,7 +481,8 @@ and no `cotal up` started, the step is to start it with `cotal up` first, then r
 again. If the default broker store is unwritable or `.cotal/channels.json` blocks that first
 start, the step names the path and what to fix before running `cotal up`. `doctor auth` does not
 change the store's permissions. From another folder, that `cotal up` names the
-space's root with `--root`, quoted for a shell.
+space's root with `--root`, quoted for a shell. If startup cannot write or search the project's
+`.cotal` directory, the step gives the same repair as `cotal up` without changing permissions.
 
 
 ### Diagnosis limits

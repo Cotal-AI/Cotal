@@ -95,7 +95,7 @@ function assertIndependentCodexRepair(): void {
 
   const replacement = join(to, "codex-plugin");
   renameSync(join(from, "codex-plugin"), replacement);
-  const moved = { ...shared, COTAL_HOME: to };
+  const moved: NodeJS.ProcessEnv = { ...shared, COTAL_HOME: to };
   const broken = run("codex", ["plugin", "list"], moved, project);
   assert.equal(broken.status, 1, broken.stdout + broken.stderr);
   assert.match(broken.stderr, /marketplace root does not contain a supported manifest/);
@@ -115,6 +115,20 @@ function assertIndependentCodexRepair(): void {
   assert.equal(registered.status, 0, registered.stdout + registered.stderr);
   assert.ok(registered.stdout.includes(replacement), registered.stdout);
   console.log("PASS: update preserves the foreign Claude marketplace and repairs the moved Codex plugin");
+
+  const version = run(process.execPath, [cli, "--version"], moved, project).stdout.match(/^cotal-ai (\S+)/)?.[1];
+  assert.ok(version);
+  const stamp = join(moved.XDG_CONFIG_HOME!, "cotal", "seed", "stamp.json");
+  writeFileSync(stamp, JSON.stringify({ ...JSON.parse(readFileSync(stamp, "utf8")), generation: "0.0.1" }));
+  const reconcile = run(process.execPath, [cli, "update"], {
+    ...moved, COTAL_UPDATE_PARENT: String(process.pid), COTAL_UPDATE_TARGET_VERSION: version,
+  }, project);
+  assert.equal(reconcile.status, 0, reconcile.stdout + reconcile.stderr);
+  assert.equal(reconcile.stderr.match(/Skipped claude integration refresh: Claude marketplace cotal-mesh belongs to Cotal home/g)?.length, 1, reconcile.stderr);
+  assert.match(reconcile.stdout, /✓ Refresh the Codex plugin: cotal@cotal-mesh/);
+  assert.equal(JSON.parse(readFileSync(stamp, "utf8")).generation, version);
+  assert.equal(readFileSync(marketplaces, "utf8"), original);
+  console.log("PASS: self-update reconciliation skips the foreign Claude marketplace and commits the generation");
 }
 const first = setup(envA, "project-a", "triage-a");
 assert.equal(first.status, 0, first.stdout + first.stderr);
