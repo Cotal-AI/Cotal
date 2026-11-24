@@ -974,12 +974,17 @@ try {
 
   {
     const path = agentFilePath(MESH, "broken-fence");
-    writeFileSync(path, "---\nname: broken-fence\n---oops\nBody.\n");
-    for (const args of [["persona", "show", "broken-fence"], ["spawn", "broken-fence", "--foreground", "--dry-run"]]) {
-      const refused = native([...args, "--json"]);
-      const { error } = JSON.parse(refused.stdout);
-      check(`${args[0]} refuses a malformed closing fence`, refused.status === 1 && error?.code === "SCHEMA_INVALID" &&
-        error.message.includes(path) && error.message.includes('missing closing "---" frontmatter fence'), refused.stdout + refused.stderr);
+    for (const [source, diagnostic] of [
+      ["---\nname: broken-fence\n---oops\nBody.\n", 'missing closing "---" frontmatter fence on its own line'],
+      ["---\n---\nBody.\n", '"name" is required'],
+    ]) {
+      writeFileSync(path, source);
+      for (const args of [["persona", "show", "broken-fence"], ["spawn", "broken-fence", "--foreground", "--dry-run"]]) {
+        const refused = native([...args, "--json"]);
+        const { error } = JSON.parse(refused.stdout);
+        check(`${args[0]} reports ${diagnostic}`, refused.status === 1 && error?.code === "SCHEMA_INVALID" &&
+          error.message.includes(path) && error.message.endsWith(diagnostic), refused.stdout + refused.stderr);
+      }
     }
     writeFileSync(path, "---\r\nname: broken-fence\r\n--- \t\r\nBody.\r\n");
     const repaired = native(["persona", "show", "broken-fence", "--json"]);
