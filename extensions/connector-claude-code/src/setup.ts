@@ -614,18 +614,23 @@ function pluginList(): PluginEntry[] | undefined {
   }
 }
 
-/** The skills plugin vs the running CLI release, by the SAME predicate `verify` enforces after an
- *  install (id, scope, enabled, errors, version), so status never blesses a plugin the installer would
- *  reject. Stale, missing and broken all name the scoped remedy. */
+/** Check the same registration and payload that skills setup must accept before suggesting a repair. */
 function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput): ConnectorStatusRow {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
   if (entries === undefined) return row("off", "unknown");
+  try {
+    assertRegistrationHome();
+  } catch (error) {
+    const failure = error as Error;
+    return row(failure.name === "ForeignConnectorRegistrationError" ? "warn" : "error", failure.message);
+  }
   const match = entries.find((entry) => entry.id === `cotal-skills@${MARKETPLACE}` && entry.scope === "user");
   if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
   const errors = (match.errors ?? match.error) as unknown;
   if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
   if (resolvedPluginCurrent(match, version, "cotal-skills")) return row("ok", "current");
-  return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
+  const mismatch = typeof match.version === "string" && match.version !== version;
+  return row("warn", `${mismatch ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
 }
 
 /** The `cotal` plugin against the installed payload Claude resolves, including older cached installs. */

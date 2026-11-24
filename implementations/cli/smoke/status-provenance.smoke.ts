@@ -27,10 +27,17 @@ writeFileSync(join(installedRoot, "package.json"), JSON.stringify({ name: "cotal
 writeFileSync(installedEntry, "// installed-entry fixture\n");
 symlinkSync(installedEntry, installedShim);
 const claude = join(sandbox, "bin", "claude");
-writeFileSync(claude, `#!/bin/sh\nprintf '%s\\n' '[{"id":"cotal-skills@cotal-mesh","scope":"user","enabled":true,"version":"${pluginVersion}"}]'\n`);
+writeFileSync(claude, `#!/bin/sh
+if [ "$1 $2 $3" = "plugin marketplace list" ]; then
+  echo '[]'
+  exit 0
+fi
+printf '%s\\n' '[{"id":"cotal-skills@cotal-mesh","scope":"user","enabled":true,"version":"${pluginVersion}"}]'
+`);
 chmodSync(claude, 0o755);
 process.env.COTAL_HOME = join(sandbox, "home");
 process.env.XDG_CONFIG_HOME = join(sandbox, "xdg");
+process.env.CLAUDE_CONFIG_DIR = join(sandbox, "claude");
 process.env.PATH = join(sandbox, "bin");
 process.chdir(project);
 

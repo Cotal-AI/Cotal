@@ -49,6 +49,10 @@ if [ "$1" = plugin ] && [ "$2" = list ]; then
   printf '%s\\n' "[{\\"id\\":\\"cotal-skills@cotal-mesh\\",\\"scope\\":\\"user\\",\\"enabled\\":true,\\"version\\":\\"$ver\\"}]"
   exit 0
 fi
+if [ "$1 $2 $3" = "plugin marketplace list" ]; then
+  echo '[]'
+  exit 0
+fi
 if [ "$1" = plugin ] && { [ "$2" = install ] || [ "$2" = update ] || [ "$2" = marketplace ]; }; then
   printf '%s\\n' "$current" > "$state"
   echo already installed
@@ -88,6 +92,7 @@ exit 0
       USERPROFILE: home,
       COTAL_HOME: join(home, ".cotal"),
       XDG_CONFIG_HOME: join(home, ".config"),
+      CLAUDE_CONFIG_DIR: join(home, "claude"),
       COTAL_SKIP_CONNECTOR_SEED: "1",
       NO_COLOR: "1",
       PATH: `${join(home, "bin")}:${process.env.PATH ?? "/usr/bin:/bin"}`,
@@ -134,6 +139,13 @@ try {
   assert.match(agentsRow, /1\/1 out of date · cotal setup --skills/, "stale .agents skills recommend setup --skills");
   assert.doesNotMatch(agentsRow, /out of date · cotal setup$/, ".agents skills row is not unscoped setup");
 
+  writeFileSync(join(first.home, ".claude-fake-state"), cliVersion);
+  const sameVersion = await run(["status"], first.env, first.cwd);
+  assert.equal(sameVersion.code, 0, sameVersion.stderr);
+  const sameVersionRow = skillRow(sameVersion.stdout, "Claude skills");
+  assert.match(sameVersionRow, /stale · cotal setup --skills/, "unverified Claude skills at the same version still recommend repair");
+  assert.doesNotMatch(sameVersionRow, /≠/, "matching releases are not presented as different versions");
+
   const refused = await run(["setup", "--skills", "--full"], first.env, first.cwd);
   assert.notEqual(refused.code, 0, "setup --skills --full is refused");
   assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/, "refusal names the --skills combination fence");
@@ -146,7 +158,7 @@ try {
   assert.doesNotMatch(skillsOnly, /seedDefaultAgent|runEnsure/, "setup --skills dispatch contains no persona or full-setup path");
   assert.doesNotMatch(setupSource, /plugin", "(?:install|update)"|\.claude-plugin|--scope/, "generic setup owns no harness plugin command or asset path");
 
-  console.log("status-skills-remedy.smoke: 15 checks passed");
+  console.log(`status-skills-remedy.smoke: ${cells()} checks passed`);
 } finally {
   for (const p of created) rmSync(p, { recursive: true, force: true });
 }

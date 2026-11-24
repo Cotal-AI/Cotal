@@ -32,9 +32,10 @@ function env(profile: string, home: string): NodeJS.ProcessEnv {
   return {
     ...clean, PATH: `${standins}:${process.env.PATH ?? ""}`, HOME: user, USERPROFILE: user, USER_HOME: user,
     XDG_CONFIG_HOME: xdg, XDG_RUNTIME_DIR: join(user, "runtime"),
-    XDG_DATA_HOME: join(user, "data"), XDG_CACHE_HOME: join(user, "cache"), COTAL_HOME: home,
+    XDG_DATA_HOME: join(user, "data"), XDG_CACHE_HOME: join(user, "cache"), COTAL_HOME: home, CODEX_HOME: join(user, "codex"),
     CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PLUGIN_CACHE_DIR: join(config, "plugins"),
     NODE_COMPILE_CACHE: join(root, "compile-cache"), COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_ASSIST: "1",
+    COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1",
   };
 }
 function run(command: string, args: string[], environment: NodeJS.ProcessEnv, cwd = root, timeout = 300_000) {
@@ -56,6 +57,14 @@ function setup(environment: NodeJS.ProcessEnv, project: string, space: string, t
   const result = run(process.execPath, [cli, "setup", "--destination", "local", "--harness", "claude", "--project", cwd, "--space", space, "--configure-only", "--json"], environment, cwd, timeout);
   writeFileSync(join(root, `${project}-${space}.json`), result.stdout);
   return result;
+}
+function skillsStatus(environment: NodeJS.ProcessEnv, project: string): { name: string; state: string; text: string } {
+  const result = run(process.execPath, [cli, "status", "--json"], environment, join(root, project));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const rows = JSON.parse(result.stdout).result.machine.integrations as { name: string; state: string; text: string }[];
+  const row = rows.find(({ name }) => name === "Claude skills");
+  assert.ok(row, result.stdout);
+  return row;
 }
 function claude(environment: NodeJS.ProcessEnv, ...args: string[]): string {
   const result = run("claude", args, environment);
@@ -150,7 +159,18 @@ resolved(envA, homeA);
 assert.ok(!existsSync(join(homeB, "claude-plugin", "cotal")), "refuse before materializing the competing plugin");
 console.log("PASS: shipped setup refuses home B, names home A, and preserves both registrations");
 
-// The same guard must cover connector refresh and the independently callable skills action.
+const foreignSkills = run(process.execPath, [cli, "setup", "--skills"], envB, join(root, "project-b"));
+assert.equal(foreignSkills.status, 3, foreignSkills.stdout + foreignSkills.stderr);
+const warning = skillsStatus(envB, "project-b");
+assert.equal(warning.state, "warn");
+assert.ok(warning.text.startsWith(`Claude marketplace cotal-mesh belongs to Cotal home ${homeA}, not ${homeB}.`), warning.text);
+assert.match(warning.text, /Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache/);
+assert.doesNotMatch(warning.text, /≠|setup --skills/);
+assert.ok(foreignSkills.stderr.includes(warning.text), foreignSkills.stderr);
+assert.deepEqual(profileBytes(envA), original);
+assert.equal(skillsStatus(envA, "project-a").text, "current");
+console.log("PASS: skills status explains the shared profile without recommending a refused action");
+
 const probe = join(root, "provider.mjs");
 writeFileSync(probe, `import { claudeSetupProvider as p } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
 const input = { cotal: [process.execPath, ${JSON.stringify(cli)}], skills: { skillsDir: ${JSON.stringify(join(tree, "implementations", "cli", "cotal-skills", "skills"))}, version: "0.0.0", stateDir: process.env.COTAL_HOME } };
@@ -168,6 +188,7 @@ const separate = env("separate", homeB);
 const independent = setup(separate, "project-independent", "triage-independent");
 assert.equal(independent.status, 0, independent.stdout + independent.stderr);
 resolved(separate, homeB);
+assert.equal(skillsStatus(separate, "project-independent").text, "current");
 assert.deepEqual(profileBytes(envA), original);
 const again = setup(envA, "project-a", "triage-a");
 assert.equal(again.status, 0, again.stdout + again.stderr);
@@ -178,6 +199,9 @@ const mcpOnly = readFileSync(join(envA.CLAUDE_CONFIG_DIR!, ".claude.json"), "utf
 const noMarketplace = setup(envB, "project-b", "triage-b");
 assert.notEqual(noMarketplace.status, 0);
 assert.match(noMarketplace.stdout + noMarketplace.stderr, /Claude user MCP entry cotal belongs to Cotal home/);
+const mcpWarning = skillsStatus(envB, "project-b");
+assert.equal(mcpWarning.state, "warn");
+assert.ok(mcpWarning.text.startsWith(`Claude user MCP entry cotal belongs to Cotal home ${homeA}, not ${homeB}.`), mcpWarning.text);
 assert.equal(readFileSync(join(envA.CLAUDE_CONFIG_DIR!, ".claude.json"), "utf8"), mcpOnly);
 console.log("PASS: an MCP-only registration cannot be taken over either");
 
