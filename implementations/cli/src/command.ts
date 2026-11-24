@@ -620,7 +620,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = (cmd.name === "config" && selected.name === "get" && positionals.length >= 2)
+      const operandsFull = (cmd.name === "ext" && selected.name === "root")
+        || (cmd.name === "config" && selected.name === "get" && positionals.length >= 2)
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
         || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)

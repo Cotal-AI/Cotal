@@ -372,6 +372,9 @@ for (const [args, why] of [
 {
   const root = run(["ext", "root"]);
   check("ext root prints only the path", root.status === 0 && root.stdout === `${join(xdg, "cotal", "extensions")}\n`, shown(root));
+  const unknownRootOption = run(["ext", "root", "--jso"]);
+  check("ext root tells the caller to drop an unknown option", unknownRootOption.status === 1 && unknownRootOption.stdout === "" &&
+    /Unknown option '--jso'\n  drop the unknown option\n/.test(unknownRootOption.stderr) && !unknownRootOption.stderr.includes("put -- before it"), shown(unknownRootOption));
   // Only the listing declares structured output, so the other modes refuse its flags as text, and keep
   // their own exits.
   for (const args of [["ext", "root", "--json"], ["ext", "root", "--plain"], ["ext", "remove", "x", "--json"], ["ext", "seed", "--plain"]]) {
