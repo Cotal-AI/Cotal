@@ -330,7 +330,7 @@ export class Cancelled extends Error {
  * exactly where its journal says it is. The language raises this before beginning an effect if the
  * host's boundary check returns a reason to stop. A turn handler can also raise it after binding
  * the turn's goal and deadline. The interpreter leaves that turn pending for reattachment and
- * records a handler fault if any other handler dispatch throws it. A workflow cannot catch an
+ * reports a handler fault if any other handler dispatch throws it. A workflow cannot catch an
  * accepted release.
  */
 export class RunReleased extends Error {
@@ -369,7 +369,7 @@ export class EffectRefused extends Error {
  * run on the way out (§9.2). The program is not at fault and has not failed; the run is exactly
  * where its journal says it is, holding one `refused` entry or one held step still `pending`, and
  * the repair is a capable host rather than anything the program could do with one more effect.
- * Like {@link RunReleased}, the language raises it and never accepts it from outside.
+ * A handler reports a capability refusal with {@link EffectRefused}. The language raises `RunHeld`.
  */
 export class RunHeld extends Error {
   readonly code = "L5025";

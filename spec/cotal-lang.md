@@ -1167,8 +1167,10 @@ A host release (L5012) leaves the run where its journal says it is. The host can
 before any unrecorded effect. An implementation MUST accept a release from a handler only for a
 pending `turn` whose recorded binding contains the entry's request id as `goalId` and a finite
 `deadlineAt`. The entry stays pending. On resume the handler MUST reattach to that goal and
-deadline without submitting another turn. For any other handler dispatch, a release signal
-settles the entry as a handler failure. A **capability refusal** is different: the handler attempted
+deadline without submitting another turn. For any other handler dispatch, a release signal is
+an L4000 `handler-fault`, not a host release, and settles the entry as failed. A `conclave` close
+reports the same fault but leaves the entry pending so replay can retry the owed close (§7.5).
+A **capability refusal** is different: the handler attempted
 nothing, the entry settles `refused` under the handler's code, and the run unwinds with L5025
 rather than recording a failure; a resume on a host that can perform the step finds the `refused`
 verdict (§10.7) and performs it live.

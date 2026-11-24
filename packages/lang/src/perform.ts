@@ -357,6 +357,10 @@ export async function settleDispatchThrown(host: EffectHost, key: StepKey, frame
   return await settleThrown(host, key, frame, e, endedAt);
 }
 
+function ineligibleRelease(error: RunReleased): EffectError {
+  return new EffectError("L4000", "handler-fault", `the handler cannot release this step: ${error.reason}`);
+}
+
 /**
  * Settle a step whose dispatch threw anything but a refusal, and rethrow what the program sees.
  * Effects and `waitUntil` share {@link settleDispatchThrown}; {@link performHold} keeps its own
@@ -364,12 +368,13 @@ export async function settleDispatchThrown(host: EffectHost, key: StepKey, frame
  */
 async function settleThrown(host: EffectHost, key: StepKey, frame: EffectFrame, e: unknown, endedAt: number): Promise<never> {
   if (e instanceof JournalAppendRejected) throw e;
-  if (e instanceof RunReleased && key.kind === "turn") {
-    const entry = host.journal.get(key);
+  if (e instanceof RunReleased) {
+    const entry = key.kind === "turn" ? host.journal.get(key) : undefined;
     // Resume can attach only to a turn whose binding names its own goal and deadline.
     if (entry?.state === "pending" && entry.requestId !== undefined
       && entry.external?.goalId === entry.requestId && typeof entry.external.deadlineAt === "number"
       && Number.isFinite(entry.external.deadlineAt)) throw e;
+    e = ineligibleRelease(e);
   }
   if (e instanceof Cancelled) {
     await host.journal.settle(key, { status: "cancelled" }, endedAt);
@@ -1339,7 +1344,7 @@ export async function runScope(
     try {
       handle = deepFreeze(await handler.openConclave(req, ctx));
     } catch (e) {
-      if (e instanceof RunReleased) throw new EffectError(e.code, "handler-fault", e.message);
+      if (e instanceof RunReleased) throw ineligibleRelease(e);
       throw e;
     }
 
@@ -1391,12 +1396,11 @@ export async function runScope(
     try {
       await handler.closeConclave(req, ctx);
     } catch (e) {
-      if (e instanceof RunReleased) throw new ScopeFailed(new EffectError(e.code, "handler-fault", e.message), { closed: false });
       // THE CLOSE DID NOT ACKNOWLEDGE, so the scope does not settle at all. A pending entry IS
       // the durable "a close is still owed" (re-entry retries it), and settling anything here
       // would be the journal claiming a disposition the world never confirmed. The body's own
       // error, if there was one, is subordinate: it did not leave members joined; this did.
-      throw new CloseOwed(e);
+      throw new CloseOwed(e instanceof RunReleased ? ineligibleRelease(e) : e);
     }
 
     if (threw) throw new ScopeFailed(bodyError, { closed: true });
