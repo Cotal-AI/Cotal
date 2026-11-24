@@ -166,6 +166,10 @@ interface Session {
   prompts?: PromptFollower;
   /** The commands and skills the seat runs, as its last `commands` listed them. */
   agentCommands?: CommandEntry[];
+  /** A line the thread's next prompt turn shows first, such as that the thread started this machine's
+   *  manager. A client may drop a line sent outside a turn, as T3 Code keeps one only in a loaded
+   *  thread's history. */
+  notice?: string;
 }
 
 /** The application a session's seat runs, as its model choice names it. */
@@ -777,10 +781,15 @@ function openCommand(b: Bridge, offers: Offers) {
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
   const { options, sessions, send, mesh, bind, sessionOf, announce, reportUsage } = b;
   const { offerFor } = offers;
-  /** Show a line in the thread once the current reply is out, so a new thread's client knows its id. */
-  const tell = (session: Session) => (line: string): void => {
-    setImmediate(() => void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`)));
+  /** Show the thread's {@link Session.notice} inside the prompt turn that is running, before its reply. */
+  const showNotice = async (session: Session): Promise<void> => {
+    const line = session.notice;
+    if (line === undefined) return;
+    session.notice = undefined;
+    // A client joins consecutive message chunks into one message, so the line keeps clear of the reply.
+    await send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${line}\n\n` } }).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`));
   };
+  const noteFor = (session: Session) => (line: string): void => { session.notice = line; };
   return {
     newSession: async (params: NewSessionRequest, client: AgentContext) => {
       const m = await mesh();
@@ -791,10 +800,9 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         throw e;
       });
       const id = newName();
-      const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
+      const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client, ...(started ? { notice: started } : {}) };
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
-      if (started) tell(session)(started);
       return { sessionId: id, configOptions: configOptions(offer, session.selection), models: modelState(offer, session.selection) };
     },
     setConfigOption: async (params: SetSessionConfigOptionRequest) => {
@@ -812,7 +820,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (session.offer.seatOnly && JSON.stringify(next) !== JSON.stringify(session.selection)) throw RequestError.invalidParams(undefined, fixed);
       if (next.machine !== session.selection.machine) {
         const m = await mesh();
-        const offer = await offerFor(m, next.machine, session.held, tell(session));
+        const offer = await offerFor(m, next.machine, session.held, noteFor(session));
         try {
           next = reconcile(offer, next);
         } catch (e) {
@@ -830,6 +838,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (session.turn) throw RequestError.invalidRequest(undefined, "a prompt is already running in this session");
       const { text, images } = promptParts(params.prompt);
       const m = await mesh();
+      await showNotice(session);
       const handled = images.length ? undefined : await slash(session, m, text);
       if (handled) return { stopReason: handled };
       if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
@@ -851,7 +860,8 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async (signal) => {
         // A thread left open past its manager's idle exit starts it again here. One whose Machine names
         // another computer starts none.
-        if (session.offer.managers.find((x) => x.instanceId === session.selection.machine)?.local) await launchManagers(m, tell(session));
+        if (session.offer.managers.find((x) => x.instanceId === session.selection.machine)?.local) await launchManagers(m, noteFor(session));
+        await showNotice(session);
         const spawning = m.spawn({
           name: session.name ?? session.id,
           agent: harness,

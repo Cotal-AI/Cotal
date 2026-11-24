@@ -302,11 +302,16 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   await tick();
   check("remote live, no local: a new thread starts this machine's manager before it offers anything", space.starts === 1 && space.catalogsAsked[0] === "m1", { starts: space.starts, asked: space.catalogsAsked });
   check("and defaults to it, with the other computer as a Machine choice", JSON.stringify(machineIn(opened)) === JSON.stringify({ current: "m1", choices: ["m1", "m2"] }), machineIn(opened));
-  check("and says in one line that it started the manager", opened !== undefined && JSON.stringify(chunks((opened as { sessionId: string }).sessionId)) === JSON.stringify([line]), opened && chunks((opened as { sessionId: string }).sessionId));
-  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
   const sid = (opened as { sessionId?: string } | undefined)?.sessionId ?? "none";
+  // A client may drop a line sent outside a turn, as T3 Code keeps one only in a loaded thread's history.
+  check("and says nothing before its first prompt", opened !== undefined && chunks(sid).length === 0, chunks(sid));
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "TEXT_MESSAGE_START", messageId: "a", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "hi" }, { type: "TEXT_MESSAGE_END", messageId: "a" }, { type: "RUN_FINISHED", runId: "r1" }]] };
+  const before = c.updates.length;
   const here = await within(c.agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
   check("its first prompt spawns on this machine's manager", here?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m1", { here, pins: space.spawned.map((r) => r.managerInstanceId) });
+  const turn = c.updates.slice(before).filter((u) => u.sessionId === sid && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text);
+  check("and its turn says in one line that it started the manager, before the reply, and only there",
+    JSON.stringify(turn) === JSON.stringify([`${line}\n\n`, "hi"]) && JSON.stringify(chunks(sid)) === JSON.stringify(turn), { turn, all: chunks(sid) });
   const other = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
   await c.agent.request(methods.agent.session.setConfigOption, { sessionId: other.sessionId, configId: "machine", value: "m2" });
   // This machine's manager stopped itself, and the thread's Machine names the other computer.
@@ -367,7 +372,7 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   await tick();
   check("a new thread no manager may start starts this machine's manager, then reads the managers again", space.starts === 1 && space.managersRead === 2, { starts: space.starts, reads: space.managersRead });
   check("the thread opens on it with its lists", space.catalogsAsked.at(-1) === "m1" && opened.configOptions?.some((o) => o.id === "model") === true, space.catalogsAsked);
-  check("and says in one line that the manager was started", JSON.stringify(chunks(opened.sessionId)) === JSON.stringify([line]), chunks(opened.sessionId));
+  check("and says nothing before its first prompt", chunks(opened.sessionId).length === 0, chunks(opened.sessionId));
   const plain = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
   await tick();
   check("a new thread while a manager is live starts none and says nothing", space.starts === 1 && chunks(plain.sessionId).length === 0, space.starts);
@@ -376,7 +381,7 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
   const reply = await within(c.agent.request(methods.agent.session.prompt, { sessionId: plain.sessionId, prompt: [{ type: "text", text: "go" }] }));
   check("a first prompt after the manager stopped starts it again before the spawn", space.starts === 2 && space.spawned.length === 1 && reply?.stopReason === "end_turn", { starts: space.starts, spawned: space.spawned.length, reply });
-  check("and the turn says so", chunks(plain.sessionId).includes(line), chunks(plain.sessionId));
+  check("and the turn says so in one line, kept clear of the reply", chunks(plain.sessionId).includes(`${line}\n\n`), chunks(plain.sessionId));
   const reads = space.managersRead;
   space.noLaunch = "none of your managers is live (m9: offline)";
   space.onStart = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: the manager did not start: boom"); };
