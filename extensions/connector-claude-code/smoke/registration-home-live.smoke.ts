@@ -79,7 +79,7 @@ function assertIndependentCodexRepair(): void {
   const to = join(root, "codex-new-home");
   const project = join(root, "codex-project");
   const codexHome = join(root, "codex-profile");
-  const shared = { ...env("codex-move", from), CODEX_HOME: codexHome };
+  const shared: NodeJS.ProcessEnv = { ...env("codex-move", from), CODEX_HOME: codexHome };
   if (spawnSync("codex", ["--version"], { env: shared, timeout: 30_000 }).status !== 0) {
     console.log("SKIP: native Codex not available for the independent connector refresh case");
     return;
