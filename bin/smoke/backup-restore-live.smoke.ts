@@ -328,6 +328,19 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       assert.ok(envelope.error?.message?.includes(named), envelope.error?.message);
       assert.equal(readMaintenanceJournal(root)?.state, cutState, `${mode} ${label} --store-dir left the preserved cut unchanged`);
     }
+    if (mode === "open") {
+      const linkedStore = join(root, "linked-store");
+      symlinkSync(existingStore, linkedStore);
+      for (const args of [["backup", "restore", artifact, "--plain"], ["up", "--restore", artifact, "--detach"]]) {
+        const refused = run(...args, "--store-dir", linkedStore);
+        assert.equal(refused.status, 1, `${refused.stdout}${refused.stderr}`);
+        assert.ok(refused.stderr.includes(`the --store-dir path ${linkedStore} is a link to ${existingStore}`), refused.stderr);
+        assert.ok(refused.stderr.includes("name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it"), refused.stderr);
+        assert.equal(readMaintenanceJournal(root)?.state, cutState);
+        assert.deepEqual(readdirSync(existingStore), []);
+      }
+      rmSync(linkedStore);
+    }
     rmSync(existingStore, { recursive: true });
     if (mode === "open") {
       // Another process on the recorded address is refused before the resume or the restore journals
