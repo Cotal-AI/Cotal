@@ -63,8 +63,8 @@
     {
       "name": "the scaffold path is not quoted",
       "file": "implementations/cli/src/commands/endpoint-authoring.ts",
-      "find": "  return `cotal endpoint check ${shellWord(file)}`;",
-      "replace": "  return `cotal endpoint check ${file}`;",
+      "find": "  return `cotal endpoint check ${shellWord(file)}${presentation === \"rich\" ? \"\" : ` --${presentation}`}`;",
+      "replace": "  return `cotal endpoint check ${file}${presentation === \"rich\" ? \"\" : ` --${presentation}`}`;",
       "expectRed": "a scaffold path a shell would split is quoted",
       "cell": "a scaffold path a shell would split is quoted"
     }
