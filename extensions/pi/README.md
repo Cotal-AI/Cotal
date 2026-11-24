@@ -8,8 +8,8 @@ without Pi installed.
 ## Requirements
 
 - Cotal (`cotal-ai`): Node 22 or newer.
-- The Pi host: exactly `@earendil-works/pi-coding-agent@0.79.10` for this release, which needs
-  Node 22.19 or newer.
+- The recommended host is `@earendil-works/pi-coding-agent@0.79.10` on Node 22.19 or newer.
+  Foreground spawn is also tested with npm Pi `0.84.3` and `1.6.0`.
 - npm-installed `pi` on `PATH` for Cotal spawning. The standalone Pi release executable does not
   support the Node loader hooks used during discovery.
 

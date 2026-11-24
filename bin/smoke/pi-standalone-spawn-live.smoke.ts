@@ -24,10 +24,12 @@ for (const dir of [join(cwd, ".git"), runtime, userExtensions, projectExtensions
 }
 
 const pi = join(repoRoot, "extensions", "pi");
+const piBin = process.env.COTAL_SMOKE_PI_BIN_DIR ?? join(pi, "node_modules", ".bin");
+const piVersion = process.env.COTAL_SMOKE_PI_VERSION ?? "0.79.10";
 const cli = join(repoRoot, "bin", "dist", "cotal.js");
 const env = {
   HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotalHome,
-  PATH: [join(pi, "node_modules", ".bin"), process.env.PATH ?? ""].join(delimiter),
+  PATH: [piBin, process.env.PATH ?? ""].join(delimiter),
   TMPDIR: scratch, TERM: "xterm-256color", COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_ASSIST: "1",
   COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1",
 };
@@ -134,7 +136,7 @@ async function checkSpawn(name: string, reload = false): Promise<void> {
 const version = spawnSync("pi", ["--version"], { cwd, env, encoding: "utf8", timeout: 10_000 });
 if (version.error) throw version.error;
 assert.equal(version.status, 0, version.stderr);
-assert.equal(version.stdout.trim(), "0.79.10");
+assert.equal(version.stdout.trim(), piVersion);
 cotal("ext", "seed");
 try {
   cotal("up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${await freePort()}`, "--store-dir", join(scratch, "store"));
@@ -145,6 +147,9 @@ try {
   const copies = [
     { path: join(userExtensions, "cotal.js"), content: bundle },
     { path: join(projectExtensions, "copied.ts"), content: Buffer.concat([Buffer.from("\uFEFF"), bundle]) },
+    { path: join(userExtensions, "vendor copy.ts"), content: bundle },
+    // Pi imports the ASCII-space path for both spellings.
+    { path: join(userExtensions, "vendor\u00a0copy.ts"), content: Buffer.from(fixture("unreachable-alias")) },
     { path: join(userExtensions, "legacy.js"), content: legacy },
     { path: join(cotalPackage, "index.js"), content: bundle },
     ...(releasedCopy ? [{ path: join(userExtensions, "released.js"), content: readFileSync(releasedCopy) }] : []),

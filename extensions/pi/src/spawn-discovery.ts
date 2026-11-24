@@ -1,7 +1,7 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import * as nodeModule from "node:module";
 import { fileURLToPath } from "node:url";
-import type { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
+import { isAbsolute } from "node:path";
 
 const MARKER = "/* @cotal-ai/pi standalone */";
 const LEGACY_HEADER = "import { createRequire as __cotalCreateRequire } from 'node:module';";
@@ -25,13 +25,10 @@ function hasStandaloneSignature(path: string): boolean {
   }
 }
 
-function isStandaloneCopy(path: string, resolveDirectory: (path: string) => string | undefined): boolean {
+function isStandaloneCopy(url: string | undefined): boolean {
+  if (!url?.startsWith("file:")) return false;
   try {
-    const stat = statSync(path);
-    if (stat.isFile()) return hasStandaloneSignature(path);
-    if (!stat.isDirectory()) return false;
-    const entry = resolveDirectory(path);
-    return entry?.startsWith("file:") === true && hasStandaloneSignature(fileURLToPath(entry));
+    return hasStandaloneSignature(fileURLToPath(url));
   } catch (error) {
     const { code } = error as NodeJS.ErrnoException;
     // Pi still owns errors for resources it cannot load.
@@ -42,60 +39,70 @@ function isStandaloneCopy(path: string, resolveDirectory: (path: string) => stri
 
 export function requireSpawnDiscovery(): void {
   if (!Reflect.get(globalThis, INSTALLED))
-    throw new Error("pi connector: cannot filter duplicate Cotal extensions; spawn requires npm-installed Pi running on Node");
+    throw new Error("pi connector: cannot filter duplicate Cotal extensions; use a compatible npm-installed Pi on Node (for example Pi 0.79.10)");
 }
 
-// Called by the loader facade. Keep Pi's package and trust resolution untouched, including reloads.
-export function filterDiscoveries(Native: typeof DefaultPackageManager, packageManagerUrl: string): typeof DefaultPackageManager {
-  const loaderUrl = new URL("extensions/loader.js", packageManagerUrl);
-  type Resolver = { esmResolve(path: string, options: { try: true }): string | undefined };
-  let jiti: Resolver | undefined;
-  const resolveDirectory = (path: string): string | undefined => {
-    // Local packages can reach the loader as directories. Use the host's Jiti resolution without
-    // running the factory or assuming index.js wins over the package's declared entry.
-    jiti ??= nodeModule.createRequire(loaderUrl)("jiti").createJiti(loaderUrl.href, { fsCache: false }) as Resolver;
-    return jiti.esmResolve(path, { try: true });
-  };
-  Reflect.set(globalThis, INSTALLED, true);
-  return class extends Native {
-    override async resolve(...args: Parameters<DefaultPackageManager["resolve"]>) {
-      const paths = await super.resolve(...args);
-      return { ...paths, extensions: paths.extensions.filter((entry) => !entry.enabled || !isStandaloneCopy(entry.path, resolveDirectory)) };
-    }
+interface ExtensionLoader {
+  esmResolve(path: string, options: { try: true }): string | undefined;
+  import(path: string, options?: { default?: boolean }): Promise<unknown>;
+}
+
+// Pi has already applied trust and path normalization when it asks Jiti for a factory.
+// Use that same Jiti instance to resolve directories. Do not evaluate a duplicate bundle.
+export function wrapExtensionLoader(createJiti: (...args: unknown[]) => ExtensionLoader): typeof createJiti {
+  return (...args) => {
+    const loader = createJiti(...args);
+    const load = loader.import.bind(loader);
+    loader.import = (path, options) => {
+      if (options?.default && isAbsolute(path)) {
+        Reflect.set(globalThis, INSTALLED, true);
+        if (isStandaloneCopy(loader.esmResolve(path, { try: true }))) return Promise.resolve(() => {});
+      }
+      return load(path, options);
+    };
+    return loader;
   };
 }
 
-function isPiResourceLoader(url: string | undefined): boolean {
-  if (!url?.startsWith("file:") || !url.endsWith("/dist/core/resource-loader.js")) return false;
+function piLoaderImport(specifier: string, parent: string | undefined): boolean {
+  if (!parent?.startsWith("file:")) return false;
+  const unpacked = specifier === "jiti/static" && parent.endsWith("/dist/core/extensions/loader.js");
+  const bundled = (specifier === "jiti" || /^\.\/jiti-(?:static-)?loader-[\w-]+\.js$/.test(specifier)) &&
+    /\/dist\/bundle\/chunks\/[^/]+\.js$/.test(parent);
+  if (!unpacked && !bundled) return false;
   try {
-    return JSON.parse(readFileSync(new URL("../../package.json", url), "utf8")).name === "@earendil-works/pi-coding-agent";
+    return JSON.parse(readFileSync(new URL("../../../package.json", parent), "utf8")).name === "@earendil-works/pi-coding-agent";
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
 }
 
+function facadeSource(native: string, format: "commonjs" | "module"): string {
+  if (format === "commonjs") return `const native = require(${JSON.stringify(fileURLToPath(native))});
+const { wrapExtensionLoader } = require(${JSON.stringify(fileURLToPath(import.meta.url))});
+module.exports = { createJiti: wrapExtensionLoader(native.createJiti) };`;
+  return `import { createJiti as native } from ${JSON.stringify(native)};
+import { wrapExtensionLoader } from ${JSON.stringify(import.meta.url)};
+export const createJiti = wrapExtensionLoader(native);`;
+}
+
 function installDiscoveryFilter(): void {
   if (typeof nodeModule.registerHooks !== "function") return;
-  const facade = new URL("?package-manager", import.meta.url).href;
-  let native: string;
-  // Pi's CLI has no per-extension exclude flag. Adapt only its resource loader's package manager
-  // import, then unregister the hook so it cannot affect extension imports or other modules.
-  const hook = nodeModule.registerHooks({
+  const facades = new Map<string, { native: string; format: "commonjs" | "module" }>();
+  nodeModule.registerHooks({
     resolve(specifier, context, nextResolve) {
       const resolution = nextResolve(specifier, context);
-      if (specifier !== "./package-manager.js" || !isPiResourceLoader(context.parentURL)) return resolution;
-      native = resolution.url;
-      return { url: facade, shortCircuit: true };
+      if (!piLoaderImport(specifier, context.parentURL)) return resolution;
+      const format = resolution.url.endsWith(".cjs") ? "commonjs" : "module";
+      const url = `${resolution.url}.cotal.${format === "commonjs" ? "cjs" : "mjs"}`;
+      facades.set(url, { native: resolution.url, format });
+      return { url, format, shortCircuit: true };
     },
     load(url, context, nextLoad) {
-      if (url !== facade) return nextLoad(url, context);
-      hook.deregister();
-      const source = `export * from ${JSON.stringify(native)};
-import { DefaultPackageManager as Native } from ${JSON.stringify(native)};
-import { filterDiscoveries } from ${JSON.stringify(import.meta.url)};
-export const DefaultPackageManager = filterDiscoveries(Native, ${JSON.stringify(native)});`;
-      return { format: "module", shortCircuit: true, source };
+      const facade = facades.get(url);
+      if (!facade) return nextLoad(url, context);
+      return { format: facade.format, shortCircuit: true, source: facadeSource(facade.native, facade.format) };
     },
   });
 }

@@ -15,7 +15,7 @@ The connector supports three Pi-hosted surfaces:
 
 1. `cotal spawn --harness pi` launches the npm-installed `pi` binary with Cotal's bundled extension.
    This also applies with `--detach`, which runs Pi in the manager's PTY.
-   Spawn leaves copies of the released standalone bundle on disk and excludes them from Pi's discovery.
+   Spawn leaves copies of the released standalone bundle on disk and does not evaluate them.
    This includes local package entry points and copies found on reload.
    Other extensions follow Pi's usual discovery and project trust rules.
    `--prompt` supplies Pi's initial message. Cotal refuses an empty prompt or one that starts with `-` or `@`,
