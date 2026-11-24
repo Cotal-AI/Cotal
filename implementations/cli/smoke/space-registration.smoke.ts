@@ -251,8 +251,10 @@ setCurrent("keep");
   const sent = await json(["send", "--space", "open1", "-c", "general", "x"]);
   check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
 
-  const again = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
-  check("adding a registered name is CONFLICT, exit 2, naming forget and --force", refused(again, 2, "CONFLICT") && /space forget open1/.test(again.env?.error?.remedy ?? "") && /--force/.test(again.env?.error?.remedy ?? ""), shown(again));
+  const conflictingServer = await json(["space", "add", "open1", "--server", DEAD, "--root", root]);
+  check("adding a registered name at a different broker is CONFLICT, exit 2, naming forget and --force",
+    refused(conflictingServer, 2, "CONFLICT") && /space forget open1/.test(conflictingServer.env?.error?.remedy ?? "") &&
+    /--force/.test(conflictingServer.env?.error?.remedy ?? "") && findMesh("open1")?.server === LIVE, shown(conflictingServer));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
 
@@ -415,11 +417,29 @@ setCurrent("keep");
     addedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.status === 0 && checkedAtEmptyRoot.env?.result.replaced === true &&
       checkedAtEmptyRoot.env.result.verified === true && findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedAtEmptyRoot));
   const addedThroughLink = await json(["space", "add", "open4", "--server", LIVE, "--root", linkedRoot, "--mode", "open", "--force"]);
-  const checkedThroughRealPath = await json(["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open"]);
+  const realRegistration = ["space", "add", "open4", "--server", LIVE, "--root", emptyRoot, "--mode", "open"];
+  const checkedThroughRealPath = await json(realRegistration);
   check("the physical root verifies an unchecked registration made through a link and preserves the selection",
     addedThroughLink.status === 0 && addedThroughLink.env?.result.space.root === linkedRoot &&
       checkedThroughRealPath.status === 0 && checkedThroughRealPath.env?.result.replaced === true && checkedThroughRealPath.env.result.verified === true &&
       findMesh("open4")?.unchecked !== true && getCurrent() === "open4", shown(checkedThroughRealPath));
+
+  const beforeRepeat = registryFiles();
+  const repeated = await run([...realRegistration, "--plain"]);
+  check("repeating a checked registration reports it already exists and verifies the broker",
+    repeated.status === 0 && repeated.stdout.includes("open4 is already registered") &&
+    repeated.stdout.includes("checked: broker answered and serves this space"), shown(repeated));
+  const sameThroughLink = ["space", "add", "open4", "--server", `${LIVE}/`, "--root", linkedRoot, "--mode", "open"];
+  const repeatedJson = await json(sameThroughLink);
+  const changedTls = await json([...sameThroughLink, "--tls"]);
+  const changedRoot = await json(["space", "add", "open4", "--server", LIVE, "--root", root, "--mode", "open"]);
+  check("equivalent broker and root spellings recheck as a no-op and report the existing registration",
+    repeatedJson.status === 0 && repeatedJson.env?.outcome === "no-op" && repeatedJson.env.result.verified === true &&
+    repeatedJson.env.result.replaced === false && repeatedJson.env.result.space.recordedAt === checkedThroughRealPath.env?.result.space.recordedAt &&
+    repeatedJson.env.result.space.server === LIVE && repeatedJson.env.result.space.root === emptyRoot, shown(repeatedJson));
+  check("a checked registration still refuses a different root or TLS requirement and keeps its record and selection",
+    refused(changedTls, 2, "CONFLICT") && refused(changedRoot, 2, "CONFLICT") &&
+    JSON.stringify(registryFiles()) === JSON.stringify(beforeRepeat) && getCurrent() === "open4", { tls: shown(changedTls), root: shown(changedRoot) });
   clearCurrent();
   const fromEmptyRoot = await run(["space", "show", "--plain"], {}, emptyRoot);
   check("bare show uses the empty registered folder with no selection",
@@ -475,6 +495,25 @@ setCurrent("keep");
       detail.status === 0 && verified?.status === 0 && checked.status === 0 && checked.env?.result.modeChecked === true && checked.env?.result.root === spacedRoot && checked.env?.result.current === true,
       { detail: shown(detail), shell: verified && shown(verified), checked: shown(checked) });
     setCurrent("keep");
+  }
+
+  // Withdraw the checked space from the smoke broker while keeping the other spaces available.
+  const { chatStream, dialerFor, presenceBucket, setupSpaceStreams } = await import("@cotal-ai/core");
+  const { jetstreamManager } = await import("@nats-io/jetstream");
+  const nc = await dialerFor(LIVE)({ servers: LIVE });
+  try {
+    const { streams } = await jetstreamManager(nc);
+    await streams.delete(chatStream("open4"));
+    await streams.delete(`KV_${presenceBucket("open4")}`);
+    const beforeMissing = registryFiles();
+    const missing = await json(realRegistration);
+    check("a checked recheck on a broker that no longer serves the space keeps the record and gives a safe remedy",
+      refused(missing, 2, "TARGET_NOT_FOUND") && missing.env?.error?.message.includes('it serves "open1", "open3", "open5"') &&
+      missing.env?.error?.remedy === 'start or restore "open4" on that broker, then retry' &&
+      JSON.stringify(registryFiles()) === JSON.stringify(beforeMissing) && getCurrent() === "keep", shown(missing));
+  } finally {
+    await nc.close();
+    await setupSpaceStreams({ servers: LIVE, space: "open4" });
   }
 }
 

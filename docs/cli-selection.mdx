@@ -108,22 +108,25 @@ interactive terminal. `--json` disables that prompt even in a terminal. To keep 
 broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
 must answer as the issuer it pins. An open broker answers for any name, so an open space must also
 be one the broker serves, as its streams show. A name it does not serve is refused with
-`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. On a terminal it then shows what it will trust and asks; `--yes`
-skips that question, but not the confirmation of fetched pins. It never changes the selection.
+`TARGET_NOT_FOUND`, exit 2, naming the spaces it does serve. When run in a terminal, it shows what
+it will trust and asks before writing a registration. `--yes` skips that question, but not the
+confirmation of fetched pins. It never changes the selection.
 
 A refusal writes nothing and carries its code: `USAGE_INVALID` or `SCHEMA_INVALID` (exit 1) for
 input, and `CONFLICT`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `DEPENDENCY_UNAVAILABLE`,
-`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name that is already
-registered is a `CONFLICT` unless it is an unchecked registration being verified in place or a
-registration added by hand being replaced with `--force`. A broker that does not answer is a
+`UNSUPPORTED`, `AUTH_REQUIRED` or `PERMISSION_DENIED` (exit 2) for what the checks found. A name
+that is already registered is a `CONFLICT` unless `--server` checks a matching manual registration
+in place or `--force` replaces a manual registration. A broker that does not answer is a
 `TARGET_UNAVAILABLE`. For a new registration, its remedy offers `--force`.
-A broker that requires auth, with a `--root` that holds another space's trust, is a
-`DEPENDENCY_UNAVAILABLE` that names the space the folder holds.
+When adding a broker that requires auth, a `--root` that holds another space's trust gives
+`DEPENDENCY_UNAVAILABLE` and names the space the folder holds.
 When no broker answers at `--server`, or at a bundle's server, the `TARGET_UNAVAILABLE` refusal says
 whether its host name resolves and whether anything took a connection at its port. When a broker
 answers there under another scheme, such as `nats://` for a `tls://` address, the remedy names that
 address, and says when it has no TLS. A port that takes no connection gets the port check as its
-remedy. For `--server`, the `--force` route follows either one.
+remedy. For a new `--server` registration, the `--force` route follows either one. If a recheck
+finds a different transport on the recorded port, restore the listener with its recorded transport
+and rerun the same check. Changing the URL would conflict with the existing registration.
 `--force` replaces a registration added by hand, never one this machine started or a catalog lists,
 and adds a `--server` space without checking its broker, which suits a
 space that is down right now; a user-auth space is always checked. Such a registration records that
@@ -133,9 +136,15 @@ If its broker does not answer, `space show` tells you to wait and check again. O
 answers, `space show` prints a `space add` command without `--force` that checks the recorded broker,
 root, mode and transport settings in place. A trailing slash on a NATS URL or another path to the
 same root directory does not prevent this check. The command quotes the root when the shell would otherwise split
-or expand it. A failed check keeps the unchecked record and the selection.
-Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
-shape `space show` gives, with `verified` and `replaced`.
+or expand it. With the same broker, root, mode and transport policy, repeating `space add --server`
+without `--force` checks the broker again. If the record was already checked and the check passes,
+the command reports that the space is already registered and exits 0 without rewriting it. A failed
+check keeps the record and the selection. If the broker for an open registration now requires auth,
+restore the open broker at that address and rerun the same check. If the broker no longer serves the
+space, start or restore the space on that broker, then retry the check without `--force`.
+Declining the question is a `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration
+under `space`, in the shape `space show` gives, with `verified` and `replaced`. A successful recheck
+of an already checked registration reports `outcome: "no-op"`, `verified: true` and `replaced: false`.
 
 
 ### Connection bundle export
