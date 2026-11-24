@@ -583,10 +583,12 @@ token of letters, digits, `_` and `-` is refused, `USAGE_INVALID` from `--role` 
 from a file's `role`. Each entry of `--subscribe`, `--allow-subscribe` and
 `--allow-publish` must be a valid channel name, written without `#`, and each `--subscribe` channel
 must be within `--allow-subscribe` when it is given, or creation refuses with `USAGE_INVALID`,
-naming the flag and the entry. `--harness` must name a harness this machine knows, as
+naming the flag and the entry. For a channel starting with `#`, create and spawn suggest the
+spelling without leading `#` characters only if it is a valid channel. `--harness` must name a harness this machine knows, as
 `config set harness` requires, or creation refuses with `USAGE_INVALID` and writes nothing.
-Create and edit refuse a definition over 1 MiB with `SCHEMA_INVALID`, the bound a create on a
-manager applies to its input, and an edit keeps that draft and names it.
+Create and edit refuse a complete definition over 1 MiB with `SCHEMA_INVALID`. The limit includes
+frontmatter, even when `--from` supplies only the instructions. An edit keeps the oversized draft
+and names it. Creation on a manager applies the same byte limit to its input.
 Creation refuses an existing definition with `CONFLICT`. The suggested edit and removal commands
 keep any explicit `--space` or `--server` flags. A name that differs from an existing one only in
 case also refuses with `CONFLICT`, since a case-insensitive file system holds the two as one file.
