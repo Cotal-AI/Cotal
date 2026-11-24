@@ -267,6 +267,14 @@ for (const [args, why] of [
   const manifest = join(extensions, "extensions.json");
   const env = { XDG_CONFIG_HOME: config };
   mkdirSync(extensions, { recursive: true });
+  writeFileSync(manifest, JSON.stringify({ extensions: [{
+    pkg: "inventory-fixture", spec: "inventory-fixture@1.0.0", version: "1.0.0",
+    commands: [{ name: "inventory-probe", summary: "show the cached command" }],
+  }] }));
+  const extensionHelp = run(["help", "inventory-probe"], env);
+  check("extension help reads the healthy inventory without a package installed",
+    extensionHelp.status === 0 && extensionHelp.stderr === "" && extensionHelp.stdout.includes("show the cached command"), shown(extensionHelp));
+
   writeFileSync(manifest, "{}\n");
   const json = run(["docs", "cli-usage", "--json"], env);
   check("docs returns one complete bundled page with a damaged extension inventory",
@@ -277,6 +285,11 @@ for (const [args, why] of [
   const plain = run(["docs", "cli-usage", "--plain"], env);
   check("plain docs opens with a damaged extension inventory",
     plain.status === 0 && plain.stderr === "" && plain.stdout.startsWith(`bundled v${VERSION}\n\n# CLI usage\n`), shown(plain));
+  for (const args of [["help"], ["help", "inventory-probe"], ["ext", "list"]]) {
+    const r = run(args, env);
+    check(`${args.join(" ")} still reports a damaged extension inventory`,
+      r.status === 1 && r.stdout === "" && r.stderr.includes('no "extensions" array') && r.stderr.includes("cotal ext seed --repair"), shown(r));
+  }
   const list = run(["ext", "list", "--json"], env);
   check("the JSON extension listing reports the damage and leaves the manifest unchanged",
     list.status === 1 && list.stderr === "" && list.envelope?.command === "ext" &&
@@ -291,6 +304,16 @@ for (const [args, why] of [
   check("docs with leading flags opens the index without touching the extension promotion journal",
     index.status === 0 && index.stderr === "" && index.envelope?.result?.kind === "docs-index" &&
     readFileSync(journal, "utf8") === "{}\n", shown(index));
+
+  const suffix = run(["docs", "--help"], env);
+  for (const args of [["help", "docs"], ["help", "docs", "cli-usage"], ["--no-color", "--", "--help", "--all", "--", "docs"]]) {
+    const prefix = run(args, env);
+    check(`${args.join(" ")} matches docs --help without reading or repairing extension inventory`,
+      suffix.status === 0 && suffix.stderr === "" && suffix.stdout.includes("Usage") &&
+      prefix.status === 0 && prefix.stderr === "" && prefix.stdout === suffix.stdout &&
+      readFileSync(manifest, "utf8") === "{}\n" && readFileSync(journal, "utf8") === "{}\n",
+      { suffix: shown(suffix), prefix: shown(prefix) });
+  }
 }
 
 // ── docs: the bundle loads only when docs runs ───────────────────────────────────────────────────

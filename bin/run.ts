@@ -62,7 +62,7 @@ registry.provide({ provides: commands("mcp"), load: importing("mcp") });
 
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
-const { commandWord, completeFileWrites, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
+const { completeFileWrites, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
 const argv = process.argv.slice(2);
 const { readFileSync } = await import("node:fs");
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
@@ -79,9 +79,8 @@ const { installUpdateNotice } = await import("./update-notice.js");
 // roots keep the explicit-import model.
 // The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
-// The bundled reference must open even when the extension inventory needs repair.
 await runCli(registry, argv, {
-  extensions: !desktopBridge && commandWord(argv) !== "docs",
+  extensions: !desktopBridge,
   async prepare(word, help) {
     // Keep the recovery message available even when a command surface cannot load.
     if (word !== undefined && !help) installUpdateNotice(argv, currentVersion);

@@ -818,7 +818,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const { output, leadingGlobals, repeatedLeading } = prepareLeadingFlags(leading);
   const words = [...output, ...args];
   const wantsHelp = asksForHelp(args);
-  const builtin = findCommand(registry.all<Command>("command"), word);
+  const builtins = registry.all<Command>("command");
+  const builtin = findCommand(builtins, word);
+  const requestedBuiltin = builtin?.name === "help" && !wantsHelp
+    ? findCommand(builtins, metadataPositionals(builtin, words).positionals[0]?.value) : builtin;
+  // The bundled reference and its help must open even when the extension inventory needs repair.
+  const extensions = opts.extensions === true && requestedBuiltin?.name !== "docs";
   const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
     if (!takesWordsRaw(cmd)) for (const option of globals.flags) takeGlobalFlag(option);
@@ -846,7 +851,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // Before any ordinary dispatch outcome can exit, a spawn takes its handoff, and no command lets a
   // child inherit the variable. The unit entry refuses such a handoff without consuming its file.
   takeManagedHandoffCustody(process.env, builtin?.name === "spawn");
-  setInstalledExtensionsEnabled(Boolean(opts.extensions));
+  setInstalledExtensionsEnabled(extensions);
   const builtinDuplicate = builtin && duplicate(builtin);
   if (builtinDuplicate) return repeatedGlobalFlag(builtinDuplicate, builtin, ownWords(builtin));
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
@@ -865,7 +870,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // Root only resolves a path. The JSON list classifies inventory errors in its handler.
   const extDiagnostics = builtin?.name === "ext" && !wantsHelp
     && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
+  let useExtensionOverlay = extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -950,7 +955,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // A seeded package's command (`web`) can be absent only because the first seed has not installed
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
-  const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
+  const awaitingSeed = !cmd && extensions && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
   // A leading flag typed with a typographic dash is read as the command word, so it is refused as the
   // same word after the command word is.
   const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
@@ -973,7 +978,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
-  if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
+  if (extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
     // Startup checks seed compatibility here and reconciles at launch. A restore that refuses
     // before launch leaves the operator-global store as it found it.
     const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
@@ -1055,7 +1060,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // completion writes its warnings, as its errors, only under COTAL_COMPLETE_DEBUG.
   const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
   const execute = async () => {
-    if (opts.extensions && cmd.requiredExtensions) {
+    if (extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
     await prepareCatalogForCommand(cmd, parsed);
