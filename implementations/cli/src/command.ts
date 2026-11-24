@@ -462,9 +462,8 @@ function typographicOption(word: string, names: ReadonlySet<string>, flags: read
   const option = `${long ? "--" : "-"}${name}`;
   const spelling = value === undefined ? option : `${option}=${value}`;
   const message = `${word} starts with a typographic dash, so it is not an option`;
-  if (value === undefined) return { message, spelling, remedy: `type the option with hyphens: ${option}` };
-  if (flag?.type !== "string") return { message, spelling };
-  return { message, spelling, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
+  const correction = value === undefined ? option : flag?.type === "string" ? `--${flag.name}=${shellWord(value)}` : undefined;
+  return { message, spelling, flagName: flag?.name, remedy: correction && `type the option with hyphens: ${correction}` };
 }
 
 function typographicOptions(cmd: Command, flagNames?: readonly string[]) {
@@ -504,6 +503,13 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
+    if (typed && cmd.name === "ext" && typed.flagName && typed.flagName !== "help") {
+      const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
+      const sub = findSubcommand(cmd, first);
+      const accepted = sub ? sub.flagNames : cmd.flagNames;
+      if (accepted && !accepted.includes(typed.flagName))
+        return { message: typed.message, remedy: `omit this option; cotal ext${sub ? ` ${sub.name}` : ""} does not take --${typed.flagName}` };
+    }
     if (typed) return typed;
   }
   return undefined;
