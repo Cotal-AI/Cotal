@@ -721,7 +721,7 @@ async function assertStackBrokerAddress(request: StackUpRequest, root: string, s
     throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
       target: { root, space, server, bindError: bindError.code },
       remedy: recorded
-        ? `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`
+        ? `${frees}, then run ${codeSpan(`${displayCmd()} up${request.foreground ? " --foreground" : ""}${request.noManager ? " --no-manager" : ""}`)} from ${root}; this stack keeps its recorded address`
         : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
     });
   }
