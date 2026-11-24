@@ -284,6 +284,15 @@ leaves the installation unchanged without failing `update --self`.
 On Linux and macOS, an installed self-update restores owner write access to its own connector
 directories before staging a release. If it cannot make those directories writable, it names the
 directory to fix and stops before staging.
+If you move your home or configuration directory while Cotal and its updates are stopped, an
+installed CLI at the same path can use the moved connector set. The former configuration folder
+must be absent, and the private connector set must still be at the same relative path under the
+new configuration folder, including its seed directory and extensions manifest. Update `HOME`,
+`COTAL_HOME`, and `XDG_CONFIG_HOME` as needed before running Cotal again.
+If Cotal finds the previous selection but cannot verify the move, it names the recorded and expected
+connector paths. Restore access to the original location, then return the intact configuration there
+or restore it from a backup. Set `XDG_CONFIG_HOME` to the parent of that `cotal` folder before retrying.
+Keep the selection records with the connector set.
 When a newer release is available, self-update sets aside an unreadable connector selection and
 reports the saved path. It uses a connector set named by a readable record, or prepares a separate
 set if neither record is readable. A later rollback keeps the saved record and restores the
