@@ -267,7 +267,7 @@ try {
     check("L1 a second serve refuses CONFLICT / LOCK_HELD, exit 2", second.status === 2 && second.doc.error?.code === "CONFLICT" && second.doc.error?.cause?.code === "LOCK_HELD", { status: second.status, out: second.out.slice(0, 300) });
     check("L1 the refusal names the live holder's pid", String(second.doc.error?.message ?? "").includes(`pid ${first.pid}`), second.doc.error?.message);
     const secondPlain = await cli("serve", "--plain");
-    check("L1 its Next names `cotal daemon status` in backticks, in plain and --json alike", String(second.doc.error?.remedy).includes("run `cotal daemon status`, with the same --daemon-home") && secondPlain.status === 2 && sameText(second, secondPlain), { remedy: second.doc.error?.remedy, plain: secondPlain.out + secondPlain.err });
+    check("L1 its Next names `cotal daemon status` in backticks, in plain and --json alike", String(second.doc.error?.remedy).endsWith("run `cotal daemon status`") && secondPlain.status === 2 && sameText(second, secondPlain), { remedy: second.doc.error?.remedy, plain: secondPlain.out + secondPlain.err });
     check("L1 the first daemon's socket keeps its inode, so 0 replacements", ino(paths.socket) === socketIno);
     await kill(first.proc, "SIGTERM");
   });
