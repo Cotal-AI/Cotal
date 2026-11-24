@@ -50,9 +50,9 @@ export async function askAppServer(o: AppServerAsk): Promise<unknown> {
         clearTimeout(timer);
         reject(e);
       });
-      // `close`, not `exit`: `exit` can fire while stdout still holds the response, so a child that
-      // answers and exits at once raced its own reply (#3749). `close` follows the end of stdout,
-      // after every `data` event has been handled.
+      // `close`, not `exit`: `exit` can fire while stdout still holds the response of a child that
+      // answers and exits at once. `close` follows the end of stdout, after every `data` event has
+      // been handled, so that response is read first.
       child.on("close", (code) => {
         clearTimeout(timer);
         reject(new Error(`codex app-server exited (${code}) before ${o.method} answered`));
