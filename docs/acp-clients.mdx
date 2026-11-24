@@ -34,6 +34,7 @@ It finds T3 Code from a `t3` command or its `~/.t3` folder (`T3CODE_HOME` when s
 Run setup once for each space you want in the client.
 
 Each entry runs this computer's `cotal acp --space <name>` by absolute path, because an app started from the desktop often does not see the folders your shell adds to `PATH`.
+The paths are ones that survive an upgrade: under the get.cotal.ai launcher the entry runs the launcher's own Node link, not the folder of one Node version such as Homebrew's `Cellar/node/<version>`, and it runs the install's entry, not one update's copy.
 When `COTAL_HOME` or `XDG_CONFIG_HOME` is set, the entry passes it on.
 A new entry is named `Cotal (<name>)`.
 An entry that already runs `cotal acp` for the space, such as one you added by hand, is updated in place.
