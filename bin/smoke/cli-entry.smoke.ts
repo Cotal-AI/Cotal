@@ -445,19 +445,26 @@ const envelopes = (r: Run) => {
   partialVersion("version --json reports a corrupt manifest as partial", ["version", "--json"], /no "extensions" array/);
   partialVersion("leading JSON and the version alias also produce the partial envelope", ["-j", "-V"], /no "extensions" array/);
   const [damagedReport] = envelopes(versionRun(["version", "--json"]));
-  const damagedText = versionRun(["version"]);
-  check("version formats agree on repairing the corrupt manifest", damagedReport?.result?.reconciliation?.source === "manifest"
+  check("version JSON names the corrupt manifest repair", damagedReport?.result?.reconciliation?.source === "manifest"
     && damagedReport.result.reconciliation.instruction === damagedReport.error?.remedy
-    && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`."
-    && damagedText.status === 1 && damagedText.stderr.includes("cotal ext seed --repair")
-    && !damagedText.stderr.includes("cotal update --self"), { json: damagedReport, text: shown(damagedText) });
-  check("version --json leaves the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
+    && damagedReport.error?.remedy === "Repair the manifest with `cotal ext seed --repair`.", damagedReport);
+  const partialText = (args: string[], reason: RegExp) => {
+    const result = versionRun(args);
+    check(`${args.join(" ")} keeps the running version and reports the unreadable inventory`, result.status === 4
+      && result.stdout === `${text.stdout.split("\n")[0]}\n` && reason.test(result.stderr)
+      && result.stderr.includes("the installed extensions could not be listed")
+      && result.stderr.includes("Repair the manifest with `cotal ext seed --repair`.")
+      && !result.stderr.includes("cotal update --self"), shown(result));
+  };
+  for (const form of ["version", "--version", "-V"]) partialText([form], /no "extensions" array/);
+  check("all version forms leave the corrupt manifest unchanged", readFileSync(manifest, "utf8") === "{}\n");
   const strict = versionRun(["ext", "list"]);
   check("ext list still refuses the corrupt manifest", strict.status === 1 && strict.stdout === "" && /no "extensions" array/.test(strict.stderr), shown(strict));
 
   const pin = { pkg: "sample-extension", version: "1.2.3", provides: [{ kind: "runtime", name: "sample" }] };
   writeFileSync(manifest, JSON.stringify({ extensions: [pin] }));
   partialVersion("version --json refuses to call a malformed extension row complete", ["version", "--json"], /invalid extension inventory entry/);
+  partialText(["version"], /invalid extension inventory entry/);
   writeFileSync(manifest, JSON.stringify({ extensions: [{ ...pin, commands: [] }] }));
   const installed = versionRun(["version", "--json"]);
   const [installedReport] = envelopes(installed);

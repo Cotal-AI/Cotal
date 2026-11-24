@@ -282,9 +282,10 @@ records or extension versions need attention. It is `{"kind":"none"}` when there
 reconcile. Other kinds include an `instruction` with the next step. `result.extensions` lists
 installed extensions by `package` and `version`.
 
-If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
-version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
-corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+If the extension manifest cannot be read, `cotal version`, `cotal --version` and `cotal -V`
+still print the running version on stdout. They report the unreadable inventory on stderr
+and exit 4. With `--json`, the report is partial and includes an `EXTENSIONS_UNREADABLE`
+warning. For a corrupt manifest, both formats point to `cotal ext seed --repair`.
 If a file occupies the config folder and blocks the inventory read, the report names that file
 and tells you to move it aside instead.
 The version command does not repair the manifest itself.

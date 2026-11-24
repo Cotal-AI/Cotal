@@ -853,8 +853,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
   const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
-  // Structured version reports inventory failures itself and needs no extension commands.
-  const versionJson = builtin?.name === "version" && !wantsHelp && asksForJson(builtin, words);
+  // Version reports inventory failures itself and needs no extension commands.
+  const versionRead = builtin?.name === "version" && !wantsHelp;
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
@@ -899,7 +899,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionRead && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
       else {

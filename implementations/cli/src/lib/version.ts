@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { cachedUpdateSummary, logicalExecutionEntry, extensionProvides, loadExtensionsManifest, UnreadableConnectorSelection } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, logicalExecutionEntry, extensionProvides, globalConfigDirProblem, loadExtensionsManifest, UnreadableConnectorSelection, writeResult } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
-import { readUpdatePending } from "./update-pending.js";
+import { manifestRepair, readUpdatePending } from "./update-pending.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
@@ -37,7 +37,7 @@ export function npmRecordedVersion(): string | undefined {
   return meta.version;
 }
 
-export interface ExtensionVersion {
+interface ExtensionVersion {
   /** Short label — the extension's provided names (`claude`, `web`), deduped; the package name if
    *  it provides nothing named. */
   label: string;
@@ -47,16 +47,8 @@ export interface ExtensionVersion {
   pkg: string;
 }
 
-/** Installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
- *  versions, for `cotal version` and `cotal status`. Reads the on-disk manifest directly — no import, no
- *  seeding side effect. Returns `[]` on an absent or corrupt manifest: the version view stays
- *  resilient, and a corrupt manifest is surfaced loudly by the real commands (the overlay is fatal). */
-export function extensionVersions(): ExtensionVersion[] {
-  return readExtensionVersions().versions;
-}
-
-/** {@link extensionVersions}, with the reason when the manifest could not be read, so a structured
- *  report can say its list is incomplete rather than empty. */
+/** Read recorded version pins without loading extensions. Preserve the reason when the inventory
+ *  could not be read so a report can distinguish it from an empty list. */
 export function readExtensionVersions(): { versions: ExtensionVersion[]; unreadable?: string; unreadableSelection?: true } {
   try {
     const versions = loadExtensionsManifest().extensions.map((entry, index) => {
@@ -75,15 +67,42 @@ export function readExtensionVersions(): { versions: ExtensionVersion[]; unreada
   }
 }
 
-/** Print the same metadata for the version command and the standalone flags. */
-export function printVersion(exts = extensionVersions()): void {
-  const current = cliVersion();
-  const update = cachedUpdateSummary(current);
-  const pending = readUpdatePending(current);
-  const lines = [`cotal-ai ${current}`, ...(pending.kind === "none" ? [] : [`  ${pending.instruction}`]), ...(update === "update status unknown" || update === "up to date" || (pending.kind !== "none" && update === pending.instruction) ? [] : [`  ${update}`])];
+/** Report the same version metadata for the command and the standalone flags. */
+export function writeVersion(presentation: "rich" | "json"): void {
+  const { versions, unreadable, unreadableSelection } = readExtensionVersions();
+  const config = unreadable === undefined ? undefined : globalConfigDirProblem();
+  const version = cliVersion();
+  const pending = readUpdatePending(version);
+  const update = cachedUpdateSummary(version);
+  const reconciliation = config && pending.kind === "unreadable" && pending.source === "manifest"
+    ? { ...pending, error: config.message, instruction: config.remedy } : pending;
+  // An older binary must still pass the updater's text probe when it cannot read a newer connector selection.
+  const partial = unreadable !== undefined && (presentation === "json" || !unreadableSelection)
+    ? { message: "the installed extensions could not be listed", remedy: config?.remedy ?? manifestRepair } : undefined;
+  const result = { version, update, reconciliation, extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) };
+  writeResult(presentation, {
+    command: "version",
+    target: null,
+    result,
+    ...(partial && {
+      completeness: "partial",
+      warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${config?.message ?? unreadable}` }],
+      partial,
+    }),
+  }, ({ version, update, reconciliation }) => ({
+    sections: [{ blocks: [{ kind: "lines", lines: versionLines(
+      version, update, reconciliation.kind === "none" ? undefined : reconciliation.instruction, versions, partial?.remedy,
+    ) }] }],
+  }));
+}
+
+function versionLines(version: string, update: string, instruction: string | undefined, exts: ExtensionVersion[], remedy: string | undefined): string[] {
+  const lines = [`cotal-ai ${version}`];
+  if (instruction && instruction !== remedy) lines.push(`  ${instruction}`);
+  if (update !== "update status unknown" && update !== "up to date" && update !== instruction) lines.push(`  ${update}`);
   if (exts.length) {
     const pad = Math.max(...exts.map((e) => e.label.length));
     for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
   }
-  console.log(lines.join("\n"));
+  return lines;
 }
