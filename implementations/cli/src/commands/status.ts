@@ -125,7 +125,7 @@ import {
   managerServiceHealth,
   printComponentHealth,
 } from "./status-health.js";
-import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldStoreProblem } from "./status-meshes.js";
+import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldStoreProblem, selectedStackStarting } from "./status-meshes.js";
 
 export { managerNoService, deliveryLeaseAbsent } from "./status-health.js";
 
@@ -253,8 +253,8 @@ export async function status(args: ParsedArgs): Promise<void> {
     ? { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false }
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
-  const selectedHints: string[] = [];
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all), stackStarting);
+  const selectedHints: string[] = [], selectedStarting = selectedStackStarting(selected, folder, stackStarting);
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all), selectedStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {
@@ -324,10 +324,10 @@ export async function status(args: ParsedArgs): Promise<void> {
       preparedHarness: !selected.ok && isWorkspaceTargetError(selected.error) && selected.error.code === "not-started" && preparedNeverStarted(selected.error.details)
         ? preferences.spaces[selected.error.details.space]?.harness : undefined,
       seed,
-      recovery, stoppedForeignListener, stackStarting,
+      recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && stackStarting && servedStack(folder, target) ? target.message : undefined);
+  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */

@@ -2179,6 +2179,16 @@ try {
     check(`${space}: status tells the operator to wait while the startup writer is alive`,
       pinned && child.exitCode === null && starting.status === 1 && starting.stdout.includes("Startup in progress") && starting.stdout.includes("Wait for startup to finish, then check again")
       && !starting.stdout.includes(" down --yes") && !starting.stdout.includes("last up ended"), { ...shown(starting), stdout: starting.stdout });
+    const outside = cli(projects, "status", "--plain", "--space", space);
+    const outsideHealth = cli(projects, "status", "--components", "--space", space);
+    const startupMessage = `"${space}" is prepared and its stack is starting`;
+    const outsideNext = outside.stdout.split("\nNext\n")[1]?.split("\n")[0] ?? "";
+    check(`${space}: status outside the project reports the same live writer and leads with waiting`,
+      outside.status === 0 && outside.stdout.includes(startupMessage) && outside.stdout.includes("Startup in progress") &&
+      ["cotal", "pnpm cotal"].some((cmd) => outsideNext.trimStart().startsWith(`${cmd} status --space ${space} `)) &&
+      outsideNext.includes("Wait for startup to finish, then check again") && !outside.stdout.includes("has no recorded outcome"), outside.stdout);
+    check(`${space}: component status outside the project keeps exit 1 and shows the active startup`,
+      outsideHealth.status === 1 && outsideHealth.stdout.split("\nComponent Health\n")[1]?.includes(`absent · not-started · ${startupMessage}`), outsideHealth.stdout);
     const startingJson = cli(root, "status", "--space", space, "--json");
     const startingFolder = startingJson.env?.result?.folder as Record<string, unknown> | undefined;
     check(`${space}: status --json reports no interrupted operation and adds no startup field`,
@@ -2188,6 +2198,10 @@ try {
     if (broker !== null) process.kill(broker, "SIGCONT");
     check(`${space}: the up killed while its broker is frozen left its operation applying and registered no space`, pinned && readStackJournal(root)?.journal.operation.phase === "applying" && findMesh(space) === undefined, { pinned, registered: findMesh(space) !== undefined });
     const cut = `"${space}" is prepared, and the last up of its stack in ${root} has no recorded outcome`;
+    const outsideCut = cli(projects, "status", "--plain", "--space", space);
+    check(`${space}: outside status names settlement instead of waiting when the writer is gone`,
+      outsideCut.status === 0 && outsideCut.stdout.includes(cut) && !outsideCut.stdout.includes("Startup in progress") &&
+      ["cotal", "pnpm cotal"].some((cmd) => outsideCut.stdout.includes(`run \`${cmd} status\` in ${root}, which names the step that finishes or settles it`)), outsideCut.stdout);
     const status = cli(root, "status");
     const [first, second] = status.stdout.slice(status.stdout.indexOf("\nNext\n") + 6).split("\n");
     check(`${space}: status names the half-started stack under the selected space and leads Next with down, then the up that starts it again`,
