@@ -215,7 +215,7 @@ for (const [argv, rerun] of [
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
-  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
+  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --json --space elsewhere --on <instance>"],
@@ -245,7 +245,7 @@ check("persona create with a malformed pin tells JSON callers to replace only th
 // the --space it was given; it used to keep only the verb.
 for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
-  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
+  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
@@ -257,6 +257,9 @@ for (const [argv, rerun] of [
   check(`${argv.join(" ")} names ${rerun}`,
     refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
 }
+const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
+check("a malformed named status pin keeps plain output on the retry",
+  plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));
 const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
 check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
   attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
