@@ -167,8 +167,9 @@ folder as `--project`, or choose another `--space` name for the new folder.
 An application whose host tool is not on PATH leaves the rest saved and the result
 `partial` (exit 4), naming the tool; an application action that does not finish does the same.
 `cotal status` recommends `cotal setup --skills` for stale Claude skills and out-of-date
-`.agents` skills. If another Cotal home owns the Claude registration, status names that home
-and explains how to use it or a separate Claude profile. See
+`.agents` skills when skills setup can proceed. If another Cotal home owns the Claude registration,
+status names that home and explains how to use it or a separate Claude profile. The conflict also
+blocks skills setup for `.agents`, which runs after the connector skills installers. See
 [Getting started](getting-started.mdx) and, for maintainers, [setup internals](setup-internals.md).
 
 

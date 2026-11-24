@@ -67,13 +67,16 @@ function profileBytes(environment: NodeJS.ProcessEnv) {
   return [join(environment.CLAUDE_CONFIG_DIR!, ".claude.json"), join(environment.CLAUDE_CODE_PLUGIN_CACHE_DIR!, "known_marketplaces.json")]
     .map((path) => readFileSync(path, "utf8"));
 }
-function skillsStatus(environment: NodeJS.ProcessEnv, project: string) {
+function machineStatus(environment: NodeJS.ProcessEnv, project: string) {
   const result = run(process.execPath, [cli, "status", "--json"], environment, join(root, project));
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  const { integrations } = JSON.parse(result.stdout).result.machine as { integrations: Array<{ name: string; state: string; text: string }> };
-  const row = integrations.find((entry) => entry.name === "Claude skills");
-  assert.ok(row, result.stdout);
-  return row;
+  return JSON.parse(result.stdout).result.machine as {
+    integrations: Array<{ name: string; state: string; text: string }>;
+    skills: { state: string; setupBlocked?: string };
+  };
+}
+function skillsStatus(environment: NodeJS.ProcessEnv, project: string) {
+  return machineStatus(environment, project).integrations.find((entry) => entry.name === "Claude skills");
 }
 function resolved(environment: NodeJS.ProcessEnv, home: string): void {
   const entries = JSON.parse(claude(environment, "plugin", "list", "--json")) as Array<{ id: string; readFromFolder?: string }>;
@@ -145,24 +148,41 @@ resolved(envA, homeA);
 assert.ok(!existsSync(join(homeB, "claude-plugin", "cotal")), "refuse before materializing the competing plugin");
 console.log("PASS: shipped setup refuses home B, names home A, and preserves both registrations");
 
-function assertForeignSkillsStatus(): void {
+function assertForeignSkillsStatus(): NodeJS.ProcessEnv {
   const project = join(root, "project-b");
   const guidance = `Claude marketplace cotal-mesh belongs to Cotal home ${homeA}, not ${homeB}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`;
-  const status = run(process.execPath, [cli, "status"], envB, project);
+  const fresh: NodeJS.ProcessEnv = { ...env("fresh-user", homeB),
+    CLAUDE_CONFIG_DIR: envB.CLAUDE_CONFIG_DIR,
+    CLAUDE_CODE_PLUGIN_CACHE_DIR: envB.CLAUDE_CODE_PLUGIN_CACHE_DIR };
+  const status = run(process.execPath, [cli, "status", "--verbose"], fresh, project);
   assert.equal(status.status, 0, status.stdout + status.stderr);
-  const line = status.stdout.split("\n").find((text) => text.includes("Claude skills:"));
-  assert.ok(line, status.stdout);
-  assert.ok(line.includes(guidance), line);
-  assert.doesNotMatch(line, /stale|≠|setup --skills/);
-  const repair = run(process.execPath, [cli, "setup", "--skills"], envB, project);
+  for (const name of ["Claude plugin", "Claude skills", "Agent skills", "Skills (.agents)"]) {
+    const lines = status.stdout.split("\n").filter((text) => text.trimStart().startsWith(`${name}:`));
+    assert.ok(lines.length, status.stdout);
+    for (const line of lines) {
+      assert.ok(line.includes(guidance), line);
+      assert.doesNotMatch(line, /stale|≠|cotal setup/);
+    }
+  }
+  assert.doesNotMatch(status.stdout, /cotal setup --skills|stale · run `cotal setup`/);
+  const repair = run(process.execPath, [cli, "setup", "--skills"], fresh, project);
   assert.equal(repair.status, 3, repair.stdout + repair.stderr);
   assert.ok(repair.stderr.includes(guidance), repair.stderr);
-  assert.deepEqual(skillsStatus(envB, "project-b"), { name: "Claude skills", state: "warn", text: guidance });
+  const { integrations, skills } = machineStatus(fresh, "project-b");
+  for (const name of ["Claude plugin", "Claude skills"])
+    assert.deepEqual(integrations.find((entry) => entry.name === name), { name, state: "warn", text: guidance });
+  assert.equal(skills.state, "not-installed");
+  assert.equal(skills.setupBlocked, guidance);
+  const split = { ...fresh, CLAUDE_CONFIG_DIR: env("split-config", homeB).CLAUDE_CONFIG_DIR };
+  assert.deepEqual(machineStatus(split, "project-b").integrations.find((entry) => entry.name === "Claude wake channel"),
+    { name: "Claude wake channel", state: "warn", text: guidance });
   assert.deepEqual(profileBytes(envA), original);
+  assert.ok(!existsSync(join(fresh.HOME!, ".agents", "skills")));
   assert.ok(!existsSync(join(homeB, "claude-plugin", "cotal-skills")));
-  console.log("PASS: status reports the ownership conflict and skills setup still refuses it without changing the profile");
+  console.log("PASS: Claude plugin and both skills rows explain the ownership conflict; repair leaves the profile and skills unchanged");
+  return fresh;
 }
-assertForeignSkillsStatus();
+const foreignSkillsEnv = assertForeignSkillsStatus();
 
 const probe = join(root, "provider.mjs");
 writeFileSync(probe, `import { claudeSetupProvider as p } from ${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)};
@@ -180,8 +200,16 @@ const independent = setup(separate, "project-independent", "triage-independent")
 assert.equal(independent.status, 0, independent.stdout + independent.stderr);
 resolved(separate, homeB);
 const currentSkills = { name: "Claude skills", state: "ok", text: "current" };
-assert.deepEqual(skillsStatus(separate, "project-independent"), currentSkills);
+const independentStatus = machineStatus(separate, "project-independent");
+assert.deepEqual(independentStatus.integrations.find((entry) => entry.name === "Claude skills"), currentSkills);
+assert.equal(independentStatus.skills.setupBlocked, undefined);
 assert.deepEqual(profileBytes(envA), original);
+const owner = { ...foreignSkillsEnv, COTAL_HOME: homeA };
+const repaired = run(process.execPath, [cli, "setup", "--skills"], owner, join(root, "project-b"));
+assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+const ownerSkills = machineStatus(owner, "project-b").skills;
+assert.equal(ownerSkills.state, "current");
+assert.equal(ownerSkills.setupBlocked, undefined);
 const again = setup(envA, "project-a", "triage-a");
 assert.equal(again.status, 0, again.stdout + again.stderr);
 resolved(envA, homeA);

@@ -60,11 +60,12 @@ function processCell(p: ProcessRow): Cell {
 }
 
 function skillsCell(s: StatusResult["machine"]["skills"]): Cell {
-  const remedy = `${displayCmd()} setup --skills`;
   if (s.state === "unreadable") return cell(`bundle error: ${s.error}`, "failed");
   if (s.state === "current") return cell(`current (${s.total})`, "ok");
-  if (s.state === "not-installed") return cell(`not installed · ${remedy}`, "hint");
-  return cell(`${s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`} · ${remedy}`, "waiting");
+  const detail = s.state === "not-installed" ? "not installed"
+    : s.retired ? `${s.behind} to reconcile (${s.retired} retired)` : `${s.behind}/${s.total} out of date`;
+  if (s.setupBlocked !== undefined) return cell(`${detail} · skills setup blocked: ${s.setupBlocked}`, "waiting");
+  return cell(`${detail} · ${displayCmd()} setup --skills`, s.state === "not-installed" ? "hint" : "waiting");
 }
 
 /** The nats-server a broker start would run, or why it refuses the one it found. */

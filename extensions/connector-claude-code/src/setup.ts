@@ -27,6 +27,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /** One installed-plugin entry, as `claude plugin list --json` reports it. */
 type PluginEntry = Record<string, unknown>;
+type RegistrationBlock = { state: "warn" | "error"; text: string };
 
 /** What the `cotal` plugin carries from this package. */
 const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs", "dist/command-reader.cjs"] as const;
@@ -141,21 +142,22 @@ function registerUserServer(cotal: readonly string[], refreshing = false): strin
 
 /** Whether Claude Code's user config declares the `cotal` server the wake channel of a launched
  *  session binds to; a managed launch is refused without it. */
-function userServerRow(installed: boolean): ConnectorStatusRow {
+function userServerRow(installed: boolean, block: RegistrationBlock | undefined): ConnectorStatusRow {
+  const label = "Claude wake channel";
   let declared: boolean;
   try {
     const entry = claudeUserMcpServers().cotal;
     declared = entry !== undefined;
     const path = claudeUserMcpPath();
     if (installed && userServerState(entry, userServerEntry([process.execPath])) !== "current" && isConfigProtected(path)) {
-      return { label: "Claude wake channel", state: "warn", text: protectedClaudeConfig(path, "The Claude Code user MCP entry cotal") };
+      return block ? { label, ...block } : { label, state: "warn", text: protectedClaudeConfig(path, "The Claude Code user MCP entry cotal") };
     }
   } catch (e) {
-    return { label: "Claude wake channel", state: "error", text: (e as Error).message };
+    return { label, state: "error", text: (e as Error).message };
   }
-  return declared
-    ? { label: "Claude wake channel", state: "ok", text: "user MCP entry cotal registered" }
-    : { label: "Claude wake channel", state: "off", text: "user MCP entry `cotal` not registered · run `cotal setup` on a space host or `cotal daemon setup --space <space>` on a daemon-connected computer" };
+  if (declared) return { label, state: "ok", text: "user MCP entry cotal registered" };
+  if (block) return { label, ...block };
+  return { label, state: "off", text: "user MCP entry `cotal` not registered · run `cotal setup` on a space host or `cotal daemon setup --space <space>` on a daemon-connected computer" };
 }
 
 /** Desktop chat supplies no native session, so its local server cannot join a signed-in space. It
@@ -621,16 +623,19 @@ function pluginList(): PluginEntry[] | undefined {
   }
 }
 
-/** Check ownership before recommending a repair to the shared profile. */
-function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput): ConnectorStatusRow {
-  const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
-  if (entries === undefined) return row("off", "unknown");
+function registrationBlock(): RegistrationBlock | undefined {
   try {
-    const conflict = registrationHomeConflict();
-    if (conflict) return row("warn", conflict);
+    const text = registrationHomeConflict();
+    if (text) return { state: "warn", text };
   } catch (error) {
-    return row("error", (error as Error).message);
+    return { state: "error", text: (error as Error).message };
   }
+}
+
+function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput, block: RegistrationBlock | undefined): ConnectorStatusRow {
+  const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
+  if (block) return { label: "Claude skills", ...block, blocksSkillsSetup: true };
+  if (entries === undefined) return row("off", "unknown");
   const match = entries.find((entry) => entry.id === `cotal-skills@${MARKETPLACE}` && entry.scope === "user");
   if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
   const errors = (match.errors ?? match.error) as unknown;
@@ -641,11 +646,12 @@ function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }
 }
 
 /** The `cotal` plugin against the installed payload Claude resolves, including older cached installs. */
-function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorStatusInput): ConnectorStatusRow {
+function pluginRow(entries: PluginEntry[] | undefined, { version }: ConnectorStatusInput, block: RegistrationBlock | undefined): ConnectorStatusRow {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude plugin", state, text });
   if (entries === undefined) return row("off", "unknown");
   const installs = entries.filter((entry) => entry.id === `cotal@${MARKETPLACE}`);
   if (!installs.length) return row("off", "not installed");
+  if (block) return row(block.state, block.text);
   if (installs.some((entry) => (Array.isArray(entry.errors) ? entry.errors.length > 0 : Boolean(entry.errors ?? entry.error))))
     return row("error", "load error · run `cotal setup`");
   try {
@@ -867,8 +873,14 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
   },
   status(input) {
     const plugins = pluginList();
+    const block = plugins === undefined ? undefined : registrationBlock();
     const app = desktopRow(input.signedIn);
-    return [pluginRow(plugins, input), userServerRow(plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false), ...(app ? [app] : []), skillsRow(plugins, input)];
+    return [
+      pluginRow(plugins, input, block),
+      userServerRow(plugins?.some((entry) => entry.id === `cotal@${MARKETPLACE}`) ?? false, block),
+      ...(app ? [app] : []),
+      skillsRow(plugins, input, block),
+    ];
   },
 };
 

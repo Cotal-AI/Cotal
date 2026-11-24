@@ -85,6 +85,8 @@ export interface ConnectorStatusRow {
   readonly label: string;
   readonly state: "ok" | "warn" | "error" | "off";
   readonly text: string;
+  /** This row explains why the provider's skills action prevents `setup --skills` from completing. */
+  readonly blocksSkillsSetup?: true;
 }
 
 /** Optional setup surface declared by a connector through {@link Connector.setup}. A missing or

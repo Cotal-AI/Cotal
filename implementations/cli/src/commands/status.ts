@@ -456,6 +456,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   }
   let connectors: HarnessStatus[] | null = null;
   const integrations: StatusResult["machine"]["integrations"] = [];
+  let skillsSetupBlock: string | undefined;
   try {
     connectors = connectorHarnesses();
   } catch (e) {
@@ -469,7 +470,10 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
     hints.push("run `cotal status` again when that command finishes");
   } else if (connectors) {
     const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
-    for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
+    for (const r of await connectorStatusRows(connectors, signedIn)) {
+      integrations.push({ name: r.label, state: r.state, text: r.text });
+      if (r.blocksSkillsSetup) skillsSetupBlock ??= r.text;
+    }
     for (const r of await clientStatusRows(signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text, client: true });
   }
   let installed: boolean | null = null;
@@ -501,7 +505,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
     integrations,
     defaults,
     connectors: connectors?.map((h) => ({ name: h.name, requires: [...h.requires], missing: h.missing })) ?? null,
-    skills: readSkills(gaps),
+    skills: readSkills(gaps, skillsSetupBlock),
     web: { installed, installedError, url, urlError },
   };
 }
@@ -510,7 +514,7 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
  *  directory (Codex, Cursor, OpenCode, Gemini CLI, Windsurf). Those harnesses have no remote update, so
  *  surface a stale/missing/retired drop here and point at the skills-only write (`cotal setup --skills`).
  *  A corrupt skills bundle throws (fail-loud); we report that as an integrity error rather than "none shipped". */
-function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
+function readSkills(gaps: Gaps, setupBlocked: string | undefined): StatusResult["machine"]["skills"] {
   let skew;
   try {
     skew = agentSkillsSkew();
@@ -521,7 +525,8 @@ function readSkills(gaps: Gaps): StatusResult["machine"]["skills"] {
   const behind = skew.filter((s) => s.state !== "current");
   const retired = behind.filter((s) => s.state === "retired").length;
   const state = !behind.length ? "current" : behind.every((s) => s.state === "missing") ? "not-installed" : "behind";
-  return { state, total: skew.length, behind: behind.length, retired, error: null };
+  return { state, total: skew.length, behind: behind.length, retired, error: null,
+    ...(state !== "current" && setupBlocked !== undefined ? { setupBlocked } : {}) };
 }
 
 /** The installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
