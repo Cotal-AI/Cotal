@@ -590,13 +590,14 @@ manager applies to its input, and an edit keeps that draft and names it.
 Creation refuses an existing definition with `CONFLICT`. The suggested edit and removal commands
 keep any explicit `--space` or `--server` flags. A name that differs from an existing one only in
 case also refuses with `CONFLICT`, since a case-insensitive file system holds the two as one file.
-The suggested edit keeps the explicit target flags in this case too.
+The suggested edit keeps the explicit target flags in this case too. If only the filename extension
+has different casing, such as `.MD`, choose another name. Catalog commands use lowercase `.md`.
 Mutation receipts contain names and paths, not bodies.
 A persona file that is a symbolic link is listed with a `PERMISSION_DENIED` warning that names the
 file it links to. `spawn` can read that file, but `persona show`, `edit` and `remove` refuse the link
 with `PERMISSION_DENIED`. If the target is a readable regular file, the refusal suggests copying it
-in place of the link. If the target is missing, restore it if you still need it, or move the broken
-link aside and put a regular persona file in its place.
+in place of the link. If the target is missing, move the link aside and put a regular persona file
+in its place. To use the original definition, restore the target and use a copy of it.
 If `.cotal/agents` is a file or a link that loops, catalog operations refuse it with `CONFLICT`.
 Move it aside. To read or edit existing definitions, restore their folder at `.cotal/agents`.
 To create a persona, retry the original create command with its source and target options.
@@ -616,7 +617,9 @@ Any other value runs as a shell command. With no editor set, or one that cannot 
 editing refuses with `DEPENDENCY_UNAVAILABLE` (exit 2)
 and names the setting to fix. The draft's private folder is made in the temporary directory
 (`TMPDIR`). One this account cannot write refuses with `PERMISSION_DENIED`, and one that is missing
-or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made. A
+or not a directory with `TARGET_UNAVAILABLE`, both exit 2 and naming it before anything is made.
+If the temporary directory is on a read-only file system, choose a writable temporary folder.
+If the catalog itself is on a read-only file system, it must be writable before saving. A
 successful editor exit and valid definition are required before saving. A draft that fails
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
 so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags.
