@@ -5693,6 +5693,13 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
+      "anchor": "`another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: names the stopped space whose registration reserves the broker address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
       "anchor": "`${retry !== undefined ? `${retry}, or ` : \"\"}${stopHolder} and retry this start`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."

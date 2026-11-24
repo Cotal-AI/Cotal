@@ -828,11 +828,12 @@ If the recorded broker address is occupied after a completed stop, `status` and 
 address and explain how to free it before restarting. The stack keeps its address.
 If a legacy `.cotal/nats.pid` file blocks a controller restart, `status` and `ps` name the file
 and give the same verification step as [startup](cli-startup.mdx#controller-recovery).
-A space that never started still reads as prepared but not started. If its default `.cotal/channels.json`
-blocks the first start, `status` and `ps` name the file and the repair. If a refused first start
-recorded a broker address and the address is still in use, `status` names how to free it or start
-at another address. A recorded file-store cap does not change the restart command because Cotal
-reserves no fixed capacity per space.
+A space that never started still reads as prepared but not started. If startup cannot write or search
+its `.cotal` directory, `status` and `ps` give the same repair as `cotal up` without changing permissions.
+If the default `.cotal/channels.json` blocks the first start, `status` and `ps` name the file and the
+repair. If a refused first start recorded a broker address and the address is still in use, `status`
+names how to free it or start at another address. A recorded file-store cap does not change the
+restart command because Cotal reserves no fixed capacity per space.
 `meshes.currentStopped` says whether the selection is such a stopped stack. A stack whose last `up`
 or `down` has no recorded outcome is not stopped, even when a member it launched still runs: the
 selection reads as prepared but not started, and the selected space names that operation.

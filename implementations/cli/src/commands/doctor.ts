@@ -75,6 +75,7 @@ import {
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
+import { preparedRootWriteProblem } from "../lib/paths.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
@@ -216,7 +217,7 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    const block = rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
+    const block = preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
     return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;

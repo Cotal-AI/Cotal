@@ -456,7 +456,8 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   const launch = definition.launch as Extract<ServiceDefinitionInput["launch"], { type: "adapter" }>;
   const target = { space, name: resolved.name, executionHost: "this-machine" };
   const { capabilities } = resolveServiceAdapter(launch.adapter, launch.options, false).declaration;
-  if (args.values["new-instance"] && !capabilities.multiInstance || args.values.foreground && !capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+  const unsupported = [args.values["new-instance"] && !capabilities.multiInstance ? "--new-instance" : null, args.values.foreground && !capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+  if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded. Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.`, { target });
   if (launch.adapter === STACK_ADAPTER.manager) {
     assertManagerStartOptions(space, launch.options);
     const host = launch.options["console-host"];

@@ -721,7 +721,7 @@ async function assertStackBrokerAddress(request: StackUpRequest, root: string, s
     throw new CommandFailure("refused", "CONFLICT", `${says} (bind failed: address already in use); no broker was launched`, {
       target: { root, space, server, bindError: bindError.code },
       remedy: recorded
-        ? `${frees}, then run bare \`${displayCmd()} up\` from ${root}; this stack keeps its recorded address`
+        ? `${frees}, then run ${codeSpan(`${displayCmd()} up${request.foreground ? " --foreground" : ""}${request.noManager ? " --no-manager" : ""}`)} from ${root}; this stack keeps its recorded address`
         : `${retry !== undefined ? `${retry}, or ` : ""}${frees} and retry this start`,
     });
   }
@@ -1050,6 +1050,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
+    if (!brokerRunning && previous === undefined && request.retryAtAnotherAddress) {
+      const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
+      if (holder) throw new CommandFailure("refused", "CONFLICT", `another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`, {
+        remedy: await request.retryAtAnotherAddress(brokerHost ?? brokerListenAddress(server).host)
+          ?? "choose an unreserved broker address and retry with `--server`",
+      });
+    }
     snapshot = writeStackJournal(root, current ?? recorded, journal);
     settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;

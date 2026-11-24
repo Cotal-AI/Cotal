@@ -69,10 +69,9 @@ function removeDeadSockets(): void {
   }
 }
 
-/** Why the server refuses a reader's hello, or undefined when it accepts it. */
-function helloRefusal({ mod, claude }: ModHello): string | undefined {
-  if (mod !== CONNECTOR_VERSION)
-    return `the mod is ${mod} and the server is ${CONNECTOR_VERSION}; reload the plugin or restart the session`;
+/** Why a Claude Code that reports `claude` as its version runs no agent commands, or undefined when
+ *  it runs them. */
+export function claudeFloorRefusal(claude: string): string | undefined {
   const release = /^(\d+)\.(\d+)\.(\d+)/.exec(claude);
   if (!release) return `Claude Code reported version ${claude}, which does not start with a release number`;
   for (const [i, floor] of CLAUDE_FLOOR.entries()) {
@@ -80,6 +79,13 @@ function helloRefusal({ mod, claude }: ModHello): string | undefined {
     if (part !== floor) return part < floor ? `Claude Code ${claude} is older than ${FLOOR_TEXT}` : undefined;
   }
   return undefined;
+}
+
+/** Why the server refuses a reader's hello, or undefined when it accepts it. */
+function helloRefusal({ mod, claude }: ModHello): string | undefined {
+  if (mod !== CONNECTOR_VERSION)
+    return `the mod is ${mod} and the server is ${CONNECTOR_VERSION}; reload the plugin or restart the session`;
+  return claudeFloorRefusal(claude);
 }
 
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";

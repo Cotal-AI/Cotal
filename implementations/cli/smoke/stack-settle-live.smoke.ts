@@ -308,6 +308,43 @@ const prepare = (space: string): string => {
   return root;
 };
 
+async function checkStoppedReservation(): Promise<void> {
+  const holder = "stopped-reservation", holderRoot = join(projects, holder);
+  mkdirSync(join(holderRoot, ".cotal"), { recursive: true, mode: 0o700 });
+  anchors.set(holderRoot, recordSmokeSandbox({ root: holderRoot, cotalHome: home, xdgConfigHome: configDir }));
+  roots.push(holderRoot);
+  const port = await freePort(), server = `nats://127.0.0.1:${port}`;
+  const started = cli(holderRoot, "up", "--detach", "--open", "--server", server);
+  const stopped = cli(holderRoot, "down", "--yes");
+  check("legacy down leaves the other space registered at the stopped address",
+    started.status === 0 && stopped.status === 0 && findMesh(holder)?.server === server, { started: shown(started), stopped: shown(stopped) });
+
+  const probe = createServer();
+  await listenOn(probe, port);
+  await new Promise<void>((done) => probe.close(() => done()));
+
+  const space = "reserved-address", root = prepare(space);
+  const refused = cli(root, "up", "--foreground", "--open", "--server", server);
+  const retry = /`(?:pnpm )?cotal (up --foreground --open --server nats:\/\/127\.0\.0\.1:(\d+))`/.exec(refused.stderr);
+  check("a first foreground start refuses the stopped reservation and names a checked alternate",
+    refused.status === 2 && refused.stderr.includes("CONFLICT") && refused.stderr.includes(`space ${holder} in ${holderRoot} reserves ${server}`)
+    && retry !== null && Number(retry[2]) !== port && !refused.stderr.includes("inspect the stack's members")
+    && pidOf(space, "stack-broker") === null, shown(refused));
+  if (!retry || Number(retry[2]) === port) return;
+
+  const retried = cliAsync(root, ...retry[1]!.split(" "));
+  const ready = await until(() => runningPidOf(space, "stack-broker") !== null && runningPidOf(space, "stack-manager") !== null
+    && readStackJournal(root)?.journal.operation.phase === "completed", 60_000);
+  track(space);
+  const startedAt = findMesh(space)?.server;
+  const down = cli(root, "down", "--yes", "--json");
+  const result = await retried;
+  check("running the suggested foreground command starts both members and keeps the stopped reservation",
+    ready && down.status === 0 && result.status === 0 && result.stdout.includes("Foreground stack lifetime")
+    && startedAt === `nats://127.0.0.1:${retry[2]}` && findMesh(holder)?.server === server,
+    { ...shown(result), down: shown(down) });
+}
+
 /** Publish 900 KB messages over an operator credential until the broker refuses one; the refusal. */
 const fillStore = async (root: string, space: string): Promise<unknown> => {
   const auth = (await getSpaceAuth(workspaceSecretStore(root), space))!;
@@ -634,6 +671,8 @@ try {
     check("the caller clears its selection", cleared.status === 0, shown(cleared));
   }
 
+  await checkStoppedReservation();
+
   // 3. A busy port on the first up (B2-02).
   {
     const space = "busyport";
@@ -724,6 +763,7 @@ try {
 
     const occupant = createServer();
     await listenOn(occupant, movedPort);
+    let foregroundRetry: string | undefined;
     try {
       const status = cli(second, "status", "--space", other, "--json");
       const history = cli(second, "history", "--space", other, "general", "--json");
@@ -733,6 +773,15 @@ try {
       check("status names the stopped stack's occupied address and how to free it", status.status === 0 && selected?.message?.includes(`another process holds that address 127.0.0.1:${movedPort}`) === true && hints?.includes(remedy) === true && !hints.some((hint) => hint.startsWith("start it again with")), shown(status));
       check("history refuses the stopped stack and names the same address and remedy", history.status === 2 && history.env?.error?.code === "TARGET_UNAVAILABLE" && history.env.error.message.includes(`another process holds that address 127.0.0.1:${movedPort}`) && history.env.error.remedy === remedy, shown(history));
       const retry = cli(second, "up", "--no-manager", "--json");
+      check("an occupied broker-only background restart keeps --no-manager in its retry",
+        retry.status === 2 && retry.env?.error?.remedy === remedy.replace(` in ${realpathSync(second)};`, ` from ${realpathSync(second)};`), shown(retry));
+      const journalBefore = readStackJournal(second)?.sha256;
+      const foreground = cli(second, "up", "--foreground", "--no-manager");
+      const output = foreground.stdout + foreground.stderr;
+      foregroundRetry = /then run `([^`]+)` from .*; this stack keeps its recorded address/.exec(output)?.[1];
+      check("an occupied foreground broker-only restart keeps both flags without changing the journal",
+        foreground.status === 2 && foregroundRetry === `${launcher} up --foreground --no-manager`
+        && journalBefore !== undefined && readStackJournal(second)?.sha256 === journalBefore, { status: foreground.status, output });
       const after = cli(second, "status", "--space", other, "--json");
       const afterSelected = after.env?.result?.selected as { message?: string } | undefined;
       const afterHints = after.env?.result?.hints as string[] | undefined;
@@ -747,6 +796,21 @@ try {
     }
     const free = cli(second, "history", "--space", other, "general", "--json");
     check("history goes back to ordinary stopped-stack guidance when the address is clear", free.status === 2 && free.env?.error?.remedy?.startsWith("start it again with `cotal up --no-manager` in ") === true, shown(free));
+    if (launcher !== undefined && foregroundRetry === `${launcher} up --foreground --no-manager`) {
+      const started = cliAsync(second, ...execWords(foregroundRetry.slice(launcher.length + 1)));
+      const ready = await until(() => {
+        const journal = readStackJournal(second)?.journal;
+        return journal?.operation.kind === "up" && journal.operation.phase === "completed";
+      }, 30_000);
+      track(other);
+      check("the printed foreground retry starts only the broker at its recorded address", ready
+        && readStackJournal(second)?.journal.server === `nats://127.0.0.1:${movedPort}`
+        && runningPidOf(other, "stack-broker") !== null && runningPidOf(other, "stack-manager") === null);
+      const stopped = cli(second, "down", "--yes", "--json");
+      const released = await started;
+      check("down stops the retried stack and releases the foreground terminal", stopped.status === 0
+        && released.status === 0 && released.stderr.includes("Foreground stack released"), { stopped: shown(stopped), released: shown(released) });
+    }
     // Once it ran, it keeps that address, so a broker another space started there must stop first.
     const third = "takenport";
     const taker = prepare(third);

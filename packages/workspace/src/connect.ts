@@ -356,8 +356,19 @@ export function principalFromBearer(bearer: string): { owner: string; actor: str
 export function refuseStaticCredsForKnownUserAuth(space: string, server: string | undefined, what: string): void {
   const recorded = findMesh(space);
   const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
-  const knownLocalUser = hasUserAuthState(findCotalRoot(), space);
-  if (!knownRecordedUser && !knownLocalUser) return;
+  const root = findCotalRoot();
+  try {
+    if (!hasUserAuthState(root, space) && !knownRecordedUser) return;
+  } catch (error) {
+    const native = error as NodeJS.ErrnoException | undefined;
+    const code = native?.code;
+    if (native?.syscall !== "lstat" || (code !== "EACCES" && code !== "EPERM")) throw error;
+    throw new ConnectRefusal(
+      `✗ cannot check the local authentication mode for space "${space}" (${code})`,
+      "  Check that this account can read the project's authentication settings and traverse their parent folders.",
+      { code: "PERMISSION_DENIED", cause: error, native: { code }, target: { space, root } },
+    );
+  }
   throw new ConnectRefusal(
     `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
