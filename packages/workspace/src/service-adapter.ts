@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { accessSync, constants, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
 import { isAbsolute, sep } from "node:path";
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import { endpointToken, token } from "@cotal-ai/core";
 import type { ControllerStackView } from "./maintenance.js";
 import type { ProcessIdentityRecord } from "./pid.js";
@@ -197,6 +197,7 @@ export interface ServiceAdapterHooks {
 const invalid = (message: string): never => { throw new CommandFailure("refused", "SCHEMA_INVALID", message); };
 const plainObject = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value)));
 const field = (name: string) => /^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(name) && !["constructor", "prototype", "__proto__"].includes(name);
+const numericBounds = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"];
 
 /** Closed reader for a launch attempt, with the fields one adapter role may receive. Any other key
  *  refuses. Messages name fields, never values, because `resumeCommit` points at a secret file. */
@@ -245,7 +246,7 @@ export function serviceAdapterDeclaration(input: unknown): ServiceAdapterDeclara
     const keywords = type === "object" ? ["properties", "required", "additionalProperties", "maxProperties"]
       : type === "array" ? ["items", "minItems", "maxItems"]
       : type === "string" ? ["minLength", "maxLength"]
-      : type === "number" || type === "integer" ? ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] : [];
+      : type === "number" || type === "integer" ? numericBounds : [];
     if (!["object", "array", "string", "number", "integer", "boolean", "null"].includes(String(type)) || Object.keys(schema).some((key) => !common.includes(key) && !keywords.includes(key))) return invalid("the adapter option schema uses an unsupported keyword or type");
     for (const key of ["title", "description"]) if (schema[key] !== undefined && (typeof schema[key] !== "string" || schema[key].length > 1000)) return invalid("adapter schema descriptions exceed their bounds");
     if (type === "object") {
@@ -257,7 +258,7 @@ export function serviceAdapterDeclaration(input: unknown): ServiceAdapterDeclara
       visit(schema.items, depth + 1);
     }
     for (const key of ["minLength", "maxLength", "minItems", "maxItems", "maxProperties"]) if (schema[key] !== undefined && (!Number.isSafeInteger(schema[key]) || Number(schema[key]) < 0 || Number(schema[key]) > 8192)) return invalid("an adapter schema bound is invalid");
-    for (const key of ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"]) if (schema[key] !== undefined && (typeof schema[key] !== "number" || !Number.isFinite(schema[key]))) return invalid("an adapter numeric bound is invalid");
+    for (const key of numericBounds) if (schema[key] !== undefined && (typeof schema[key] !== "number" || !Number.isFinite(schema[key]))) return invalid("an adapter numeric bound is invalid");
     const scalar = (value: unknown) => value === null || typeof value === "string" && value.length <= 8192 || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value);
     if (Object.hasOwn(schema, "const") && !scalar(schema.const) || schema.enum !== undefined && (!Array.isArray(schema.enum) || !schema.enum.length || schema.enum.length > 256 || !schema.enum.every(scalar))) return invalid("adapter option alternatives must be bounded scalar values");
   };
@@ -273,13 +274,43 @@ export function serviceAdapterDeclaration(input: unknown): ServiceAdapterDeclara
   return input as unknown as ServiceAdapterDeclaration;
 }
 
+/** Describe a validated numeric option using only its declared type and bounds. */
+export function serviceNumericOptionRange(schema: Readonly<Record<string, unknown>>): string | undefined {
+  const { type, minimum, maximum, exclusiveMinimum, exclusiveMaximum } = schema;
+  if (type !== "number" && type !== "integer") return undefined;
+  const value = type === "integer" ? "an integer" : "a number";
+  const limits: string[] = [];
+  if (typeof minimum === "number" && typeof maximum === "number") limits.push(`from ${minimum} through ${maximum}`);
+  else if (typeof minimum === "number") limits.push(`at least ${minimum}`);
+  if (typeof exclusiveMinimum === "number") limits.push(`greater than ${exclusiveMinimum}`);
+  if (typeof maximum === "number" && typeof minimum !== "number") limits.push(`at most ${maximum}`);
+  if (typeof exclusiveMaximum === "number") limits.push(`less than ${exclusiveMaximum}`);
+  return limits.length ? `${value} ${limits.join(" and ")}` : undefined;
+}
+
+function numericOptionError(schema: ServiceAdapterDeclaration["optionsSchema"], error: ErrorObject | undefined): string | undefined {
+  if (!error || error.keyword !== "type" && !numericBounds.includes(error.keyword)) return undefined;
+  let option: unknown = schema;
+  // The closed schema admits no references or field names that require JSON Pointer escaping.
+  for (const part of error.schemaPath.slice(2).split("/").slice(0, -1)) {
+    if (!plainObject(option) || !Object.hasOwn(option, part)) return undefined;
+    option = option[part];
+  }
+  return plainObject(option) ? serviceNumericOptionRange(option) : undefined;
+}
+
 /** `name` gives how an option reads in a refusal, such as the flag a preset gives it. */
 export function validateServiceAdapterOptions(declaration: ServiceAdapterDeclaration, options: Readonly<Record<string, unknown>>, name = (option: string) => option): void {
   serviceAdapterDeclaration(declaration);
   let check: ValidateFunction, valid: boolean;
   try { check = new Ajv2020({ strict: true, ownProperties: true, validateFormats: false }).compile(declaration.optionsSchema); valid = check(options) === true; }
   catch { return invalid("the adapter options could not be validated against its closed declaration"); }
-  if (!valid) return invalid(`the service options do not match the installed adapter's closed schema${schemaErrorLocation(check.errors, name)}; option values were not printed`);
+  if (!valid) {
+    const range = numericOptionError(declaration.optionsSchema, check.errors?.at(-1));
+    // A numeric error's instance path visits only declared fields and bounded array indices.
+    const location = schemaErrorLocation(check.errors, name, range ? field : undefined);
+    return invalid(`the service options do not match the installed adapter's closed schema${location}${range ? `, which must be ${range}` : ""}; option values were not printed`);
+  }
 }
 
 /** Public readiness evidence is closed and bound to a creation-pinned process. The installed

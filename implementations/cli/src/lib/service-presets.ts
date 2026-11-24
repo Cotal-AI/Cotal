@@ -1,7 +1,7 @@
 import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, oneLine, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, serviceNumericOptionRange, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -96,7 +96,9 @@ export function servicePresetFlags(preset: ServicePreset, registeredOnly = false
   for (const [option, schema] of Object.entries(properties)) {
     const name = presetFlagName(option);
     if (!/^[a-z][a-z0-9-]{0,63}$/.test(name) || reserved.has(name) || schema.type === "boolean" && (reserved.has(`no-${name}`) || names.has(`no-${name}`))) throw new CommandFailure("refused", "UNSUPPORTED", "the preset option names cannot be represented without shadowing CLI flags; use a validated --file definition instead");
-    const description = typeof schema.description === "string" ? schema.description : `add --preset ${preset.name}: declared ${option} option`;
+    const label = typeof schema.description === "string" ? schema.description : `add --preset ${preset.name}: declared ${option} option`;
+    const range = serviceNumericOptionRange(schema);
+    const description = range ? `${label} (${range})` : label;
     const fallback = preset.defaults?.[option];
     const marked = fallback ? `${description} (default: ${describeDefault(fallback)})` : required.has(option) && !description.includes("(required)") ? `${description} (required)` : description;
     const value = resolvedPaths[preset.adapter]?.includes(option) ? "<path>" : urlOptions[preset.adapter]?.includes(option) ? "<url>" : placeholder(adapter.declaration.paths?.[option], schema.type);

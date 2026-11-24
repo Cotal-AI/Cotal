@@ -57,17 +57,22 @@ function overLongLaunchArg(input: unknown): string | undefined {
   return undefined;
 }
 const nativeString = (value: string): boolean => !/[\u0000-\u001f\u007f]/u.test(value);
+const printableSchemaSegment = (segment: string): boolean => /^(?:[A-Za-z_][A-Za-z0-9_-]{0,63}|[0-9]{1,4})$/.test(segment);
 
 /** Where a closed-schema validator stopped, from its last error, as ` at <field path>` and what is
  *  wrong there. Each segment is printed only when it is a plain identifier or an index, so an
  *  arbitrary user-controlled property name never reaches a message. `name` gives how the first
- *  segment reads, such as the flag a preset option takes. Empty when it cannot say. */
-export function schemaErrorLocation(errors: readonly { keyword: string; instancePath: string; params: Record<string, unknown> }[] | null | undefined, name = (field: string) => field): string {
+ *  segment reads, such as the flag a preset option takes. A caller that verified the error path
+ *  against a closed declaration may supply its field grammar. Empty when it cannot say. */
+export function schemaErrorLocation(errors: readonly { keyword: string; instancePath: string; params: Record<string, unknown> }[] | null | undefined, name = (field: string) => field, declaredField?: (segment: string) => boolean): string {
   const last = errors?.at(-1);
   if (!last) return "";
   const field = last.keyword === "additionalProperties" ? last.params.additionalProperty : last.keyword === "required" ? last.params.missingProperty : undefined;
-  const parts = [...last.instancePath.split("/").filter(Boolean), ...(field === undefined ? [] : [String(field)])];
-  if (!parts.length || parts.some((part) => !/^(?:[A-Za-z_][A-Za-z0-9_-]{0,63}|[0-9]{1,4})$/.test(part))) return "";
+  const path = last.instancePath.split("/").filter(Boolean);
+  if (path.some((part) => !printableSchemaSegment(part) && !declaredField?.(part))) return "";
+  if (field !== undefined && !printableSchemaSegment(String(field))) return "";
+  const parts = field === undefined ? path : [...path, String(field)];
+  if (!parts.length) return "";
   const at = [name(parts[0]!), ...parts.slice(1)].join(".");
   return last.keyword === "additionalProperties" ? ` at ${at}, which the schema does not declare` : last.keyword === "required" ? ` at ${at}, which is required` : ` at ${at}`;
 }
