@@ -622,10 +622,15 @@ function noApplicationHere(): boolean {
   try { return connectorHarnesses().every((harness) => harness.missing.length > 0); } catch { return false; }
 }
 
-function psRerun(v: FlagValues<typeof psFlags>, slots = false): string {
-  if (v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server) return "the same command";
+function psCommand(v: FlagValues<typeof psFlags>, slots = false): string | undefined {
+  if (v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server) return undefined;
   const words = [...(slots ? ["--slots"] : []), ...(v.on === undefined ? [] : ["--on", v.on]), ...(v.wide ? ["--wide"] : []), ...(v.json ? ["--json"] : []), ...(v.plain ? ["--plain"] : [])];
-  return codeSpan(onRerun("cotal ps", v, words));
+  return onRerun("cotal ps", v, words);
+}
+
+function psRerun(v: FlagValues<typeof psFlags>, slots = false): string {
+  const command = psCommand(v, slots);
+  return command ? codeSpan(command) : "the same command";
 }
 
 function liveSeatsRemedy(v: FlagValues<typeof psFlags>): string {
@@ -650,7 +655,11 @@ export async function ps(args: ParsedArgs): Promise<void> {
   let on: string | undefined;
   let census: SeatCensus;
   try {
-    on = await managerPin(v, onRerun("cotal ps", v, slots ? ["--slots"] : []));
+    if (v.on !== undefined) {
+      const unpinned = { ...v, on: undefined };
+      const retry = psCommand(unpinned, slots) ?? { remedy: "replace the --on value in the original command with the full manager instance id" };
+      on = await managerPin(v, retry, psCommand(unpinned));
+    }
     census = await readSeats(v, command, on);
   } catch (e) {
     if (isWorkspaceTargetError(e) && e.code === "not-started" && e.details.root !== undefined && !e.details.rootMissing) {
