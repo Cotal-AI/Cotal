@@ -70,33 +70,34 @@ export function rolledBackRuns(previous: ReadonlyMap<string, RunJournalView>, re
 }
 
 async function previousHistoryIsEmpty(broker: IsolatedBroker, space: string): Promise<boolean> {
-  let nc: Awaited<ReturnType<typeof connectIsolatedBroker>> | undefined;
   try {
-    nc = await connectIsolatedBroker(broker, broker.initialLogin);
-    const jsm = await jetstreamManager(nc, { checkAPI: false });
-    const names: string[] = [];
-    const list = jsm.streams.names();
-    for (let page: string[]; (page = await list.next()).length;) names.push(...page);
-    const inventory = validateSpaceBackupInventory(space, names, { atRest: true });
-    const records = recordsKvStreamName(space);
-    for (const { name, class: kind } of inventory.backedUp) {
-      if (kind !== "messages" && kind !== "workflow") continue;
-      const info = await jsm.streams.info(name, name === records ? { subjects_filter: ">" } : undefined);
-      validateCanonicalBackupStreamConfig(space, name, info.config as unknown as Record<string, unknown>);
-      const state = validateBackupStreamState(info.state as unknown as Record<string, unknown>);
-      if (state.lost !== undefined) return false;
-      if (state.last_seq === 0) continue;
-      // The clone can expire messages at startup. Zero current messages with an advanced sequence
-      // is not proof that the preserved store was empty. The shared records KV also holds the
-      // manager's own service registration, which is present even without a workflow.
-      if (name !== records || !hasOnlyManagerRegistration(state, space)) return false;
+    const login = await broker.addLogin({ profile: "backup", scope: { operation: "inspect", selection: "full" } });
+    const nc = await connectIsolatedBroker(broker, login);
+    try {
+      const jsm = await jetstreamManager(nc, { checkAPI: false });
+      const names: string[] = [];
+      const list = jsm.streams.names();
+      for (let page: string[]; (page = await list.next()).length;) names.push(...page);
+      const inventory = validateSpaceBackupInventory(space, names, { atRest: true });
+      const records = recordsKvStreamName(space);
+      for (const { name, class: kind } of inventory.backedUp) {
+        if (kind !== "messages" && kind !== "workflow") continue;
+        const info = await jsm.streams.info(name, name === records ? { subjects_filter: ">" } : undefined);
+        validateCanonicalBackupStreamConfig(space, name, info.config as unknown as Record<string, unknown>);
+        const state = validateBackupStreamState(info.state as unknown as Record<string, unknown>);
+        if (state.lost !== undefined) return false;
+        if (state.last_seq === 0) continue;
+        // A clone can expire messages at startup. Zero current messages with an advanced sequence
+        // does not prove the original was empty. The records KV also holds manager registrations.
+        if (name !== records || !hasOnlyManagerRegistration(state, space)) return false;
+      }
+      return true;
+    } finally {
+      await nc.close();
     }
-    return true;
   } catch {
-    // A missing stream or an unreadable observation cannot authorize deletion.
+    // An unsuccessful inspection cannot authorize deletion.
     return false;
-  } finally {
-    await nc?.close();
   }
 }
 
@@ -135,13 +136,12 @@ export async function inspectPreviousStore(options: {
       ...(options.auth ? { auth: options.auth } : {}),
       deadline: options.deadline,
       label: "previous",
-      initialScope: { profile: "backup", scope: { operation: "inspect", selection: "full" } },
+      initialScope: { profile: "restore", scope: { operation: "journal" } },
       attemptId: options.attemptId,
     });
     options.record({ owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
-    const historyEmpty = await previousHistoryIsEmpty(broker, options.space);
-    const runs = historyEmpty ? new Map<string, RunJournalView>() : await readRunJournals(broker, options.space);
-    return { historyEmpty, runs };
+    const runs = await readRunJournals(broker, options.space);
+    return { historyEmpty: runs.size === 0 && await previousHistoryIsEmpty(broker, options.space), runs };
   } finally {
     if (broker) await broker.stop();
     clone.cleanup();

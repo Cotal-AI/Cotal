@@ -951,7 +951,7 @@ type LeftOutRecord = { readonly space: string; readonly mode: MaintenanceAuthMod
 
 /** Whether a restore replaced a newer cut and did not prove its message history and runs empty. */
 export function restoreReplacedNewerCut(record: LeftOutRecord): boolean {
-  return record.launch?.previousCutNewer === true && record.launch.previousHistoryEmpty !== true;
+  return record.launch?.previousCutNewer === true;
 }
 
 /** The other JetStream accounts whose streams a restore left in the store it set aside, such as an

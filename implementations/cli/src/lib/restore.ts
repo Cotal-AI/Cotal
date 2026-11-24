@@ -572,7 +572,7 @@ export function restoreHistory(root: string, attemptId: string): { onlyCopy?: Re
     if (!journal || !("restore" in journal) || journal.restore.attemptId !== attemptId) return {};
     const leftOut = restoreLeftOut(journal);
     const onlyCopy = leftOut ? { leftOut, newer: restoreReplacedNewerCut(journal), otherAccounts: restoreOtherAccounts(journal), rolledBack: restoreRolledBackRuns(journal), ...(journal.restore.previousSource ? { previousStore: journal.restore.previousSource.identity.path } : {}) } : undefined;
-    const emptyNote = "launch" in journal && journal.launch.previousHistoryEmpty === true ? "The previous store had no message history or workflow runs for the restored space." : undefined;
+    const emptyNote = "launch" in journal && journal.launch.previousCutNewer === false ? "The previous store had no message history or workflow runs for the restored space." : undefined;
     return { onlyCopy, emptyNote };
   } catch { return {}; }
 }
@@ -971,8 +971,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       restoreOnly: flags["restore-only"] ?? artifact.manifest.selection,
       restoredStreams: [...wanted],
       acceptMissingSource: Boolean(flags["accept-missing-source"]),
-      ...(previousCutNewer ? { previousCutNewer: true } : {}),
-      ...(previous?.historyEmpty ? { previousHistoryEmpty: true } : {}),
+      // On a newer cut, only an affirmative empty-store proof clears the history warning.
+      ...(previousCutNewer ? { previousCutNewer: previous?.historyEmpty !== true } : {}),
       ...(otherAccounts.length ? { otherAccounts } : {}),
       ...(rolledBack?.runs.length ? { rolledBackRuns: rolledBack.runs as unknown as JsonValue, ...(rolledBack.more ? { rolledBackRunsMore: rolledBack.more } : {}) } : {}),
       serverName,
