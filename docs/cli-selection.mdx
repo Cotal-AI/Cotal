@@ -33,7 +33,8 @@ cotal use [<space> | --clear] [--json|--plain]
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
 project whose root has one running registered space other than the automatically adopted selection,
-that space is marked as this folder's, since a command without `--space` targets it there. It probes
+that space is marked as this folder's, since a command without `--space` targets it there. An offline
+registration at the same root stays listed but does not prevent that marker. The listing probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable` when the connection fails, or `not answering` when it times out.
 A stopped local listener is reported as `broker process is stopped`. Its registration stays.
