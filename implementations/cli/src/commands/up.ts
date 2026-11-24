@@ -1108,7 +1108,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     // moment of the start exits without it.
     const release = values.foreground ? undefined : noticeOnInterrupt(() => {
       settleInterruptedLaunches();
-      const failure = stackUpInterrupted(meshRoot, stackSpace, values["no-manager"] === true);
+      const failure = stackUpInterrupted(meshRoot, stackSpace, noManager, values.__invokedRoot);
       if (presentation === "json") writeEnvelope(failureEnvelope("up", failure));
       return `${failure.message} ${failure.remedy}`;
     });

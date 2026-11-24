@@ -228,9 +228,10 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
-  const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const scope = { space, name, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, scope, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
+  const target = { ...scope, instanceId: selected?.name ?? null };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
   // The owned unit entry runs only a direct process, so an adapter definition's install refuses
   // before anything is allocated.

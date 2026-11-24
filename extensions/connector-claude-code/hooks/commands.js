@@ -86,8 +86,9 @@ function verdict({ name, source }) {
 }
 
 // Why a remote request may not run `name`, or undefined when it may. Claude picks the entry a name
-// runs, so a name is refused when any entry listed under it is.
-const refusal = (commands, name) => commands.filter((entry) => entry.name === name).map(verdict).find(Boolean);
+// runs, so a name is refused when any entry listed under it is. The connector applies it to the list
+// a launcher reads before launch, so that list offers only what the seat will run.
+export const refusal = (commands, name) => commands.filter((entry) => entry.name === name).map(verdict).find(Boolean);
 
 // Exported for the cells: Claude's test kit cannot make `$.command.run` reject.
 export function rejected(op, message) {

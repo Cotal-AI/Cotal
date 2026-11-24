@@ -1,7 +1,8 @@
-import { existsSync, lstatSync, readlinkSync, realpathSync, type Stats } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { authDir, canonicalRoot, codeSpan, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, readMaintenanceJournal, recordsMovedTo, shellPath, soleSpaceOf } from "@cotal-ai/workspace";
+import { shellWord } from "./endpoint-errors.js";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
  *  command resolves the same `.cotal/` whether you're at the project root or a subdirectory. */
@@ -19,6 +20,25 @@ export function homeHoldsStack(root: string): boolean {
  *  don't break when `cotal` runs from a subdirectory. */
 export function cotalPath(...segments: string[]): string {
   return join(cotalRoot(), ".cotal", ...segments);
+}
+
+/** Startup writes under .cotal, or creates it under the project root. */
+export function upRootWriteProblem(root: string): { path: string; message: string; remedy: string } | undefined {
+  const control = join(root, ".cotal");
+  const path = statSync(control, { throwIfNoEntry: false })?.isDirectory() ? control : root;
+  try { accessSync(path, constants.W_OK | constants.X_OK); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EROFS") return { path, message: `${path} is on a read-only file system (${code})`, remedy: "retry with the project on a writable file system" };
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    return { path, message: `${path} does not grant this account both write and search access (${code})`, remedy: `make it writable and searchable by you, for example with chmod u+wx ${shellWord(path)}` };
+  }
+  return undefined;
+}
+
+/** Give permission advice only when the read-only probe establishes a startup blocker. */
+export function preparedRootWriteProblem(root: string): ReturnType<typeof upRootWriteProblem> {
+  try { return cotalLinkAt(root) ? undefined : upRootWriteProblem(root); } catch { return undefined; }
 }
 
 /** Whether the working folder was removed before this process read it. Node then fails every cwd

@@ -59,44 +59,63 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
     return 1;
   }
   if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
-  else if (await npmProxyRefused(latest.npmResult, rt.env)) {
-    rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
-    return 1;
+  else {
+    const setting = await npmProxyRefusal(latest.npmResult, rt);
+    if (setting === "environment") {
+      rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
+      return 1;
+    }
+    if (setting) {
+      rt.out(`The npm proxy refused the connection (ECONNREFUSED). No installed packages were replaced. Check \`${setting}\` in your npm configuration, then retry.`);
+      return 0;
+    }
   }
   rt.out(unavailable);
   return 0;
 }
 
 /** npm gives a generic proxy hint even for direct failures. Match the refused socket instead. */
-async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
-  const httpsProxy = env.https_proxy || env.HTTPS_PROXY;
-  const httpProxy = env.http_proxy || env.HTTP_PROXY;
-  if ((!httpsProxy && !httpProxy) || result.status === null || result.error) return false;
+async function npmProxyRefusal(result: CommandResult, rt: UpdateRuntime): Promise<"environment" | "https-proxy" | "proxy" | undefined> {
+  if (result.status === null || result.error) return;
   let error: { code?: unknown; summary?: unknown } | undefined;
   try { error = JSON.parse(result.stdout)?.error; }
-  catch { return false; }
-  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return false;
+  catch { return; }
+  if (error?.code !== "ECONNREFUSED" || typeof error.summary !== "string") return;
   const refused = /^(?:FetchError: )?request to (\S+) failed, reason: connect ECONNREFUSED (\S+):(\d+)$/.exec(error.summary);
-  if (!refused) return false;
+  if (!refused) return;
   const [, request, address, port] = refused;
   const registry = URL.parse(request);
-  if (!registry || (registry.protocol !== "https:" && registry.protocol !== "http:") || !isIP(address)) return false;
-  const setting = httpsProxy || (registry.protocol === "http:" ? httpProxy : undefined);
-  const proxy = setting ? URL.parse(setting) : null;
-  if (!proxy || (proxy.protocol !== "http:" && proxy.protocol !== "https:")) return false;
+  if (!registry || (registry.protocol !== "https:" && registry.protocol !== "http:") || !isIP(address)) return;
 
   const portOf = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
-  if (portOf(proxy) !== port) return false;
   const normalize = (ip: string) => isIP(ip) === 6 ? new SocketAddress({ address: ip, family: "ipv6" }).address : ip;
   const matches = async (url: URL) => {
     const host = url.hostname.replace(/^\[|\]$/g, "");
     const addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map(item => item.address);
     return addresses.some(ip => normalize(ip) === normalize(address));
   };
-  try {
-    // If the registry could have refused the same socket directly, do not blame the proxy.
-    return await matches(proxy) && (portOf(registry) !== port || !await matches(registry));
-  } catch { return false; }
+  const confirmsProxy = async (setting: string | undefined) => {
+    const proxy = setting ? URL.parse(setting) : null;
+    if (!proxy || (proxy.protocol !== "http:" && proxy.protocol !== "https:") || portOf(proxy) !== port) return false;
+    try {
+      // If the registry could have refused the same socket directly, do not blame the proxy.
+      return await matches(proxy) && (portOf(registry) !== port || !await matches(registry));
+    } catch { return false; }
+  };
+  const { https_proxy, HTTPS_PROXY, http_proxy, HTTP_PROXY } = rt.env;
+  if (await confirmsProxy(https_proxy || HTTPS_PROXY || (registry.protocol === "http:" ? http_proxy || HTTP_PROXY : undefined))) return "environment";
+
+  // npm resolves config precedence and redacts the password in its text listing. Its JSON listing
+  // omits authenticated proxy URLs, and commented-out settings are not effective.
+  const config = rt.npm(["config", "list", "--json=false", "--long", "--logs-max=0", "--update-notifier=false"]);
+  if (config.status !== 0 || config.error) return;
+  for (const key of ["https-proxy", "proxy"] as const) {
+    const value = new RegExp(`^${key} = ("[^\\r\\n]*")$`, "m").exec(config.stdout)?.[1];
+    if (!value) continue;
+    try { if (await confirmsProxy(JSON.parse(value))) return key; }
+    catch { return; }
+    return;
+  }
 }
 
 /** Resolve installed first-party surfaces in a disposable prefix, including their npm dependencies. */

@@ -3,7 +3,7 @@
  * process serves an endpoint once for its lifecycle, and the served table is exactly the cluster's
  * commands, so this module is the one owner of that serve.
  */
-import type { CotalEndpoint } from "@cotal-ai/core";
+import type { CotalEndpoint, FirstCommand } from "@cotal-ai/core";
 import { createCommandLane, type CommandDispatcher, type CommandQueue } from "./agent-commands.js";
 import { createNameLane } from "./agent-name.js";
 import { PROMPT_DESK_MIN_MAX_PAYLOAD, createPromptDesk, type PromptDesk } from "./prompt-desk.js";
@@ -23,7 +23,8 @@ export interface AgentEndpoint {
  * Serve this process's `agent` endpoint on `ep` and show the `prompts` presence field. Resolves once
  * the broker accepted the subscription. `dispatcher` runs the agent's harness commands, and
  * `onQueued` is told each time a command waits for a turn. Without a dispatcher, `commands` answers
- * `supported: false` and `command` is refused.
+ * `supported: false` and `command` is refused. `first` is the command its launch handed the agent,
+ * queued before any other.
  *
  * Rejects on an open mesh, under a static credential and without a lifecycle UID, when the broker
  * refuses the subscription (a credential minted before the rows existed), and when the connection's
@@ -34,7 +35,7 @@ export interface AgentEndpoint {
  */
 export async function openAgentEndpoint(
   ep: CotalEndpoint,
-  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void },
+  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void; first?: FirstCommand },
 ): Promise<AgentEndpoint> {
   if (typeof opts?.warn !== "function") throw new TypeError("openAgentEndpoint needs opts.warn");
   const max = ep.maxPayload;
@@ -46,7 +47,7 @@ export async function openAgentEndpoint(
     } catch { /* a logger that throws stops nothing */ }
   };
   const desk = createPromptDesk(ep, warn);
-  const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}));
+  const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}), opts.first);
   const naming = createNameLane(ep, warn);
   const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler] });
   desk.served(serve.ready);

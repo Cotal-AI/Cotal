@@ -189,6 +189,7 @@ An answering daemon without an active automatic schedule is reported separately,
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
+Both preferences can be read or changed even if the extension manifest is corrupt.
 Both `--auto` and `--notify` refuse `--on`, even with an empty value, without changing preferences.
 If `update-settings.json` contains damaged JSON or invalid settings, these preference commands
 save its contents in a private `update-settings.json.corrupt.<id>` copy in the same folder,
@@ -330,6 +331,8 @@ Update runs from the surviving project root, or the filesystem root when no proj
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
+If the running Node is in a directory that contains a colon and no Node is available on npm's `PATH`,
+self-update can run the selected npm script directly with that Node.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -374,6 +377,8 @@ recovery guidance instead of suggesting another update that would meet the same 
 If a connector cannot refresh its integration, update still attempts the other connector refreshes.
 It reports completed refreshes and names each failure, then exits nonzero. A Claude marketplace
 owned by another Cotal home stays unchanged, while an independent Codex marketplace can still be repaired.
+During `cotal update --self`, Cotal reports that it skipped a Claude refresh owned by another Cotal home.
+It leaves that registration unchanged and continues the CLI upgrade and the other refreshes.
 
 
 ### Manager continuity
@@ -512,9 +517,11 @@ of its first-party runtime dependency closure through npm, using a temporary cac
 scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
 transient network failures twice, waiting one second and then two seconds. The latest-version read
 keeps a single attempt. If npm reports a refused connection to the proxy set by `HTTP_PROXY` or
-`HTTPS_PROXY`, manual `cotal update --self` fails and leaves the installation unchanged. Check those
-proxy settings and retry. Cotal neither prints the proxy URL nor bypasses it. An unavailable registry
-without a confirmed proxy refusal remains a no-op.
+`HTTPS_PROXY`, manual `cotal update --self` fails and leaves installed packages unchanged. Check those
+proxy settings and retry. For a refused proxy set in npm configuration, the command names the
+`https-proxy` or `proxy` setting to check and exits 0 without replacing installed packages. Cotal
+neither prints the proxy URL nor bypasses it. An unavailable registry without a confirmed proxy
+refusal remains a no-op.
 If npm is in offline mode and the latest-version lookup misses Cotal's temporary cache,
 `cotal update --self` reports that the check was skipped and exits 0. The skipped check does not
 retry with network access or start a new install. Before the lookup, the updater can still recover an
@@ -561,8 +568,8 @@ checkouts still install a separate global copy; Windows keeps npm's configured g
 From 0.167.1, self-update restores owner write permission on user-owned package, `dist`,
 `node_modules` and `lib` directories before checking release archives. It leaves file modes and
 other accounts' directories unchanged. If write access still fails, it names the user-owned
-directory to repair without recommending sudo. An unwritable `node_modules` directory is checked
-before downloading archives or reserving the update lock.
+directory to repair without recommending sudo. Self-update repairs an owned read-only `node_modules`
+directory before taking the lock to remove abandoned installation staging.
 If an installation owned by another account is not writable, the update refuses before replacing it.
 For a root-owned npm installation, have an administrator follow the printed npm install command.
 The command uses `sudo` if it is on PATH, otherwise `doas` if it is on PATH. If neither is
@@ -846,7 +853,9 @@ prefix and `result.items` holds one row per installed extension with `pkg`, `ver
 `ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
 `kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
 without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
-`ext root` stays a raw path for `$(cotal ext root)`.
+`ext root` stays a raw path for `$(cotal ext root)`, even if the manifest is corrupt.
+If the manifest is corrupt, `ext list --json` exits 1 with a `SCHEMA_INVALID` refusal and names
+`cotal ext seed --repair` in `error.remedy`. The listing leaves the damaged file unchanged.
 
 `ext list` checks package metadata without loading or repairing extensions. It keeps each recorded
 row and reports a missing package directory as not installed. A package with a missing or invalid
@@ -1050,7 +1059,8 @@ Only an automatically adopted selection yields to a running space registered for
 With no space running here it is the selected space, or the only running one. Outside a project,
 with no saved selection, an offline registration does not take the place of your defaults.
 You can still read that space's saved values with `--space <name>`. `--user` reads your defaults alone.
-If `config get` already has a key, remove an unknown option rather than moving it after `--`.
+If `config get` or `config unset` already has a key, or `config set` has both a key and a value,
+remove an unknown option rather than moving it after `--`.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`.
 Both commands work without installing or refreshing connectors. Only `harness`

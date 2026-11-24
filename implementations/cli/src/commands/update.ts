@@ -149,13 +149,13 @@ export interface UpdateRuntime {
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
-  reconcile(): Promise<void>;
+  reconcile(selfUpdate: boolean): Promise<void>;
   /** Preserve native custody of an authenticated automatic update child before reconciliation. */
   adoptUpdateChild?(): Promise<boolean | void>;
   /** The native updater can survive its daemon's restart and verify automatic activation. */
   automaticGenerationWait?: boolean;
   /** Bring what connectors installed in their harnesses to this release; report each completed refresh. */
-  refreshConnectors(report: (line: string) => void): Promise<void>;
+  refreshConnectors(report: (line: string) => void, selfUpdate: boolean): Promise<void>;
   /** Bring the entries client setup wrote in ACP clients to this release, once the operator
    *  extensions that provide them are current; one line per client. */
   refreshClients(): Promise<readonly string[]>;
@@ -226,10 +226,10 @@ export const updateRuntime: UpdateRuntime = {
     } catch { return false; }
   },
   preflightReplacement: async () => { assertReadableSeedState(); },
-  refreshConnectors: async (report) => { await refreshConnectorInstalls(report); },
+  refreshConnectors: async (report, selfUpdate) => { await refreshConnectorInstalls(report, selfUpdate); },
   refreshClients: refreshClientInstalls,
-  reconcile: async () => {
-    await runSeed({ verify: true });
+  reconcile: async (selfUpdate) => {
+    await runSeed({ verify: true }, selfUpdate);
     const completion = refreshOwnedCompletions();
     if (completion.changed.length || completion.preserved.length) process.stdout.write(`${renderReport({ sections: [
       { title: "Owned shell completion", blocks: [
@@ -605,7 +605,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     // the package changes, so continuity is only answerable after that restart has settled.
     const journaled = readUpdateRecovery() !== undefined;
     if (journaled) {
-      const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+      const result = await reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1, true);
       if (result !== 0) return result;
       // Only a child whose native custody survived the service boundary can verify activation.
       // Other automatic helpers retain their existing post-exit activation path.
@@ -619,7 +619,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
       return 1;
     }
-    return journaled ? 0 : reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1);
+    return journaled ? 0 : reconcileCurrent(current, rt, target, (ok) => ok ? 0 : 1, true);
   }
 
   if (self) {
@@ -666,7 +666,7 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
       }
       reportVersion(current, latest.version, rt, reconciled);
       return reconciled ? 0 : 1;
-    });
+    }, true);
   }
 
   return reconcileCurrent(current, rt, target, (reconciled) => {
@@ -696,7 +696,7 @@ async function reconcileCurrent(
   current: string,
   rt: UpdateRuntime,
   target: Record<string, unknown>,
-  finish: (reconciled: boolean, deferred?: boolean) => number,
+  finish: (reconciled: boolean, deferred?: boolean) => number, selfUpdate = false,
 ): Promise<number> {
   try { await rt.prepareReconciliation?.(target); }
   catch (error) {
@@ -731,7 +731,7 @@ async function reconcileCurrent(
 
   rt.out(c.bold("Built-in connectors"));
   try {
-    await rt.reconcile();
+    await rt.reconcile(selfUpdate);
   } catch (e) {
     rt.err(c.red(`✗ built-in connectors: ${message(e)}`));
     return finish(false);
@@ -739,7 +739,7 @@ async function reconcileCurrent(
   try {
     rt.out("Refreshing connector integrations");
     const refreshStarted = Date.now();
-    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)));
+    await rt.refreshConnectors((line) => rt.out(c.green(`✓ ${line}`)), selfUpdate);
     rt.out(`✓ connector integrations refreshed (${((Date.now() - refreshStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));

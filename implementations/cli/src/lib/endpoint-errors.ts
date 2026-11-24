@@ -18,7 +18,7 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
   const code = nativeEndpointRefusal(native?.code);
   if ((!mayHaveInvoked || native?.outcome === "not-executed") && code) {
     const absoluteDirectoryRequired = mayHaveInvoked && native?.code === "failed-precondition"
-      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && (target.command === "resolve-cwd" || target.command === "list-dir")
+      && target.endpoint === BASELINE_LIFECYCLE_ENDPOINT && (target.command === "resolve-cwd" || target.command === "list-dir" || target.command === "harness-commands")
       && error instanceof NativeReplyError && error.phase === "invocation"
       && error.response.reply.error?.details?.some((detail) => detail.kind === "ai.cotal.manager.absolute-directory-required");
     return new CommandFailure("refused", code, mayHaveInvoked ? "the native endpoint refused the call before execution" : "the native endpoint view could not be resolved under this caller", {
@@ -31,6 +31,10 @@ export function endpointFailure(error: unknown, target: Record<string, unknown>,
 
 /** `value` as one POSIX shell word, quoted when a shell would split or expand it. */
 export const shellWord = (value: string): string => /^[A-Za-z0-9_./:+-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+
+/** `flag value` pasted as one shell word, attached `flag=value` when a bare `value` would read as
+ *  another option: `--allow-subscribe -x` refuses its own suggestion, so it prints `--allow-subscribe=-x`. */
+export const grantOption = (flag: string, value: string): string => `${flag}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
 
 export function verifyPinnedEndpoint(space: string, server: string | undefined): string {
   const inventory = `cotal endpoint list --live --space ${shellWord(space)}`;

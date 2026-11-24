@@ -121,6 +121,12 @@ async function collectConnectorSets(): Promise<void> {
   } catch { /* An incomplete inventory or failed collection never fails the update. */ }
 }
 
+function preflightExecutionWithCleanup(): boolean {
+  const repaired = preflightExecutionUpdate();
+  if (!process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  return repaired;
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
@@ -281,8 +287,8 @@ const composed: Command = { ...command, async run(args) {
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
     } } : {}) }),
-    ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
-      preflightExecution: preflightExecutionUpdate,
+    ...(staged ? {
+      preflightExecution: preflightExecutionWithCleanup,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       globalVersion: () => observeExecutionVersion(executionInstallRoot()),
@@ -599,7 +605,7 @@ const composed: Command = { ...command, async run(args) {
     const release = runtime.claimGlobalUpdate(interruptedChildRoot);
     release();
   }
-  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  if (!(staged && args.values.self === true) && logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
   if (packageCheck !== "current") await collectConnectorSets();

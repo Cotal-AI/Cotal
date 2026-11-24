@@ -8,10 +8,9 @@
  */
 import { randomBytes } from "node:crypto";
 import {
-  AGENT_COMMAND_DESCRIPTION_MAX, AGENT_COMMAND_INPUT_HINT_MAX, AGENT_COMMAND_LIST_MAX, AGENT_COMMAND_MESSAGE_MAX, AGENT_COMMAND_STATE_DETAIL,
-  AGENT_CONTRACTS, EpEnvelopeError, isAgentCommandName,
+  AGENT_COMMAND_MESSAGE_MAX, AGENT_COMMAND_STATE_DETAIL, AGENT_CONTRACTS, EpEnvelopeError, fitCommandEntries,
   type CommandEntry, type CommandIdInput, type CommandInput, type CommandOutput, type CommandState, type CommandStateOutput, type CommandTarget,
-  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext, type InterruptOutput,
+  type CommandsOutput, type EpErrorCode, type EpPrincipalCommandDef, type EpPrincipalServeContext, type FirstCommand, type InterruptOutput,
 } from "@cotal-ai/core";
 
 /** A `commands` reply waits at most this long for the harness's list. */
@@ -20,6 +19,10 @@ export const COMMAND_LIST_MS = 10_000;
 export const MAX_QUEUED_COMMANDS = 8;
 /** How many ended commands the agent remembers. An older id is `not-found`. */
 export const ENDED_COMMANDS_KEPT = 32;
+/** How long a first command waits for a harness that runs no commands yet, such as Claude Code
+ *  before its command mod connects. Then it is refused with the harness's cause. */
+export const FIRST_COMMAND_READY_MS = 60_000;
+const FIRST_COMMAND_POLL_MS = 250;
 
 /** One command a caller asked this agent to run. `args` is empty when the caller sent none. */
 export interface AgentCommand {
@@ -93,23 +96,24 @@ function cut(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("")}…`;
 }
 
-function fitText(text: unknown, max: number): string | undefined {
-  return typeof text === "string" && text !== "" ? cut(text, max) : undefined;
-}
-
 function within<T>(work: () => Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`no answer within ${ms / 1000} s`)), ms); });
   return Promise.race([Promise.resolve().then(work), late]).finally(() => clearTimeout(timer));
 }
 
-export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQueued: () => void): CommandLane {
+/** `first` is the command the launch handed this agent. It is queued before any other, under the
+ *  id its spawn named, and waits until the harness runs commands. */
+export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQueued: () => void, first?: FirstCommand): CommandLane {
   // Every command not yet forgotten, in the order it was queued, so the first queued entry is the oldest.
   const entries = new Map<string, Entry>();
   const ended: string[] = [];
   let closed = false;
+  // The first command while the harness runs no commands yet. It reads as queued, and the connector
+  // is not shown it until the harness runs commands.
+  let held: Entry | undefined;
 
-  const queued = (): Entry[] => [...entries.values()].filter((e) => e.state.kind === "queued");
+  const queued = (): Entry[] => [...entries.values()].filter((e) => e.state.kind === "queued" && e !== held);
   const known = (id: string): Entry => {
     const e = entries.get(id);
     if (!e) throw refused("not-found", `command ${id} is not known to this agent`);
@@ -129,19 +133,30 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     } catch (e) {
       throw refused("unavailable", `the harness did not list its commands: ${(e as Error).message}`);
     }
-    if (!Array.isArray(listed)) throw refused("internal", "the connector's list is not an array");
-    const commands: CommandEntry[] = [];
-    for (const e of listed as Partial<Record<keyof CommandEntry, unknown>>[]) {
-      if (!isAgentCommandName(e?.name)) continue;
-      if (!dispatcher.targets.has(e.target as CommandTarget))
-        throw refused("internal", `the connector listed the ${String(e.target)} "${e.name}" but runs no ${String(e.target)}s`);
-      const description = fitText(e.description, AGENT_COMMAND_DESCRIPTION_MAX), inputHint = fitText(e.inputHint, AGENT_COMMAND_INPUT_HINT_MAX);
-      commands.push({ name: e.name, target: e.target as CommandTarget, ...(description ? { description } : {}), ...(inputHint ? { inputHint } : {}) });
-    }
-    if (commands.length > AGENT_COMMAND_LIST_MAX)
-      throw refused("resource-exhausted", `the harness lists ${commands.length} commands and skills, over the ${AGENT_COMMAND_LIST_MAX} a reply carries`);
-    return { supported: true, commands };
+    return { supported: true, commands: fitCommandEntries(listed, dispatcher.targets) };
   }
+
+  function seed(f: FirstCommand): void {
+    const e: Entry = { id: f.id, command: { target: f.target, name: f.name, args: f.args ?? "" }, state: { kind: "queued" } };
+    entries.set(e.id, e);
+    const refuse = (message: string): void => end(e, { kind: "refused", code: "failed-precondition", message: cut(message, AGENT_COMMAND_MESSAGE_MAX) });
+    if (!dispatcher) return refuse("this agent's connector runs no commands or skills");
+    if (!dispatcher.targets.has(e.command.target)) return refuse(`this agent's connector runs no ${e.command.target}s`);
+    if (dispatcher.unsupported?.() === undefined) return;
+    held = e;
+    const deadline = Date.now() + FIRST_COMMAND_READY_MS;
+    const timer = setInterval(() => {
+      const cause = e.state.kind === "queued" ? dispatcher.unsupported?.() : undefined;
+      if (cause !== undefined && Date.now() < deadline) return;
+      clearInterval(timer);
+      held = undefined;
+      if (e.state.kind !== "queued") return;
+      if (cause === undefined) onQueued();
+      else refuse(`the harness ran no commands within ${FIRST_COMMAND_READY_MS / 1000} s: ${cause}`);
+    }, FIRST_COMMAND_POLL_MS);
+    timer.unref?.();
+  }
+  if (first) seed(first);
 
   /** An agent never runs a command on itself or stops its own turn, whatever its row. */
   function notSelf(ctx: EpPrincipalServeContext, what: string): void {
@@ -216,7 +231,8 @@ export function createCommandLane(dispatcher: CommandDispatcher | undefined, onQ
     },
     close() {
       closed = true;
-      for (const e of queued()) end(e, { kind: "refused", code: "unavailable", message: `the agent stopped before ${what(e.command)} started` });
+      for (const e of entries.values())
+        if (e.state.kind === "queued") end(e, { kind: "refused", code: "unavailable", message: `the agent stopped before ${what(e.command)} started` });
     },
   };
 }
