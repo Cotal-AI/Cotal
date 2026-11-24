@@ -115,6 +115,13 @@ function standIn(name: string, script: string, vars: Record<string, string>): { 
   const pids: number[] = Array.isArray(serve?.pids) ? serve.pids : [];
   for (let i = 0; i < 40 && pids.some(alive); i++) await new Promise((r) => setTimeout(r, 50));
   check("opencode 1.x: the read stops the server and what it started", pids.length === 2 && !pids.some(alive), pids);
+  const early = standIn("opencode", FAKE, { FAKE_OC1_REPLY: reply, FAKE_OC1_EARLY_EXIT: "1" });
+  const why = await opencodeConnector.commands!.list({ cwd: project, resolvedBinaries: { opencode: early.bin } }).then(() => "listed", (e: Error) => e.message);
+  const orphaned: number[] = lines(early.log).find((e) => e.argv?.[0] === "serve")?.pids?.slice(1) ?? [];
+  for (let i = 0; i < 40 && orphaned.some(alive); i++) await new Promise((r) => setTimeout(r, 50));
+  check("opencode 1.x: a server that exits before it listens is a failed read, and the process it started is stopped too",
+    /exited \(3\) before it listened/.test(why) && orphaned.length === 1 && !orphaned.some(alive), { why, orphaned });
+  for (const pid of orphaned.filter(alive)) process.kill(pid, "SIGKILL");
   writeFileSync(reply, JSON.stringify({ data: [] }));
   const failed = await list().then((c) => JSON.stringify(c), (e: Error) => e.message);
   check("opencode 1.x: a server that answers no list is a failed read, never an empty list", /answered \/command with no list/.test(failed), failed);
