@@ -372,19 +372,43 @@ function canonicalFuturePath(path: string): string {
   return join(realpathSync.native(dirname(absolute)), basename(absolute));
 }
 
-function overlaps(a: string, b: string): boolean {
-  const fromA = relative(a, b);
-  const fromB = relative(b, a);
-  const contained = (path: string) => path === "" || (path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(path));
-  return contained(fromA) || contained(fromB);
+function contains(parent: string, child: string): boolean {
+  const path = relative(parent, child);
+  return path === "" || (path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(path));
 }
 
-function assertBackupPaths(root: string, source: string, destination: string): void {
+function overlaps(a: string, b: string): boolean {
+  return contains(a, b) || contains(b, a);
+}
+
+function assertDestinationOutsideAttempts(destination: string, artifact: string, attempts: string): void {
+  if (!overlaps(artifact, attempts)) return;
+  const relation = contains(attempts, artifact) && relative(attempts, artifact) !== "" ? "is inside" : "overlaps";
+  throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destination} ${relation} the maintenance attempt directory ${attempts}. No backup was written.`, {
+    target: { directory: destination, attempts }, remedy: `name a destination outside ${attempts}`, selfContained: true,
+  });
+}
+
+function assertBackupDestination(root: string, journal: NonNullable<ReturnType<typeof readMaintenanceJournal>>, destination: string): void {
   const artifact = canonicalFuturePath(destination);
-  const attempts = resolve(root, ".cotal", "maintenance", "attempts");
+  const physicalRoot = realpathSync.native(root);
+  const attempts = join(physicalRoot, ".cotal", "maintenance", "attempts");
+  const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
+  if (preserved && overlaps(artifact, preserved))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destination} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destination, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
+  assertDestinationOutsideAttempts(destination, artifact, attempts);
+  // An artifact among the space's identity, material or launch files would be removed by `clean all`.
+  const cleaned = Object.values(localIdentityCleanupTargets(physicalRoot, journal.space)).flat().map(canonicalRoot)
+    .find((path) => overlaps(artifact, path));
+  if (cleaned)
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destination} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destination, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
+}
+
+function assertBackupPaths(source: string, destination: string, attempts: string): void {
   if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
+  const artifact = canonicalFuturePath(destination);
   if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
-  if (overlaps(artifact, attempts)) throw new Error("backup destination must not overlap the maintenance attempt directory");
+  assertDestinationOutsideAttempts(destination, artifact, attempts);
 }
 
 async function snapshotStream(
@@ -597,17 +621,8 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   }
   if (missingBackupPath(destinationPath) === "folder")
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${dirname(destinationPath)} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath), missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
-  // A destination the preserved store holds, or one in a folder this account cannot write, is refused
-  // here, before the lock, so it leaves no attempt behind.
-  const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
-  if (preserved && overlaps(canonicalFuturePath(destinationPath), preserved))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
-  // `clean all` removes the space's identity, material and launch files with whatever they hold, so
-  // an artifact among them would be removed with them.
-  const cleaned = Object.values(localIdentityCleanupTargets(canonicalRoot(root), journal.space)).flat().map(canonicalRoot)
-    .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
-  if (cleaned)
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
+  // Refuse invalid destinations before taking the lock or recovering a prior claim.
+  assertBackupDestination(root, journal, destinationPath);
   try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
     // Do not offer a command whose operand the terminal would change by escaping invisibles.
@@ -628,7 +643,8 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const attemptId = `backup-${randomUUID()}`;
   observed.attemptId = attemptId;
   const deadline = new Date(Date.now() + OPERATION_TIMEOUT_MS);
-  const clonePath = join(ensurePrivateAttemptsDir(root).path, `${attemptId}-clone`);
+  const privateAttempts = ensurePrivateAttemptsDir(root).path;
+  const clonePath = join(privateAttempts, `${attemptId}-clone`);
   let lock: MaintenanceLock;
   try { lock = acquireMaintenanceLock(root, BACKUP_CREATE_LOCK); }
   catch (error) {
@@ -656,7 +672,8 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       observed.mutationAttempted = true;
     }
     ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
-    assertBackupPaths(root, ready.source.path, destination);
+    // A destination parent may have been retargeted since preflight.
+    assertBackupPaths(ready.source.path, destinationPath, privateAttempts);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);

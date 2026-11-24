@@ -143,6 +143,40 @@ function assertArtifactSearchRefusal(root: string, folder: string, artifact: str
   }
 }
 
+function assertAttemptDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const maintenance = join(root, ".cotal", "maintenance");
+  const attempts = join(maintenance, "attempts");
+  const journal = join(maintenance, "v1", "journal.json");
+  const before = readFileSync(journal);
+  mkdirSync(attempts, { recursive: true, mode: 0o700 });
+  const linked = join(root, "attempts-link");
+  symlinkSync(attempts, linked, "junction");
+  const reason = `is inside the maintenance attempt directory ${attempts}`;
+  const remedy = `name a destination outside ${attempts}`;
+  const direct = join(attempts, "archive");
+  const alias = join(linked, "archive");
+  for (const flags of [[], ["--plain"]]) {
+    const result = run("backup", "create", direct, ...flags);
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stderr.includes(`${direct} ${reason}`) && result.stderr.includes(remedy), result.stderr);
+    assert.doesNotMatch(result.stderr, /Usage|LIFECYCLE_BLOCKED|before recovery/);
+  }
+  const lock = acquireMaintenanceLock(root);
+  let result: SpawnSyncReturns<string>;
+  try { result = run("backup", "create", alias, "--json"); }
+  finally { releaseMaintenanceLock(lock); }
+  assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+  const envelope = JSON.parse(result.stdout);
+  assert.equal(envelope.outcome, "refused");
+  assert.equal(envelope.error.code, "USAGE_INVALID");
+  assert.ok(envelope.error.message.includes(`${alias} ${reason}`), result.stdout);
+  assert.equal(envelope.error.remedy, remedy);
+  assert.equal(envelope.target.directory, alias);
+  assert.deepEqual(readFileSync(journal), before, "the preserved cut is unchanged");
+  assert.deepEqual(readdirSync(attempts), [], "no artifact or attempt was created");
+  assert.equal(existsSync(join(maintenance, "lock.json")), false);
+}
+
 /** Parse a published artifact as a real consumer would: the format tag, the exact stream inventory
  *  for the selection, and a files list whose recorded SHA-256 matches the bytes on disk. */
 function assertValidManifest(directory: string, space: string, selection: SpaceBackupSelection): BackupManifest {
@@ -193,6 +227,7 @@ async function backupStageFaultScenario(): Promise<void> {
     must("preserve cut", run("down", "--preserve-state"));
     assert.equal(journalState(root), "ready");
     const sourceBefore = lstatSync(sourcePath, { bigint: true });
+    assertAttemptDestinationRefusal(root, run);
 
     if (process.getuid && process.getuid() !== 0) {
       const folder = join(root, "no search");
