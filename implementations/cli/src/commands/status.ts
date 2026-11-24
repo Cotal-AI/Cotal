@@ -91,7 +91,7 @@ import {
   serviceHeldRecords,
   STACK_ADAPTER,
   STACK_DEFINITION,
-  stackStartedWithoutManager,
+  stackRecordedWithoutManager,
   stackOperationBlock,
   unfinishedStackOperation,
   type StackJournal,
@@ -756,7 +756,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     : -1;
   if (managerIndex !== -1 && legacyManagerStopped(root, space, localManagerInstanceId(root, space)))
     processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
-  const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
+  const noManager = journal !== undefined && controllerStack && stackRecordedWithoutManager(journal);
   // An operation cut off with no recorded outcome can keep up and down from settling it; status names
   // why and the way out their refusal names. A refusal of another kind is left to them.
   let stackBlock: StackOperationBlock | null = null;
