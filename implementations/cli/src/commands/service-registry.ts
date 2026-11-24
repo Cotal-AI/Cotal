@@ -4,12 +4,12 @@ import { parseCommandArgs, registry, type Command, type CompletionResult, type F
 import { codeSpan, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
-import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
-import { personaCatalog } from "../lib/persona-files.js";
+import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
 import { definitionRootMatch, execServiceDefinition, importServiceDefinition, serviceDefinitionProjection, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { serviceAction } from "./service-actions.js";
 import { followRecordedLog } from "./service-log-follow.js";
@@ -55,7 +55,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.file !== undefined && !String(args.values.file).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--file cannot be empty", { remedy: "pass --file <definition.json> with the path to a service definition" });
   if (args.values.exec !== undefined && (mode !== "add" || args.values.file !== undefined || args.values.preset !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--exec belongs to service add and cannot combine with --file or --preset");
   if (args.values.cwd !== undefined && args.values.exec === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd belongs to service add --exec");
-  if (args.values.cwd !== undefined && !String(args.values.cwd).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty");
+  if (args.values.cwd !== undefined && !String(args.values.cwd).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty. Omit --cwd to use the directory where you run the command, or pass --cwd <dir> to use another directory.");
   if (mode === "start" && name !== undefined && (args.values.instance !== undefined || args.values["new-instance"]) && presetStartFlags(name).some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "a preset's options on start cannot be combined with --instance or --new-instance");
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
@@ -109,7 +109,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const presentation = presentationOf(args.values);
   // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
   // describe the service and never the target.
-  const catalog = personaCatalog({ space: args.values.space as string | undefined });
+  const { catalog, prepared } = personaCatalogContext({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space, addedDefinitionStep);
@@ -124,7 +124,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       const running = mode === "restart" && manager !== undefined && recordedPresetProcess(space, root, manager) !== undefined;
       await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``, running ? "the running manager was left running" : undefined);
     }
-    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
+    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values, prepared);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
     if (resolved?.stopped) return mode === "status"
       ? stoppedManagerStatus(resolved, resolved.stopped, space, root, presentation, commandName)
@@ -221,7 +221,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
       removableServiceInstances(space, row.name, id);
       if (!args.values.yes) {
-        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id })}\`` });
+        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id }, presentation === "json")}\`` });
         const answer = await prompts.confirm({ message: `Forget stopped instance ${id} of ${oneLine(row.name)}? No process or OS unit will be removed.`, initialValue: false });
         if (prompts.isCancel(answer) || !answer) return cancelled("Instance record kept");
       }
@@ -233,7 +233,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {})}\`` });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {}, presentation === "json")}\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)} and delete its instances' logs? No process or OS unit will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled("Service definition kept");
     }
@@ -367,8 +367,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     const recorded = recordedPresetProcess(space, root, preset);
     let needs: string[] = [], several = false;
     try {
-      const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
-      needs = [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
+      needs = presetRequiredInputs(preset, space, root);
       several = resolveServiceAdapter(preset.adapter, {}, false).declaration.capabilities.multiInstance;
     } catch { needs = ["its options"]; }
     // A preset that runs many instances is added under a name of your own; any other starts by its name.
@@ -447,7 +446,13 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   const target = { space, name: resolved.name, executionHost: "this-machine" };
   const { capabilities } = resolveServiceAdapter(launch.adapter, launch.options, false).declaration;
   if (args.values["new-instance"] && !capabilities.multiInstance || args.values.foreground && !capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
-  if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, launch.options);
+  if (launch.adapter === STACK_ADAPTER.manager) {
+    assertManagerStartOptions(space, launch.options);
+    const host = launch.options["console-host"];
+    if (typeof host === "string" && /[\u0000- \u007f]/u.test(host)) throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; no native child was launched", {
+      target, selfContained: true, remedy: "replace the invalid host with `--console-host 127.0.0.1`, keeping the other flags unchanged",
+    });
+  }
   writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
     { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
     { kind: "lines", lines: ["Nothing was saved, launched or loaded. The real start saves this definition first, then starts it."] },

@@ -14,7 +14,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -163,11 +163,12 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     if (e.error) {
       const prefix = `agent file ${e.path}: `;
       const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
-      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
+      const blankSelector = hasBlankPersonaSelector(e);
+      console.log(`${c.red(blankSelector ? JSON.stringify(e.name) : name)}  ${c.red(blankSelector ? "⨯ invalid selector" : "⨯ unparseable")} ${c.dim(oneLine(reason))}`);
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const live = present ? (present.has(d.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");

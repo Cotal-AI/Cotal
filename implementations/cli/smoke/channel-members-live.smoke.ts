@@ -121,7 +121,7 @@ try {
   check("an unknown name is refused TARGET_NOT_FOUND, exit 2, naming the registered channels",
     unknown.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "TARGET_NOT_FOUND"
       && refusal.error.message === "#nosuch has no observed members, no saved entry and no retained messages; registered channels: #general"
-      && refusal.error.remedy === "name a channel the space has; `cotal ch` lists the registered ones", unknown.out.slice(-600));
+      && refusal.error.remedy === `name a channel the space has; \`cotal ch --space ${SPACE}\` lists the registered ones`, unknown.out.slice(-600));
   const cased = cotal("channel", "members", "General");
   check("General names the registered #general and the command for it, with no census",
     cased.status === 2 && cased.out.includes("channel names are case-sensitive, and the registered one is #general")
@@ -135,6 +135,10 @@ try {
   check("#general lists anna and offers to follow it in the resolved space",
     general.status === 0 && general.out.includes("anna") && general.out.includes(`cotal ch members general --space ${SPACE} --follow`), general.out.slice(-600));
 
+  const inferredInventory = cotal("channel", "--plain");
+  check("the channel inventory suggests the resolved space even when none is passed",
+    inferredInventory.status === 0 && ["cotal", "pnpm cotal"].some((cli) => inferredInventory.stdout.includes(`${cli} ch show <name> --space ${SPACE}`)), inferredInventory.out);
+
   check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
   const dashShow = cotal("channel", "show", "#-audit", "--plain");
   check("channel show spells a dash-prefixed channel as a shell-safe operand",
@@ -142,14 +146,19 @@ try {
   const dashMembers = cotal("ch", "members", "#-audit", "--plain");
   check("the suggested member read succeeds and its follow command keeps the operand safe",
     dashMembers.status === 0 && dashMembers.out.includes(`cotal ch members '#-audit' --space ${SPACE} --follow`), dashMembers.out);
-  const dashCase = cotal("ch", "members", "#-Audit", "--json");
-  check("a case correction keeps the registered dash-prefixed spelling copyable",
-    dashCase.status === 2 && envelope(dashCase.stdout)?.error?.remedy === "name it as registered: `cotal channel members '#-audit'`", dashCase.out);
+  const dashCase = cotal("ch", "members", "#-Audit", "--space", SPACE, "--json");
+  check("a case correction keeps the registered dash-prefixed spelling, explicit space and JSON format",
+    dashCase.status === 2 && envelope(dashCase.stdout)?.error?.code === "TARGET_NOT_FOUND"
+      && envelope(dashCase.stdout)?.error?.remedy === `name it as registered: \`cotal channel members '#-audit' --space ${SPACE} --json\``, dashCase.out);
+  const corrected = cotal("channel", "members", "#-audit", "--space", SPACE, "--json");
+  check("the corrected member read returns its census as JSON", corrected.status === 0 && Array.isArray(envelope(corrected.stdout)?.result?.members), corrected.out);
   const dashRemove = cotal("ch", "rm", "#-audit", "--json");
-  check("the removal confirmation prints a shell-safe operand",
-    dashRemove.status === 1 && envelope(dashRemove.stdout)?.error?.remedy === "confirm with `cotal channel remove '#-audit' --yes`", dashRemove.out);
-  const removed = cotal("channel", "remove", "#-audit", "--yes");
-  check("the suggested confirmation removes the same channel", removed.status === 0 && removed.out.includes("Channel removed"), removed.out);
+  const confirm = envelope(dashRemove.stdout)?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+  check("the removal confirmation prints a shell-safe operand and keeps --json",
+    dashRemove.status === 1 && confirm === "channel remove '#-audit' --yes --json", dashRemove.out);
+  const removed = confirm ? cotal(...confirm.split(" ").map((word) => word.replace(/^'|'$/g, ""))) : undefined;
+  check("the suggested confirmation removes the same channel with a JSON receipt",
+    removed?.status === 0 && JSON.parse(removed.stdout).result?.removed === true, removed?.out);
 
   const other = join(base, "other");
   mkdirSync(other, { mode: 0o700 });
@@ -167,6 +176,20 @@ try {
     writeFileSync(join(s, path), await mintCreds(targetAuth, newIdentity(), "admin"), { mode: 0o600 });
     const target = ["--space", SPACE, "--server", SERVER, "--creds", path];
     const scope = `--space ${SPACE} --server ${SERVER} --creds '${path}'`;
+    const removal = cotal("channel", "remove", "genral", ...target, "--json");
+    const missing = envelope(removal.stdout);
+    const list = missing?.error?.remedy === `name a channel the space has; \`cotal ch ${scope}\` lists the registered ones`
+      ? cotal("ch", ...target, "--plain") : undefined;
+    check("an unknown removal suggests listing the intended space with its broker and credential",
+      removal.status === 2 && missing?.error?.code === "TARGET_NOT_FOUND" && list?.status === 0
+        && list.stdout.includes(`Mesh: ${SPACE}`) && list.stdout.includes("#general"), { removal: removal.out, list: list?.out });
+    const inventory = cotal("ch", ...target, "--plain");
+    const suggests = (action: string) => ["cotal", "pnpm cotal"].some((cli) => inventory.stdout.includes(`${cli} ch ${action} ${scope}`));
+    const suggestedShow = suggests("show <name>") ? cotal("ch", "show", "general", ...target, "--plain") : undefined;
+    check("the inventory's show, set and defaults commands keep the inspected space, broker and credential",
+      inventory.status === 0 && suggests('set <name> --desc "…"') && suggests("defaults")
+        && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
+        && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
     const card = cotal("channel", "show", "archive", ...target, "--plain");
     const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
     check("the suggested history read uses the inspected space, broker and credential",

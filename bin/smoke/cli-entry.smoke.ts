@@ -667,7 +667,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("foreground spawn keeps its mode and offers two compatible ways past --json",
     foregroundJson.status === 1 && foregroundReceipt.error?.code === "USAGE_INVALID" &&
     foregroundReceipt.error.remedy.includes("omit --json to launch in this terminal, or replace --foreground with -d"), shown(foregroundJson));
+  const pinnedSpawn = ["spawn", "dev", "--on", "a".repeat(30)];
+  const pinnedJson = cotal([...pinnedSpawn, "--json"], undefined, noSeed);
+  const pinnedReceipt = JSON.parse(pinnedJson.stdout);
+  const detachRemedy = "add -d to wait for readiness without attaching";
+  check("pinned spawn with --json refuses attachment and suggests retaining the pin and receipt with -d",
+    pinnedJson.status === 1 && pinnedReceipt.error?.code === "USAGE_INVALID" && pinnedReceipt.error?.remedy === detachRemedy, shown(pinnedJson));
+  const pinnedPlain = cotal([...pinnedSpawn, "--plain"], undefined, noSeed);
+  check("pinned spawn with --plain gives the same compatible remedy",
+    pinnedPlain.status === 1 && /Code:\s+USAGE_INVALID/.test(pinnedPlain.stderr) && pinnedPlain.stderr.trimEnd().endsWith(`\n  ${detachRemedy}`), shown(pinnedPlain));
   const missingTurn = cotal(["run", "yield"], undefined, noSeed);
+  for (const verb of [["turns"], ["yield", "turn-1", "--status", "done"]]) {
+    const r = cotal(["run", ...verb, "--creds", "./unused.creds", "--json"], undefined, noSeed);
+    check(`run ${verb[0]} rejects an operator credential override`, r.status === 1 &&
+      JSON.parse(r.stdout).error?.code === "USAGE_INVALID" && r.stdout.includes("managed seat's own identity"), shown(r));
+  }
   const yieldForm = /^✗ run yield takes one identifier\n {2}`cotal run turns` lists your turns\. Run `(cotal run yield <turn-id> --status <done\|blocked\|handoff>)`\. For a handoff, add `(--to <agent>)`\./.exec(missingTurn.stderr);
   check("run yield without an id names the required status and handoff destination without printing help",
     missingTurn.status === 1 && !!yieldForm && !missingTurn.stderr.includes("Usage"), shown(missingTurn));
@@ -1027,9 +1041,11 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     };
     for (const argv of [["persona", "--json"], ["personas", "list"], ["persona", "show", "x"], ["persona", "create", "y", "--prompt", "Y.", "--subscribe", ""]]) {
       const r = cotal(argv, broken, noSeed);
-      const said = r.stdout + r.stderr;
-      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} with CONFLICT, naming it`,
-        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`) && said.includes("out of the way") && !said.includes("no personas in"), shown(r));
+      const said = (r.stdout + r.stderr).replace(/\s+/g, " ");
+      check(`${argv.slice(0, 2).join(" ")} refuses a .cotal/agents that is ${shape} and explains how to recover the catalog`,
+        r.status === 2 && said.includes("CONFLICT") && said.includes(`.cotal/agents ${what}, so it holds no personas`)
+        && said.includes("restore their catalog folder there") && said.includes("retry the original create command with its source and target options")
+        && !said.includes("cotal persona create <name>") && !said.includes("no personas in"), shown(r));
     }
   }
   // A definition over 1 MiB is refused by create and edit with one refusal, and nothing is saved.
@@ -1099,6 +1115,16 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     writeFileSync(join(home, "..", "agents", "sec.md"), "---\nname: sec\nmodel: [SECRETPERSONA42\n---\nSec.\n");
     writeFileSync(join(home, "..", "m.yaml"), manifest);
   };
+  const help = cotal(["team", "check", "--help"], undefined, noSeed);
+  check("team check help explains the manifest space assertion", help.status === 0 &&
+    help.stdout.includes("[--space <name>]") && /--space must match\s+the manifest/.test(help.stdout), shown(help));
+  const manifest = files(`${head}channels:\n  ops: {}\n`);
+  const match = cotal(["team", "check", "m.yaml", "--space", "entry", "--json"], manifest, noSeed);
+  check("team check accepts the manifest space without a broker", match.status === 0 &&
+    JSON.parse(match.stdout).result?.space === "entry", shown(match));
+  const mismatch = cotal(["team", "check", "m.yaml", "--space", "another", "--json"], manifest, noSeed);
+  check("team check refuses a different space as a conflict", mismatch.status === 2 &&
+    JSON.parse(mismatch.stdout).error?.code === "CONFLICT", shown(mismatch));
   const cases: [string, string, string[]][] = [
     ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
     ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],

@@ -128,7 +128,8 @@ const lockFree = (d: string): boolean => {
 };
 // Every per-user location the CLI could read or write points into this sandbox, never the real user's.
 const childEnv = {
-  ...process.env, HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
   XDG_RUNTIME_DIR: rt, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1", DO_NOT_TRACK: "1",
 };
 const runtimeEntries = (): string[] => existsSync(runtimeDir) ? readdirSync(runtimeDir, { recursive: true }).map(String).sort() : [];
@@ -323,6 +324,21 @@ try {
     check("H0d neither refusal created the runtime or lifetime lock", !existsSync(missingRuntime) && !existsSync(lockFile(managed)));
   });
 
+  await cell("a runtime file refuses status and serve before creating state", async () => {
+    const runtimeFile = join(root, "runtime-file");
+    writeFileSync(runtimeFile, "keep this file");
+    const env = { ...childEnv, XDG_RUNTIME_DIR: runtimeFile };
+    for (const mode of ["status", "serve"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--json"], 30_000, env);
+      const { status, doc } = result;
+      check(`${mode} refuses the runtime file and names the remedy`, status === 2 && doc.outcome === "refused"
+        && doc.error?.code === "TARGET_UNAVAILABLE" && doc.error.cause?.code === "NO_RUNTIME_DIR"
+        && doc.error.message?.includes(`XDG_RUNTIME_DIR points to ${runtimeFile}, which is not a directory`) === true
+        && doc.error.remedy?.includes("owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it") === true, result);
+    }
+    check("the runtime file is untouched and no lifetime lock exists", readFileSync(runtimeFile, "utf8") === "keep this file" && !existsSync(lockFile(managed)));
+  });
+
   await cell("H0e serve publishes a socket at the Linux pathname limit", async () => {
     const nearLimit = join(root, "r".repeat(67 - Buffer.byteLength(root) - 1));
     mkdirSync(nearLimit, { mode: 0o755 });
@@ -394,6 +410,25 @@ try {
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
   });
 
+  await cell("H1 status and serve agree on recovery from a different runtime directory", async () => {
+    const otherRuntime = join(root, "rt2");
+    mkdirSync(otherRuntime, { mode: 0o700 });
+    const env = { ...childEnv, XDG_RUNTIME_DIR: otherRuntime };
+    const args = ["--daemon-home", managed];
+    const command = "`cotal daemon status --daemon-home '" + managed.replaceAll("'", "'\\''") + "'`";
+    const remedy = `use the same XDG_RUNTIME_DIR as the running daemon, then run ${command}`;
+    for (const [op, code, native] of [["status", "TARGET_UNAVAILABLE", "NOT_RUNNING"], ["serve", "CONFLICT", "LOCK_HELD"]] as const) {
+      const json = await cli([op, ...args, "--json"], 30_000, env);
+      const plain = await cli([op, ...args, "--plain"], 30_000, env);
+      check(`H1 ${op} keeps its refusal and tells both formats to use the serving runtime and selected home`, json.status === 2
+        && json.doc.error?.code === code && json.doc.error?.cause?.code === native
+        && json.doc.error?.message?.includes("a different runtime directory") === true && json.doc.error?.remedy === remedy
+        && plain.status === 2 && plain.err.includes(remedy), { json, plain });
+    }
+    const ready = await cli(command.slice(1, -1));
+    check("H1 using the serving runtime reaches the original daemon", ready.status === 0 && ready.doc.result?.state === "ready" && ready.doc.result?.pid === managedServe?.child.pid, ready);
+  });
+
   await cell("H1 unknown space commands leave Manager inventory unchanged", async () => {
     const statusArgs = ["status", "--daemon-home", managed, "--json"];
     const before = await cli(statusArgs);
@@ -411,6 +446,26 @@ try {
     }
     const after = await cli(statusArgs);
     check("H1 repeated disconnect adds no Manager to status", after.status === 0 && after.doc.result?.managers?.length === 0, after);
+  });
+
+  await cell("H1 an empty open-space disconnect does not send the operator to a dashboard", async () => {
+    recordMesh({ space: "offline", mode: "open", root: meshRoot, server: "nats://127.0.0.1:1", ts: new Date().toISOString() });
+    recordMesh(userMesh("user-disconnect"));
+    try {
+      const args = ["--daemon-home", managed, "--space", "offline"];
+      const connect = await cli(["service-connect", ...args, "--json"]);
+      check("H1 the registered open space does not support service connect", connect.status === 2 && connect.doc.error?.code === "UNSUPPORTED", connect);
+      const json = await cli(["service-disconnect", ...args, "--json"]);
+      const plain = await cli(["service-disconnect", ...args, "--plain"]);
+      const message = "This space does not use the machine service. There was nothing to disconnect.";
+      check("H1 disconnect succeeds and explains the no-op in both formats", json.status === 0 && json.doc.result?.state === "disconnected"
+        && json.doc.result?.removedRecords?.length === 0 && json.doc.result?.message === message
+        && plain.status === 0 && plain.out.includes(message) && !plain.out.includes("dashboard"), { json, plain });
+      const user = await cli(["service-disconnect", "--daemon-home", managed, "--space", "user-disconnect", "--plain"]);
+      check("H1 an empty user-auth disconnect still warns that the remote record may remain", user.status === 0 && user.out.includes("The remote record may remain") && user.out.includes("dashboard"), user);
+    } finally {
+      for (const space of ["offline", "user-disconnect"]) rmSync(meshFile(space), { force: true });
+    }
   });
 
   await cell("H1b remedies retain the selected daemon and known provider or space", async () => {
@@ -689,6 +744,9 @@ try {
     check("H4 the first serve's socket keeps its inode and still answers", lstatSync(derived).ino === ino && (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === killedPid);
     await stop(managedServe, "SIGKILL");
     check("H4 instrument: after SIGKILL the socket is left behind, and the kernel has released the lock while its record still names the dead pid", existsSync(derived) && lstatSync(derived).ino === ino && lockFree(managed) && lockRecordPid(managed) === killedPid, { free: lockFree(managed), recorded: lockRecordPid(managed), killedPid });
+    const stopped = await cli(["status", "--daemon-home", managed, "--json"], 30_000, { ...childEnv, XDG_RUNTIME_DIR: join(root, "rt2") });
+    check("H4 a dead lifetime record leaves the foreground start remedy intact", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING"
+      && stopped.doc.error?.remedy?.startsWith("start it with `cotal daemon serve --daemon-home ") === true, stopped);
     // No operator step: the successor removes exactly the socket the record names and binds its own.
     // A second name keeps the dead inode allocated through the restart, so the successor's socket
     // cannot be given its number, which some filesystems hand straight back once it is freed. Its

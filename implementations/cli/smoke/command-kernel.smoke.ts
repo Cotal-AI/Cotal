@@ -6,7 +6,9 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -16,6 +18,7 @@ import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { runNpmAsync } from "../src/commands/update-process.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -202,6 +205,37 @@ log("reply", reply === null ? "timed out" : "received", "elapsed", now() - start
     assert.match(timedOut.stdout, /Virtual time:\s+1000 ms/);
     assert.match(timedOut.stdout, /reply timed out elapsed 1000/);
 
+    for (const { effect, call, log, table, reply, code, deadlineMs, late, exact, timely, timelyMs, value } of [
+      { effect: "turn", call: 'turn(agent, { name: "review", deadline: "1s" })', log: "status",
+        table: "turns", reply: { status: "done" }, code: "L4003", deadlineMs: 1000,
+        late: "2s", exact: "1s", timely: "500ms", timelyMs: 500, value: "done" },
+      { effect: "ask", call: 'ask(agent, { name: "review", schema: { ok: "boolean" }, deadline: "3s", attempts: 2 })', log: "ok",
+        table: "asks", reply: [{ ok: "wrong type" }, { ok: true }], code: "L4006", deadlineMs: 3000,
+        late: "2s", exact: "1500ms", timely: "1s", timelyMs: 2000, value: true },
+    ]) {
+      writeFileSync(join(root, "review.js"), `const agent = await spawn("reviewer");\nconst result = await ${call};\nlog(result.${log});\n`);
+      for (const delay of [late, exact, timely]) {
+        const label = `${effect} with ${delay} per reply`;
+        writeFileSync(join(root, "results.json"), JSON.stringify({ [table]: { review: reply }, clock: { [effect]: delay } }));
+        const simulated = run(["run", "simulate", "review.js", "--handler", "results.json", "--json"]);
+        assert.equal(simulated.status, 0, `${label}: ${simulated.stdout}${simulated.stderr}`);
+        assert.equal(simulated.stderr, "", label);
+        const { outcome, completeness, result } = JSON.parse(simulated.stdout);
+        assert.equal(outcome, "ok", label);
+        assert.equal(completeness, "complete", label);
+        assert.equal(result.elapsedMs, delay === timely ? timelyMs : deadlineMs, label);
+        if (delay === timely) {
+          assert.equal(result.outcome, "completed", label);
+          assert.deepEqual(result.log, [{ scope: "", values: [value] }], label);
+        } else {
+          assert.equal(result.outcome, "failed", label);
+          assert.equal(result.failure.code, code, label);
+          assert.equal(result.failure.step, `/${effect}:review#0`, label);
+          assert.deepEqual(result.log, [], label);
+        }
+      }
+    }
+
     writeFileSync(join(root, "expiry-race.js"), `
 const raceResult = await race({
   approval: async () => await checkpoint("approve", "Approve?", { timeout: "1s", onExpiry: "proceed" }),
@@ -267,6 +301,7 @@ function updateRuntime(opts: {
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
     refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
       events.push("report-running-manager");
@@ -1047,6 +1082,14 @@ async function completionOut(positionals: string[]): Promise<string> {
     events.indexOf("reconcile") < events.indexOf("refresh-connectors"),
     "update refreshes what connectors installed in their harnesses, after the connectors themselves",
   );
+  assert.ok(
+    events.findIndex((event) => event.startsWith("spawn:")) < events.indexOf("refresh-clients"),
+    "update refreshes client entries after the operator extensions that provide them are replayed",
+  );
+  assert.ok(
+    events.indexOf("release-mutation") < events.indexOf("refresh-clients"),
+    "update releases its extension pass before loading client providers, which take that lock",
+  );
 }
 
 // --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
@@ -1478,6 +1521,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   stopped.rt.reconcile = async () => { throw new Error("seed interrupted"); };
   assert.equal(await executeUpdate(false, stopped.rt), 1);
   assert.ok(!stopped.events.some((event) => event.startsWith("spawn:")), "seed failure blocks later prefix mutation");
+  assert.ok(!stopped.events.includes("refresh-clients"), "a failed update leaves the client entries alone");
+
+  const clientFails = updateRuntime({ extensions: [installed("@cotal-ai/orca")] });
+  clientFails.rt.refreshClients = async () => { throw new Error("T3 Code settings are not valid JSON"); };
+  assert.equal(await executeUpdate(false, clientFails.rt), 1, "a client entry Cotal cannot update fails the command");
 }
 
 // --- one mutation claim linearizes the whole operator pass through the default npm check ----------
@@ -1548,7 +1596,7 @@ async function completionOut(positionals: string[]): Promise<string> {
         }
         if (name === "@cotal-ai/cli" && ["connection-refused", "unsafe-code"].includes(scenario)) return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "connection-refused" ? "ECONNREFUSED" : "E401\nsecret-token", summary: "https://user:secret@registry.example/?token=secret" } }), stderr: "npm error secret-token" };
         if (scenario === "date-metadata") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET", summary: `No matching version found for ${spec} with a date before 1/1/2020.` } }) };
-        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
+        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404", summary: "Not Found - GET https://user:secret@registry.example/private-key/@cotal-ai%2fcore?token=secret - Not found" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         const metadata = {
           name, version: scenario === "wrong-version" || scenario === "array-wrong-version" ? "0.13.3" : requestedVersion,
@@ -1578,8 +1626,13 @@ async function completionOut(positionals: string[]): Promise<string> {
     } else {
       assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
       const error = fixture.events.filter(event => event.startsWith(arriving ? "out:" : "err:")).join("\n");
-      if (arriving) assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
-      else if (scenario.startsWith("date-")) {
+      if (arriving) {
+        assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
+        if (scenario === "metadata-404") {
+          assert.match(error, /npm E404 from https:\/\/registry\.example\)/);
+          assert.doesNotMatch(error, /secret|private-key/);
+        }
+      } else if (scenario.startsWith("date-")) {
         assert.match(error, /min-release-age.*before.*Adjust that date filter/);
         assert.doesNotMatch(error, /still reaching the registry|again in a few minutes/);
       } else {
@@ -1599,6 +1652,50 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "closed-scope"], { encoding: "utf8", timeout: 90_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
+}
+
+// A reachable scoped mirror can serve one first-party package and return HTTP 404 for another.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-scoped-404-"));
+  const version = "0.13.2", npmrc = join(root, "mirror.npmrc");
+  const requests: string[] = [];
+  const mirror = createServer((request, response) => {
+    const path = decodeURIComponent(request.url ?? "");
+    requests.push(path);
+    response.setHeader("content-type", "application/json");
+    if (path !== "/@cotal-ai/cli") return response.writeHead(404).end('{"error":"Not found"}');
+    response.end(JSON.stringify({ name: "@cotal-ai/cli", "dist-tags": { latest: version }, versions: {
+      [version]: { name: "@cotal-ai/cli", version, dist: { tarball: "https://registry.invalid/cli.tgz", integrity: "sha512-fixture" } },
+    } }));
+  });
+  try {
+    await once(mirror.listen(0, "127.0.0.1"), "listening");
+    const address = mirror.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const config = `@cotal-ai:registry=${origin}/\n`;
+    writeFileSync(npmrc, config);
+    const fixture = updateRuntime({
+      npm: args => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
+      releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies: { "@cotal-ai/cli": version, "@cotal-ai/core": version }, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
+    });
+    fixture.rt.npmAsync = (args, cache) => args[1].startsWith("@cotal-ai/")
+      ? runNpmAsync([...args, "--userconfig", npmrc], cache) : Promise.resolve(fixture.rt.npm(args));
+    let clock = 0;
+    fixture.rt.now = () => clock;
+    fixture.rt.sleep = async () => { clock += 600_000; };
+    assert.equal(await executeUpdate(true, fixture.rt), 0);
+    assert.deepEqual(requests.sort(), ["/@cotal-ai/cli", "/@cotal-ai/cli", "/@cotal-ai/core", "/@cotal-ai/core"]);
+    const output = fixture.events.filter(event => event.startsWith("out:"));
+    const diagnostic = `@cotal-ai/core@${version} was not found (npm E404 from ${origin}). Check @cotal-ai:registry in .npmrc`;
+    assert.ok(output.some(line => line.startsWith("out:Waiting for ") && line.includes(diagnostic)), output.join("\n"));
+    assert.ok(output.at(-1)?.includes(`${diagnostic}. Keeping cotal-ai@0.13.1; no global install was attempted.`), output.join("\n"));
+    assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)));
+    assert.equal(readFileSync(npmrc, "utf8"), config);
+  } finally {
+    await new Promise<void>(done => mirror.close(() => done()));
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // A listed release that becomes downloadable during the wait installs through the normal path.
@@ -2341,7 +2438,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
   assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
   assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
-  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  const spawnCommand = findCommand(registry.all<Command>("command"), "spawn")!;
+  const restart = ["--restarts", "2", "--restart-window", "1000"];
+  for (const [placement, change] of [[[], "add -d"], [["--foreground"], "replace --foreground with -d"]] as const) {
+    const preview = ["--dry-run", "--json"];
+    const denied = refusal(parseCommandArgs(spawnCommand, [...placement, ...restart, ...preview]).values);
+    assert.equal(denied?.code, "USAGE_INVALID");
+    assert.equal(denied.remedy, `${change} to keep restart supervision, or omit --restarts and --restart-window to launch in this terminal`);
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, ["-d", ...restart, ...preview])), "the managed retry keeps both restart flags");
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, [...placement, ...preview])), "the direct retry omits both restart flags");
+  }
   assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
 }
 

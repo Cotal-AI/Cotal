@@ -9,12 +9,15 @@ const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (
 
 function npmEngine(file: string): { entry: string; range: string } | undefined {
   try {
-    const real = realpathSync(file);
-    const entry = basename(real).toLowerCase() === "npm.cmd"
-      ? realpathSync(join(dirname(real), "node_modules", "npm", "bin", "npm-cli.js")) : real;
-    if (basename(entry) !== "npm-cli.js") return;
+    let entry = realpathSync(file);
+    if (basename(entry).toLowerCase() === "npm.cmd") {
+      const target = /^[ \t]*@?node[ \t]+"%~dp0[\\/]?((?:[^"%!^\r\n]+[\\/])?dist[\\/]npm\.js)"[ \t]+%\*[ \t]*\r?$/im.exec(readFileSync(entry, "utf8"))?.[1];
+      entry = realpathSync(target ? resolve(dirname(entry), target) : join(dirname(entry), "node_modules", "npm", "bin", "npm-cli.js"));
+    }
+    const corepack = basename(entry) === "npm.js" && basename(dirname(entry)) === "dist";
+    if (!corepack && basename(entry) !== "npm-cli.js") return;
     const manifest = JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8"));
-    if (manifest.name !== "npm" || manifest.bin?.npm !== "bin/npm-cli.js" || typeof manifest.engines?.node !== "string") return;
+    if (manifest.name !== (corepack ? "corepack" : "npm") || (!corepack && manifest.bin?.npm !== "bin/npm-cli.js") || typeof manifest.engines?.node !== "string") return;
     return { entry, range: manifest.engines.node };
   } catch { return undefined; }
 }
@@ -46,18 +49,18 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const engine = npmEngine(file);
   const withNode = (node: string) => ({ ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` });
   if (engine && !satisfies(process.version, engine.range)) {
-    const seen = new Set([realpathSync(process.execPath)]);
+    const current = realpathSync(process.execPath);
+    const seen = new Set<string>();
     const probeEnv = { ...env };
     delete probeEnv.NODE_OPTIONS;
     for (const candidate of [recordedNode(), ...[dirname(file), ...directories].map(dir => resolveOnPath("node", { ...env, [pathKey]: dir }))]) {
-      if (!candidate) continue;
-      let node: string;
-      try { node = realpathSync(candidate); } catch { continue; }
-      if (seen.has(node)) continue;
-      seen.add(node);
-      const version = spawnSync(node, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+      try { if (realpathSync(candidate) === current) continue; } catch { continue; }
+      // Version-manager shims can select the tool by the invoked filename.
+      const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
       if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
-        return { file: node, args: [engine.entry, ...args], env: withNode(node), cwd };
+        return { file: candidate, args: [engine.entry, ...args], env: withNode(candidate), cwd };
     }
   }
   if (windows) return { file: "npm", args, env, cwd };

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -21,7 +22,6 @@ import {
   listSpaceAccounts,
   loadMeshes,
   loadPreparedSpaces,
-  meshesForRoot,
   noteFolderSpace,
   noteFolderSpaceShown,
   plainFlag,
@@ -33,6 +33,7 @@ import {
   spaceKey,
   stackElsewhereRemedy,
   stackJournalRoot,
+  stoppedStack,
   writeResult,
   type Cell,
   type BrokerCheck,
@@ -204,8 +205,9 @@ export async function space(args: ParsedArgs): Promise<void> {
 }
 
 function spaceShownAt(cwd: string): string | undefined {
-  if (!isGenuineSpace(cwd)) {
-    const matches = meshesForRoot(cwd);
+  const registeredRoots = loadMeshes().map((mesh) => ({ mesh, root: canonicalRoot(mesh.root) }));
+  for (let root = canonicalRoot(cwd); !isGenuineSpace(root); root = dirname(root)) {
+    const matches = registeredRoots.filter((entry) => entry.root === root).map((entry) => entry.mesh);
     if (matches.length > 1) {
       const spaces = matches.map((m) => m.space);
       throw new MeshTargetError("ambiguous-target", `this folder has ${spaces.length} registered spaces: ${spaces.join(", ")}`, {
@@ -213,6 +215,7 @@ function spaceShownAt(cwd: string): string | undefined {
       });
     }
     if (matches[0]) return matches[0].space;
+    if (dirname(root) === root) break;
   }
   return folderSpace(cwd, { refuseAmbiguous: true });
 }
@@ -446,7 +449,9 @@ function preparedView(p: PreparedDetail, project: string, moved: ReturnType<type
   } else if (p.state === "unsettled") {
     hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {
-    hints.push({ text: `start it${p.state === "stopped" ? " again" : ""} with ${codeSpan(`${cmd} up`)} in ${p.root}`, tone: "hint" });
+    const stopped = p.state === "stopped";
+    const up = `${cmd} up${stopped && stoppedStack(p.root, p.space)?.noManager ? " --no-manager" : ""}`;
+    hints.push({ text: `start it${stopped ? " again" : ""} with ${codeSpan(up)} in ${p.root}`, tone: "hint" });
   }
   if (!p.current && !p.rootMissing) hints.push({ text: `select it with ${codeSpan(`${cmd} use ${shellWord(p.space)}`)}`, tone: "hint" });
   return {

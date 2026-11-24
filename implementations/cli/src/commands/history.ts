@@ -31,6 +31,7 @@ import {
 import { credentialEnded } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { historySetupFailureRecords } from "../lib/follow-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -285,21 +286,6 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   parseLimit(values.limit);
   const since = parseSince(values.since, Date.now());
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");
-}
-
-/** A JSON history follow that refused before writing its snapshot. */
-export function historySetupFailureRecords(args: ParsedArgs, failure: CommandFailure) {
-  const first = args.positionals[0];
-  const target = {
-    space: args.values.space ?? null,
-    ...(typeof failure.target === "object" && failure.target !== null ? failure.target : {}),
-    channel: first === undefined ? null : channelOf(first),
-    dms: Boolean(args.values.dms),
-  };
-  return [
-    streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
-    streamRecord("history", "end", target, { reason: "setup-failed" }),
-  ];
 }
 
 /** `cotal history [channel]`: the newest retained messages in the selected space within the caller's

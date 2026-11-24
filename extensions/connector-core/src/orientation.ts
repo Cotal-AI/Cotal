@@ -146,6 +146,15 @@ export interface Orientation {
   actions: { read: string; replyChannel: string; replyPrivate: string; askRole: string };
 }
 
+/** The tool for each intent, as the card shows it. The three that are not `read` are the ways a
+ *  reply reaches a peer. */
+export const MESH_ACTIONS = {
+  read: "cotal_inbox",
+  replyChannel: "cotal_send",
+  replyPrivate: "cotal_dm",
+  askRole: "cotal_anycast",
+} as const;
+
 /** The everyday loop (the `core` group); every other tool falls into `more`. Keep in sync with the
  *  reply/loop tools an agent reaches for each turn. An unknown/new tool defaults to `more`. */
 const CORE_TOOLS = new Set([
@@ -249,12 +258,7 @@ export function buildOrientation(
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
-    actions: {
-      read: "cotal_inbox",
-      replyChannel: "cotal_send",
-      replyPrivate: "cotal_dm",
-      askRole: "cotal_anycast",
-    },
+    actions: { ...MESH_ACTIONS },
   };
 }
 

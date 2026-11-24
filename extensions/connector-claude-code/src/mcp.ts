@@ -42,6 +42,8 @@ import { createClaudeEventPlane } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
+import { openCommandFeed, type CommandFeed } from "./command-feed.js";
+import { claudeCommands, commandTurns } from "./commands.js";
 import { endHost, recordHost } from "./once-exit.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
@@ -82,6 +84,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
   // Desktop Chat runs no native hooks module. In Code, the server and native wake reader are
   // children of the same host process, which names their private feed.
   const feed = desktop ? undefined : await openWakeFeed(process.ppid);
+  const commands = desktop ? undefined : await openCommandFeed(process.ppid, { warn: (msg) => void process.stderr.write(`[cotal-connector] ${msg}\n`) });
   const host = createAppHost({
     cotal: () => readCliRecord(dirname(process.argv[1] ?? "")),
     // Claude Desktop's working directory is not the person's project, so the mesh is found from a
@@ -92,6 +95,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
     ...(feed ? { notify: (session, notice) => feed.notifyApproval(session, notice) } : {}),
     ...(feed ? { turn: (session, id, text) => feed.sendTurn(session, id, text) } : {}),
     participate: (connection) => connection.agent.participateInTurns(),
+    ...(commands ? { commands } : {}),
   });
   feed?.onNative((event) => host.nativeEvent(event));
   let rearm: (connection?: GatewayConnection, fireNow?: boolean) => void = () => {};
@@ -151,6 +155,7 @@ async function serveLocal(desktop: boolean): Promise<void> {
       .then(() => served.close())
       .finally(() => {
         feed?.close();
+        commands?.close();
         process.exit(0);
       }));
   process.stdin.on("end", end);
@@ -178,6 +183,7 @@ async function main(): Promise<void> {
     output: process.stdout,
     fatalBind: true,
     onShutdown: (code) => process.exit(code),
+    claudePid: process.ppid,
   });
   const stop = () => void session.close().finally(() => process.exit(0));
   process.on("SIGINT", stop);
@@ -195,6 +201,9 @@ export interface ClaudeSessionOptions {
   /** A shutdown frame or the end or closure of `input` ended the session. Called once after teardown;
    *  `code` is 1 if teardown failed, or the requested exit code otherwise. */
   onShutdown?: (code: number) => void;
+  /** The Claude Code process this session's server runs under. Set, the session serves that
+   *  process's command socket for its command mod. A host serving several sessions leaves it unset. */
+  claudePid?: number;
 }
 
 export interface ClaudeSession {
@@ -241,6 +250,7 @@ async function startSession(
     surfaced: (items) => wake?.surfaced(items),
     // Read lazily too: `agent` and `config` are built below. Unbound, there is no card to hand over yet.
     orientation: async () => (agent.connected ? orientationCard(agent, config, "claude-code", env) : undefined),
+    idle: () => turns.idle(),
   });
 
   const config = configFromEnv(env);
@@ -250,12 +260,19 @@ async function startSession(
   const channelFlag = envFlag(env, "COTAL_CHANNEL");
   // One process may host several sessions, so its own directory is not a session's: the card's
   // directory comes from that session's SessionStart hook instead.
-  const agent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true });
+  const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
+  // The command mod's socket opens below, once the session's teardown is in place.
+  let commands: CommandFeed | undefined;
+  const agent: MeshAgent = new MeshAgent(config, env, {
+    withholdProcessCwd: true,
+    onceClaimBound: true,
+    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn }),
+  });
+  const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
   // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
   // stays open. The desk exists once the agent serves that endpoint, which only a user-auth mesh does.
-  const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
   const hooks = launchedSessionHooks(prompts, claude, warn);
 
@@ -291,6 +308,7 @@ async function startSession(
       } catch {
         /* ignore */
       }
+      commands?.close();
       wake?.stop();
       try {
         await events?.close();
@@ -311,6 +329,7 @@ async function startSession(
     );
   };
   setClose(close);
+  if (opts.claudePid !== undefined) commands = await openCommandFeed(opts.claudePid, { warn });
   controlServer = startControlServer(
     agent,
     control,

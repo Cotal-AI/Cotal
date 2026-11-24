@@ -302,7 +302,7 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
       // Autonomous recovery is asserted before this command. Hold scheduling, renew through the
       // real host, and flush the adopted serve connection before the CLI call. Standing renewal
       // replaces that connection and retires the old one, which cannot emit a reconnect witness.
-      const previous = renewalOwner.serviceServe.nc;
+      const previous = renewalOwner.servePlane.serviceServe.nc;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let phase = "renew held family";
       try {
@@ -311,11 +311,11 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
           timer = setTimeout(() => reject(new Error("service replacement was not ready")), 7_000);
         });
         await Promise.race([renewStanding(true), deadline]);
-        const nc = renewalOwner.serviceServe.nc;
+        const nc = renewalOwner.servePlane.serviceServe.nc;
         assert.notEqual(nc, previous, "standing renewal must adopt a replacement serve connection");
         phase = "flush renewed subscriptions";
         await Promise.race([nc.flush(), deadline]);
-        if (nc !== renewalOwner.serviceServe.nc || nc.isClosed()) throw new Error("service connection changed at recovery boundary");
+        if (nc !== renewalOwner.servePlane.serviceServe.nc || nc.isClosed()) throw new Error("service connection changed at recovery boundary");
         prepared = true;
       } catch (e) { error = `${phase}: ${(e as Error).message}`; }
       finally { clearTimeout(timer); }
@@ -354,12 +354,12 @@ function standingMeta() {
   const held: Record<string, unknown> = {
     supervisor: m.credentialRenewal.remoteSupervisorCreds,
     executor: m.credentialRenewal.remoteExecutorCreds,
-    serve: m.serviceServe?.creds,
+    serve: m.servePlane.serviceServe?.creds,
     goalWriter: m.goalWriterComponent.goalWriterCreds,
     sessionLedger: m.servePlane.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);
-  const nc = m.serviceServe?.nc;
+  const nc = m.servePlane.serviceServe?.nc;
   if (nc && !serveConnectionIds.has(nc)) serveConnectionIds.set(nc, ++nextServeConnectionId);
   const out: Record<string, unknown> = {
     debt: m.credentialRenewal.remoteRenewalDebt?.reason ?? null,

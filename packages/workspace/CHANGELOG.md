@@ -1,5 +1,45 @@
 # @cotal-ai/workspace
 
+## 0.176.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- @cotal-ai/core@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 56b6dc1: Overlapping CLI commands now report an installation at most once per UTC day. Each command still reports its own outcome.
+- 5c49fdd: Keep space registrations that cannot be read, show the correct broker-only restart command, and omit the unsupported `--new-instance` flag from manager preset start help.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- 3e4e94e: Extension add now installs packages whose entry points at a directory, resolving it to the directory's index file the way Node does instead of failing the import and rolling the install back.
+- 03b122e: Show a usable `cotal auth mint` correction for channel names that start with a hyphen. The suggested `--allow-subscribe` or `--allow-publish` flag uses `=` so the channel is read as its value.
+- 1d07abd: A file-only credential mint names its stopped space with the broker address the space last ran at. The retained local signing authority resolves when the given address matches the recorded one instead of refusing the space as unknown.
+- 5406c82: Use the same CLI launcher in moved-folder recovery instructions, including `pnpm cotal` in a source checkout without `cotal` on PATH.
+- Updated dependencies [35e08ac]
+  - @cotal-ai/core@0.175.3
+
 ## 0.175.2
 
 ### Patch Changes

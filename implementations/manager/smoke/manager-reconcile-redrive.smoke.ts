@@ -333,9 +333,9 @@ try {
   shutdownManager = new Manager({ space, servers, runtime: "pty", workspaceRoot: shutdownRoot });
   const shutdownInternals = shutdownManager as unknown as {
     staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
-    serviceServe?: unknown;
     registerManagerService(): Promise<void>;
     reconcileStaticLifecycles(): Promise<void>;
+    servePlane: { serviceServe?: unknown; };
   };
   let shutdownRegistrationEntered = false;
   let releaseShutdownRegistration!: () => void;
@@ -367,7 +367,7 @@ try {
   releaseShutdownRegistration();
   await Promise.allSettled([shutdownStarting, shutdownStopping]);
   check("the shutdown fence prevents the serial sweep from starting a later terminal", attempts.get("shutdown-first") === 1 && attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
-  check("startup cannot publish the manager service after stop completes", shutdownInternals.serviceServe === undefined, { registered: shutdownInternals.serviceServe !== undefined });
+  check("startup cannot publish the manager service after stop completes", shutdownInternals.servePlane.serviceServe === undefined, { registered: shutdownInternals.servePlane.serviceServe !== undefined });
   await shutdownInternals.reconcileStaticLifecycles();
   check("shutdown refuses a new static reconciliation sweep", attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
   shutdownManager = undefined;
