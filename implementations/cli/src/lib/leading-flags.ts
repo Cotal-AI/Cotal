@@ -10,34 +10,10 @@ import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
 export const OUTPUT_FLAG_WORDS: ReadonlySet<string> = new Set(["--json", "-j", "--plain"]);
 export const GLOBAL_FLAG_WORDS: ReadonlySet<string> = new Set(GLOBAL_FLAGS.map((name) => `--${name}`));
 
-function commandWordIndex(argv: readonly string[]): number {
-  let lead = 0;
-  while (lead < argv.length && (OUTPUT_FLAG_WORDS.has(argv[lead]!) || GLOBAL_FLAG_WORDS.has(argv[lead]!))) lead++;
-  return argv[lead] === "--" ? lead + 1 : lead;
-}
-
 /** The command word of `argv` as `runCli` reads it: the first word after the leading output and
  *  global flags and a `--` that ends them, or undefined when `argv` names none. */
 export function commandWord(argv: readonly string[]): string | undefined {
-  return argv[commandWordIndex(argv)];
-}
-
-export function isHelpFlag(word: string | undefined): boolean {
-  return word === "--help" || word === "-h";
-}
-
-/** A `--` in the command's args ends its options, so a help flag after it is an operand. */
-export function asksForHelp(args: readonly string[]): boolean {
-  for (const word of args) {
-    if (word === "--") break;
-    if (isHelpFlag(word)) return true;
-  }
-  return false;
-}
-
-/** Whether the command word or its options request help. */
-export function helpRequested(argv: readonly string[]): boolean {
-  const lead = commandWordIndex(argv);
-  const word = argv[lead];
-  return word === "help" || isHelpFlag(word) || asksForHelp(argv.slice(lead + 1));
+  let lead = 0;
+  while (lead < argv.length && (OUTPUT_FLAG_WORDS.has(argv[lead]!) || GLOBAL_FLAG_WORDS.has(argv[lead]!))) lead++;
+  return argv[argv[lead] === "--" ? lead + 1 : lead];
 }

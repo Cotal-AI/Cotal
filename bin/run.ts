@@ -66,7 +66,7 @@ const { commandWord, completeFileWrites, runCli, stdoutError } = await import("@
 const argv = process.argv.slice(2);
 const { readFileSync } = await import("node:fs");
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
-(await import("./update-notice.js")).installUpdateNotice(argv, currentVersion);
+const { installUpdateNotice } = await import("./update-notice.js");
 const word = commandWord(argv);
 if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
 else await importing(...(Object.keys(surfaces) as Surface[]))();
@@ -96,4 +96,8 @@ completeFileWrites();
 const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
 // The bundled reference must open even when the extension inventory needs repair.
 const extensions = !desktopBridge && word !== "docs";
-await runCli(registry, argv, { extensions, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+await runCli(registry, argv, {
+  extensions,
+  onNonHelpInvocation: () => installUpdateNotice(argv, currentVersion),
+  startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt },
+});
