@@ -41,7 +41,10 @@ function run(...args: string[]) {
   return runFrom(root, ...args);
 }
 function runFrom(cwd: string, ...args: string[]) {
-  assertSmokeSandboxDown(anchor, args, { cwd, env });
+  return runInSandbox(anchor, cwd, ...args);
+}
+function runInSandbox(sandbox: typeof anchor, cwd: string, ...args: string[]) {
+  assertSmokeSandboxDown(sandbox, args, { cwd, env });
   const result = spawnSync(process.execPath, ["--import", import.meta.resolve("tsx"), cli, ...args], {
     cwd, env, encoding: "utf8", timeout: 180_000,
   });
@@ -323,6 +326,52 @@ if (process.platform === "linux") {
     foreground.kill("SIGTERM");
     const timeout = setTimeout(() => foreground.kill("SIGKILL"), 10_000);
     try { await finished; } finally { clearTimeout(timeout); }
+  }
+}
+if (process.platform === "linux") {
+  const project = join(scratch, "controller-zombie"), space = "controller-zombie";
+  mkdirSync(project, { mode: 0o700 });
+  const prepared = runFrom(project, "space", "create", space);
+  if (prepared.status !== 0) throw new Error(prepared.stdout + prepared.stderr);
+  const controllerSandbox = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
+  const address = `nats://127.0.0.1:${await freePort()}`;
+  const owner = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli,
+    "up", "--foreground", "--open", "--space", space, "--server", address], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
+  const ownerState = observeOwnedChild(owner);
+  let output = "", pausedManager: number | undefined;
+  for (const stream of [owner.stdout, owner.stderr]) stream.on("data", (chunk) => { output += String(chunk); });
+  const procFields = (pid: number) => readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").at(-1)!.split(" ");
+  try {
+    await waitForOwnedChild(() => {
+      if (ownerState.error || ownerState.exited) throw ownerState.error ?? new Error(output);
+      return output.includes("up completed");
+    }, 60_000, "the foreground controller and its members are ready");
+    const running = runFrom(project, "status", "--space", space, "--json");
+    const rows = (JSON.parse(running.stdout).result as StatusResult).services?.instances;
+    const broker = rows?.find(row => row.definition === "stack-broker");
+    const manager = rows?.find(row => row.definition === "stack-manager");
+    if (!owner.pid || !broker?.pid || !manager?.pid || [broker, manager].some(row =>
+      row.observedProcess !== "running" || Number(procFields(row.pid!)[1]) !== owner.pid))
+      throw new Error("the foreground controller does not own both running processes");
+    owner.kill("SIGSTOP");
+    process.kill(manager.pid, "SIGSTOP");
+    pausedManager = manager.pid;
+    await waitForOwnedChild(() => processStopped(owner.pid!) && processStopped(manager.pid!), 5_000, "the controller and Manager are paused");
+    process.kill(broker.pid, "SIGTERM");
+    await waitForOwnedChild(() => procFields(broker.pid!)[0] === "Z", 5_000, "the broker exited but was not reaped");
+    const plain = runFrom(project, "status", "--space", space, "--plain");
+    check("status marks the owned broker gone and the paused Manager running",
+      plain.status === 0 && /stack-broker[^\n]+\bgone\b/.test(plain.stdout) && /stack-manager[^\n]+\brunning\b/.test(plain.stdout), plain.stdout);
+    const components = runFrom(project, "status", "--space", space, "--components");
+    check("component health marks the unreaped owned broker absent",
+      /^  broker\s+absent[^\n]*\bgone\b/m.test(components.stdout), components.stdout);
+  } finally {
+    if (pausedManager !== undefined) process.kill(pausedManager, "SIGCONT");
+    if (!ownerState.closed) owner.kill("SIGCONT");
+    const stopped = runInSandbox(controllerSandbox, project, "down", "--yes");
+    if (stopped.status !== 0 && !ownerState.closed) owner.kill("SIGTERM");
+    await waitForOwnedChild(() => ownerState.closed, 60_000, "the foreground controller has exited");
+    check("the controller stack is cleaned up", stopped.status === 0, stopped.stdout + stopped.stderr);
   }
 }
 if (process.platform === "linux") {

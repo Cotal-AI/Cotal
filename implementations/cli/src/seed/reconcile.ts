@@ -11,10 +11,10 @@ import {
   bindExtensionPeers,
   connectorConfigDir,
   connectorMetadataStale,
-  extensionEntry,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  resolveExtensionEntry,
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
@@ -942,7 +942,7 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
 /** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
-  return existsSync(join(extensionPackageDir(pkg), extensionEntry(installed)));
+  return existsSync(resolveExtensionEntry(extensionPackageDir(pkg), installed));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND

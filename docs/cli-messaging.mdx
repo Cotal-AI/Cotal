@@ -30,7 +30,8 @@ The refusal names the mesh the send was aimed at when this machine's records nam
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
 It also keeps `--json` or `--plain` when requested.
 No destination, several destinations, several body sources or an empty message is refused. A lone
-`-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
+`-` is refused too, because stdin is read only through `--stdin` or `--file -`. The suggested
+stdin command also keeps `--json` or `--plain` when requested. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
@@ -267,9 +268,9 @@ starts with `/`. `/help` lists the slash commands, in `--plain` and in the termi
 command that takes a channel reads it with or without its `#`.
 `/history` reads the current channel's retained messages. When the terminal transcript does not fit,
 the view counts the hidden rows and points to `cotal history` for the current channel, or to
-`cotal history --dms` for a direct recipient. Run the command against the same mesh with a grant that
-can read the history. Use `--limit <n>` to read a larger retained window. On an open mesh, which runs
-no delivery daemon, `/history` reads messages the way `cotal history` does.
+`cotal history --dms` for a direct recipient. The command names the chat session's space. Run it
+with a grant that can read the history. Use `--limit <n>` to read a larger retained window. On an
+open mesh, which runs no delivery daemon, `/history` reads messages the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. An `@` right after an ASCII letter or
@@ -542,8 +543,9 @@ decodable defaults in `result.registry.defaults` or reports a defaults-key decod
 `channel set` and `channel defaults` trim surrounding whitespace from `--window` before saving
 the duration. For example, `--window ' 24h '` saves `24h`.
 
-Use `--replay` to turn replay on and `--no-replay` to turn it off. If you write `--replay off`,
-the command refuses without saving and gives a retry that keeps your other settings, target and output format.
+With `channel set` or `channel defaults`, use `--replay` to turn replay on and `--no-replay` to turn
+it off. If you write `--replay off`, the write refuses without saving and gives a retry that keeps
+your other settings, target and output format. `channel show` reads settings without replay flags.
 
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as

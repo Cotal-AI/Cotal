@@ -148,15 +148,17 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
 
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const goodFixture = fixture("cotal-ext-fixture", GOOD, { bin: { "fixture-bin": "bin.js" } });
+  const goodFixture = fixture("cotal-ext-fixture", GOOD, { main: "./index", bin: { "fixture-bin": "bin.js" } });
   writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
   const r = cotal(["ext", "add", goodFixture]);
-  ok("add exits 0", r.status === 0, r.stderr.slice(-400));
+  ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
   ok("add names the contributed command", /hello-ext/.test(r.stdout), r.stdout);
   ok("manifest written + announced", existsSync(manifestPath) && /→ wrote extensions manifest/.test(r.stderr), r.stderr.slice(-300));
   ok("core is linked to OUR copy", /→ wrote @cotal-ai\/core link/.test(r.stderr));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
+  const run = cotal(["hello-ext"]);
+  ok("a later command resolves the same npm main", run.status === 0 && run.stdout.trim() === "hello world", run);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------

@@ -348,10 +348,14 @@ service show manager` reads it. A start that names another `--runtime` or other 
 stopped manager saves it again with that option, and says so. With `--dry-run` it checks the
 registered broker URL and installed runtime metadata without loading provider code, saving a
 definition or starting a process. It also rejects a `--console-host` with whitespace or control
-characters, including when no manager is saved yet. An invalid `--name`, malformed `--console-host`,
+characters. If no manager is saved yet, the refusal suggests retrying with `--console-host 127.0.0.1`
+and keeping the other flags unchanged. An invalid `--name`, malformed `--console-host`,
 or launch digest override that does not match its file leaves the saved definition and stopped
-instance unchanged. A running manager refuses
-`LIFECYCLE_BLOCKED` and names `cotal manager stop` first.
+instance unchanged. After a digest mismatch, omit both launch flags to keep the saved launch settings,
+or verify the override file and retry with its matching SHA-256. With a manager running, start checks
+the replacement's runtime and broker before recommending a stop. If those checks pass and the start
+would change the running manager's options, it refuses with `LIFECYCLE_BLOCKED` and names
+`cotal manager stop`.
 
 On a user-auth space this folder hosts, `start` and `restart` need your signed-in, granted login,
 as `cotal up` does for its manager. On a user-auth space registered here from another host, they
@@ -371,8 +375,9 @@ The manager these verbs act on is the space's one manager service: `manager` whe
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
 stack's manager, and `cotal manager start` reports it running and starts no second one.
-If no manager has been started in the requested space, the start command suggested by `status` and
-`stop` names that space even when another one is selected.
+If the requested space was prepared but never started, `manager status` suggests running `cotal up`
+in that project's folder. When `status` or `stop` suggests a manager-only start, that command names
+the requested space even when another one is selected.
 Without `--instance`, `cotal manager status` and `cotal manager stop` select the running stack
 manager even if an older saved `manager` service is stopped. Stopping the stack manager this way
 leaves the broker running. `--instance` still selects the named saved service instance.

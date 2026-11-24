@@ -39,7 +39,7 @@ import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { serviceInstances } from "../lib/service-instances.js";
-import { readStackJournal, stackRootGone, unusableStackJournal } from "../lib/stack-journal.js";
+import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, unusableStackJournal } from "../lib/stack-journal.js";
 import { linkedCotalRemedy } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
@@ -247,7 +247,8 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // A copy or a moved folder is reported under the space its records name, as the commands run here
     // refuse under it, and says what the folder holds; Next gives the step they name.
     const elsewhere = e.code === "not-started" ? recordsElsewhereText(d) : undefined;
-    const held = e.code === "not-started" && !d.rootMissing && !d.unsettled && d.root && d.space ? await stackStartAddressProblem(d.root, d.space) : undefined;
+    const held = e.code === "not-started" && !d.rootMissing && !d.unsettled && d.root && d.space
+      ? (d.stopped ? legacyBrokerPidfileBlock(d.root) : undefined) ?? await stackStartAddressProblem(d.root, d.space) : undefined;
     const result: SelectedResult = {
       resolved: false, code: e.code, message: elsewhere ?? (held ? `${message}; ${held.message}` : message),
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),

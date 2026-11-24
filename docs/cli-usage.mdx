@@ -182,7 +182,9 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`. The refusal names `--` when the command takes an operand and there is no spelling suggestion.
+`--`. The refusal can suggest `--` when an operand is still available and there is no spelling
+suggestion. Once `endpoint check` has its contract file or `endpoint work lease` has its target and
+pool, the refusal tells you to drop an unknown option instead.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
 the refusal tells you to drop the unknown option instead.
@@ -276,6 +278,8 @@ installed extensions by `package` and `version`.
 If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
 version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
 corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+If a file occupies the config folder and blocks the inventory read, the report names that file
+and tells you to move it aside instead.
 The version command does not repair the manifest itself.
 
 | Field | Meaning |
@@ -513,7 +517,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Agents | [`models`](cli-agents.mdx#models) | List connector model catalogs and variants from the manager |
 | Agents | [`mcp`](cli-messaging.mdx#mcp) | Serve Cotal tools over stdio for an MCP-only host |
 | Agents | [`app-identity`](cli-auth.mdx#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
-| Agents | [`start`](cli-agents.mdx#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`start`](cli-agents.mdx#spawn) | Removed: migrate to `cotal spawn`, with `--foreground` for `--live-only` |
 | Agents | [`stop`](cli-agent-control.mdx#managed-seats) | Ask the manager to stop a managed agent |
 | Agents | [`ps`](cli-agent-control.mdx#managed-seats) | List managed agents and their mesh status |
 | Agents | [`attach`](cli-agent-control.mdx#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
