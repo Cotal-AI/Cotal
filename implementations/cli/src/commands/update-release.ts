@@ -39,7 +39,7 @@ function npmOfflineCacheMiss(result: CommandResult): boolean {
   catch { return false; }
 }
 
-export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string): Promise<number> {
+export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string, promotionRecovered: boolean): Promise<number> {
   if (latest.missingNpm) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
     rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
@@ -48,6 +48,7 @@ export async function handleLatestVersionFailure(latest: LatestVersionFailure, c
   if (latest.offline) {
     if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
     rt.onOfflineVersionCheckSkipped?.();
+    if (promotionRecovered) rt.out("Completed an interrupted extension promotion.");
     rt.out(`${latest.error}. The latest-version check was skipped.`);
     return 0;
   }
