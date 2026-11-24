@@ -64,6 +64,8 @@ same("echo 'literal $HOME and `text`'", ["echo", "literal $HOME and `text`"]);
 same('echo "literal \\$HOME and \\`text\\`"', ["echo", "literal $HOME and `text`"]);
 same("echo '' x", ["echo", "", "x"]);
 same("echo a#b 'x|y' \"*\"", ["echo", "a#b", "x|y", "*"]);
+same('echo "one\u2028two" one\u2029two', ["echo", "one\u2028two", "one\u2029two"]);
+same(String.raw`sh -c "echo \"\$HOME\""`, ["sh", "-c", 'echo "$HOME"']);
 for (const [line, what] of [
   ["a | tee x", "an unquoted |"], ["a > out", "an unquoted >"], ["a; b", "an unquoted ;"], ["a && b", "an unquoted &"],
   ["echo $HOME", "an unquoted $"], ["echo `id`", "an unquoted `"], ["ls *.js", "an unquoted *"], ["cat ~/x", "an unquoted ~"],
@@ -264,13 +266,15 @@ try {
   const piped = cotal(["service", "add", "hello", "--exec", "echo hi | tee out", "--space", SPACE]);
   check("service add --exec with a pipe refuses and saves nothing", piped.status === 1 && out(piped).includes("an unquoted | would not work") && JSON.stringify(definitions()) === "[]", out(piped));
   const guidance = "inside --exec, use single quotes for literal text or put a backslash before the character inside double quotes";
+  const shellExample = String.raw`--exec 'sh -c "echo \"\$HOME\""'`;
   for (const [line, character] of [['echo "literal $HOME"', "$"], ['echo "literal `text`"', "`"]] as const) {
     const args = ["service", "add", "quoted-expansion", "--space", SPACE, "--exec", line];
     const json = cotal([...args, "--json"]), plain = cotal([...args, "--plain"]);
     const { outcome, error } = JSON.parse(json.stdout);
     check(`service add refuses ${character} inside double quotes and explains literal quoting in JSON and plain output`,
       json.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID" && error.message.includes(`${character} inside double quotes`)
-      && error.remedy?.startsWith(guidance) && error.remedy.includes("sh -c") && plain.status === 1 && out(plain).includes(guidance),
+      && error.remedy?.startsWith(guidance) && error.remedy.includes(shellExample)
+      && plain.status === 1 && out(plain).includes(guidance) && out(plain).includes(shellExample),
       { json: out(json), plain: out(plain) });
   }
   check("a refused double-quoted expansion saves nothing", serviceDefinitionStore(SPACE).read("quoted-expansion") === undefined);
@@ -282,7 +286,7 @@ try {
     const { outcome, error } = JSON.parse(json.stdout);
     check(`service add refuses ${JSON.stringify(line)} and offers a definition file instead of quoting`,
       json.status === 1 && outcome === "refused" && error?.code === "USAGE_INVALID"
-      && error.message.includes("cannot contain a line break, even inside quotes") && error.remedy === multilineRemedy
+      && error.message.includes("cannot contain CR or LF line breaks, even inside quotes") && error.remedy === multilineRemedy
       && plain.status === 1 && out(plain).includes(multilineRemedy), { json: out(json), plain: out(plain) });
   }
   check("a refused line break saves nothing", serviceDefinitionStore(SPACE).read("multiline") === undefined);
