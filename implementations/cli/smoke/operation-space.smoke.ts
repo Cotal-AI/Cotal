@@ -57,7 +57,9 @@ const outcome = (r: ReturnType<typeof spawnSync>) => {
 };
 const fixture = join(import.meta.dirname, "operation-space.fixture.ts");
 const kernel = (...words: string[]) => outcome(spawnSync(process.execPath, [...process.execArgv, fixture, ...words], { cwd: root, env, encoding: "utf8", timeout: 60_000 }));
-const cotalAt = (cwd: string, ...words: string[]) => outcome(spawnSync(process.execPath, [BIN, ...words], { cwd, env, encoding: "utf8", timeout: 120_000 }));
+const runCotal = (cwd: string, words: string[], extraEnv?: NodeJS.ProcessEnv) =>
+  outcome(spawnSync(process.execPath, [BIN, ...words], { cwd, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 120_000 }));
+const cotalAt = (cwd: string, ...words: string[]) => runCotal(cwd, words);
 const cotal = (...words: string[]) => cotalAt(root, ...words);
 const shown = (r: ReturnType<typeof kernel>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -107,20 +109,38 @@ check("persona create over an existing file is a CONFLICT in the prepared space"
 check("its remedy names the edit and the remove that resolve it", (conflict.envelope?.error?.remedy ?? "").includes("cotal persona edit rev") && (conflict.envelope?.error?.remedy ?? "").includes("cotal persona remove rev"), conflict.envelope?.error);
 const conflictPlain = cotal("persona", "create", "rev", "--plain");
 check("its plain report begins with Mesh: <space> and ends with a Next", conflictPlain.status === 2 && conflictPlain.first === "Mesh: opsp" && /\nNext\n\s+change it with `cotal persona edit rev`/.test(conflictPlain.stderr), shown(conflictPlain));
-// A persona that does not exist: show and remove name where to see the ones that do.
-for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
+// A persona that does not exist: a local lookup names where to see the ones that do.
+for (const args of [["show", "nosuch"], ["edit", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
   check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
 }
 const alternate = mkdtempSync(join(home, "alternate-"));
 const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
 check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
-const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
-const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
-check("persona show in a different catalog refuses and its recovery lists that catalog",
-  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
-    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
-    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
+const server = "nats://127.0.0.1:1";
+const selectors = ["--space", "alternate-catalog", "--server", server];
+const expectedList = `cotal persona ${selectors.join(" ")}`;
+const alternateList = cotal("persona", ...selectors, "--json");
+check("fixture: explicit selectors and the working directory select different catalogs",
+  alternateList.status === 0 && alternateList.envelope?.target?.space === "alternate-catalog"
+    && cotal("persona", "--json").envelope?.target?.space === "opsp", shown(alternateList));
+for (const [command, action] of [["persona", "show"], ["persona", "edit"], ["persona", "remove"],
+  ["personas", "show"], ["personas", "edit"], ["personas", "rm"]]) {
+  const label = `${command} ${action}`;
+  const args = [command, action, "nosuch", ...selectors];
+  const refusal = command === "persona" ? cotal(...args, "--json") : runCotal(root, args, { VISUAL: "unused-editor" });
+  const remedy = command === "persona" ? refusal.envelope?.error?.remedy : refusal.stderr;
+  const list = remedy?.match(/see the personas here with `([^`]+)`/)?.[1];
+  check(`${label} of a missing persona keeps both selectors in its remedy`,
+    refusal.status === 2 && list === expectedList && (command === "persona"
+      ? refusal.envelope?.error?.code === "TARGET_NOT_FOUND" && refusal.envelope.target?.space === "alternate-catalog"
+      : refusal.stderr.includes("TARGET_NOT_FOUND")), shown(refusal));
+  if (list === expectedList) {
+    const followed = cotal(...list.split(" ").slice(1), "--json");
+    check(`${label} recovery lists the explicitly selected catalog`,
+      followed.status === 0 && followed.stdout === alternateList.stdout, shown(followed));
+  }
+}
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");

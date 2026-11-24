@@ -116,7 +116,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
-    const expected = requirePersonaSource(path);
+    const expected = requirePersonaSource(path, target);
     // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;

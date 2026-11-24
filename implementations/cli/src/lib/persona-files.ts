@@ -146,7 +146,7 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   }
 }
 
-export function requirePersonaSource(path: string, target = ""): PersonaSource {
+export function requirePersonaSource(path: string, target: string): PersonaSource {
   const source = readPersonaSource(path);
   if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: `see the personas here with ${codeSpan(`cotal persona${target}`)}` });
   return source;
@@ -330,7 +330,7 @@ export type PersonaEdit = { action: "saved"; displayName: string } | { action: "
 export async function editPersona(path: string, name: string, catalog: PersonaCatalog, target: string, json = false): Promise<PersonaEdit> {
   if (explicitNoInputFlag())
     throw new ConfirmationRequired("persona edit opens an editor, and --no-input forbids one", { remedy: "edit interactively without --no-input" });
-  const source = requirePersonaSource(path);
+  const source = requirePersonaSource(path, target);
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
@@ -366,7 +366,7 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
       keep = readPersonaSource(draft)?.bytes.equals(source.bytes) === false;
       return { action: "cancelled", status: result.status ?? 1, ...(keep ? { draft } : {}) };
     }
-    const edited = requirePersonaSource(draft).bytes;
+    const edited = requirePersonaSource(draft, target).bytes;
     if (edited.equals(source.bytes)) return { action: "unchanged" };
     const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
