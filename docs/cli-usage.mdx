@@ -446,6 +446,9 @@ the default persona failed, including creation of its `agents` directory, it rep
 `OPERATION_PARTIAL`, exit 4, names what was saved and
 warns that the persona file may be incomplete. After fixing the write problem, check the persona
 file and run the same `space create` again to finish preparing the space.
+If `up` or `down` cannot write the initial maintenance lock because of a storage limit,
+no stack member is started or stopped by that attempt. When no lock needs cleanup, the
+command exits 5 and names the lock file and the storage limit. Correct the limit and retry.
 On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
 Directory creation preserves that native cause without treating a missing parent or a dangling
 symlink as a quota failure.
