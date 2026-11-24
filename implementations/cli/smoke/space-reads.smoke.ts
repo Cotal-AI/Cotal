@@ -84,7 +84,7 @@ function saveDormantBroker(space: string, project: string): string {
 }
 
 // An implicit config scope outside a project requires a running broker.
-{
+function checkConfigScope(live: string): void {
   const space = "config-probe";
   const entry = { space, server: DEAD, root: hintProject, mode: "open", origin: "manual", ts: new Date().toISOString() } as const;
   recordMesh(entry);
@@ -103,7 +103,7 @@ function saveDormantBroker(space: string, project: string): string {
     const selected = json(["config", "get", "harness"]);
     check("a saved selection still reads the offline space", selected.status === 0 && selected.env?.result.setting.value === "codex" && selected.env.result.scope.from === "selected", shown(selected));
     clearCurrent();
-    recordMesh({ ...entry, server: LIVE });
+    recordMesh({ ...entry, server: live });
     const running = json(["config", "get", "harness"]);
     check("the only running space supplies its override", running.status === 0 && running.env?.result.setting.value === "codex" && running.env.result.scope.from === "running", shown(running));
   } finally {
@@ -132,13 +132,13 @@ function saveDormantBroker(space: string, project: string): string {
   const preparedBefore = readFileSync(record);
   const show = () => run(["space", "show", space, "--plain"]);
   const who = () => json(["who", "--space", space]);
-  const startup = `start it with \`cotal up\` in ${project}`;
+  const startup = (launcher: string) => `start it with \`${launcher} up\` in ${project}`;
   const recovery = (text: string) => text.includes(`cotal space forget ${space}`) &&
     text.includes(`cotal space create ${space} --root <dir>`) && !text.includes("cotal up");
   const intact = show(), intactTarget = who();
   check("an intact prepared folder is still a place to start the space",
-    intact.status === 0 && intact.stdout.includes(startup) && intactTarget.status === 2 &&
-      intactTarget.env?.error?.code === "TARGET_UNAVAILABLE" && intactTarget.env.error.remedy === startup,
+    intact.status === 0 && ["cotal", "pnpm cotal"].some((launcher) => intact.stdout.includes(startup(launcher))) && intactTarget.status === 2 &&
+      intactTarget.env?.error?.code === "TARGET_UNAVAILABLE" && intactTarget.env.error.remedy === startup("cotal"),
     [intact, intactTarget].map(shown));
 
   if (process.platform !== "win32") {
@@ -337,11 +337,6 @@ function saveDormantBroker(space: string, project: string): string {
     readFileSync(project, "utf8") === "replacement file\n", shown(forgot));
 }
 
-if (process.env.COTAL_SMOKE_PREPARED_ROOT_ONLY === "1") {
-  finish();
-  process.exit(process.exitCode ?? 0);
-}
-
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
 const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
@@ -367,6 +362,7 @@ for (let i = 0; i < 50; i++) {
   if (await isReachable(LIVE)) break;
   await new Promise((r) => setTimeout(r, 100));
 }
+checkConfigScope(LIVE);
 
 const ts = new Date().toISOString();
 const root = mkdtempSync(join(home, "root-"));
