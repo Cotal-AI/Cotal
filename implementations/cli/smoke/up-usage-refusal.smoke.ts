@@ -283,14 +283,17 @@ check("a prepared root refuses public exchange and names a route that keeps the 
     && exchangeError.remedy.includes("Keep the broker and public exchange flags")
     && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(preparedExchange));
 const serviceHostingFlags = ["--user-auth", "--no-manager", "--idp", "http://127.0.0.1:1/auth",
-  "--service-endpoints", "--max-payload", "2098176", "--json"];
-const serviceHostingRemedy = (remedy: string | undefined) => remedy?.includes("cotal up --user-auth --idp <auth base URL> --service-endpoints --max-payload 2098176") === true
+  "--service-endpoints", "--json"];
+const serviceHostingRemedy = (remedy: string | undefined) => remedy?.includes("cotal up --user-auth --idp <auth base URL> --service-endpoints --max-payload <bytes>") === true
+  && remedy.includes("Keep your requested `--max-payload` if it is at least 2098176 bytes")
   && remedy.includes("new, unprepared project folder without running `cotal space create` first")
   && remedy.includes("use `--space <unused-name>`, and omit `--root`, `--json` and `--plain`");
-const hostingTlsAdvice = "If the broker uses TLS, pass `--tls-cert <cert.pem> --tls-key <key.pem>` and a `tls://` broker address with `--server`";
+const hostingTlsAdvice = (remedy: string | undefined) => remedy?.includes("--server tls://<local IPv4 address>:<port>") === true
+  && remedy.includes("--tls-cert <cert.pem> --tls-key <key.pem>") && remedy.includes("matching IP SAN");
 for (const exchange of [[], ["--exchange-public-port", "0"]]) {
   const before = readdirSync(join(prepared, ".cotal"));
-  const result = run(["up", ...serviceHostingFlags, "--server", "nats://127.0.0.1:1", ...exchange], prepared);
+  const result = run(["up", ...serviceHostingFlags, "--max-payload", exchange.length ? "4194304" : "2098176",
+    "--server", "nats://127.0.0.1:1", ...exchange], prepared);
   const error = result.envelope?.error;
   check(`a fresh prepared root refuses --service-endpoints${exchange.length ? " with public exchange" : ""} before startup and names the legacy route`,
     result.status === 2 && result.envelope?.outcome === "refused" && error?.code === "UNSUPPORTED"
@@ -305,9 +308,10 @@ check("a prepared root refusing service hosting with TLS gives a legacy retry th
   hostingTls.status === 2 && hostingTls.envelope?.outcome === "refused" && hostingTlsError?.code === "UNSUPPORTED"
     && hostingTlsError.message?.includes("--service-endpoints, --tls-cert, --tls-key and --server tls://") === true
     && serviceHostingRemedy(hostingTlsError.remedy)
-    && hostingTlsError.remedy?.includes(hostingTlsAdvice) === true
+    && hostingTlsAdvice(hostingTlsError.remedy)
     && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(hostingTls));
-async function checkManifestHosting(root: string, scheme: "nats" | "tls"): Promise<void> {
+async function checkManifestHosting(root: string, tls?: { cert: string; key: string }): Promise<void> {
+  const scheme = tls ? "tls" : "nats";
   const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
   let idpRequests = 0;
   const idp = createHttpServer((req, res) => {
@@ -320,11 +324,11 @@ async function checkManifestHosting(root: string, scheme: "nats" | "tls"): Promi
   try {
     const port = (idp.address() as AddressInfo).port;
     // The IdP also holds the broker port so a failed refusal cannot launch anything.
-    const server = `${scheme}://127.0.0.1:${port}`;
+    const server = `${scheme}://${tls ? "localhost" : "127.0.0.1"}:${port}`;
     const hostingManifest = join(root, "hosting.yaml");
     const space = scheme === "tls" ? "upusagetls" : "upusage";
     writeFileSync(hostingManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  auth: user\n  idp: http://127.0.0.1:${port}/auth\n  servers: "${server}"\nchannels: {}\nagents: {}\n`);
-    const args = ["up", "-f", hostingManifest, "--user-auth", "--no-manager"];
+    const args = ["up", "-f", hostingManifest, "--user-auth", "--no-manager", ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])];
     const manifest = (...flags: string[]) => new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
       execFile(process.execPath, [BIN, ...args, ...flags], { cwd: root, env, timeout: 30_000 }, (error, stdout, stderr) =>
         resolve({ status: error ? error.code : 0, stdout, stderr }));
@@ -336,8 +340,8 @@ async function checkManifestHosting(root: string, scheme: "nats" | "tls"): Promi
     const requestsBefore = idpRequests;
     const unchanged = () => idpRequests === requestsBefore
       && JSON.stringify(readdirSync(join(root, ".cotal"), { recursive: true }).sort()) === JSON.stringify(before);
-    const keepsTls = (remedy: string | undefined) => serviceHostingRemedy(remedy) && remedy?.includes(hostingTlsAdvice) === true
-      && remedy.includes("does not inherit broker settings from the manifest or the project's recorded policy");
+    const keepsTls = (remedy: string | undefined) => serviceHostingRemedy(remedy) && hostingTlsAdvice(remedy)
+      && remedy?.includes("does not inherit broker settings from the manifest or the project's recorded policy") === true;
     const message = "--service-endpoints cannot be combined with --file/-f";
     const refused = await manifest("--dry-run", "--service-endpoints");
     check(`${scheme} manifest preview refuses hosting before preflight or writes and says how to keep TLS`,
@@ -348,7 +352,7 @@ async function checkManifestHosting(root: string, scheme: "nats" | "tls"): Promi
         && apply.envelope.error.message?.includes(message) === true && keepsTls(apply.envelope.error.remedy) && unchanged(), shown(apply));
   } finally { await new Promise<void>((resolve) => idp.close(() => resolve())); }
 }
-await checkManifestHosting(prepared, "nats");
+await checkManifestHosting(prepared);
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
@@ -625,7 +629,10 @@ try {
       const r = run(["up", ...args], cwd);
       check(`up refuses ${label} with its fix and no help, exit 1`, r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr), shown(r));
     }
-    await checkManifestHosting(root, "tls");
+    const dns = { cert: join(root, "dns.pem"), key: join(root, "dns.key") };
+    const dnsCert = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", dns.key, "-out", dns.cert, "-days", "2", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], { encoding: "utf8" });
+    check("openssl mints a DNS-only certificate for the TLS manifest", dnsCert.status === 0 && existsSync(dns.cert), dnsCert.stderr?.slice(0, 400));
+    await checkManifestHosting(root, dns);
     check("the refusals leave the recorded policy as it was and start no broker", readFileSync(policyFile, "utf8") === policy && !started(root) && !started(plainRoot), readdirSync(join(root, ".cotal")));
   }
 
