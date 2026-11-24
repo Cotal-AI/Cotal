@@ -611,7 +611,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = (cmd.name === "config" && (selected.name === "get" || selected.name === "unset") && positionals.length >= 2)
+      const operandsFull = (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
+        || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
         || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
