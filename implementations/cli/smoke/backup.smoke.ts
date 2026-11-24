@@ -67,6 +67,25 @@ async function checkUnreadableRestore(root: string, directory: string, file: str
   }
 }
 
+async function checkUnreadableManifest(root: string, directory: string): Promise<void> {
+  const path = join(directory, "manifest.json");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal);
+  const denied = (error: unknown) => isCommandFailure(error) && error.outcome === "refused"
+    && error.code === "PERMISSION_DENIED" && error.message.includes(path)
+    && error.remedy?.includes("make it readable by you") === true;
+  chmodSync(path, 0o200);
+  try {
+    for (const verb of ["inspect", "verify"])
+      assert.throws(() => backupRead({ positionals: [verb, directory], values: {}, raw: [] }), denied);
+    await assert.rejects(prepareRestore(root, { restore: directory }), denied);
+    assert.deepEqual(readFileSync(journal), before, "an unreadable manifest leaves the ready cut unchanged");
+    assert.deepEqual(readdirSync(join(root, ".cotal", "maintenance", "attempts")), [], "an unreadable manifest leaves no stage");
+  } finally {
+    chmodSync(path, 0o600);
+  }
+}
+
 function checkLinkedInterruptedBackup(root: string): void {
   const parent = join(root, "backups"), alias = join(root, "backup-link");
   mkdirSync(parent);
@@ -262,6 +281,11 @@ try {
   assert.throws(verify, verifyFault(null, "invalid-name", /^backup manifest declares a file name that is not a plain name in the artifact folder.*; the name was not printed/), "verify names a traversing file name as its fault");
   writeFileSync(join(destination, "manifest.json"), `${"[".repeat(100_000)}${"]".repeat(100_000)}`);
   assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /^backup artifact manifest\.json is not a valid cotal-space-backup manifest: it is not a JSON object/), "verify names a deeply nested manifest as invalid");
+  writeFileSync(join(destination, "manifest.json"), Buffer.from([0x22, 0xff, 0x22]));
+  assert.throws(verify, verifyFault("manifest.json", "manifest-invalid", /it is not UTF-8 JSON/));
+  assert.throws(() => stageArtifact(destination, stagingParent), {
+    file: "manifest.json", fault: "manifest-invalid", message: /it is not UTF-8 JSON/,
+  });
   const inventory = (edit: (manifest: { space: string; files: { path: string }[]; streams: { stream: string }[] }) => void) => {
     const manifest = JSON.parse(originalManifest) as { space: string; files: { path: string }[]; streams: { stream: string }[] };
     edit(manifest);
@@ -602,8 +626,10 @@ try {
             && / or resume with bare .*up`; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force` again$/.test(error.remedy ?? ""),
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
-      if (process.geteuid && process.geteuid() !== 0)
+      if (process.geteuid && process.geteuid() !== 0) {
         await checkUnreadableRestore(realpathSync(cleanRoot), realpathSync(destination), snapshot.path);
+        await checkUnreadableManifest(realpathSync(cleanRoot), realpathSync(destination));
+      }
       checkLinkedInterruptedBackup(cleanRoot);
     } finally { process.chdir(previousCwd); }
   }

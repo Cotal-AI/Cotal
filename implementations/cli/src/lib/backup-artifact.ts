@@ -250,11 +250,18 @@ export function createArtifactWriter(destination: string): ArtifactWriter {
   };
 }
 
-function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
+function readManifestBytes(path: string): Buffer {
+  if (lstatSync(path, { throwIfNoEntry: false })) assertManifestFile(path);
+  const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
+  if (!bytes) throw new Error("backup manifest is absent");
   assertManifestFile(path);
+  return bytes;
+}
+
+function parseManifest(bytes: Buffer): BackupManifest {
   let value: BackupManifest;
   // The parser's own message quotes the input, so only the fact is reported.
-  try { value = JSON.parse(pinnedBytes === undefined ? readFileSync(path, "utf8") : new TextDecoder("utf-8", { fatal: true }).decode(pinnedBytes)) as BackupManifest; }
+  try { value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as BackupManifest; }
   catch { throw new ArtifactFileFault("manifest.json", "manifest-invalid", "it is not UTF-8 JSON"); }
   try { return validManifest(value); }
   catch (error) {
@@ -413,10 +420,8 @@ export function inspectBackupArtifact(artifact: string, verify: boolean) {
   const before = lstatSync(artifact, { bigint: true });
   if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("backup artifact directory changed before inspection");
   const path = join(artifact, "manifest.json");
-  if (lstatSync(path, { throwIfNoEntry: false })) assertManifestFile(path);
-  const bytes = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
-  if (!bytes) throw new Error("backup manifest is absent");
-  const manifest = parseManifest(path, bytes);
+  const bytes = readManifestBytes(path);
+  const manifest = parseManifest(bytes);
   validateArtifactInventory(artifact, manifest);
   if (verify) for (const file of manifest.files) copyArtifactFile(artifact, file);
   const after = lstatSync(artifact, { bigint: true });
@@ -451,7 +456,7 @@ export function stageArtifact(artifactPath: string, parent: string): StagedArtif
   const artifact = resolve(artifactPath);
   const artifactStat = lstatSync(artifact);
   if (!artifactStat.isDirectory() || artifactStat.isSymbolicLink()) throw new Error(`backup artifact is not a real directory: ${artifact}`);
-  const manifest = parseManifest(join(artifact, "manifest.json"));
+  const manifest = parseManifest(readManifestBytes(join(artifact, "manifest.json")));
   validateArtifactInventory(artifact, manifest);
   const parentPath = realpathSync.native(resolve(parent));
   const parentStat = lstatSync(parentPath, { bigint: true });
