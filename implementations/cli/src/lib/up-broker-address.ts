@@ -57,11 +57,25 @@ export async function retryStackAddress(raw: readonly string[], invokedFrom: str
   let server: string;
   try { server = await freshStackServer(await serverWithFreePort(stackServer, host), host); }
   catch { return undefined; }
+  return `start this stack at another address with ${codeSpan(upAtAddress(raw, server))} from ${shellWord(invokedFrom)}`;
+}
+
+function upAtAddress(raw: readonly string[], server: string): string {
   // Replay the validated command, replacing only --server (both accepted spellings).
   const words = [...raw];
-  const at = words.findIndex((word) => word === "--server" || word.startsWith("--server="));
+  const end = words.includes("--") ? words.indexOf("--") : words.length;
+  const at = words.slice(0, end).findLastIndex((word) => word === "--server" || word.startsWith("--server="));
   if (at !== -1) words.splice(at, words[at] === "--server" ? 2 : 1, "--server", server);
-  else words.splice(words.includes("--") ? words.indexOf("--") : words.length, 0, "--server", server);
-  const command = `${displayCmd()} up ${words.map(shellWord).join(" ")}`;
-  return `start this stack at another address with ${codeSpan(command)} from ${shellWord(invokedFrom)}`;
+  else words.splice(end, 0, "--server", server);
+  return `${displayCmd()} up ${words.map(shellWord).join(" ")}`;
+}
+
+export function legacyUpRetry(raw: readonly string[]) {
+  return async (server: string, host: string): Promise<{ original: string; alternate?: string }> => {
+    const original = upAtAddress(raw, server);
+    let alternate: string;
+    try { alternate = await freshStackServer(await serverWithFreePort(server, host), host); }
+    catch { return { original }; }
+    return { original, alternate: upAtAddress(raw, alternate.replace(/\/$/, "")) };
+  };
 }

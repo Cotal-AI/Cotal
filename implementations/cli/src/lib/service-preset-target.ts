@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { registry, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, canonicalRoot, codeSpan, hasUserAuthState, loadManagerInstanceIdentity, localProcessPath, localProcessVisible, oneLine, parsePid, probeLiveness, protectedCredentialReference, readLocalRecordSource, readPidfile, WEB_SERVICE_ADAPTER, type LocalProcess, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
+import { targetWords } from "./confirmation-required.js";
 import { serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
@@ -11,6 +12,16 @@ import { selfArgv } from "./self-exec.js";
 import { pruneEmptyServiceSpace, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecords } from "./service-process.js";
 import { addedDefinitionStep, STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { managerLogPath } from "./manager-proc.js";
+
+/** A missing stop-preview target can lead to a corrected preview or a read of the selected catalog. */
+export function stopPreviewStep(space: string, values: ParsedArgs["values"], member?: { name: string; verb: string }): string {
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
+  const scope = targetWords({ space });
+  if (!member) return `list this space's saved definitions with ${codeSpan(`cotal service${scope}${output}`)}`;
+  const instance = typeof values.instance === "string" ? ` --instance=${shellWord(values.instance)}` : "";
+  const agents = values["with-agents"] ? " --with-agents" : "";
+  return `this space's controller stack names it ${member.name}: preview its stop with ${codeSpan(`cotal ${member.verb} ${member.name} --dry-run${scope}${instance}${agents}${output}`)}`;
+}
 
 /** A preset name a service command resolved to the definition it acts on. `saved` says what this
  *  command saved first: a definition from the preset's defaults, or one saved again with the
@@ -161,7 +172,7 @@ export function resolvePresetService(space: string, root: string, requested: str
       : `cotal service start ${requested}`;
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no ${requested} has been started in space ${oneLine(space)}; nothing was ${mode === "status" || mode === "logs" ? "read" : "changed"}`, {
       target: { space, name: requested },
-      remedy: requested === "manager" && mode === "status" && prepared
+      remedy: mode === "stop" && values["dry-run"] ? stopPreviewStep(space, values) : requested === "manager" && mode === "status" && prepared
         ? `start it with \`cotal up\` in ${oneLine(root)}` : `start it with ${codeSpan(start)}`,
     });
   }

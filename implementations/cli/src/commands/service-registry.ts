@@ -91,6 +91,15 @@ function launchesManager(space: string, root: string, name: string, mode: string
   return manager === undefined || recordedPresetProcess(space, root, manager) === undefined;
 }
 
+/** Do not print a shortened Manager retry when it would discard launch settings or an instance pin. */
+function managerLoginRetry(commandName: string, mode: string, name: string, values: ParsedArgs["values"]): string {
+  const switches = ["dry-run", "yes", "foreground", "with-agents", "plain", "json"];
+  if (name.startsWith("-") || Object.keys(values).some((key) => key !== "space" && !switches.includes(key)))
+    return "retry the original command with all its options unchanged";
+  const command = commandName === "manager" ? `cotal manager ${mode}` : `cotal service ${mode} ${shellWord(name)}`;
+  return codeSpan(command + targetWords({ space: values.space }) + switches.filter((key) => values[key] === true).map((key) => ` --${key}`).join(""));
+}
+
 function legacyProcesses(context: LocalProcessContext) {
   return registry.all<LocalProcess>("local-process").filter((provider) => localProcessVisible(provider, context)).map((provider) => {
     try {
@@ -124,7 +133,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       // A refused restart stops nothing, so over a running manager it says that manager was left running.
       const manager = findServicePreset("manager");
       const running = mode === "restart" && manager !== undefined && recordedPresetProcess(space, root, manager) !== undefined;
-      await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``, running ? "the running manager was left running" : undefined);
+      await assertManagerLogin(root, space, managerLoginRetry(commandName, mode, suppliedName!, args.values), running ? "the running manager was left running" : undefined);
     }
     const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values, prepared);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
@@ -447,7 +456,8 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   const launch = definition.launch as Extract<ServiceDefinitionInput["launch"], { type: "adapter" }>;
   const target = { space, name: resolved.name, executionHost: "this-machine" };
   const { capabilities } = resolveServiceAdapter(launch.adapter, launch.options, false).declaration;
-  if (args.values["new-instance"] && !capabilities.multiInstance || args.values.foreground && !capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
+  const unsupported = [args.values["new-instance"] && !capabilities.multiInstance ? "--new-instance" : null, args.values.foreground && !capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+  if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded. Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.`, { target });
   if (launch.adapter === STACK_ADAPTER.manager) {
     assertManagerStartOptions(space, launch.options);
     const host = launch.options["console-host"];

@@ -19,7 +19,7 @@
  * Run: pnpm smoke:history-read
  */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -576,6 +576,21 @@ try {
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
   await checkUnreachableHistoryFollow(unavailable);
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const root = mkdtempSync(join(home, "mode-read-"));
+    const dir = join(root, ".cotal", "auth");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const args = ["history", "general", "--json", "--space", space, "--server", unavailable, "--creds", join(root, "absent.creds")];
+    try {
+      chmodSync(dir, 0);
+      const refused = await run(args, root);
+      check("an unreadable local authentication mode refuses before reading the missing credential",
+        refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.error.message.includes("authentication mode")
+          && (refused.envelope.target as { root?: string })?.root === realpathSync(root) && Boolean(refused.envelope.error.remedy), shown(refused));
+    } finally { chmodSync(dir, 0o700); }
+    const missing = await run(args, root);
+    check("a readable empty mode directory reaches the missing credential refusal", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND", shown(missing));
+  }
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
   // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel

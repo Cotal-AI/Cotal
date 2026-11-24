@@ -253,7 +253,7 @@ function assertRegistrationHome(): void {
   const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
   const check = (home: string, registration: string) => {
     if (canonical(home) !== canonical(cotalHome()))
-      throw new Error(`${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`);
+      throw Object.assign(new Error(`${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`), { name: "ForeignConnectorRegistrationError" });
   };
   const result = command("plugin", "marketplace", "list", "--json");
   if (result.status !== 0) throw new Error(`plugin marketplace list failed:\n${result.output}`);

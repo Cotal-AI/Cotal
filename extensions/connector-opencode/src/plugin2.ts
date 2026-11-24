@@ -44,6 +44,7 @@ import { createOpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
 import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
+import { COMMAND_ROUTES, LISTS_LOAD_MS, readCommandLists } from "./command-routes.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
 
 function log(msg: string): void {
@@ -117,21 +118,7 @@ class OpenCodeHttpError extends Error {
   }
 }
 
-/** How OpenCode lists and runs each command target, measured on 2.2.5. The field `key` of a listed
- *  entry is the name `run` sends, so a listed name is one a command runs. A built-in skill's `id`
- *  differs from its `name`, and `/prompt` attaches a skill by `id`. `loaded` is the event OpenCode
- *  emits once it loaded the list. */
-const COMMAND_ROUTES: Record<CommandTarget, { list: string; loaded: string; key: "name" | "id"; run(name: string, args: string): [path: string, body: Record<string, unknown>] }> = {
-  command: { list: "/api/command", loaded: "command.updated", key: "name", run: (name, args) => ["command", { name, text: args }] },
-  skill: { list: "/api/skill", loaded: "skill.updated", key: "id", run: (name, args) => ["prompt", { text: args, skills: [{ id: name }] }] },
-};
-
 const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
-
-/** How long the first list waits for OpenCode to load the lists. OpenCode loads a location's commands
- *  and skills on the first request for them, answers that request with what it already holds, and
- *  emits each list's `loaded` event once the load ended (measured on 2.2.5). */
-const LISTS_LOAD_MS = 3_000;
 
 /** How long a command OpenCode accepted has to start its turn. 2.2.5 accepts some commands, such as
  *  `goal clear`, without starting one, and then no execution event frees the session. */
@@ -191,19 +178,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   })();
 
   async function readLists(): Promise<CommandEntry[]> {
-    const lists = await Promise.all((Object.keys(COMMAND_ROUTES) as CommandTarget[]).map(async (target) => {
-      const { list, key } = COMMAND_ROUTES[target];
-      const data = (await opencodeApi<{ data?: unknown } | undefined>(list))?.data;
-      if (!Array.isArray(data)) throw new Error(`OpenCode answered ${list} with no data list`);
-      return data.map((e: unknown) => {
-        const entry = (typeof e === "object" && e !== null ? e : {}) as Record<string, unknown>;
-        const name = entry[key];
-        if (typeof name !== "string") throw new Error(`OpenCode listed a ${target} with no ${key} at ${list}`);
-        return { name, target, ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
-      });
-    }));
     // The launch's own `/reconnect` runs only at the agent's terminal (reconnect-command.ts).
-    return lists.flat().filter((e) => !isReconnect(e));
+    return (await readCommandLists((path) => opencodeApi(path))).filter((e) => !isReconnect(e));
   }
   // The `loaded` events still to come, set from the event loop, and the one bounded wait for them.
   const listsLoading = new Set(Object.values(COMMAND_ROUTES).map((r) => r.loaded));

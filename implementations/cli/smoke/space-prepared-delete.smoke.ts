@@ -17,7 +17,7 @@
  * Run: pnpm smoke:space-prepared-delete
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -210,6 +210,27 @@ check("bare doctor auth --fix there still refuses AUTH_REQUIRED, exit 2, naming 
     repaired.status === 2 && repaired.envelope?.error?.remedy === DOCTOR_HERE, shown(repaired));
 }
 
+if (typeof process.getuid === "function" && process.getuid() !== 0) {
+  const store = join(realpathSync(root), ".cotal", "nats");
+  mkdirSync(store, { mode: 0o500 });
+  try {
+    const diagnosis = run(["doctor", "auth", "--plain"]);
+    const fix = run(["doctor", "auth", "--fix", "--space", "b4b", "--json"]);
+    const repair = `chmod -R u+w ${store}`;
+    const diagnosisText = diagnosis.stdout + diagnosis.stderr;
+    check("bare doctor auth stays partial and names the store repair before the first start",
+      diagnosis.status === 4 && diagnosisText.includes(`the broker store ${store} is not writable`) &&
+      ["cotal", "pnpm cotal"].some((launcher) => diagnosisText.includes(`${repair}, then start it with \`${launcher} up\``)), shown(diagnosis));
+    check("doctor auth --fix keeps AUTH_REQUIRED, names the store repair, and leaves its mode unchanged",
+      fix.status === 2 && fix.envelope?.error?.code === "AUTH_REQUIRED" &&
+      fix.envelope.error.remedy?.includes(`${repair}, then start it with \`cotal up\``) === true &&
+      (statSync(store).mode & 0o777) === 0o500, shown(fix));
+  } finally {
+    chmodSync(store, 0o700);
+    rmSync(store, { recursive: true });
+  }
+}
+
 // From another folder the step names the prepared root with --root, quoted so a shell reads it back
 // as that folder.
 const special = join(home, "it's $HOME d");
@@ -227,6 +248,37 @@ const shellRead = elsewhereStep ? spawnSync("/bin/sh", ["-c", `printf %s ${elsew
 check("doctor auth --space from another folder refuses AUTH_REQUIRED and names cotal up --root for the prepared root",
   doctorElsewhere.status === 2 && doctorElsewhere.envelope?.error?.code === "AUTH_REQUIRED" && elsewhereStep !== null, shown(doctorElsewhere));
 check("a shell reads that --root back as the prepared folder", shellRead !== undefined && existsSync(shellRead) && realpathSync(shellRead) === realpathSync(special), { remedy: doctorElsewhere.envelope?.error?.remedy, shellRead });
+
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const control = join(realpathSync(special), ".cotal");
+  const before = readdirSync(control).sort();
+  const mode = statSync(control).mode & 0o777;
+  chmodSync(control, 0o500);
+  try {
+    const verdict = '"b4d" is prepared but not started';
+    const up = run(["up", "--open", "--space", "b4d", "--server", server, "--json"], special);
+    const problem = up.envelope?.error?.message?.replace("; nothing was started or written", "") ?? "";
+    const remedy = up.envelope?.error?.remedy ?? "";
+    check("up refuses a prepared root whose control directory cannot be written",
+      up.status === 2 && up.envelope?.error?.code === "PERMISSION_DENIED" && problem.includes(`${control} does not grant this account both write and search access`) && remedy.includes("chmod u+wx "), shown(up));
+    const status = run(["status", "--space", "b4d", "--plain"], special);
+    check("status keeps the prepared verdict and names the permission repair before startup",
+      status.status === 0 && status.stdout.includes(verdict) && status.stdout.includes(`First start blocked: ${problem}. ${remedy}`) && !status.stdout.includes("start it with"), shown(status));
+    const ps = run(["ps", "--space", "b4d", "--json"], special);
+    check("ps keeps TARGET_UNAVAILABLE and gives the same repair as up",
+      ps.status === 2 && ps.envelope?.error?.code === "TARGET_UNAVAILABLE" && ps.envelope.error.message === `${verdict}. First start blocked: ${problem}` && ps.envelope.error.remedy === remedy, shown(ps));
+    const doctor = run(["doctor", "auth", "--plain"], special);
+    check("bare doctor stays partial and puts the permission repair before startup",
+      doctor.status === 4 && doctor.stderr.includes(`${verdict}; ${problem}. First ${remedy}, then start it with`), shown(doctor));
+    const namedDoctor = run(["doctor", "auth", "--space", "b4d", "--json"]);
+    check("named doctor keeps AUTH_REQUIRED and diagnoses the prepared root from elsewhere",
+      namedDoctor.status === 2 && namedDoctor.envelope?.error?.code === "AUTH_REQUIRED" && namedDoctor.envelope.error.remedy?.startsWith(`${verdict}; ${problem}. First ${remedy}, then start it with`) === true, shown(namedDoctor));
+    check("diagnostics do not change the control directory mode or add entries",
+      (statSync(control).mode & 0o777) === 0o500 && JSON.stringify(readdirSync(control).sort()) === JSON.stringify(before));
+  } finally {
+    chmodSync(control, mode);
+  }
+}
 
 // Bare doctor auth names only the space its own root prepared: not another prepared space, not the
 // selection, and none from a folder that holds no space.

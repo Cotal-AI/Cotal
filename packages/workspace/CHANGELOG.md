@@ -1,5 +1,38 @@
 # @cotal-ai/workspace
 
+## 0.176.6
+
+### Patch Changes
+
+- 664698a: Keep the running folder space marked in `cotal space` and `cotal status` when an offline registration shares its folder.
+- d91500c: Report a full disk, quota or file-size limit when startup or shutdown cannot write the initial maintenance lock. The command names the file and how to retry instead of reporting an unknown outcome.
+- @cotal-ai/core@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- 8c884a8: Keep your requested startup options in foreground and busy-port retries, and report a verified startup in progress instead of telling you to stop it.
+- e9f798e: When `cotal update --self` skips its version check because npm is in offline mode, report that it restored owner write permission on the Cotal connector configuration and that no installed packages were replaced. A retry that changes no permissions prints no notice.
+- @cotal-ai/core@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- d482720: Broker URL errors tell you to remove the embedded user name and password without suggesting a credential file to commands that cannot use one for the connection.
+- e0a0bb7: Plain chat accepts multiline drafts at the stated limit, chat retry guidance keeps your original options, and the terminal console quits cleanly after the broker stops.
+- 99e0752: Quitting the console from the space overview returns to the shell even if you backed out while a space was still connecting. Stopping the observer prevents its pending startup from opening subscriptions or starting refresh timers.
+- 8176b19: Make CLI retry hints usable for dash-leading manifest files, space names and roles, and tell callers to drop unknown endpoint options when all operands are supplied.
+- dd96500: Install npm extensions with extensionless main entries and show how to finish managed shell completion when the startup file is read-only.
+- d31ba81: Keep the output format in space retries, select the only running project space over an adopted selection, show the correct broker-only restart in `whoami`, and report exited owned processes as gone.
+- 87465c9: When self-update repairs connector permissions or recovers connector state before a registry outage, it reports that no installed packages were replaced instead of saying nothing changed.
+- c82c548: Cotal keeps using your installed connectors after a verified home move and tells you how to preserve them if it cannot verify the move.
+- e73a285: Start dashboards under custom names with `--no-open`, check manager replacement options before advising a stop, and show how to reach a direct foreground agent.
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [73f4306]
+  - @cotal-ai/core@0.176.4
+
 ## 0.176.3
 
 ### Patch Changes

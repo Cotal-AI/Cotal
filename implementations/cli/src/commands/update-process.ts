@@ -17,6 +17,9 @@ export interface CommandResult {
 }
 
 export class RegistryUnavailable extends Error {}
+export class StagingTimeout extends Error {
+  constructor(readonly npmOutput: string) { super("Package staging reached its time limit"); }
+}
 
 export function parseNpmVersion(output: string): string {
   const parsed: unknown = JSON.parse(output.trim());
@@ -159,12 +162,18 @@ export async function runGlobalProcess(
   try {
     const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
     if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
-    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
-    const recordCache = gated && staging !== undefined;
+    const reconcileCache = gated && operation === "reconcile";
+    cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
+    let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
-      const start = processStartToken(process.pid);
-      if (!start) throw new Error("cannot identify the staged npm cache owner");
-      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+      try {
+        const start = processStartToken(process.pid);
+        if (!start) throw new Error("cannot identify the staged npm cache owner");
+        writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+      } catch (cause) {
+        if (!reconcileCache) throw cause;
+        recordCache = false;
+      }
     }
     if (staging !== undefined) {
       // npm is quiet during a download. Its private cache receives the archive bytes and
@@ -200,7 +209,10 @@ export async function runGlobalProcess(
     if (child.pid !== undefined) {
       try {
         // Publish cache custody before the gate permits npm to write to it.
-        if (recordCache) writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
+        if (recordCache) {
+          try { writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" }); }
+          catch (cause) { if (!reconcileCache) throw cause; }
+        }
         mutation.markLive(child.pid);
         published = true;
       } catch (e) {
@@ -255,7 +267,7 @@ export async function runGlobalProcess(
     if (stopping) {
       await stopping;
       if (published) mutation.clear();
-      throw new RegistryUnavailable("target staging could not reach the registry");
+      throw new StagingTimeout(`${stderr}\n${stdout}`);
     }
     if (published) mutation.complete(
       closed.status,
@@ -266,7 +278,7 @@ export async function runGlobalProcess(
     );
     return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
-    if (e instanceof RegistryUnavailable) throw e;
+    if (e instanceof StagingTimeout) throw e;
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();

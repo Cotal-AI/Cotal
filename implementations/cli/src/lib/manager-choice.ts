@@ -88,11 +88,11 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
  * candidates. On a static or open mesh a manager's presence does not carry its instance id, so a
  * name is refused there and the instance id is asked for.
  */
-export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: ManagerRetry): Promise<string | undefined> {
+export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: ManagerRetry, rosterCommand?: string): Promise<string | undefined> {
   if (values.on === undefined) return undefined;
   const flags = targetFlags(values);
   const roster = flags.server !== undefined && brokerAddressForDisplay(flags.server) !== flags.server
-    ? "the roster for the same broker" : codeSpan(`cotal ps${targetWords(flags)}`);
+    ? "the roster for the same broker" : codeSpan(rosterCommand ?? `cotal ps${targetWords(flags)}`);
   const on = onInstance(String(values.on), verb, roster);
   if (on === undefined || instanceIdShaped(on)) return on;
   let mode: string | undefined;
