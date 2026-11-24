@@ -150,6 +150,7 @@
   "implementations/manager/smoke/session-ledger-family.smoke.ts": 2,
   "implementations/manager/smoke/sibling-mint-fence.smoke.ts": 1,
   "implementations/manager/smoke/spawn-action-auth.smoke.ts": 5,
+  "implementations/manager/smoke/spawn-auto-name.smoke.ts": 1,
   "implementations/manager/smoke/spawn-grant-door.smoke.ts": 3,
   "implementations/manager/smoke/spawn-inline-persona.smoke.ts": 1,
   "implementations/manager/smoke/spawn-once-restart.smoke.ts": 2,
