@@ -1011,6 +1011,49 @@ async function missingCustomSourceScenario(): Promise<void> {
   }
 }
 
+/** A registry disaster restore starts history and runs empty, but cleanup only retires its journal. */
+async function missingRegistrySourceGuidanceScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-registry-disaster-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-registry-disaster-home-")));
+  const { run } = sandboxRun(root, home);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const store = join(root, "donor store"), saved = join(root, "saved store"), artifact = join(root, "registry backup");
+  const succeeds = (result: ReturnType<typeof run>): string => {
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    return result.stdout;
+  };
+  try {
+    succeeds(run("up", "--detach", "--open", "--server", server, "--space", "registry_disaster", "--store-dir", store));
+    succeeds(run("down", "--preserve-state", "--store-dir", store, "--yes"));
+    succeeds(run("backup", "create", artifact, "--only", "registry", "--plain"));
+    renameSync(store, saved);
+    const restored = succeeds(run("up", "--restore", artifact, "--accept-missing-source", "--detach"));
+    assert.match(restored, /No previous store was retained\./);
+    const journal = readMaintenanceJournal(root);
+    assert.equal(journal?.state, "active");
+    const attempt = journal.restore.attemptId;
+
+    const status = succeeds(run("status", "--plain"));
+    const preserve = run("down", "--preserve-state", "--yes");
+    assert.equal(preserve.status, 2, `${preserve.stdout}${preserve.stderr}`);
+    assert.match(preserve.stderr, /LIFECYCLE_BLOCKED/);
+    for (const output of [restored, status, preserve.stderr]) {
+      assert.ok(["cotal", "pnpm cotal"].some((cli) => output.includes(`\`${cli} backup cleanup-fallback ${attempt} --yes\``)), output);
+      assert.match(output, /chat and DM history and workflow runs start empty/i);
+      assert.doesNotMatch(output, /--discard-history|deletes the previous store/);
+    }
+    const preview = succeeds(run("backup", "cleanup-fallback", attempt, "--dry-run", "--plain"));
+    assert.match(preview, /Previous source:\s+none retained/);
+    assert.match(succeeds(run("backup", "cleanup-fallback", attempt, "--yes", "--plain")), /Completed restore journal retired/);
+    assert.equal(readMaintenanceJournal(root), undefined);
+    assert.ok(existsSync(join(store, "jetstream")) && existsSync(join(saved, "jetstream")));
+  } finally {
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 /** #7017: after a registry restore into another store, `down` and the cleanup that retires the
  *  previous store, the bare `up` the stop receipt names reopens the restored store. The space is not
  *  named after its folder, so `down` dropped the record that named that store and only the broker
@@ -1606,6 +1649,7 @@ await missingPidfileListenerScenario();
 await undisplayableBackupRetryScenario();
 await linkedStoreScenario();
 await missingCustomSourceScenario();
+await missingRegistrySourceGuidanceScenario();
 await restoredStoreRestartScenario();
 await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();

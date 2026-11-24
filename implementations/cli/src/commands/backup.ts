@@ -47,7 +47,6 @@ import {
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
-  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
@@ -131,7 +130,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, record) : "finish this root's current maintenance attempt first; check it with `cotal status`",
   });
 }
 
