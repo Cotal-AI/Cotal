@@ -197,6 +197,20 @@ function caseTwin(file: string, entries: readonly string[]): string | undefined 
   return entries.find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
 }
 
+/** An ENOENT from readdir can hide a dangling link at the catalog or above it. */
+function assertCatalogMissing(dir: string, root: string, readError: unknown): void {
+  for (let path = dir; ; path = dirname(path)) {
+    try {
+      const entry = lstatSync(path, { throwIfNoEntry: false });
+      if (entry === undefined && path !== root) continue;
+      if (entry !== undefined && path !== dir && statSync(path).isDirectory()) return;
+    } catch (error) {
+      throw catalogReadRefusal(path, error);
+    }
+    throw catalogReadRefusal(path, readError);
+  }
+}
+
 /** Snapshot for retry advice. A create still validates the destination again under its lock. */
 export function readPersonaOccupancy(root: string): (name: string) => boolean {
   const dir = personaDir(root);
@@ -205,8 +219,7 @@ export function readPersonaOccupancy(root: string): (name: string) => boolean {
     entries = readdirSync(dir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw catalogReadRefusal(dir, error);
-    const folder = catalogFolderProblem(dir);
-    if (folder) throw folder;
+    assertCatalogMissing(dir, root, error);
     entries = [];
   }
   return name => {

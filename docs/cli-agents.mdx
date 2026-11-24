@@ -583,8 +583,8 @@ If the file's name is valid and unused in the selected catalog, the refusal give
 also occupies the name. To use a different name, copy the definition to a separate input file,
 set its frontmatter `name` to the new catalog name, and retry with that file and name. With
 `--file -`, pipe the original bytes to keep their name, or pipe a corrected definition to use
-another name. If the CLI cannot check the catalog, the refusal explains why and does not suggest
-a name until you can check the catalog again.
+another name. If the CLI cannot check the catalog, for example because a parent folder links to
+a missing target, the refusal explains why and does not suggest a retry name.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
 such as a missing frontmatter block, the renamed `channels` key or a `subscribe` channel outside
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.

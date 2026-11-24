@@ -952,6 +952,44 @@ try {
   }
   checkBrokenCatalog();
 
+  function checkCatalogParentImport() {
+    if (process.platform === "win32") return;
+    const project = realpathSync(offlineRoot);
+    const parent = join(project, ".cotal"), saved = join(project, "saved-cotal");
+    const dir = join(parent, "agents"), missingLinkTarget = "missing-control";
+    const name = "parent-import", target = "parent-copy";
+    const source = join(scratch, "parent-import.md");
+    const bytes = `---\nname: ${name}\n---\nAn external definition.\n`;
+    writeFileSync(source, bytes);
+    const create = (name: string) => native(["persona", "create", name, "--file", source, "--space", "offline-audit", "--json"], CWD);
+    renameSync(parent, saved);
+    try {
+      symlinkSync(missingLinkTarget, parent);
+      const blocked = create(target);
+      const { error } = JSON.parse(blocked.stdout);
+      check("a dangling catalog parent preserves the mismatch and names the broken link without suggesting a retry name",
+        blocked.status === 1 && error?.code === "SCHEMA_INVALID" &&
+        error.message === `persona name must match the catalog name '${target}'; ${source} names '${name}'` &&
+        error.remedy === `could not check which persona names are free: ${parent} is a link to the missing target ${missingLinkTarget}. To check again, restore the link's target or move the broken link aside` &&
+        readlinkSync(parent) === missingLinkTarget && !existsSync(join(project, missingLinkTarget)), blocked.stdout);
+
+      unlinkSync(parent);
+      const absent = create(target);
+      const failure = JSON.parse(absent.stdout).error;
+      check("an absent catalog and parent still offer the unused-name retry without creating anything",
+        absent.status === 1 && failure?.code === "SCHEMA_INVALID" &&
+        failure.remedy.startsWith(`create it under its own name with \`cotal persona create ${name} --file ${source} --space offline-audit\``) &&
+        !existsSync(parent), absent.stdout);
+      const retried = create(name);
+      check("the unused-name retry creates the missing catalog and saves the exact bytes",
+        retried.status === 0 && readFileSync(join(dir, `${name}.md`), "utf8") === bytes && !existsSync(join(dir, `${target}.md`)), retried.stdout);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+      renameSync(saved, parent);
+    }
+  }
+  checkCatalogParentImport();
+
   for (const field of ["subscribe", "allowSubscribe", "allowPublish", "quiet", "muted"]) {
     const path = agentFilePath(MESH, "invalid-channel");
     writeFileSync(path, `---\nname: invalid-channel\n${field}: ["#general"]\n---\nReview the project.\n`);
