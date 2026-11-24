@@ -1,6 +1,5 @@
 ---
 "@cotal-ai/cli": patch
-"@cotal-ai/core": patch
 "@cotal-ai/workspace": patch
 ---
 

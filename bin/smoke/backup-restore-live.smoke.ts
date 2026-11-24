@@ -6,7 +6,7 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readd
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
-import { createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { chatStream, createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
   acquireMaintenanceLock,
@@ -460,7 +460,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     } else {
       assert.doesNotMatch(restored.stdout, /history start empty/);
       const previous = active.restore.previousSource?.identity.path;
-      assert.ok(previous && restored.stdout.includes("Later changes to channel settings, access grants, membership, message history, and workflow runs are not restored.") && restored.stdout.includes(`The previous store at ${previous} holds the only copy of the ${leftOut}.`), `${mode} full restore of an older artifact names the newer state it left out\n${restored.stdout}`);
+      assert.ok(previous && restored.stdout.includes("Later changes to channel settings, access grants, membership, history limits, message history, and workflow runs are not restored.") && restored.stdout.includes(`The previous store at ${previous} holds the only copy of the ${leftOut}.`), `${mode} full restore of an older artifact names the newer state it left out\n${restored.stdout}`);
     }
     // `up -f` boots a fresh mesh, so it refuses while the restore is active and names the way out.
     const manifest = join(root, "cotal.yaml");
@@ -1436,8 +1436,34 @@ async function emptyNewerCutScenario(): Promise<void> {
     assert.equal(result.status, 0, `${args.join(" ")}\n${result.stdout}${result.stderr}`);
     return result;
   };
+  const restoreWithConsentGuard = (destination: string) => {
+    must("down", "--preserve-state", "--yes");
+    const cut = readMaintenanceJournal(root);
+    assert.ok(cut?.state === "ready");
+    const older = must("backup", "restore", artifact, "--store-dir", destination, "--plain");
+    assert.match(older.stdout + older.stderr, /--discard-history/);
+    const restored = readMaintenanceJournal(root);
+    assert.ok(restored?.state === "active");
+    assert.equal(restored.launch.previousCutNewer, true);
+    const cleanup = ["backup", "cleanup-fallback", restored.restore.attemptId];
+    assert.match(must(...cleanup, "--dry-run", "--json").stdout, /HISTORY_ONLY_IN_PREVIOUS_STORE/);
+    const refused = run(...cleanup, "--yes", "--plain");
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.match(refused.stderr, /USAGE_INVALID/);
+    assert.ok(existsSync(cut.source.path) && existsSync(destination), "the refusal keeps both stores");
+    assert.deepEqual(readMaintenanceJournal(root), restored, "the refusal keeps the active journal");
+    return cleanup;
+  };
+  const chatLimit = () => {
+    const { result } = JSON.parse(must("history", "limit", "--space", space, "--json").stdout) as {
+      result: { streams: { stream: string; holds: { maxAgeMs: number | null; perSubject: number | null } }[] };
+    };
+    return result.streams.find(({ stream }) => stream === chatStream(space))?.holds;
+  };
   try {
     must("up", "--detach", "--open", "--server", server, "--space", space);
+    const initialLimit = chatLimit();
+    assert.ok(initialLimit && initialLimit.maxAgeMs !== 120_000);
     must("down", "--preserve-state", "--yes");
     must("backup", "create", artifact);
     must("up", "--detach");
@@ -1460,26 +1486,17 @@ async function emptyNewerCutScenario(): Promise<void> {
     must(...cleanup, "--yes");
     assert.ok(!existsSync(cut.source.path) && existsSync(target), "cleanup removes only the fallback");
     assert.equal(readMaintenanceJournal(root), undefined, "cleanup retires the restore journal");
+
+    must("history", "limit", "--max-age", "2m", "--yes", "--space", space);
+    assert.equal(chatLimit()?.maxAgeMs, 120_000, "the newer cut holds the changed limit without any messages");
+    const limitCleanup = restoreWithConsentGuard(join(root, "restored-with-original-limit"));
+    assert.deepEqual(chatLimit(), initialLimit, "the restored store holds the older policy");
+    must(...limitCleanup, "--yes", "--discard-history");
+
     must("channel", "set", "fallback-only", "--desc", "setting created after backup", "--space", space);
     assert.match(must("channel", "--space", space).stdout, /#fallback-only/);
-    must("down", "--preserve-state", "--yes");
-
-    const settingsCut = readMaintenanceJournal(root);
-    assert.ok(settingsCut?.state === "ready");
-    const settingsTarget = join(root, "restored-without-new-settings");
-    const older = must("backup", "restore", artifact, "--store-dir", settingsTarget, "--plain");
-    assert.match(older.stdout + older.stderr, /--discard-history/);
+    restoreWithConsentGuard(join(root, "restored-without-new-settings"));
     assert.doesNotMatch(must("channel", "--space", space).stdout, /#fallback-only/);
-    const settingsRestore = readMaintenanceJournal(root);
-    assert.ok(settingsRestore?.state === "active");
-    assert.equal(settingsRestore.launch.previousCutNewer, true);
-    const settingsCleanup = ["backup", "cleanup-fallback", settingsRestore.restore.attemptId];
-    assert.match(must(...settingsCleanup, "--dry-run", "--json").stdout, /HISTORY_ONLY_IN_PREVIOUS_STORE/);
-    const refused = run(...settingsCleanup, "--yes", "--plain");
-    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.match(refused.stderr, /USAGE_INVALID/);
-    assert.ok(existsSync(settingsCut.source.path) && existsSync(settingsTarget), "the refusal keeps both stores");
-    assert.deepEqual(readMaintenanceJournal(root), settingsRestore, "the refusal keeps the active journal");
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });

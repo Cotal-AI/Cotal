@@ -191,8 +191,8 @@ so its cleanup removes nothing and only retires the journal. A later `down --pre
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
 and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
 and a full restore of an older artifact can leave out newer messages, workflow runs, channel
-settings, access grants, or members. Cleanup requires consent unless restore verified that the
-newer cut held no additional backed-up state. A backup holds one account, so any restore also leaves
+settings, access grants, members, or history limits. Cleanup requires consent unless restore verified
+that the newer cut held no additional backed-up state. A backup holds one account, so any restore also leaves
 out the streams of another account in the store it replaced, such as an open mesh's account beside a static
 space's after both ran in one folder. In each case its old store holds the only copy of them. Its `--dry-run` warns with
 `HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, with those accounts in `otherAccounts`, and the cleanup refuses
@@ -240,11 +240,12 @@ names the store the restore set aside, which holds the only copy of them. Its ne
 that `backup cleanup-fallback` deletes that store only with `--discard-history`. A full restore of
 an artifact made before the state it replaced was preserved, such as a backup taken before a later
 `cotal up` and `down --preserve-state`, can omit changes to channel settings, access grants, members,
-message history, or workflow runs. When the full artifact includes the workflow journal, restore
-checks the newer cut on an isolated copy. A fresh cut can qualify if its streams hold no additional
-state and any initial channel-default entry matches the restored copy. If restore verifies this,
-the plain receipt says so, and cleanup does not require `--discard-history` for the age difference
-alone. If the check finds additional state or cannot rule it out, the receipt warns with
+history limits, message history, or workflow runs. When the full artifact includes the workflow
+journal, restore checks the newer cut on an isolated copy. A fresh cut can qualify if its streams
+hold no additional state, its history limits match the backup, and any initial channel-default
+entry matches the restored copy. A cut with consumers does not qualify. If restore verifies that
+the cut qualifies, the plain receipt says so, and cleanup does not require `--discard-history` for
+the age difference alone. If the check finds additional state or cannot rule it out, the receipt warns with
 `NEWER_HISTORY_NOT_RESTORED` and cleanup still requires `--discard-history`.
 When the store a restore replaced also held another account's streams, the receipt says they are not
 restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,

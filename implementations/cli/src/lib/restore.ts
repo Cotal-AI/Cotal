@@ -603,7 +603,7 @@ export function leftOutNotes(attemptId: string, selection: string, onlyCopy: Res
   const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId}`);
   const kept = onlyCopy.previousStore ? `The previous store at ${onlyCopy.previousStore} holds the only copy of ${selection === "registry" && !accounts.length ? "them" : `the ${onlyCopy.leftOut}`}. ${cleanup} deletes it only with --discard-history.` : undefined;
   const other = accounts.length ? [`The store this restore replaced also held streams of ${accounts.length === 1 ? "account" : "accounts"} ${accounts.join(", ")}, which this backup does not hold, so they are not restored.`] : [];
-  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved. Later changes to channel settings, access grants, membership, message history, and workflow runs are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
+  if (selection !== "registry") return [...(onlyCopy.newer ? ["This backup was made before the state it replaced was preserved. Later changes to channel settings, access grants, membership, history limits, message history, and workflow runs are not restored.", ...rolledBackNotes(onlyCopy.rolledBack)] : []), ...other, ...(kept ? [kept] : [])];
   return ["A registry-only restore brings back channel settings only, so chat and DM history and workflow runs start empty.", ...other, kept ?? "No previous store was retained."];
 }
 
@@ -935,7 +935,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;
     const previous = previousStore
-      ? await inspectPreviousStore({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, auth, restoredDefault, deadline, record: recordResources })
+      ? await inspectPreviousStore({ root, previousStore, attemptId, space: journal.space, mode: journal.mode, auth, restoredDefault, recordedStreams: artifact.manifest.streams, deadline, record: recordResources })
       : undefined;
     const rolledBack = previous && restoredRuns ? rolledBackRuns(previous.runs, restoredRuns) : undefined;
 

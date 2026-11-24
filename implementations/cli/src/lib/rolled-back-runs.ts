@@ -1,11 +1,12 @@
 import { join } from "node:path";
 import { jetstreamManager, type MsgRequest } from "@nats-io/jetstream";
 import {
-  CHANNEL_DEFAULTS_KEY, GOVERN_HEAD, RECORD_KINDS, channelBucket, isStreamNotFound, parseRecordKey, parseRunJournalRecord,
+  CHANNEL_DEFAULTS_KEY, GOVERN_HEAD, RECORD_KINDS, channelBucket, historyLimitOf, historyLimitStreamOf, isStreamNotFound, parseRecordKey, parseRunJournalRecord,
   recordsBucket, recordsKvStreamName, spacePrefix, validateBackupStreamState,
   validateCanonicalBackupStreamConfig, validateSpaceBackupInventory, wfjStreamName, type SpaceAuth,
 } from "@cotal-ai/core";
 import type { AttemptOwnedPath, MaintenanceAuthMode, ProcessOwner, RolledBackRun } from "@cotal-ai/workspace";
+import type { BackupStreamRecord } from "./backup-artifact.js";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, type IsolatedBroker } from "./isolated-broker.js";
 
 /** The most runs a restore's launch lists; it counts the rest. */
@@ -72,7 +73,7 @@ export function rolledBackRuns(previous: ReadonlyMap<string, RunJournalView>, re
 /** Read the stored value and headers without interpreting or rewriting the registry entry. */
 export async function readRegistryDefault(broker: IsolatedBroker, space: string): Promise<string | undefined> {
   try {
-    const login = await broker.addLogin({ profile: "restore", scope: { operation: "registry" } });
+    const login = await broker.addLogin({ profile: "registry-read" });
     const nc = await connectIsolatedBroker(broker, login);
     try {
       const bucket = channelBucket(space);
@@ -93,7 +94,7 @@ export async function readRegistryDefault(broker: IsolatedBroker, space: string)
   }
 }
 
-async function previousStoreHasNoUniqueState(broker: IsolatedBroker, space: string, restoredDefault: string | undefined): Promise<boolean> {
+async function previousStoreHasNoUniqueState(broker: IsolatedBroker, space: string, restoredDefault: string | undefined, recordedStreams: readonly BackupStreamRecord[]): Promise<boolean> {
   try {
     const login = await broker.addLogin({ profile: "backup", scope: { operation: "inspect", selection: "full" } });
     const nc = await connectIsolatedBroker(broker, login);
@@ -107,9 +108,18 @@ async function previousStoreHasNoUniqueState(broker: IsolatedBroker, space: stri
       const records = recordsKvStreamName(space);
       for (const { name, class: kind } of inventory.backedUp) {
         const info = await jsm.streams.info(name, name === records ? { subjects_filter: ">" } : undefined);
-        validateCanonicalBackupStreamConfig(space, name, info.config as unknown as Record<string, unknown>);
+        const config = info.config as unknown as Record<string, unknown>;
+        validateCanonicalBackupStreamConfig(space, name, config);
+        if (historyLimitStreamOf(space, name)) {
+          const recorded = recordedStreams.find((entry) => entry.stream === name)?.config;
+          if (typeof recorded?.max_age !== "number" || typeof recorded.max_msgs_per_subject !== "number" ||
+              typeof config.max_age !== "number" || typeof config.max_msgs_per_subject !== "number") return false;
+          const before = historyLimitOf(config), restored = historyLimitOf(recorded);
+          if (before.maxAgeMs !== restored.maxAgeMs || before.perSubject !== restored.perSubject) return false;
+        }
         const state = validateBackupStreamState(info.state as unknown as Record<string, unknown>);
-        if (state.lost !== undefined) return false;
+        // Do not waive consent for a checkpoint without comparing its config and ACK floor.
+        if (state.lost !== undefined || state.consumer_count !== 0) return false;
         switch (kind) {
           case "registry":
             if (state.last_seq === 0) break;
@@ -160,6 +170,7 @@ export async function inspectPreviousStore(options: {
   mode: MaintenanceAuthMode;
   auth?: SpaceAuth;
   restoredDefault: string | undefined;
+  recordedStreams: readonly BackupStreamRecord[];
   deadline: Date;
   record: (input: { owners?: readonly ProcessOwner[]; ownedPaths?: readonly AttemptOwnedPath[] }) => void;
 }): Promise<{ noUniqueState: boolean; runs: Map<string, RunJournalView> }> {
@@ -181,7 +192,7 @@ export async function inspectPreviousStore(options: {
     });
     options.record({ owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
     const runs = await readRunJournals(broker, options.space);
-    return { noUniqueState: runs.size === 0 && await previousStoreHasNoUniqueState(broker, options.space, options.restoredDefault), runs };
+    return { noUniqueState: runs.size === 0 && await previousStoreHasNoUniqueState(broker, options.space, options.restoredDefault, options.recordedStreams), runs };
   } finally {
     if (broker) await broker.stop();
     clone.cleanup();
