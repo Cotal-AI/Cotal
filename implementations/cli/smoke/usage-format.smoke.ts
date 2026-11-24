@@ -95,6 +95,18 @@ const dottedOperand = run(["version", "release.3"]);
 check("an unexpected positional keeps the full value in its refusal",
   usageShape(dottedOperand, /^✗ Unexpected argument 'release\.3'\n/m) && dottedOperand.stderr.includes("\ncotal version\n"), shown(dottedOperand));
 
+for (const verb of ["start", "stop", "restart", "status", "logs", "install", "uninstall"]) {
+  const extra = run(["manager", verb, "extra", "--json"]);
+  const error = parsed(extra)?.error;
+  check(`manager ${verb} names the extra operand and its own selectors`, extra.status === 1 && error?.code === "USAGE_INVALID" &&
+    error.message === `unexpected argument "extra" for \`cotal manager ${verb}\`` &&
+    error.remedy?.includes("remove the extra argument") === true && error.remedy.includes("--space <space> or --instance <full-id>"), shown(extra));
+}
+const managerExtra = run(["manager", "status", "extra", "--plain"]);
+check("a plain manager operand refusal keeps the manager status help", managerExtra.status === 1 &&
+  managerExtra.stderr.includes('unexpected argument "extra" for `cotal manager status`') &&
+  managerExtra.stderr.includes("Usage\n  cotal manager status") && !managerExtra.stderr.includes("use service"), shown(managerExtra));
+
 // The linear extension declares one usage form per line.
 const LINEAR = join(import.meta.dirname, "..", "..", "linear", "dist", "index.js");
 const linear = (args: string[]) => {
@@ -159,8 +171,30 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
+for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
+  const result = run(["watch", ...args, "--view", "--json"]);
+  const records = result.stdout.trim().split("\n").map((line) => JSON.parse(line));
+  check("a missing watch view emits a stream refusal and end record",
+    result.status === 1 && result.stderr === "" && records.map((record) => record.type).join() === "error,end"
+    && records.every((record) => record.stream === "watch" && record.target?.requestedSpace === space)
+    && records[0]?.data?.code === "USAGE_INVALID" && records[0]?.data?.message === "--view needs a value"
+    && records[0]?.data?.remedy === "write --view <view>" && records[1]?.data?.reason === "setup-failed", shown(result));
+}
 check("a global flag cannot hide a missing value at the end of a short option group",
   groupedSpace.status === 1 && groupedSpace.stderr === "" && JSON.parse(groupedSpace.stdout).error.message === "--space needs a value", shown(groupedSpace));
+for (const global of ["--no-input", "--no-color"]) {
+  const args = [global, "config", "get", "harness", "--space", global];
+  const text = run(args);
+  const json = run([...args, "--json"]);
+  const complete = run([global, "config", "get", "harness", "--space", "demo", global, "--json"]);
+  check(`a repeated ${global} in the value slot reports the missing value in text and JSON`,
+    usageShape(text, /--space needs a value/) && text.stderr.includes("write --space <name>")
+    && json.status === 1 && json.stderr === "" && JSON.parse(json.stdout).error.code === "USAGE_INVALID"
+    && JSON.parse(json.stdout).error.message === "--space needs a value" && JSON.parse(json.stdout).error.remedy === "write --space <name>",
+    { text: shown(text), json: shown(json) });
+  check(`a repeated ${global} with the value supplied still refuses the duplicate`, complete.status === 1 && complete.stderr === ""
+    && JSON.parse(complete.stdout).error.message === `Option '${global}' cannot be repeated`, shown(complete));
+}
 const completeValue = run(["docs", "--json", "--search", "usage", "--no-input"]);
 check("a global flag after a supplied value is accepted", completeValue.status === 0 && completeValue.stderr === ""
   && JSON.parse(completeValue.stdout).result.query === "usage", shown(completeValue));
@@ -196,6 +230,16 @@ check("a typo in --search names a replacement option that searches for the same 
   && !!searchRetry && searchRetry.status === 0 && searchRetry.stderr === ""
   && JSON.parse(searchRetry.stdout).result.kind === "docs-search" && JSON.parse(searchRetry.stdout).result.query === noHitQuery,
   { refused: shown(searchTypo), retry: searchRetry && shown(searchRetry) });
+for (const args of [["--search", noHitQuery], [`--search=${noHitQuery}`]]) {
+  const refused = run(["docs", "--json", ...args, "--serch", "other"]);
+  const error = JSON.parse(refused.stdout).error;
+  const retry = run(["docs", "--json", ...args]);
+  check(`a typo after ${args.join(" ")} asks to drop the extra option and its value`,
+    refused.status === 1 && refused.stderr === "" && error.code === "USAGE_INVALID"
+    && error.message === "Unknown option '--serch'" && error.remedy === "drop the unknown option and its value, if any; --search is already set"
+    && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result.query === noHitQuery,
+    { refused: shown(refused), retry: shown(retry) });
+}
 const shortEquals = run(["send", "-c=general", "hello"]);
 check("-c=value is refused naming the value it would give", usageShape(shortEquals, /-c=general gives -c the value "=general"/) && /write -c general or --channel=general/.test(shortEquals.stderr), shown(shortEquals));
 for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
@@ -228,6 +272,9 @@ for (const [args, flag] of [
   [["\u2013\u2013plain", "status"], "--plain"],
   [["\u2013no-input", "status"], "--no-input"],
   [["\u2014json", "status"], "--json"],
+  [["\u2013j", "version"], "-j"],
+  [["\u2013h"], "-h"],
+  [["\u2013V"], "-V"],
 ] as const) {
   const r = run([...args]);
   check(`${args.join(" ")} is refused as a typographic dash before the command word, naming ${flag}`, r.status === 1 && r.stdout === ""
@@ -254,10 +301,21 @@ if (process.platform !== "win32") {
     && directories.every((path) => (statSync(path).mode & 0o777) === 0o700)
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
-  const original = readFileSync(files[0]!, "utf8");
-  const conflict = run(["endpoint", "init", "different", "--dir", dir, "--json"], {}, cwd);
-  check("endpoint init does not replace scaffold files", conflict.status === 2 && JSON.parse(conflict.stdout).error?.code === "CONFLICT"
-    && readFileSync(files[0]!, "utf8") === original, shown(conflict));
+  const original = files.map((path) => readFileSync(path));
+  const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
+  const conflict = run([...conflictArgs, "--json"], {}, cwd);
+  const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
+  const rejected = JSON.parse(conflict.stdout);
+  const copyDir = `${parent}/reviews-copy`;
+  const copy = run(["endpoint", "init", "different", "--dir", copyDir, "--json"], {}, cwd);
+  const checked = run(["endpoint", "check", join(copyDir, "contract.json"), "--plain"], {}, cwd);
+  check("endpoint init preserves scaffold files and names the alternate destination remedy in JSON and plain output",
+    conflict.status === 2 && rejected.error?.code === "CONFLICT" && rejected.target?.path === files[0]
+    && rejected.error?.remedy?.includes("cotal endpoint init different --dir <new-directory>")
+    && plainConflict.status === 2 && plainConflict.stderr.includes(rejected.error.remedy)
+    && files.every((path, index) => readFileSync(path).equals(original[index]!))
+    && copy.status === 0 && JSON.parse(copy.stdout).result?.endpoint === "com.example.different" && checked.status === 0,
+    [conflict, plainConflict, copy, checked].map(shown));
 
   symlinkSync(directories[0]!, join(cwd, dir, "linked-parent"), "dir");
   for (const blocked of [`${dir}/linked-parent`, `${dir}/contract.json`]) {
@@ -687,7 +745,17 @@ for (const [args, usage, foreign] of [
   for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
-      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout), shown(help));
+      help.status === 0 && /unavailable in this CLI/.test(help.stdout) && /^Usage$/m.test(help.stdout) && !/^Examples$/m.test(help.stdout) &&
+      help.stdout.trimEnd().endsWith("Structured output: json, plain"), shown(help));
+  }
+
+  for (const operation of ["lease", "commit"]) {
+    const extra = operation === "commit" ? ["--lease", "missing.creds", "--result", "{}"] : [];
+    const refused = run(["endpoint", "work", operation, "ep:example", "review", ...extra, "--json"]);
+    const receipt = JSON.parse(refused.stdout);
+    check(`endpoint work ${operation} still returns the finite unsupported refusal`,
+      refused.status === 2 && receipt.schemaVersion === 1 && receipt.command === "endpoint" && receipt.outcome === "refused" &&
+      receipt.target?.capability === "work" && receipt.target.operation === operation && receipt.error?.code === "UNSUPPORTED", shown(refused));
   }
 
   // The persona create example, its placeholders filled in, run as written against a fresh Cotal home
@@ -721,6 +789,11 @@ for (const [args, usage, foreign] of [
 // No mark at all: the report names the outcome in words, and `!` stays the warning mark.
 const reportShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^Request refused$/m.test(r.stderr) && /Code: +USAGE_INVALID/.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/[✗↳]|^! /m.test(r.stderr);
+const describeLive = run(["endpoint", "describe", "manager", "--live", "--plain"]);
+check("endpoint describe explains the --live refusal and both available reads",
+  reportShape(describeLive, /endpoint describe already reads the contract live and does not take --live/) &&
+  describeLive.stderr.includes("remove --live") && describeLive.stderr.includes("cotal endpoint list --live") &&
+  !describeLive.stderr.includes("--file and --yes"), shown(describeLive));
 const ascii = { LANG: "C" };
 const plainOwn = run(["config", "get", "bogus", "--plain"]);
 check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
@@ -922,6 +995,27 @@ if (process.platform !== "win32") {
   check("telemetry runs from a removed folder", telemetry.status === 0 && telemetry.stdout.includes('"outcome":"ok"'), shown(telemetry));
 }
 
+{
+  const relativeHome = { COTAL_HOME: "relative" };
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+  ] as const) {
+    const r = run([...args, "--json"], relativeHome);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames a relative COTAL_HOME refusal without a snapshot`, r.status === 1 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
+      && records[0].data?.message?.startsWith('COTAL_HOME "relative" is a relative path')
+      && records[0].data?.remedy?.startsWith("set COTAL_HOME to an absolute path, or unset it to use ")
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed", shown(r));
+  }
+  const finite = run(["history", "review", "--json"], relativeHome);
+  check("finite history with a relative COTAL_HOME still emits one usage refusal", finite.status === 1 && finite.stderr === ""
+    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
+}
+
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.
 {
   const notes = mkdtempSync(join(home, "notes-"));
@@ -938,6 +1032,23 @@ if (process.platform !== "win32") {
   const json = at(["status", "--json"]);
   const envelope = json.stdout.startsWith("{") ? JSON.parse(json.stdout) : undefined;
   check("with --json it is one CONFLICT refusal", json.status === 2 && envelope?.outcome === "refused" && envelope.error?.code === "CONFLICT", shown(json));
+  for (const [stream, args, target] of [
+    ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
+    ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+    ["watch", ["watch"], { requestedSpace: null }],
+  ] as const) {
+    const r = at([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} reports the project conflict as a setup failure without a snapshot`, r.status === 2 && r.stderr === ""
+      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+      && records[0]?.type === "error" && records[0].data?.code === "CONFLICT" && records[0].data?.message?.includes(join(notes, ".cotal"))
+      && records[0].data?.remedy === "rename or move that file, then run the command again"
+      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  const history = at(["history", "review", "--json"]);
+  const receipt = JSON.parse(history.stdout || "{}");
+  check("finite history still reports one CONFLICT receipt", history.status === 2 && history.stderr === ""
+    && receipt.command === "history" && receipt.outcome === "refused" && receipt.error?.code === "CONFLICT", shown(history));
   const rooted = at(["space", "create", "notes", "--root", notes], neutral);
   check("--root naming that folder refuses the same way", named(rooted), shown(rooted));
   for (const args of [["--version"], ["version"]]) {
@@ -1032,6 +1143,14 @@ if (process.platform !== "win32") {
   const helpSvcStartMgr = run(["help", "service", "start", "manager"]);
   const svcStartMgrHelp = run(["service", "start", "manager", "--help"]);
   check("help service start manager prints the same preset-augmented help as service start manager --help", helpSvcStartMgr.status === 0 && helpSvcStartMgr.stdout === svcStartMgrHelp.stdout && /--runtime/.test(helpSvcStartMgr.stdout), shown(helpSvcStartMgr));
+  check("manager preset start help keeps --instance and omits --new-instance in Usage and Options",
+    svcStartMgrHelp.status === 0 && /\[--instance <id>\]/.test(svcStartMgrHelp.stdout) && !svcStartMgrHelp.stdout.includes("--new-instance"), shown(svcStartMgrHelp));
+  const genericStartHelp = run(["service", "start", "--help"]);
+  check("generic service start help still lists --new-instance in Usage and Options",
+    genericStartHelp.status === 0 && /\[--instance <id>\|--new-instance\]/.test(genericStartHelp.stdout) && /^  --new-instance\s/m.test(genericStartHelp.stdout), shown(genericStartHelp));
+  const multiManager = run(["service", "start", "manager", "--new-instance", "--dry-run", "--json", "--space", "presetspace"], {}, presetSpace);
+  const multiRefusal = parsed(multiManager) as { outcome?: string; error?: { code?: string } } | undefined;
+  check("manager preset still refuses --new-instance in a preview", multiManager.status === 2 && multiRefusal?.outcome === "refused" && multiRefusal.error?.code === "UNSUPPORTED", shown(multiManager));
   const serviceList = run(["service", "list", "--space", "presetspace", "--json"], {}, presetSpace);
   const helpService = run(["service", "--help"]);
   const helpServiceList = run(["help", "service", "list"]);

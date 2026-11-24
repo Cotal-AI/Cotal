@@ -69,7 +69,7 @@ function assertServiceRecordsWritable(root: string, space: string, values: Parse
   const dir = serviceRecordsWriteProblem(space, ["instances"]);
   if (dir) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each member's stop; no member was stopped`, {
     target: { root, space, path: dir },
-    remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+    remedy: `make it writable with chmod u+w ${shellWord(dir)}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
   });
 }
 

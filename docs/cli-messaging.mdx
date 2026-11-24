@@ -28,6 +28,7 @@ and `USAGE_INVALID` (exit 1, without the command's help) for a directory, invali
 that is empty or contains only whitespace.
 The refusal names the mesh the send was aimed at when this machine's records name one. The retry
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
+It also keeps `--json` or `--plain` when requested.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. An empty
 `--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
@@ -213,7 +214,8 @@ A named channel is the session's initial channel. On a static or user-auth mesh 
 session's whole read and post list, so a session opened without one can send and receive direct
 messages only. A send, join or channel mode outside that list refuses with `PERMISSION_DENIED`
 before anything reaches the broker. `/leave` does not change that list, so `/join` returns the
-session to a channel it left. `/join` takes one concrete channel name and refuses wildcards before
+session to a channel it left. If the session is already on the channel, `/join` says so.
+`/join` takes one concrete channel name and refuses wildcards before
 checking the grant. A grant refusal says to leave and run `cotal chat <channel>` with the
 flags this session was started with, such as `--stdio` and `--space`. For a channel name starting
 with `-`, the command quotes the name with its `#` prefix, as in `cotal chat '#-audit'`, so it is
@@ -258,11 +260,16 @@ that names no present peer and no sender the session heard from is refused there
 send to it would get, and the numbered list opens. A `#<channel>`
 holding `*` or `>` is refused with the sentence `cotal send -c` gives. In the list, an empty line
 keeps the current recipient, and `/quit` leaves. `:multi` starts a message of several lines, which a line
-holding only `.` ends. A line starting with `/` runs a slash command, and `//` sends a line that
+holding only `.` ends. A multiline draft holds up to 65,536 UTF-16 code units, including the line breaks
+between its lines. If a line would exceed that limit, chat says it was not added and keeps the rest of
+the draft. A line starting with `/` runs a slash command, and `//` sends a line that
 starts with `/`. `/help` lists the slash commands, in `--plain` and in the terminal view. A slash
 command that takes a channel reads it with or without its `#`.
-`/history` reads the current channel's retained messages. On an open mesh, which runs no delivery
-daemon, it reads them the way `cotal history` does.
+`/history` reads the current channel's retained messages. When the terminal transcript does not fit,
+the view counts the hidden rows and points to `cotal history` for the current channel, or to
+`cotal history --dms` for a direct recipient. The command names the chat session's space. Run it
+with a grant that can read the history. Use `--limit <n>` to read a larger retained window. On an
+open mesh, which runs no delivery daemon, `/history` reads messages the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
 `cotal send -c` does, so it wakes the agents it names. An `@` right after an ASCII letter or
@@ -301,9 +308,10 @@ nothing. `--kind agent` refuses with exit 1 because a chat session never present
 so does any other kind.
 
 `--role`, `--link`, `--token`, `--creds` and `--lifecycle-uid` are declared but no admission
-supports them yet, so each refuses with exit 2. A role would put the session on that role's work
-queue, and the view has no way yet to answer the sender of a task. The static and user-auth
-admissions take no role.
+supports them yet, so each refuses with exit 2. Remove only the named option and its value, then
+rerun the original command to keep the channel, space and session view. A role would put the session
+on that role's work queue, and the view has no way yet to answer the sender of a task. The static
+and user-auth admissions take no role.
 
 
 ### Session close
@@ -508,6 +516,9 @@ channel and `defaults` when the defaults key does not decode say the same. A `se
 that would write such a key refuses with `CONFLICT` and leaves the bytes as they are. `remove`
 of that key removes the entry.
 
+The inventory's `Next` commands name the space it read and keep any `--server` and `--creds`
+options you passed.
+
 The `channel show` text report, including `--plain`, shows the resolved replay, window and delivery settings.
 Each value with no per-channel override is marked `inherited`, whether it comes from space
 defaults or the built-in policy. The inventory uses the same mark for replay and delivery.
@@ -515,6 +526,8 @@ Explicit settings are unmarked even when they equal the defaults. In `channel de
 mark identifies values supplied by the built-in policy.
 The suggested membership and history commands name the space inspected and keep any explicit
 `--server` and `--creds` options. A membership report's suggested follow command does the same.
+Channel write receipts also keep the target space and those options in their suggested inventory
+and history commands. For a named channel the history command includes the quoted `#` channel name.
 
 `channel show <name> --json` returns the raw space defaults in `result.registry.defaults` when
 saved and decodable. `result.registry.channels` contains only the named channel's saved entry, or
@@ -544,8 +557,9 @@ This includes the name retained by a directly started local space after it stops
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
-case differs. A channel with a saved entry or retained messages and no member reads as empty. A
-follow shows the census again only when it changes: a poll that observes the same members writes no
+case differs. The spelling correction keeps `--json` or `--plain` if given. A channel with a saved
+entry or retained messages and no member reads as empty. A follow shows the census again only when
+it changes: a poll that observes the same members writes no
 record and prints nothing, and the `end` record's `lastAsOf` is the last poll the follow read. A follow's
 view offers no command to follow. A lost connection is
 one `TARGET_UNAVAILABLE` error record, or one line, while the follow re-establishes it, and a `gap`
@@ -562,7 +576,8 @@ Removal keeps retained history unless `--purge` is present. The confirmation nam
 space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
 is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
 naming the registered spelling when only the case differs. In that case the suggested command
-inspects the registered channel without removing it. Removing a channel that has retained
+inspects the registered channel without removing it. Otherwise the suggested list command names
+the resolved space and keeps any explicit `--server` and `--creds`. Removing a channel that has retained
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
 channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. When the chat stream is not on the broker, that
@@ -646,7 +661,7 @@ cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-
 | `--dm-max-age <age\|none>` | none | `limit`: delete a DM once it is older than this, from `2m` to `3650d`, or `none` |
 | `--dm-per-sender <n\|none>` | none | `limit`: keep this many of each sender's newest DMs to each recipient, at least 1, or `none` |
 
-`history limit` reads the broker address and signing authority from the selected space's records.
+`history limit` reads the broker address from the selected space's records.
 
 Reads the newest retained messages in the selected space, newest last. Name a channel to read
 only that channel. Without a channel, `history` reads every accessible channel, including names
@@ -739,9 +754,10 @@ writes nothing, and asks for no `--yes`. `result.kind` is `history-limits`, and 
 `--force` is refused. Omit it from history reads, including reads of the current limits. When
 setting limits, use `--yes` to confirm without prompting and keep the target and limit flags.
 
-Run it on the broker host from the space's root: it mints a one-shot provisioner credential from the
-root's trust, as `up` does, and a root without that trust is refused with `PERMISSION_DENIED`. A
-space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
+Run it on the broker host from the space's root. For an open space, the command connects without
+credentials. In other spaces, the command mints a one-shot provisioner credential from the root's
+signing trust and refuses with `PERMISSION_DENIED` if that trust is missing.
+A space missing one of the streams is refused with `TARGET_NOT_FOUND`; `cotal up` creates them. A
 stream whose other settings differ from the ones `cotal up` creates is refused with `CONFLICT`. Every
 requested stream is read and checked before the first one changes.
 
@@ -838,19 +854,23 @@ without `--creds`, on the operator credential this machine records.
 ## pending [#pending]
 
 ```bash
-cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]
+cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--server <url>] [--creds <private-file>] [--json|--plain]
 ```
 
 The finite read reports the selected DM durable's native pending count, ack
 floor, delivered sequence, frontier, retention limits and up to 20 candidate
 IDs by default. JSON and plain output use the common one-document result. A
-name must match one observed roster entry; an exact principal ID wins over a
-display-name match, and an ambiguous display name refuses. `--durable` reads a
-previous lifecycle by its complete durable name without substituting a
-same-named current agent. An absent or unreadable durable is not `pending 0`. A missing DM stream is
+name must match one observed roster entry. An exact principal ID wins over a
+display-name match, and an ambiguous display name refuses. If no recipient matches, the
+refusal names the recipient and space and gives the `cotal who --all` command for that space. It
+keeps an explicit `--server` override. `--durable` reads a previous lifecycle by its complete
+durable name without substituting a same-named current agent. An absent or unreadable durable is not
+`pending 0`. A missing DM stream is
 `TARGET_NOT_FOUND` as well: the durable was not read.
 The caller needs the native admin read authority; user-auth has no equivalent
-view here and refuses without a static or bare fallback. If the local stack is stopped, the
+view here and refuses without a static or bare fallback. To read from a broker not registered on
+this machine, pass its URL with `--server <url>` and a static admin credential with `--creds <private-file>`.
+If the local stack is stopped, the
 refusal names the stopped space and where to start it again. A failed read does not prune a locally
 saved mesh registration.
 

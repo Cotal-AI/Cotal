@@ -4,6 +4,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { onRerun } from "../lib/control.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { membershipSetupFailureRecords } from "../lib/follow-setup-failure.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -14,14 +15,6 @@ interface Members {
   channel: string;
   asOf: number | null;
   members: { id: string; name: string | null; live: boolean; durable: boolean; observedAt: number }[];
-}
-
-/** A JSON membership follow that refused before writing its snapshot. */
-export function membershipSetupFailureRecords(target: { space: string | null; channel: string | null }, failure: CommandFailure) {
-  return [
-    streamRecord("membership", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
-    streamRecord("membership", "end", target, { reason: "setup-failed", lastAsOf: null }),
-  ];
 }
 
 /** An invisible reader of the broker-derived feed, never an input to channel authorization. */

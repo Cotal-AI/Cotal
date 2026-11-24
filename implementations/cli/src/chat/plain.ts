@@ -215,8 +215,8 @@ export async function runPlain(opts: {
           if (text.trim()) stage(text);
           return;
         }
-        if (mode.lines.join("\n").length + line.length + 1 > MAX_DRAFT) {
-          state = addNotice(state, "waiting", `draft is at its ${MAX_DRAFT}-character limit; end with .`);
+        if (mode.lines.join("\n").length + line.length + (mode.lines.length ? 1 : 0) > MAX_DRAFT) {
+          state = addNotice(state, "waiting", `line not added: it would exceed the ${MAX_DRAFT} UTF-16 code unit draft limit. Shorten the line or end with .`);
           return;
         }
         mode = { kind: "multi", lines: [...mode.lines, line] };
@@ -259,7 +259,7 @@ export async function runPlain(opts: {
             state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now");
             return;
           }
-          const { state: next, ack } = await runSlash(session, () => state, parsed.command);
+          const { state: next, ack } = await runSlash(session, () => state, parsed.command, "plain");
           state = next;
           unacked.push(...ack);
           return;

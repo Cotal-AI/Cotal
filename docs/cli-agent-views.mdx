@@ -26,6 +26,8 @@ signs in to the broker, redeems enrollment, provisions or allocates an agent. A 
 launch arguments if the installed connector supports validation without creating launch files. Where the launch reads
 whether the recorded brokers answer to choose its space, as in a folder whose registered space may
 be stopped, the preview reads the same without signing in, so it names the space the launch uses.
+In the project of a stopped open stack, `spawn --detach --dry-run` can use the name saved by the
+last start without restarting the stack.
 A managed preview checks an explicit `--name` with the launch's local name rule, including the
 actor-token rule for a selected user-auth space. An invalid name is refused with `USAGE_INVALID`
 (exit 1). A successful managed preview reports `completeness` as `not-checked`. The manager
@@ -36,7 +38,11 @@ this machine only, through the lookup the launch uses: `result.requested.runtime
 `error` when it is not. A runtime this machine cannot run is a `RUNTIME_UNAVAILABLE` warning,
 because a manager on another host checks its own.
 `--runtime auto` is refused as the launch refuses it. A direct preview resolves the local persona,
-harness precedence and physical working directory. It checks the effective name from `--name` or
+harness precedence and physical working directory. If the directory is unavailable, the refusal
+names the path and suggests passing an existing directory to `--cwd` or omitting `--cwd` to use
+the current directory. The preview does not create a directory. Like the foreground launch, it refuses a
+symbolic-link loop in the persona path with `SCHEMA_INVALID` (exit 1), names the path, and explains
+how to correct or replace the link. It checks the effective name from `--name` or
 persona frontmatter with the launch's local name rule, including the actor-token rule for a selected
 user-auth space. An invalid effective name is refused with `USAGE_INVALID` (exit 1).
 On a resolved open or user-auth space, a direct preview refuses `--expires-in` and `--expires-at`
@@ -71,9 +77,9 @@ checked.
 readiness result, when that manager's runtime streams a terminal. The attachment is pinned to the attributed accepting manager and the allocated identity/incarnation,
 not a second display-name guess. `--detach/-d` returns a finite JSON/plain-capable receipt after
 the same readiness result. While it waits, it prints the launch it asked for, with the space as a
-field, and one line that says the manager answers when it refuses the launch, or when the agent
-joins or exits, within about 30 seconds. The receipt or refusal that follows names the mesh in its
-`Mesh:` heading. A launch the manager reports failed, such as an agent whose process exits at once,
+field, and says the manager answers when it refuses the launch or when the agent joins or exits.
+The receipt or refusal that follows names the mesh in its `Mesh:` heading. A launch the manager
+reports failed, such as an agent whose process exits at once,
 fails `OPERATION_FAILED`, exit 5, with the manager's reason. The terminal receipt shows the full lifecycle, original request, accepted goal where reported,
 role and model request separately from any provider acceptance claim. When the host granted the
 agent other read or post channels than it asked for, as a host that narrows a request to your grant
@@ -96,7 +102,8 @@ whose provider, registered or installed with this CLI, declares no terminal. Any
 attach is partial, exit 4, with the manager's reason as `Native detail` and a Next that gives
 `cotal ps` and `cotal attach` with the space and manager instance. Without usable input/output terminals, an attaching
 `--on` launch refuses before allocation and names `-d` or a spawn in this terminal. A shell tool's
-inherited parent PTY is not enough.
+inherited parent PTY is not enough. With `--json` or `--plain`, add `-d` to keep the manager pin
+and receive a receipt without attaching.
 
 A launch whose agent application waits for you before it joins is ready once its process runs.
 Claude with `--opt resume=` and no session id opens its session picker, so the CLI says the agent
@@ -122,15 +129,18 @@ An unpinned launch that no manager received has no such line, because no manager
 
 `--harness/-H`, `--model/-m`, `--name/-n`, `--prompt/-p` and `--cwd/-C` retain their declared
 meanings. The legacy `--agent` spelling remains accepted; using both harness spellings refuses.
-A `--file <persona-file>` launch uses this route too unless `--foreground` is given. A manifest is
-deployed with `cotal team deploy <file>`, not `spawn`.
+`--file <persona-file>` selects the persona, not the launch route. Without `--detach` or `--on`,
+the application runs in this terminal and relative file paths resolve from the invoking folder.
+With `--detach` or `--on`, the manager reads the file on its own host and resolves relative paths
+from its workspace. Use `cotal team deploy <file>` for a manifest, not `spawn`.
 
-`--foreground` runs the native application directly. It does not support a structured receipt,
-manager pin or manager control credential. Native exit or terminal loss may end that process;
-no detachable-view or reboot-survival claim applies. The command exits with the application's
-exit code. When a signal ends the application, it exits with 128 plus the signal number, as a
-shell does, so SIGTERM gives 143 and SIGKILL gives 137. Protected internal handoff/enrollment
-children keep their existing direct execution and native authorization checks.
+`--foreground` explicitly selects direct execution. It cannot be combined with `--detach` or
+`--on`. Direct execution does not support a structured receipt or manager control credential.
+Native exit or terminal loss may end the process. This route offers no detachable view or
+reboot-survival guarantee. The command exits with the application's exit code. When a signal ends
+the application, it exits with 128 plus the signal number, as a shell does, so SIGTERM gives 143
+and SIGKILL gives 137. Protected internal handoff/enrollment children keep their existing direct
+execution and native authorization checks.
 
 If the agent joins but attachment fails, the result is partial with its original identity and
 manager. No second launch occurs. A view exit sends no stop request. This route does not offer
@@ -149,6 +159,9 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
+If `cotal ps` refuses an invalid manager ID, its roster lookup keeps the space and broker you supplied.
+On a static or open space, if the manager registry shows that the pin is absent, the refusal
+names the registered managers without waiting for a reply from the missing instance.
 Its Next names the agent it read, with the `--space` and `--server` you gave and the manager's
 `--on`, so the `attach` and `stop` it suggests run as printed.
 It takes no `--all`, `--components`, `--wide` or `--verbose`.
@@ -209,7 +222,7 @@ summary and retains the complete list in JSON; none are claimed to have joined. 
 or refused summary after boot is not a reason to boot again. A summary records the absolute folder
 `up -f` ran in. After that folder is moved or copied, the summary still reads but names the old
 path. It settles nothing in the new folder and blocks no `up` or `down` there, and `team show <id>`
-refuses it with CONFLICT, naming the folder it was recorded at.
+refuses it with CONFLICT, naming the folder it was recorded at. To inspect the project that holds the copy, the refusal gives a status command that changes to its folder and names its space.
 The inventory's `completeness` stays `partial` because older fresh boots may have no summary.
 That historical caveat does not change the exit status. If a local deployment record cannot be
 read or validated, `team` keeps the readable records, warns, and exits 4. Its JSON reports
@@ -235,9 +248,10 @@ but the full run ID selects the ledger; an edited manifest is not new teardown a
 the native plan before a separate apply. Listing ownership does not confer permission to stop
 anything. One guarded `team deploy <file>` route accepts a
 channel-only manifest whose declared cards are all absent and explicitly set
-`deliveryClass: live`. It refuses agents, runtime requests, defaults,
+`deliveryClass: live`. It refuses agents, runtime requests, nonempty defaults,
 broker bind changes, access edges, existing cards,
 a changed re-apply, registered broker lists and unresolved prior attempts before an effect.
+An empty `defaults: {}` requests no changes to space defaults.
 A card that does not set `deliveryClass: live` is refused with `UNSUPPORTED`. The refusal names
 the cards and asks you to set `deliveryClass: live` on each card. On an open mesh, durable channels
 require a different authenticated mesh with a delivery service. On an authenticated mesh, the
@@ -333,7 +347,8 @@ relevant retained additive IDs and unreadable paths. The legacy bare `down`,
 intents and unremoved agent/channel receipts before effects. Bare `down` and a later
 `team deploy` name `cotal team remove <id> --dry-run`, then `--yes`, for each deployment that
 blocks them. A complete matched
-static agent-retirement receipt releases only its original deployment's blocker.
+removal receipt releases only its original deployment's blocker. The boot preview
+lists that deployment as history without warning that it blocks boot.
 A bare `up` of a stopped controller stack starts it again over a returned channel-only deployment
 made on that stack, and keeps the deployment's records and cards as they are. Any other retained
 deployment, such as an unsettled attempt or an agent deployment, still refuses the start with
@@ -363,6 +378,8 @@ starts its agents from a launch spec pinned by digest. One rich, JSON or plain r
 the controller members and requested topology. Agent joins are not checked, so the receipt is
 partial. A manifest that requests no agents leaves no join unchecked, so its receipt is `ok`. The fresh attempt and summary are launch records, not stop authority. No additive
 ownership ledger is created; `cotal down` uses the stack journal and each member's native lifecycle.
+The text receipt offers `cotal team show <id> --space <space>` to read the launch summary in the
+booted space without changing your saved selection.
 
 Before writes it checks the selected root, auth mode, broker address, runtime, connectors and
 retained ownership records. A journal, legacy PID record, possibly live component, service instance,
@@ -380,8 +397,9 @@ If they do not settle in time, the refusal reports that the stack is still runni
 Terminal loss
 or an external kill is not a confirmed stop. When a `cotal down` from another terminal completes,
 it prints `Foreground stack released` and exits 0, as a foreground `up` does, although its start
-receipt was partial. Foreground apply takes neither JSON nor plain output;
-a dry-run remains a finite preview. It does not establish native apply readiness or platform support.
+receipt was partial. Foreground apply takes neither `--json` nor `--plain`.
+`cotal team boot <file> --foreground --dry-run` is a finite preview and accepts either output flag.
+It does not establish native apply readiness or platform support.
 `up -f --foreground` still refuses on its retained launcher path.
 
 
@@ -389,12 +407,15 @@ a dry-run remains a finite preview. It does not establish native apply readiness
 
 A `team boot` in a root whose stack is up, with no `cotal down` since, refuses with
 `LIFECYCLE_BLOCKED`, says the space is already up and starts nothing. Its Next offers
-`cotal service --space <space>` to inspect the recorded stack, or `cotal down --dry-run` to preview
-a stop. After stopping it, run `cotal up` in its root to restart the recorded stack. To add new
+`cotal service --space <space>` to inspect the recorded stack, or `cotal down --space <space> --dry-run`
+from its recorded project root to preview a stop. The preview and restart commands both change to
+that root. The restart includes `--no-manager` when the stack started without a manager. To add new
 channels or agents, use `cotal team deploy <file>` with a separate manifest that declares only new
 resources.
 A recorded stack resumes only after its last whole-stack stop completed and its manager was never
 attempted. The manifest's `broker.servers`, `broker.host` and `broker.auth` must match that stack.
+For a single broker URL, the scheme's letter case and an optional trailing slash do not affect
+the match. The stack resumes at its recorded address.
 A manifest that differs refuses `CONFLICT` (exit 2) and names each setting that differs with its
 recorded and declared values. Its Next names the manifest change that matches the stack, or a new
 space in another folder prepared with `cotal space create <space>`.
@@ -437,11 +458,19 @@ extensions may produce their own output outside the finite result.
 ### Additive deployment verification
 
 `team deploy <file> --dry-run` resolves the manifest and personas and requires a
-registration for the declared space in this root. It shows the declared
+local registration for the declared space. From another checkout, the text preview names
+the registered project root required for apply. A channel-only apply from another checkout
+refuses and gives the command to retry from that root. The preview shows the declared
 channel delivery/replay/window values separately from its non-atomic live
 registry classification. If the selected running mesh is open, an explicit
 durable channel declaration is warned as unsupported by its missing delivery
-daemon; the read-only preview remains available. Additive deploy does not
+daemon; the read-only preview remains available. The preview warns about invalid
+channel card fields, such as an invalid replay window, and does not list those cards
+as creation candidates. Apply reports the invalid field before writing any cards.
+If the manifest's explicit `broker.auth` differs from the registered mode, the preview
+warns that apply would refuse and lists no channel creation candidates. Omit `broker.auth`
+or set it to match the registered mode.
+Additive deploy does not
 seed manifest-wide defaults. For an existing
 unmanaged card, it names only explicitly declared fields that differ from the live value, never the live
 instructions or description body. No declaration authorizes overwriting a
@@ -449,8 +478,11 @@ saved card.
 It makes scoped, TLS-bound
 native reads of the presence and channel-registry buckets. A complete presence
 scan can prove an empty roster; a failed or malformed scan refuses rather than
-classifying absence. It classifies channel cards against the registry and agents
-against a unique prior ledger for the same manifest content. The derived membership
+classifying absence. The preview uses the registry and a unique prior ledger for
+the same manifest content. It also checks an identical retained deployment's card
+receipt against the live create revisions and card content. If it cannot verify a
+card claimed by a retained attempt, it does not classify that card as owned or unmanaged.
+The derived membership
 feed, when readable, shows a lower bound of other readers, not authorization.
 These observations are non-atomic and do not reserve names or prove that a manager,
 runtime, connector, channel writer or launch grant will be ready. An unregistered or
@@ -610,7 +642,9 @@ retirement and before any card-removal intent exists. Open and user-auth mixed r
 
 ### Manifest file checks
 
-`team check <file>` resolves the native manifest and referenced personas without a broker.
+`team check <file> [--space <name>]` resolves the native manifest and referenced personas without
+contacting a broker. `--space` asserts that the name matches the manifest's `space:` field. It does
+not select a registered target. A mismatch is refused with `CONFLICT` (exit 2).
 It lists the manifest's `defaults:` and each channel's delivery class, replay and replay window.
 A field the channel leaves out shows the manifest default it inherits at boot, marked `(default)`.
 A field neither declares does not claim a live registry value; the native seed may merge over

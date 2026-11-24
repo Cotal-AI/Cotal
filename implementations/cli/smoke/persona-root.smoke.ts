@@ -511,6 +511,15 @@ try {
   const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
+  const offlineRoot = join(scratch, "offline-project");
+  const prepared = native(["space", "create", "offline-audit", "--root", offlineRoot, "--plain"], CWD);
+  check("a separate project is prepared without starting a broker", prepared.status === 0, prepared.stdout + prepared.stderr);
+  const args = ["persona", "--space", "offline-audit", "--plain"];
+  const offline = native(args, CWD);
+  const plannedServer = native([...args, "--server", "nats://127.0.0.1:1"], CWD);
+  check("a planned server still lists the named prepared project's local catalog",
+    offline.status === 0 && plannedServer.status === 0 && plannedServer.stdout === offline.stdout &&
+    /offline-audit .* local persona files/.test(plannedServer.stdout) && /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
   checkCreateInputGuidance((args, input) => native(args, MESH, childEnv, input), MESH);
   if (process.platform !== "win32") {
     const server = "nats://[::1]:43002";
@@ -896,11 +905,12 @@ try {
     check("the printed JSON command returns the correct persona", json.status === 0 &&
       JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
     const refused = native(["persona", "remove", "--json", "--", "-reviewer"]);
-    const remove = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
-    check("persona remove prints copyable confirmation for a hyphen-leading catalog name",
-      refused.status !== 0 && remove === "cotal persona remove --yes -- -reviewer" && existsSync(path), refused.stdout);
-    const removed = native(remove.split(" ").slice(1));
-    check("the printed remove command removes the existing definition", removed.status === 0 && !existsSync(path), removed.stdout + removed.stderr);
+    const remove: string | undefined = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
+    check("persona remove prints a JSON confirmation for a hyphen-leading catalog name",
+      refused.status === 1 && remove === "cotal persona remove --yes --json -- -reviewer" && existsSync(path), refused.stdout);
+    const removed = remove ? native(remove.split(" ").slice(1)) : undefined;
+    check("the printed remove command removes the existing definition with a JSON receipt",
+      removed?.status === 0 && !existsSync(path) && JSON.parse(removed.stdout).result?.action === "removed", removed && removed.stdout + removed.stderr);
   }
   {
     const path = agentFilePath(MESH, "nul-endpoints");

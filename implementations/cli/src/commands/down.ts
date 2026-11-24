@@ -163,6 +163,24 @@ export function validateDownArguments(args: ParsedArgs): void {
         remedy: `run ${codeSpan(retry)} from this root`,
       });
     }
+    const { space, ...flags } = args.values;
+    if (typeof space === "string" && bareStop(flags) && flags["with-agents"] === undefined) {
+      let prepared: string | undefined, project: string | undefined;
+      try {
+        prepared = preparedSpaceAt(canonicalRoot(cotalRoot()))?.space;
+        if (prepared !== undefined && prepared !== space) project = findPreparedSpace(space)?.root;
+      } catch { /* A project lookup is only for the diagnostic. */ }
+      if (prepared !== undefined && prepared !== space) {
+        throw new CommandFailure("refused", "UNSUPPORTED", `--space ${JSON.stringify(space)} does not match the space ${JSON.stringify(prepared)} prepared in this folder; nothing was stopped`, {
+          remedy: project === undefined ? `locate the project root for space ${JSON.stringify(space)} before retrying` : `retry from the project root for space ${JSON.stringify(space)} at ${oneLine(project)}`,
+        });
+      }
+    }
+    if (args.values["dry-run"] === true && (args.values.file !== undefined || args.values.run !== undefined)) {
+      throw new CommandFailure("refused", "UNSUPPORTED", "a legacy deployment preview does not support --json or --plain", {
+        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep --dry-run and the same deployment selection`, selfContained: true,
+      });
+    }
     const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
     throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: `run ${codeSpan(retry)} from this root without --json or --plain; \`${displayCmd()} down --dry-run --json\` reads this root's stack` });
   }
@@ -464,7 +482,10 @@ function guardLegacyBareDown(): { space: string; server: string; mode?: string }
   // is named with its own `space forget`, which `cotal space show` reads first and which refuses
   // while that space runs, and the stop to run again once the address is this stack's alone.
   if (other.length) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another registered space names this exact broker address; bare down did not stop its shared listener", { target: { ...scoped, otherSpaces: other.map((row) => row.space) }, remedy: [
-    ...other.map((row) => `read "${row.space}" with \`cotal space show ${row.space}\`, stop it in its own folder, then take it off this address with \`cotal space forget ${row.space}\``),
+    ...other.map(({ space }) => {
+      const name = `${space.startsWith("-") ? "-- " : ""}${shellWord(space)}`;
+      return `read ${JSON.stringify(space)} with ${codeSpan(`cotal space show ${name}`)}, stop it in its own folder, then take it off this address with ${codeSpan(`cotal space forget ${name}`)}`;
+    }),
     "then run `cotal down` again",
   ].join("; ") });
   assertNoLiveServices(mesh.space, "down");

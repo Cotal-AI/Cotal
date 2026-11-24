@@ -253,10 +253,13 @@ previous installation is a warning that names the copy, not a failed add.
 
 ## Structured output [#structured-output]
 
-A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
-one JSON document on stdout. Most commands have one, among them `cotal status`, `cotal space`,
-`cotal service`, `cotal up`, `cotal down`, `cotal ps`, `cotal history` and `cotal config`.
-`cotal help <command>` shows whether a command and each of its subcommands has one.
+A command or subcommand whose help lists `json` under Structured output takes `--json` (`-j`).
+Finite JSON output is one document on stdout. Streaming commands and modes can use the same flag
+for newline-delimited JSON (NDJSON), with one record per line. See the stream formats for
+[`history --follow`](cli-messaging.mdx#history),
+[`channel members --follow`](cli-messaging.mdx#channel) and [`watch`](cli-observation.mdx#observer-stream).
+The envelope below applies to finite JSON output.
+
 `cotal version --json` writes:
 
 ```json
@@ -287,11 +290,11 @@ The version command does not repair the manifest itself.
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
 
-Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
+Diagnostics stay on stderr. A command with finite JSON output reports a refusal or failure with the
 envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
 keeps its exit code without printing a text report. Other failures to write the envelope send the
 text report to stderr and keep the same exit code. A usage error under
-`--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
+finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies when `-j` comes before a short option that is unknown or needs a value, as in
 `cotal config get harness -jZ` or `cotal config get harness -js`.
 A word that names none of a command's subcommands and is near none of them is a usage error that
@@ -301,8 +304,7 @@ A command without a JSON output refuses `--json` as an unknown option.
 An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
 on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
 
-A subcommand's help has its own `structured output` line, and only the forms that show one write a
-document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
+Bare `cotal ext` and `cotal ext list` write a JSON document with `--json`. `ext add`, `ext remove`, `ext root` and
 `ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
 failure.
 
@@ -370,7 +372,7 @@ answer at once, and Enter takes the selection.
 Without a terminal, or with `--no-input` or `--json`, `history clear`, `channel remove`,
 `persona remove` and `endpoint remove` refuse and print the command that confirms them with
 `--yes`. That command keeps the `--space`, `--server` and `--creds` you gave, so it acts on the
-same space.
+same space. For `channel remove` and `persona remove`, it also keeps `--json` when requested.
 
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in
@@ -446,7 +448,9 @@ failure. A command run from a folder that no longer exists refuses with `USAGE_I
 before it does anything, and says to `cd` to an existing folder. It prints that line and the `cd`
 remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
-2, before it does anything, names that file and says to rename or move it. `help`, `version` and
+2, before it does anything, names that file and says to rename or move it. With `--json`,
+`watch`, `history --follow` and `channel members --follow` write an `error` record and then an
+`end` record with reason `setup-failed`, without a snapshot. `help`, `version` and
 `completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
 exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
 contains relative entries.

@@ -404,8 +404,10 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const registered = resolveSpaceDeletionEntry(name);
   const blocked = liveStackRefusal(registered, name);
   if (blocked) throw blocked;
-  if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} first, then run ${codeSpan(spaceDeleteCommand(name, " --yes"))}` });
+  if (!yes && (!canPrompt() || presentation === "json")) {
+    const output = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect ${codeSpan(spaceDeleteCommand(name, ` --dry-run${output}`))} first, then run ${codeSpan(spaceDeleteCommand(name, ` --yes${output}`))}` });
+  }
   // From here an interrupt says what the deletion left, as `progress` records it.
   const progress: DeletionProgress = { acknowledged: [], alreadyAbsent: [], submitted: null, postReadStarted: false };
   const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));

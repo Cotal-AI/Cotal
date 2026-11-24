@@ -34,6 +34,7 @@ import {
   resolveEventsStateRoot,
   CommandRefused,
   type CommandDispatcher,
+  type InboxItem,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
@@ -41,6 +42,7 @@ import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record } from "./agui-source2.js";
 import { createOpenCode2Mapper } from "./agui-map2.js";
 import { buildCotalTools2 } from "./tools.js";
+import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
 
@@ -356,6 +358,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   let pendingMention = false;
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
   let lastTurnWasCommand = false;
+  const replyCheck = new ReplyCheck();
 
   async function ensureSession(): Promise<string | undefined> {
     return sessionID ?? (await sessionReady);
@@ -403,6 +406,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
+    let carried: InboxItem[] = [];
     const turnPeek = agent.peekPendingTurns();
     if (boot !== undefined) {
       parts.push(boot);
@@ -417,8 +421,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       const openBefore = batch.open;
       const items = await agent.takeChosen("automatic", (preview) => preview);
       if (execution || submitting || (!openBefore && batch.open) || controller.signal.aborted) return;
-      if (items.length === 0 && !turnPeek) return nothingToSend();
+      if (items.length === 0 && !turnPeek && !replyCheck.pending) return nothingToSend();
       if (items.length > 0) {
+        carried = items;
         ids = items.map((i) => i.recvKey);
         const inj = formatInjection(items);
         if (inj) parts.push(inj);
@@ -426,7 +431,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     }
     const brief = briefed ? undefined : agent.channelBriefing();
     if (brief) parts.unshift(brief);
-    if (parts.length === 0 && !turnPeek) return nothingToSend();
+    if (parts.length === 0 && !turnPeek && !replyCheck.pending) return nothingToSend();
     const system = firstTurnSystem();
     if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     // The turns' permit, after the last gate and right before the send with no await between: a
@@ -436,8 +441,11 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return nothingToSend(); }
+    const check = boot === undefined ? replyCheck.take() : undefined;
+    if (check) parts.unshift(check.text);
+    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0 && !check) { batch.abandon(); return nothingToSend(); }
     const text = parts.join("\n\n");
+    replyCheck.submitted(carried);
     execution = "submitted";
     submission++;
     lastTurnWasCommand = false;
@@ -470,6 +478,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // An execution that started meanwhile still holds the session: only our submission is released.
         if (execution === "submitted") execution = undefined;
         batch.abandon();
+        check?.restore();
         log(`drive failed: ${(e as Error).message}`);
       } finally {
         submitting = undefined;
@@ -485,6 +494,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   async function driveCommand(): Promise<void> {
     if (!batch.surface([])) return;
     execution = "submitted";
+    replyCheck.submitted([]);
     const mine = ++submission;
     submitting = (async () => {
       try {
@@ -537,7 +547,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
    *  batch driven below before its turn ran. The latter's position is still recorded, so a replay of
    *  it closes nothing either once an execution is running. An end at or before the running
    *  execution's start belongs to an earlier one, so it is not recorded and closes nothing. */
-  async function completeTurn(ev: OpenCode2Event, settle: () => void, failure?: PresenceCondition): Promise<void> {
+  async function completeTurn(ev: OpenCode2Event, settle: () => void, succeeded: boolean, failure?: PresenceCondition): Promise<void> {
     // An end with no log position closes nothing, but a submission in flight cannot order itself
     // against it, so it counts as a turn end for that submission's once task.
     if (!positioned(ev)) unorderedEnds += 1;
@@ -547,6 +557,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     execution = undefined;
     const carried = new Set(batch.keys);
     settle();
+    replyCheck.ended(succeeded);
     // A failed turn says why before it reads idle, so no observer sees a bare idle for it. The
     // next turn's `working` clears it (connector-core).
     if (failure) await safeCondition(failure);
@@ -556,7 +567,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     void (async () => {
       await submitting;
       if (ended !== ev.durable) return; // a later turn ended during the wait: only its task leaves out the batch that turn failed
-      if (bootPending() || pendingMention || agent.queuedCommands > 0 || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+      if (bootPending() || pendingMention || replyCheck.pending || agent.queuedCommands > 0 || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
     })();
   }
 
@@ -609,7 +620,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // Register the shared cotal_* tools, rendered by `buildCotalTools2` from the SAME specs
   // `buildCotalTools` renders for 1.x (`./tools.ts`).
   await ctx.tool.transform((ed) => {
-    for (const t of buildCotalTools2(agent, config)) ed.add(t);
+    for (const t of buildCotalTools2(agent, config, (tool) => replyCheck.toolSucceeded(tool))) ed.add(t);
   });
 
   // Queued only now, after the last step that can throw: a setup the host refuses returns no
@@ -706,17 +717,17 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
           }
           case "session.execution.succeeded": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.ack()); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
+            await completeTurn(ev, () => batch.ack(), true); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.abandon(), opencode2FailureCondition(data)); // leave the inbox unacked so the batch can retry on a later safe turn
+            await completeTurn(ev, () => batch.abandon(), false, opencode2FailureCondition(data)); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.ack()); // explicit user Stop: treat the surfaced batch as dismissed, not failed
+            await completeTurn(ev, () => batch.ack(), false); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
           case "permission.asked": {

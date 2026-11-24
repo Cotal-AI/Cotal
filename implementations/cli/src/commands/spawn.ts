@@ -81,8 +81,8 @@ import { onInstance } from "../lib/control.js";
 import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
-import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, missingPersonaFailure, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -226,14 +226,19 @@ export function validateSpawnArguments(args: ParsedArgs) {
   }
   if ((values.restarts === undefined) !== (values["restart-window"] === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--restarts and --restart-window must be supplied together");
   if (values.restarts !== undefined) {
-    if (direct) throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: "add -d, or --on <instance>, to launch it through a manager" });
+    if (direct) {
+      const foreground = "omit --restarts and --restart-window to launch in this terminal";
+      const managed = values.foreground ? "replace --foreground with -d" : "add -d";
+      const directOnly = internal || values["enrollment-file"] !== undefined || values["live-only"] || values["expires-in"] !== undefined || values["expires-at"] !== undefined;
+      throw new CommandFailure("refused", "USAGE_INVALID", "restart supervision belongs to a managed launch, not a spawn in this terminal", { remedy: directOnly ? foreground : `${managed} to keep restart supervision, or ${foreground}` });
+    }
     for (const field of ["restarts", "restart-window"] as const) if (!/^[1-9][0-9]*$/.test(values[field]!) || !Number.isSafeInteger(Number(values[field])))
       throw new CommandFailure("refused", "USAGE_INVALID", `--${field} must be a positive safe integer`);
   }
   if (values["live-only"] && !direct) throw new CommandFailure("refused", "USAGE_INVALID", "--live-only belongs to direct foreground execution");
   seatExpiry(values, direct);
   if (!values["dry-run"] && !direct && !values.detach && (values.json || values.plain || inputDisabledByFlag() || !process.stdin.isTTY || !process.stdout.isTTY))
-    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", "attaching to a manager's launch needs usable input and output terminals before an identity is allocated", { remedy: values.json || values.plain ? "add -d to wait for readiness without attaching" : "add -d to wait for readiness without attaching, or drop --on to run it in this terminal", selfContained: true });
   for (const field of ["harness", "agent", "model", "variant", "name", "cwd"] as const) if (values[field] !== undefined && !values[field]!.trim())
     throw new CommandFailure("refused", "USAGE_INVALID", `--${field} cannot be empty`);
   if (values.events && values["no-events"]) throw new CommandFailure("refused", "USAGE_INVALID", "choose --events or --no-events, not both");
@@ -548,13 +553,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       if (handoffText !== undefined) {
         stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       } else if (code === "ENOENT") {
-        const missing = missingPersona(target, ref, personaFrom, path);
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
+        throw missingPersonaFailure(target, ref, personaFrom, path);
       } else if (code === "ELOOP") {
         throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
           target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
         });
       } else {
+        const unreadable = unreadablePersona(path, code, { space, path });
+        if (unreadable) throw unreadable;
         stderrLine("✗ ", `${(e as Error).message}`, c.red);
       }
       process.exit(1);
@@ -567,7 +573,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
     }
     if (written !== undefined) provenance.wrote("default persona", written);
-    def = loadLaunchPersonaFile(path);
+    try { def = loadLaunchPersonaFile(path); }
+    catch (retryError) {
+      if (written !== undefined || (retryError as NodeJS.ErrnoException).code !== "ENOENT") throw retryError;
+      throw brokenPersonaLink(path, { space, path }, true) ?? retryError;
+    }
   }
 
   // Provenance: say which persona file WON resolution (--config > positional > preference > default)

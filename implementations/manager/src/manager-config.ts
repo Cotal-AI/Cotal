@@ -36,6 +36,8 @@ export interface ManagerConfig {
    *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
    *  coordinate every static activation records. */
   readonly managerLifecycleUid: string;
+  /** The hosting authority this manager was built with; absent for a self-hosted manager. */
+  readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
   readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
   /** Process start, for the served `status` uptime. */
   readonly startedAtMs: number;
