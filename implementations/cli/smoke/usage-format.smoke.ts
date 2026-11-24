@@ -129,6 +129,16 @@ check("an unknown option names -- for a word that starts with -", usageShape(das
 const spaceTypo = run(["space", "--json", "--unlisted-option"]);
 check("an unknown option cannot become the space subcommand", spaceTypo.status === 1 && spaceTypo.stderr === ""
   && JSON.parse(spaceTypo.stdout).error.remedy === "run `cotal help space`", shown(spaceTypo));
+for (const args of [
+  ["example", "--server", "nats://127.0.0.1:4222", "--mode", "open", "--root", ".", "--force"],
+  ["--file", "bundle.json", "example"],
+]) {
+  const refusal = run(["space", "add", ...args, "--json", "--no-such-option"]);
+  const error = parsed(refusal)?.error;
+  check(`space add with a name and ${args.includes("--file") ? "--file" : "--server"} tells the caller to drop an unknown option`,
+    refusal.status === 1 && refusal.stderr === "" && error?.code === "USAGE_INVALID"
+    && error.message === "Unknown option '--no-such-option'" && error.remedy === "drop the unknown option", shown(refusal));
+}
 const dashValue = run(["history", "--from", "-bob"]);
 check("an option value that starts with - is given its --name=value form", usageShape(dashValue, /the value of --from starts with "-"/) && /write it as --from=-bob/.test(dashValue.stderr), shown(dashValue));
 if (process.platform !== "win32") {
