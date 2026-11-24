@@ -612,6 +612,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
       const operandsFull = (cmd.name === "config" && selected.name === "get" && positionals.length >= 2)
+        || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
           || (first === "work" && selected.name === "lease" && positionals.length >= 4)));
       const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands, operandsFull);
