@@ -180,6 +180,25 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
+for (const [args, stream] of [[["history", "general"], "history"], [["channel", "members", "general"], "membership"]] as const) {
+  for (const [fixed, valid, malformed] of [["--follow", "--json", "--json=false"], ["--json", "--follow", "--follow=false"]]) {
+    for (const pair of [[valid, malformed], [malformed, valid]]) {
+      const result = run([...args, fixed, ...pair]);
+      const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      check(`${args.join(" ")} ${fixed} ${pair.join(" ")} emits a stream usage refusal`,
+        result.status === 1 && result.stderr === "" && result.stdout.endsWith("\n")
+        && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream && record.target?.channel === "general")
+        && records[0]?.data?.code === "USAGE_INVALID" && records[1]?.data?.reason === "setup-failed", shown(result));
+    }
+  }
+  for (const suffix of [[], ["--", "--follow"]]) {
+    const result = run([...args, "--json", "--follow=false", ...suffix]);
+    check(`${args.join(" ")} without a bare follow option emits a finite usage refusal`,
+      result.status === 1 && result.stderr === "" && parsed(result)?.outcome === "refused"
+      && parsed(result)?.error?.code === "USAGE_INVALID", shown(result));
+  }
+}
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
 for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
   const result = run(["watch", ...args, "--view", "--json"]);
