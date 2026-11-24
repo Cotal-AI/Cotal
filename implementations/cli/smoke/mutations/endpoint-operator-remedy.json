@@ -55,16 +55,16 @@
     {
       "name": "endpoint init prints the directory placeholder",
       "file": "implementations/cli/src/commands/endpoint-authoring.ts",
-      "find": "{ command: scaffoldCheckCommand(data.directory), description",
-      "replace": "{ command: scaffoldCheckCommand(\"<directory>\"), description",
+      "find": "  const next = scaffoldCheckCommand(destination);",
+      "replace": "  const next = scaffoldCheckCommand(\"<directory>\");",
       "expectRed": "endpoint init's Next is the check command for the contract it created",
       "cell": "endpoint init's Next is the check command for the contract it created"
     },
     {
       "name": "the scaffold path is not quoted",
       "file": "implementations/cli/src/commands/endpoint-authoring.ts",
-      "find": "  return `cotal ep check ${/^[A-Za-z0-9_./+-]+$/.test(file) ? file : `'${file.replace(/'/g, `'\\\\''`)}'`}`;",
-      "replace": "  return `cotal ep check ${file}`;",
+      "find": "  return `cotal endpoint check ${shellWord(file)}`;",
+      "replace": "  return `cotal endpoint check ${file}`;",
       "expectRed": "a scaffold path a shell would split is quoted",
       "cell": "a scaffold path a shell would split is quoted"
     }

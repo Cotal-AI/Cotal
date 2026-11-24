@@ -684,6 +684,7 @@ runs its Manager. For these local spaces, `daemon setup` and `daemon connect-che
 Daemon setup reports this before it checks for an installed daemon service, including when a
 foreground daemon is running. It does not turn the space on or record a hosted Manager refusal.
 `--no-manager` and `--wait` require `--space`; `--wait` also requires `--no-manager`.
+Pass a whole number of seconds from 0 to 86400. Use `--wait 0` to skip the wait. A blank value is invalid.
 Space-specific daemon commands require an explicit `--space <s>` even when `cotal use`
 has selected a space. `daemon status` can omit it to read the daemon and all hosted Managers.
 If supplied, the name must be 1 to 64 characters using ASCII letters, digits, underscores or
@@ -1214,8 +1215,9 @@ local control listener is bound and verified, not that a mesh or Cloud connectio
 
 On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. The configured directory must already
 exist. If `XDG_RUNTIME_DIR` is unset, the daemon and its clients use `/run/user/<effective uid>` if it
-is a private directory owned by that user with mode `0700`. If the selected directory is missing,
-`serve` and `status` refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`) without creating it. Set
+is a private directory owned by that user with mode `0700`. If the selected path is missing or
+`XDG_RUNTIME_DIR` points to a file, `serve` and `status` refuse `TARGET_UNAVAILABLE`
+(`NO_RUNTIME_DIR`) before creating the socket or its lifetime lock. Set
 `XDG_RUNTIME_DIR` to an existing private directory you own with mode `0700` before retrying.
 On macOS the endpoint is `cotal/daemon.sock` in your cache
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment
@@ -1297,8 +1299,9 @@ If the daemon is running but its socket is in a different runtime directory, `st
 
 `serve` holds the lifetime lock `<dir>/daemon.lock` while it runs. The default daemon holds the
 same lock at `<COTAL_HOME>/daemon/daemon.lock`. A second `serve` for the same daemon refuses
-`CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. A start that fails for any
-other reason releases the lock again. Every client command sends nothing unless the process at its
+`CONFLICT` (`LOCK_HELD`), naming the live holder and when it started. When a lock or socket conflict
+suggests checking status, the command includes the `--daemon-home` you supplied. A start that fails
+for any other reason releases the lock again. Every client command sends nothing unless the process at its
 socket is the live owner (same pid and process start) of its daemon's lock: `<dir>/daemon.lock`
 with `--daemon-home`, and `<COTAL_HOME>/daemon/daemon.lock` in the client's own Cotal home without
 it. Otherwise it refuses `PERMISSION_DENIED` (`PEER_NOT_LOCK_OWNER`). So a client whose

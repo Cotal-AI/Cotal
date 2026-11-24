@@ -35,7 +35,7 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
@@ -48,7 +48,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-869-home-"));
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = join(home, "xdg");
 
-const { parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
+const { CotalEndpoint, parseCommandArgs, probeConnect, registry } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { spawnRequiredExtensions, runCli } = await import("@cotal-ai/cli");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps) into the registry
@@ -164,6 +164,26 @@ try {
     await sleep(100);
   }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
+
+  // The filename selects the catalog entry, while presence reports the display name.
+  const mismatch = join(workspaceRoot, ".cotal", "agents", "mismatch.md");
+  const filenameOnly = join(workspaceRoot, ".cotal", "agents", "displayed.md");
+  writeFileSync(mismatch, "---\nname: displayed\n---\n");
+  writeFileSync(filenameOnly, "---\nname: absent\n---\n");
+  const displayed = new CotalEndpoint({
+    space: SPACE, servers: SERVER, channels: [], consume: false, registerPresence: true, watchPresence: false,
+    card: { name: "displayed", kind: "agent" },
+  });
+  try {
+    await displayed.start();
+    const out = unstyled(await capture(() => run("personas", ["list", "--running", "--space", SPACE])));
+    ok("personas list marks a catalog entry running by its live display name", /^mismatch\s+● running$/m.test(out), out);
+    ok("personas list does not match a live display name to a filename alone", /^displayed\s+○ not running$/m.test(out), out);
+  } finally {
+    await displayed.stop();
+    rmSync(mismatch);
+    rmSync(filenameOnly);
+  }
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
@@ -317,6 +337,32 @@ try {
       ok(`an open-space preview refuses ${flag} with the launch's diagnostic`,
         expiry.code === 1 && expiry.out.includes('"code":"USAGE_INVALID"') && expiry.out.includes("is open and mints no credential") &&
         expiry.out.includes('"remedy":"drop the flag"') && !existsSync(defaultPath), expiry);
+    }
+    if (process.platform !== "win32") {
+      const link = "../shared-default.md";
+      symlinkSync(link, defaultPath);
+      const broken = await childSpawnCli(["--dry-run", "--plain"]);
+      const remedy = "restore the link's target or move the broken link aside";
+      ok("a bare preview warns that a broken default link blocks the write, but still exits 0",
+        broken.code === 0 && broken.out.includes(defaultPath) && broken.out.includes(link) &&
+        broken.out.replace(/\s+/g, " ").includes(remedy) && !broken.out.includes("the launch writes the shipped default"), broken);
+      const explicitBroken = await preview("default");
+      const report = explicitBroken.code === 0 ? JSON.parse(explicitBroken.out) : undefined;
+      ok("an explicit default preview keeps its JSON shape but reports no write and warns about the link",
+        report?.result?.persona?.write === "none" && report.warnings.some((w: { code: string; message: string }) =>
+          w.code === "TARGET_NOT_FOUND" && w.message.includes(remedy)), explicitBroken);
+      const launch = await childSpawnCli(["--harness", "uninstalled-example"]);
+      ok("the launch refuses before the connector check and keeps the broken link",
+        launch.code === 2 && /Code:\s+TARGET_NOT_FOUND/.test(launch.out) && launch.out.includes(defaultPath) && launch.out.includes(link) &&
+        launch.out.replace(/\s+/g, " ").includes(remedy) && !launch.out.includes("DEPENDENCY_UNAVAILABLE") && !launch.out.includes("wrote default persona") &&
+        readlinkSync(defaultPath) === link, launch);
+      writeFileSync(join(workspaceRoot, ".cotal", "shared-default.md"), "---\nname: shared_default\n---\n");
+      const repaired = await preview("default");
+      const restored = repaired.code === 0 ? JSON.parse(repaired.out) : undefined;
+      ok("restoring the target makes the preview read the linked persona without replacing it",
+        restored?.result?.requestedName === "shared_default" && restored.result.persona.write === "none" &&
+        !restored.warnings.some((w: { code: string }) => w.code === "TARGET_NOT_FOUND") && readlinkSync(defaultPath) === link, repaired);
+      rmSync(defaultPath);
     }
     process.env.COTAL_DEFAULT_AGENT = "other";
     reset();

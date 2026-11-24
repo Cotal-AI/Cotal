@@ -28,7 +28,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator, nanos } from "@nats-io/transport-node";
-import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager, type ConsumerConfig } from "@nats-io/jetstream";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
@@ -36,6 +36,7 @@ import {
   serverConfig, newIdentity, setupSpaceStreams, seedChannelRegistry, principalKey, DEV_OWNER,
   chatStream, chatSubject, dmStream, historyReaderConsumer, HISTORY_READERS, permissionsFor, type CotalMessage,
 } from "../src/index.js";
+import type { EndpointHistory } from "../src/endpoint-history.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -43,6 +44,39 @@ const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.te
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = (s: string) => new TextEncoder().encode(s);
 const { check, finish } = createSuite();
+
+async function checkDottedHistory(observer: CotalEndpoint, space: string, dotted: string, expected: number): Promise<void> {
+  const history = (observer as unknown as { history: EndpointHistory }).history;
+  const open = history.openHistoryReader;
+  const configs: Pick<ConsumerConfig, "filter_subject" | "filter_subjects">[] = [];
+  history.openHistoryReader = async function (...args: Parameters<EndpointHistory["openHistoryReader"]>) {
+    const consumer = await open.apply(this, args);
+    const { filter_subject, filter_subjects } = (await consumer.info(true)).config;
+    configs.push({ filter_subject, filter_subjects });
+    return consumer;
+  };
+  try {
+    const channels = (await observer.listChannels()).map(({ channel }) => channel);
+    const filter = chatSubject(space, "*", "*", dotted);
+    const all = await observer.multiChannelHistory(channels, { limit: expected + 1, signal: AbortSignal.timeout(10_000) });
+    check("observer: all-channel history includes the deep post and every ordinary post in order",
+      all.length === expected && all.every((row, i) => row.seq === i + 1)
+        && all.at(-1)?.channel === dotted && textOf(all.at(-1)!.msg) === "dotted post", all.length);
+
+    const split = configs.filter((config) => (config.filter_subjects ?? [config.filter_subject]).includes(filter));
+    check("a deep filter split from a plural batch keeps the broker's plural create form",
+      split.length > 0 && split.every(({ filter_subject, filter_subjects }) =>
+        !filter_subject && filter_subjects?.length === 1 && filter_subjects[0] === filter));
+
+    configs.length = 0;
+    const named = await observer.multiChannelHistory([dotted], { signal: AbortSignal.timeout(10_000) });
+    check("a genuine single-channel history read uses the broker's filter-bearing create form",
+      named.length === 1 && named[0]?.seq === expected && configs.length > 0 && configs.every((config) =>
+        config.filter_subject === filter && !config.filter_subjects?.length));
+  } finally {
+    history.openHistoryReader = open;
+  }
+}
 
 /** A TCP relay to the broker whose broker-to-client direction can be held. Once the client sends a
  *  frame containing the armed marker, what the broker sends back is kept until `release`: the request
@@ -88,6 +122,7 @@ const fanoutChannels = Array.from({ length: FANOUT_CHANNELS }, (_, i) => `fan.c$
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `hist-readers-${randomUUID().slice(0, 8)}`;
+const dotted = "a.".repeat(123) + "bc"; // 129 whole-subject tokens, including the five routing tokens.
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
@@ -120,7 +155,7 @@ try {
   // A backlog on two channels and in DMs. `team.ops` is a two-token channel, like the channel the
   // hosted dashboard failed to read.
   const pId = newIdentity(), uidP = mintLifecycleUid();
-  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["team.ops", "general"], allowPublish: ["team.ops", "general", ...fanoutChannels], subscribe: [], lifecycleUid: uidP });
+  const pCreds = await provisionAgent(mgr, auth, pId, { allowSubscribe: ["team.ops", "general"], allowPublish: ["team.ops", "general", dotted, ...fanoutChannels], subscribe: [], lifecycleUid: uidP });
   const poster = await start(pCreds, "poster", { lifecycleUid: uidP, card: { id: pId.id, name: "poster", kind: "agent" } });
   const tId = newIdentity(), uidT = mintLifecycleUid();
   await provisionAgent(mgr, auth, tId, { allowSubscribe: [], subscribe: [], lifecycleUid: uidT });
@@ -128,6 +163,7 @@ try {
   for (let i = 1; i <= 10; i++) await poster.multicast(`general ${i}`, { channel: "general" });
   for (let i = 1; i <= 10; i++) await poster.unicast(principalKey(DEV_OWNER, tId.id).key, `dm ${i}`);
   for (const c of fanoutChannels) for (let i = 1; i <= 3; i++) await poster.multicast(`${c} ${i}`, { channel: c });
+  await poster.multicast("dotted post", { channel: dotted });
 
   // A test-only allow-all inspector: it lowers the caps and counts consumers, which no shipped
   // profile may do on these streams.
@@ -154,6 +190,7 @@ try {
 
   const obsId = newIdentity();
   const observer = await start(await mintCreds(auth, obsId, "observer"), "observer");
+  await checkDottedHistory(observer, space, dotted, 41 + 3 * FANOUT_CHANNELS);
   const admId = newIdentity();
   const admin = await start(await mintCreds(auth, admId, "admin"), "admin");
 

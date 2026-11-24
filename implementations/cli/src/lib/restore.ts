@@ -4,6 +4,7 @@ import {
   mkdirSync,
   realpathSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -68,7 +69,7 @@ import {
   readStoreIdentity,
   type StoreIdentity,
 } from "@cotal-ai/workspace";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
+import { ArtifactFileFault, artifactReadRefusal, artifactStreams, BACKUP_MANIFEST_FORMAT_V1, inspectBackupArtifact, missingBackupPath, missingBackupPathText, notAnArtifactRefusal, readStagedCheckpoints, stageArtifact, type BackupManifest, type StagedArtifact } from "./backup-artifact.js";
 import { authorityFingerprint } from "./maintenance-files.js";
 import { attemptProcessesGone, ensurePrivateAttemptsDir, startIsolatedBroker, sweepAttemptResidue, type IsolatedBroker } from "./isolated-broker.js";
 import { inspectPreviousStore, readRunJournals, rolledBackRuns } from "./rolled-back-runs.js";
@@ -76,7 +77,7 @@ import { noticeOnInterrupt } from "./interrupt-notice.js";
 import { displayCmd } from "./self-exec.js";
 import { assertEndpointUnreachable } from "./endpoint-cut.js";
 import { acquireStackOperationLock } from "./stack-journal.js";
-import { foreignEntriesRefusal, oldStoreForeignEntries } from "./store-dir.js";
+import { checkStorePath, foreignEntriesRefusal, missingRestoreStoreParent, oldStoreForeignEntries } from "./store-dir.js";
 import { admitAndRestoreSeatCheckpoints } from "./seat-resume.js";
 import { assertControllerRestorable, reconfigureControllerBroker, rollbackRestoreWithBroker } from "./controller-restore.js";
 import { assertControllerCoupling, newControllerAttemptLaunch } from "./controller-resume.js";
@@ -349,29 +350,27 @@ function artifactOverlapRefusal(root: string, artifact: string, store: string): 
   return undefined;
 }
 
-/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback, so it
- *  must not exist yet and its parent must. Either mistake is a usage refusal before anything is
- *  staged. The preserved source itself is the same-path restore. */
+/** An explicit `--store-dir` names the directory a restore creates and owns for its rollback.
+ *  Its parent must resolve to a directory, and the target must be absent unless it is the preserved store. */
 function assertNewStorePath(target: string, source: string): void {
-  const present = (path: string) => {
-    try { lstatSync(path); return true; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  };
+  if (!statSync(dirname(target), { throwIfNoEntry: false })?.isDirectory()) throw missingRestoreStoreParent(target);
   const remedy = "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it";
-  if (!present(dirname(target)))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${dirname(target)} does not exist; nothing was restored`, { target: { storeDir: target }, remedy });
-  if (target !== source && present(target))
+  if (target !== source && lstatSync(target, { throwIfNoEntry: false }))
     throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${target} already exists, and a restore creates its store directory itself; nothing was restored`, { target: { storeDir: target }, remedy });
 }
 
-function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string): void {
-  const canonicalTarget = canonicalFuturePath(target);
+function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {
+  const canonicalTarget = explicit ? checkStorePath(target, "restore", () => canonicalFuturePath(target)) : canonicalFuturePath(target);
   if (canonicalTarget !== source && (contains(source, canonicalTarget) || contains(canonicalTarget, source)))
     throw new Error("restore target must not overlap the preserved source store");
   if (contains(attempts, canonicalTarget) || contains(canonicalTarget, attempts))
     throw new Error("restore target must not overlap the maintenance attempt directory");
   if (contains(artifact, canonicalTarget) || contains(canonicalTarget, artifact))
-    throw new Error("restore target must not overlap the backup artifact");
+    throw new CommandFailure("refused", "USAGE_INVALID", "restore target must not overlap the backup artifact. No restore started.", {
+      target: { storeDir: target },
+      remedy: "choose an absent `--store-dir` path outside the backup artifact, under an existing writable directory",
+      selfContained: true,
+    });
 }
 
 async function validateManifest(
@@ -747,8 +746,9 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
     targetPath = launch.targetPath;
     if (rebuild && targetPath !== journal.source.path)
       throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
-    if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
-    assertRestoreTargetPath(journal.source.path, artifactPath, join(root, ".cotal", "maintenance", "attempts"), targetPath);
+    const explicitStore = flags["store-dir"] !== undefined;
+    if (explicitStore) checkStorePath(targetPath, "restore", () => assertNewStorePath(launch.targetPath, journal.source.path));
+    assertRestoreTargetPath(journal.source.path, artifactPath, join(root, ".cotal", "maintenance", "attempts"), targetPath, explicitStore);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that
     // no Cotal store writes would move with it; it is refused before anything moves. A store restored
     // elsewhere stays where it is, and its cleanup refuses instead.
@@ -772,7 +772,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
       artifact = stageArtifact(artifactPath, stageParent);
     } catch (error) {
       if (!(error instanceof ArtifactFileFault)) throw error;
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
+      throw artifactReadRefusal(error, artifactPath, root) ?? new CommandFailure("refused", "SCHEMA_INVALID", `${error.message}; nothing was restored`, { target: { root, directory: artifactPath, file: error.file, fault: error.fault }, remedy: `this copy cannot be restored as it is: check it with ${codeSpan(`cotal backup verify ${shellPath(artifactPath)}`)}, or restore another copy of the same artifact; the preserved cut is unchanged` });
     }
     staged = artifact;
     await validateManifest(artifact.manifest, flags, journal, currentAuthority);

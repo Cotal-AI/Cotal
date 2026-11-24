@@ -624,6 +624,18 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
 
+function checkDemoPersonaPaths(inputs: SetupInputs): void {
+  const agents = personaDir(inputs.project);
+  for (const name of Object.keys(DEMO_AGENTS)) {
+    const path = join(agents, `${name}.md`);
+    if (isDir(path)) {
+      throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
+        target: { space: inputs.space, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
+      });
+    }
+  }
+}
+
 /**
  * Writes what the plan checked: the space, the personas, the `harness` preference, the
  * application's own setup actions, Cotal's skills and the chosen runtimes. A harness or runtime
@@ -633,6 +645,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation; start: boolean; detach: boolean; configureOnly: boolean; managerInstanceId?: string }): Promise<void> {
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
+  if (opts.demo) checkDemoPersonaPaths(inputs);
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });
@@ -1239,21 +1252,32 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
- *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
-export async function refreshConnectorInstalls(): Promise<string[]> {
+/** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
+export async function refreshConnectorInstalls(report?: (line: string) => void): Promise<string[]> {
   const lines: string[] = [];
+  const failures: string[] = [];
   for (const connector of await setupConnectorSurface()) {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) {
-      const started = Date.now();
-      console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
-      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    if (!refresh) continue;
+    const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
+    const started = Date.now();
+    console.error(`Refreshing ${refresh.title}`);
+    let detail: string;
+    try {
+      detail = await refresh.run(input);
+    } catch (error) {
+      if (!report) throw error;
+      failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
+    console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    const line = `${refresh.title}: ${detail}`;
+    if (report) report(line);
+    else lines.push(line);
   }
+  if (failures.length > 0) throw new Error(failures.join("\n"));
   return lines;
 }
 

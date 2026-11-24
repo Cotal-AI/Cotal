@@ -11,7 +11,11 @@ import { canPrompt } from "./meshes-wizard.js";
 import { targetWords } from "../lib/confirmation-required.js";
 import { commitEndpointReference, importEndpointReference, listEndpointReferences, readEndpointReference, referenceName, validateEndpointReference, type EndpointReference, type ReferenceSnapshot } from "../lib/endpoint-references.js";
 
-export const endpointFlags = [...invokeFlags,
+export const endpointFlags = [...invokeFlags.map((flag) => flag.name === "space"
+  ? { ...flag, description: "select the space, including for saved references without a broker" }
+  : flag.name === "server" || flag.name === "creds"
+    ? { ...flag, description: `For inventory, requires --live. ${flag.description}` }
+    : flag),
   { name: "since", type: "string", value: "<native-sequence>", description: "watch: native sequence coordinate; declaration adapter remains required" },
   { name: "lease", type: "string", value: "<private-file>", description: "work commit: original native lease tuple reference; no file is opened on an unsupported route" },
   { name: "result", type: "string", value: "<JSON>", description: "work commit: result JSON; its body is not echoed on refusal" },
@@ -34,13 +38,22 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (args.values.dir !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--dir belongs to endpoint init");
   if (mode === "describe" || mode === "invoke") {
     if (mode !== "describe" && args.values.refresh !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--refresh belongs to endpoint describe");
-    if (args.values.file !== undefined || args.values.yes !== undefined || args.values.live !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--file and --yes belong to local reference changes, not native calls");
+    if (args.values.live !== undefined) throw new CommandFailure("refused", "USAGE_INVALID",
+      mode === "describe" ? "endpoint describe already reads the contract live and does not take --live" : "--live does not belong to endpoint invoke",
+      { remedy: "remove --live, or use `cotal endpoint list --live` to list registrations" });
+    if (args.values.file !== undefined || args.values.yes !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--file and --yes belong to local reference changes, not native calls");
     if (mode === "describe" && ["args", "name", "self", "admin", "timeout", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "invocation flags do not belong to endpoint describe");
     validateEndpointArguments({ ...args, positionals: args.positionals.slice(1) }, mode);
     return;
   }
   if (args.values.live !== undefined && mode !== "list") throw new CommandFailure("refused", "USAGE_INVALID", "--live belongs to the endpoint inventory");
-  if ([...(mode === "list" && args.values.live ? [] : ["server", "creds"]), "on", "args", "name", "self", "admin", "timeout", "refresh", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "local endpoint reference operations accept no broker, caller or invocation flags");
+  const brokerFlags = ["server", "creds"].filter((flag) => args.values[flag] !== undefined);
+  if (["on", "args", "name", "self", "admin", "timeout", "refresh", "wait", "cast", "all", "handle"].some((flag) => args.values[flag] !== undefined) || (mode !== "list" && brokerFlags.length))
+    throw new CommandFailure("refused", "USAGE_INVALID", "local endpoint reference operations accept no broker, caller or invocation flags");
+  if (mode === "list" && !args.values.live && brokerFlags.length) {
+    const flags = brokerFlags.map((flag) => `--${flag}`).join(" and ");
+    throw new CommandFailure("refused", "USAGE_INVALID", `endpoint inventory accepts ${flags} only with --live`, { remedy: `add --live to read native registrations, or omit ${flags} to list saved references` });
+  }
   if (!["list", "show", "add", "remove"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use endpoint, endpoint show <name>, endpoint add [name] [--file <reference.json>], or endpoint remove <name>");
   if (name !== undefined) referenceName(name);
   if (args.values.file !== undefined && mode !== "add") throw new CommandFailure("refused", "USAGE_INVALID", "--file belongs to endpoint add");
@@ -49,12 +62,22 @@ export function validateEndpointReferenceArguments(args: ParsedArgs): void {
   if (mode === "add" && (!name || args.values.file === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted endpoint add needs a name and --file; guided input requires an interactive terminal");
 }
 
-function selectedSpace(args: ParsedArgs): string {
+function selectedSpace(args: ParsedArgs): string | EndpointReference {
   const values = args.values as { space?: string; server?: string };
   try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true }).space; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
+    const candidates = error.details.spaces;
+    if (error.code === "ambiguous-target" && candidates?.length && args.positionals[0] === "add" &&
+      values.space === undefined && typeof args.values.file === "string") {
+      return importEndpointReference(resolve(args.values.file), (pinnedSpace) => {
+        if (typeof pinnedSpace === "string" && candidates.includes(pinnedSpace)) {
+          return resolveMeshTarget(process.cwd(), { space: pinnedSpace, readOnly: true }).space;
+        }
+        throw error;
+      });
+    }
     if (error.code === "ambiguous-target" && ["list", "show", "remove"].includes(args.positionals[0] ?? "list")) throw error;
     if (error.code === "unknown-space") {
       const { message, remedy } = workspaceErrorParts({ kind: "target", error });
@@ -80,7 +103,8 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   if (modeRequested === "describe") return describeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   if (modeRequested === "invoke") return invokeCmd({ ...args, positionals: args.positionals.slice(1) }, "endpoint");
   const presentation = presentationOf(args.values);
-  const space = selectedSpace(args);
+  const selected = selectedSpace(args);
+  const space = typeof selected === "string" ? selected : selected.space;
   recordOperationSpace(space);
   const [mode = "list", suppliedName] = args.positionals;
   if (mode === "list") {
@@ -145,7 +169,8 @@ export async function endpoint(args: ParsedArgs): Promise<void> {
   }
   if (readEndpointReference(space, name)) throw new CommandFailure("refused", "CONFLICT", "this local reference already exists; it was not overwritten", { target: { space, name }, remedy: "show the current reference before explicitly removing or changing it" });
   let reference: EndpointReference;
-  if (typeof args.values.file === "string") reference = importEndpointReference(resolve(args.values.file), space);
+  if (typeof selected !== "string") reference = selected;
+  else if (typeof args.values.file === "string") reference = importEndpointReference(resolve(args.values.file), space);
   else {
     const nativeClass = await prompts.text({
       message: "Native endpoint class", placeholder: "reviews",

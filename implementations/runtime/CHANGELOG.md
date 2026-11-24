@@ -1,5 +1,94 @@
 # @cotal-ai/runtime
 
+## 0.176.6
+
+### Patch Changes
+
+- ea08bc8: Report the results filename and how to fix it when a workflow simulation receives a JSON array or another non-object value as its results script.
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/lang@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- e6810ad: When a local workflow resume is missing its run ID, show how to list runs on the same target without a manager and add the ID to the original command.
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/lang@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- 7a6895d: Use a matching endpoint import space from the file, explain how to proceed with relative `ZDOTDIR` or invalid simulation results, and document which JSON modes stream records.
+- 959cd61: `run show` checks its journal limit before suggesting how to look up a run ID, so the suggested read no longer repeats an incompatible limit and JSON format.
+- 3696130: When a local workflow revoke finds no admission, suggest a run list for the same space that works without a manager, and document how to take a full backup after system-account rotation.
+- 0f60f11: When `cotal run check` cannot find a run, suggest a local listing on the same target so the command works without a manager.
+- 871ccaa: When a journal read needs a run ID, keep its space, broker and Manager or local endpoint in the suggested list and journal commands.
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [99e0752]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [dd96500]
+- Updated dependencies [d31ba81]
+- Updated dependencies [87465c9]
+- Updated dependencies [c82c548]
+- Updated dependencies [e73a285]
+- Updated dependencies [0758948]
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/lang@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [a38ed1d]
+  - @cotal-ai/lang@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/lang@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/lang@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+- bedf4ee: Quote workflow simulation retry paths and reject local admission lists with no patterns before contacting the broker.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+- Updated dependencies [7266240]
+- Updated dependencies [28b97c7]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/lang@0.176.0
+
 ## 0.175.3
 
 ### Patch Changes

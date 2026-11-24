@@ -1,7 +1,7 @@
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { agentFilePath, personaDir } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, resolveMeshTarget, resolvePreference, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
+import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
+import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
@@ -49,13 +49,25 @@ export function missingConnector(name: string, target: object): CommandFailure {
     remedy: pkg ? `add it with \`cotal ext add ${pkg}\`` : "install its integration with `cotal ext add <npm-package>`, or check the name" });
 }
 
+/** After ENOENT or ENOTDIR loading a persona, check whether a link still occupies its path. */
+export function brokenPersonaLink(path: string, target: object, shippedDefault = false): CommandFailure | undefined {
+  const link = personaLinkTarget(path);
+  if (link === undefined) return undefined;
+  const subject = shippedDefault ? "the default persona" : "the persona";
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", `${subject} at ${path} is a symbolic link to a missing target: ${link}${shippedDefault ? ". The shipped default cannot replace the link" : ""}`, {
+    target, remedy: shippedDefault ? "restore the link's target or move the broken link aside, then retry"
+      : "restore the link's target, or move the link aside and put a regular persona file in its place",
+  });
+}
+
 /** The space a launch from `cwd` targets when no `--space` or `--server` names one: the space the mesh
  *  target resolves to, or the space prepared in this folder that no `up` has started, which
  *  `spawn --dry-run` previews. A selected space that is only prepared somewhere else is not one.
  *  Undefined when nothing here resolves to one space. */
-export function launchSpace(cwd: string): { space: string; source: MeshTarget["source"] | "prepared" } | undefined {
+export async function launchSpace(cwd: string): Promise<{ space: string; source: MeshTarget["source"] | "prepared" } | undefined> {
   try {
-    const target = resolveMeshTarget(cwd, { readOnly: true });
+    const sweep = resolveReadsLiveness(cwd) ? await pruneStaleMeshes(undefined, "targets") : {};
+    const target = resolveMeshTarget(cwd, { readOnly: true, ...sweep });
     return { space: target.space, source: target.source };
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
@@ -67,6 +79,13 @@ export function launchSpace(cwd: string): { space: string; source: MeshTarget["s
 
 /** The mesh a persona was looked for in. A preview of a space that is not started has no broker. */
 export type PersonaSite = Pick<MeshTarget, "space" | "root" | "personaRoot"> & Partial<Pick<MeshTarget, "server" | "source" | "origin">>;
+
+export function missingPersonaFailure(site: PersonaSite, ref: string, from: string | undefined, path: string, target = { space: site.space, path }): CommandFailure {
+  const broken = brokenPersonaLink(path, target);
+  if (broken) return broken;
+  const { message, remedy } = missingPersona(site, ref, from, path);
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy });
+}
 
 /** The refusal for a launch persona that is not there, which the launch and its preview both give. A
  *  path reference opened that one file and never read the catalog, so it names the file. A catalog

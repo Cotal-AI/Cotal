@@ -49,6 +49,7 @@ The `host` and `port` definition options default to `127.0.0.1` and 7799. Port 0
 A wildcard host is refused when the service starts, and the refusal names the `cotal service remove` and `cotal service add` that change the saved definition.
 Background `cotal service start web` opens an authenticated browser session for a loopback listener.
 Repeating a loopback start reuses the matching process and refreshes the single-use link in the private session record, even without a display or with `--no-open`. Existing browser sessions stay valid.
+If you save the dashboard under another name with `cotal service add <name> --preset web`, use that name for both starts. `--no-open` also works with the saved name.
 It starts no dependency automatically. Use `--no-open` for manual access or a remote listener.
 Without a browser opener, or without a Linux graphical session, startup still succeeds and warns how to find the private session record.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.

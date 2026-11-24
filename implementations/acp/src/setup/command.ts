@@ -2,14 +2,40 @@
  * The command an ACP client runs to reach one space, as setup writes it. A GUI application sees
  * neither the shell's PATH nor its environment, so the command names this Cotal's Node and entry by
  * absolute path, and the Cotal locations the shell set travel in the entry's own environment.
+ *
+ * The paths are the ones that survive an upgrade. The running Node's own path can name one version's
+ * folder, as Homebrew's `Cellar/node/<version>` does, and that folder is removed when Node upgrades.
+ * The running entry names one install generation, and a later update moves to another.
  */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { join } from "node:path";
+import { executionIdentity } from "@cotal-ai/workspace";
 
-/** What a client runs for `space`: the Node and entry of the running Cotal, then `acp --space`. */
+/** The Node a client runs: the get.cotal.ai launcher's Node link when this Cotal runs under that
+ *  launcher and the link resolves to `node`, else `node`. The launcher exports `COTAL_LAUNCHER=1`
+ *  and its install root as `npm_config_prefix`, and keeps `<root>/nodebin/node` pointing at the Node
+ *  it chose; it refuses to start when that link is gone. */
+export function durableNode(node: string, env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.COTAL_LAUNCHER === "1" ? env.npm_config_prefix : undefined;
+  if (!root) return node;
+  const link = join(root, "nodebin", "node");
+  return existsSync(link) && realpathSync(link) === realpathSync(node) ? link : node;
+}
+
+/** The entry a client runs: the install's own entry when `entry` is the generation this process
+ *  loaded, so the client follows the next update, else `entry`. */
+export function durableEntry(entry: string): string {
+  const identity = executionIdentity();
+  return identity !== undefined && existsSync(entry) && realpathSync(entry) === identity.loadedEntry ? identity.logicalEntry : entry;
+}
+
+/** What a client runs for `space`: the running Cotal's Node and entry by the paths that survive an
+ *  upgrade, then `acp --space`. */
 export function acpCommand(cotal: readonly string[], space: string): { command: string; args: string[] } {
-  const [node, ...entry] = cotal;
-  if (!node || entry.length === 0) throw new Error("the Cotal CLI record has no Node executable and entry");
-  return { command: node, args: [...entry, "acp", "--space", space] };
+  const [node, ...rest] = cotal;
+  const entry = rest.at(-1);
+  if (!node || entry === undefined) throw new Error("the Cotal CLI record has no Node executable and entry");
+  return { command: durableNode(node), args: [...rest.slice(0, -1), durableEntry(entry), "acp", "--space", space] };
 }
 
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
@@ -46,14 +72,14 @@ export function passedEnv(env: NodeJS.ProcessEnv = process.env): Record<string, 
 }
 
 /** Why an entry's command does not run this Cotal, or undefined when it does. `here` is the Node
- *  this process runs on. An entry whose executable is a launcher, as one a person added by hand may be,
- *  is checked only for being there. */
+ *  this process runs on; a link to it, such as the launcher's Node link, runs it too. An entry whose
+ *  executable is a launcher, as one a person added by hand may be, is checked only for being there. */
 export function staleCommand(command: unknown, args: unknown, here = process.execPath): string | undefined {
   if (typeof command !== "string" || !command) return "it names no executable";
   if (!existsSync(command)) return `${command} is gone`;
   if (!strings(args)) return "its arguments are not a list";
   const entry = args.slice(0, args.indexOf("acp")).at(-1);
   if (entry !== undefined && !existsSync(entry)) return `${entry} is gone`;
-  if (entry !== undefined && command !== here) return `it runs ${command}, not this Cotal's ${here}`;
+  if (entry !== undefined && realpathSync(command) !== realpathSync(here)) return `it runs ${command}, not this Cotal's ${here}`;
   return undefined;
 }

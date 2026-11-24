@@ -128,7 +128,8 @@ const lockFree = (d: string): boolean => {
 };
 // Every per-user location the CLI could read or write points into this sandbox, never the real user's.
 const childEnv = {
-  ...process.env, HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+  HOME: user, XDG_CONFIG_HOME: join(user, "config"), XDG_STATE_HOME: join(user, "state"), XDG_CACHE_HOME: join(user, "cache"),
   XDG_RUNTIME_DIR: rt, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", NO_COLOR: "1", DO_NOT_TRACK: "1",
 };
 const runtimeEntries = (): string[] => existsSync(runtimeDir) ? readdirSync(runtimeDir, { recursive: true }).map(String).sort() : [];
@@ -321,6 +322,21 @@ try {
       check(`H0d ${mode} names the missing runtime and tells the caller how to select a private one`, doc.error?.message?.includes(missingRuntime) === true && doc.error.remedy?.includes("owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it") === true, result);
     }
     check("H0d neither refusal created the runtime or lifetime lock", !existsSync(missingRuntime) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("a runtime file refuses status and serve before creating state", async () => {
+    const runtimeFile = join(root, "runtime-file");
+    writeFileSync(runtimeFile, "keep this file");
+    const env = { ...childEnv, XDG_RUNTIME_DIR: runtimeFile };
+    for (const mode of ["status", "serve"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--json"], 30_000, env);
+      const { status, doc } = result;
+      check(`${mode} refuses the runtime file and names the remedy`, status === 2 && doc.outcome === "refused"
+        && doc.error?.code === "TARGET_UNAVAILABLE" && doc.error.cause?.code === "NO_RUNTIME_DIR"
+        && doc.error.message?.includes(`XDG_RUNTIME_DIR points to ${runtimeFile}, which is not a directory`) === true
+        && doc.error.remedy?.includes("owned by your user with mode 0700 and set XDG_RUNTIME_DIR to it") === true, result);
+    }
+    check("the runtime file is untouched and no lifetime lock exists", readFileSync(runtimeFile, "utf8") === "keep this file" && !existsSync(lockFile(managed)));
   });
 
   await cell("H0e serve publishes a socket at the Linux pathname limit", async () => {
@@ -725,6 +741,7 @@ try {
     const killedPid = managedServe!.child.pid;
     const second = await cli(["serve", "--daemon-home", managed, "--json"]);
     check("H4 a second managed serve refuses CONFLICT / LOCK_HELD, exit 2, naming the live holder's pid", second.status === 2 && second.doc.error?.code === "CONFLICT" && second.doc.error?.cause?.code === "LOCK_HELD" && new RegExp(`held by a live process \\(pid ${killedPid},`).test(second.doc.error?.message ?? ""), { status: second.status, doc: second.doc, err: second.err.slice(0, 300) });
+    check("H4 the status command in the conflict names the managed home", second.doc.error?.remedy?.includes("`cotal daemon status --daemon-home '" + managed.replaceAll("'", "'\\''") + "'`") === true, second.doc.error?.remedy);
     check("H4 the first serve's socket keeps its inode and still answers", lstatSync(derived).ino === ino && (await cli(["status", "--daemon-home", managed, "--json"])).doc.result?.pid === killedPid);
     await stop(managedServe, "SIGKILL");
     check("H4 instrument: after SIGKILL the socket is left behind, and the kernel has released the lock while its record still names the dead pid", existsSync(derived) && lstatSync(derived).ino === ino && lockFree(managed) && lockRecordPid(managed) === killedPid, { free: lockFree(managed), recorded: lockRecordPid(managed), killedPid });

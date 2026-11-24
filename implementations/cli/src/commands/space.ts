@@ -33,6 +33,7 @@ import {
   spaceKey,
   stackElsewhereRemedy,
   stackJournalRoot,
+  stoppedStack,
   writeResult,
   type Cell,
   type BrokerCheck,
@@ -448,7 +449,9 @@ function preparedView(p: PreparedDetail, project: string, moved: ReturnType<type
   } else if (p.state === "unsettled") {
     hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {
-    hints.push({ text: `start it${p.state === "stopped" ? " again" : ""} with ${codeSpan(`${cmd} up`)} in ${p.root}`, tone: "hint" });
+    const stopped = p.state === "stopped";
+    const up = `${cmd} up${stopped && stoppedStack(p.root, p.space)?.noManager ? " --no-manager" : ""}`;
+    hints.push({ text: `start it${stopped ? " again" : ""} with ${codeSpan(up)} in ${p.root}`, tone: "hint" });
   }
   if (!p.current && !p.rootMissing) hints.push({ text: `select it with ${codeSpan(`${cmd} use ${shellWord(p.space)}`)}`, tone: "hint" });
   return {
@@ -484,7 +487,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const space = shellWord(s.space);
-  const hints: Cell[] = s.current ? [] : [{ text: `select it with ${codeSpan(`cotal use ${space}`)}`, tone: "hint" }];
+  const hints: Cell[] = s.current ? [] : [{ text: `select it with ${codeSpan(`${displayCmd()} use ${s.space.startsWith("-") ? "-- " : ""}${space}`)}`, tone: "hint" }];
   if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with ${codeSpan(`${displayCmd()} down --space ${space} --yes`)}`, tone: "waiting" });
   if (!s.modeChecked && s.origin === "manual" && s.mode !== "user") {
     if (s.check === "reachable") {
