@@ -310,8 +310,11 @@ export function connectorConfigDir(): string {
   return id ? currentConfig(id) ?? updateSnapshot(id) ?? previousConfig(id) ?? (["extensions", "seed"].some(name => existsSync(join(globalConfigDir(), name))) ? globalConfigDir() : join(id.path, "cotal")) : globalConfigDir();
 }
 
-/** Restore write access before staging, without touching another installation or following managed links. */
-export function prepareConnectorConfigForUpdate(): void {
+/**
+ * Restore write access without following managed links or touching another installation.
+ * Report completed repairs and recovery, even if a later check refuses.
+ */
+export function prepareConnectorConfigForUpdate(onChange?: () => void): void {
   const config = resolve(globalConfigDir());
   const what = "the Cotal connector configuration";
   const refuse = (path: string, reason: string): never => {
@@ -333,8 +336,11 @@ export function prepareConnectorConfigForUpdate(): void {
     if (!stat) return false;
     if (!stat.isDirectory() || stat.uid !== process.getuid?.()) refuse(path, "is not a real directory owned by this account");
     const mode = (stat.mode & 0o7755) | 0o200;
-    try { if (mode !== (stat.mode & 0o7777)) chmodSync(path, mode); }
-    catch { refuse(path, "could not be made writable by this account"); }
+    if (mode !== (stat.mode & 0o7777)) {
+      try { chmodSync(path, mode); }
+      catch { refuse(path, "could not be made writable by this account"); }
+      onChange?.();
+    }
     writable(path, constants.R_OK | constants.W_OK | constants.X_OK);
     return true;
   };
@@ -354,7 +360,7 @@ export function prepareConnectorConfigForUpdate(): void {
   const id = identity();
   if (id) {
     repairPath(id.path);
-    recoverRetiredCanonical(id.path);
+    recoverRetiredCanonical(id.path, onChange);
   }
   const current = id && currentConfig(id, repairPath);
   // A bound downgrade inherits its snapshot into a new root, never the existing generation.
@@ -371,11 +377,11 @@ export function prepareConnectorConfigForUpdate(): void {
   if (id && !current && existsSync(id.path)) walk(id.path);
 }
 
-/** Implicit recovery may mutate current or canonical state, never a predecessor exposed only for reads. */
-export function canRecoverConnectorConfig(): boolean {
+/** Check eligibility and report any completed canonical recovery, without mutating predecessor state. */
+export function canRecoverConnectorConfig(onChange?: () => void): boolean {
   const id = identity();
   if (!id) return true;
-  recoverRetiredCanonical(id.path);
+  recoverRetiredCanonical(id.path, onChange);
   return currentConfig(id) !== undefined || previousConfig(id) === undefined;
 }
 
@@ -412,7 +418,7 @@ function removeRetiredConnectorTree(path: string): void {
 
 const retiredCanonical = (set: string) => join(set, ".retired-cotal");
 
-function recoverRetiredCanonical(set: string): void {
+function recoverRetiredCanonical(set: string, onChange?: () => void): void {
   const aside = retiredCanonical(set);
   if (!lstatSync(aside, { throwIfNoEntry: false })) return;
   // Self-update preflight can reach this before restoring a stale update journal.
@@ -426,6 +432,7 @@ function recoverRetiredCanonical(set: string): void {
       ownedDirectory(canonical);
       removeRetiredConnectorTree(aside);
     } else renameSync(aside, canonical);
+    onChange?.();
   } finally { release(); }
 }
 
