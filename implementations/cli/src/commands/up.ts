@@ -96,7 +96,7 @@ import { c, hang, stderrLine } from "../ui.js";
 import { admitAndRestoreSeatCheckpoints } from "../lib/seat-resume.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, resolveNatsServer, unreadVersion } from "../lib/nats-bin.js";
 import { cotalPath, cotalRoot } from "../lib/paths.js";
-import { channelsReads, readChannelsFile } from "../lib/channel-seed.js";
+import { channelsReads, loadChannelsFile, readChannelsFile, readDefaultChannelsFile } from "../lib/channel-seed.js";
 import { controllerManifestRemedy, detachedNext, renderDetachedSummary } from "../lib/up-report.js";
 import { seedBeforeLaunch, seedMoveNote } from "../seed/launch.js";
 import { seedDir } from "../seed/paths.js";
@@ -155,7 +155,6 @@ import {
   assertManagerPayload,
   parseAccountResolver,
   authTimeoutArgs,
-  loadChannelsFile,
   refuseRunningElsewhere,
   refuseRecordsElsewhere,
   resolveTransport,
@@ -586,7 +585,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       assertTlsIntentServed(launch.server, transport, "--server");
       assertTlsAddressServed(launch.server, transport, root);
       assertServesDialHost(transport, new URL(launch.server).hostname);
-      loadChannelsFile();
+      readDefaultChannelsFile(root);
       if (wantUser && values.idp !== undefined) await preflightUserStack(root, launch.space, values.idp);
       try { await preflightRuntime(launch.runtime); }
       catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the requested runtime did not pass preflight; nothing was restored", { target: { root, space: launch.space, runtime: launch.runtime }, remedy: error instanceof Error ? error.message : "inspect the selected runtime provider" }); }
@@ -1088,7 +1087,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   if (ownerHome !== undefined) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this folder's running stack belongs to another Cotal home; nothing was started", { target: { root: meshRoot, home: ownerHome }, remedy: stackHomeRemedy(ownerHome) });
   // A bare start seeds the root's default channels file, so one it would refuse is named here,
   // before anything starts; an explicit --channels file was checked with the other flags.
-  if (!values.file && !values.restore && values.channels === undefined) loadChannelsFile();
+  if (!values.file && !values.restore && values.channels === undefined) readDefaultChannelsFile(meshRoot);
   const transport = resolveTransport(values, undefined, meshRoot, {
     persist: false,
     quiet: true,
@@ -1822,6 +1821,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
     verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
   } : undefined;
+  const seedFile = loadChannelsFile(cotalRoot(), values.channels, !resumeAttempt && values.open === true);
   if (values.detach) {
     // A `backup restore` owns its own receipt: the native launcher's progress lines stay off stdout.
     // The receipt names its space before the launch prints anything, as every report does. A start that
@@ -1850,7 +1850,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       ...(values["recreate-issued-stores"] !== undefined ? { recreateIssuedStores: resolve(values["recreate-issued-stores"]) } : {}),
       ...(values["recreate-membership-store"] ? { recreateMembershipStore: true } : {}),
       publicExchange,
-      channels: values.channels,
+      seed: !resumeAttempt || values.channels ? seedFile : undefined,
       // The RAW flag, not the loopback-defaulted `host` above: `startMeshDetached` applies the same
       // default itself, and what it records must distinguish "the operator asked for this address"
       // from "nobody asked", or every mesh would persist an exposure decision it never made.
@@ -1924,7 +1924,6 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
   // later protection check walks as an ancestor.
   mkdirSync(storeDir, { recursive: true, mode: 0o700 });
   await claimSpace(space, server, cotalRoot());
-  const seedFile = loadChannelsFile(values.channels);
   // Decided above the branch; the dial host is only settled here (a port collision may have moved
   // the server, and the hostname is what the certificate has to match).
   assertServesDialHost(transport, new URL(server).hostname);

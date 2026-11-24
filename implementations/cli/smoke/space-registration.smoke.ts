@@ -1569,6 +1569,13 @@ if (process.platform === "linux") {
       refused(badSeed, 1, "SCHEMA_INVALID") && (badSeed.env?.error?.message ?? "").includes(seedPath) && (badSeed.env?.error?.message ?? "").includes(named) &&
         cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(badSeed));
   }
+  const durableSeed = join(fresh, "durable-channels.json");
+  writeFileSync(durableSeed, '{"channels":{"wire.seeded":{"deliveryClass":"durable","replay":false}}}');
+  const durableChannel = await json(["up", "--open", "--no-manager", "--channels", durableSeed, "--server", LIVE], fresh);
+  check("open up refuses an explicit durable channel before writing or starting a stack",
+    refused(durableChannel, 2, "UNSUPPORTED") && durableChannel.env?.error?.message?.includes(durableSeed) && durableChannel.env?.error?.message?.includes('channel "wire.seeded"') &&
+      durableChannel.env?.error?.remedy?.includes('"live"') && durableChannel.env?.error?.remedy?.includes("authenticated space") &&
+      cotalFiles() === beforeRuntime.files && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableChannel));
   // The `✗` line quotes the parser's excerpt of a file that is not JSON with its control characters
   // escaped, so an escape sequence in a cloned file never reaches the terminal.
   const escSeed = join(fresh, "esc-channels.json");
@@ -1588,6 +1595,11 @@ if (process.platform === "linux") {
   // The default file is read once the root is settled, so it refuses after the stack lock's layout
   // exists and before a store, a broker or a registration.
   const defaultSeed = join(fresh, ".cotal", "channels.json");
+  writeFileSync(defaultSeed, '{"defaults":{"deliveryClass":"durable"},"channels":{"ops":{"deliveryClass":"live"}}}');
+  const durableDefault = await json(["up", "--open", "--no-manager", "--server", LIVE], fresh);
+  check("open up refuses a durable seed default even when every named channel is live",
+    refused(durableDefault, 2, "UNSUPPORTED") && durableDefault.env?.error?.message?.includes(defaultSeed) && durableDefault.env?.error?.message?.includes("defaults.deliveryClass") &&
+      !existsSync(join(fresh, ".cotal", "nats")) && JSON.stringify(registryFiles()) === JSON.stringify(beforeRuntime.registry), shown(durableDefault));
   writeFileSync(defaultSeed, '{"chanels":{}}');
   const badDefault = await json(["up", "--open", "--server", server], fresh);
   check("an invalid default .cotal/channels.json refuses the same way, with a remedy to fix or remove it, before a store or a registration",
@@ -1616,7 +1628,7 @@ if (process.platform === "linux") {
   // Its seed comes through a FIFO written once, which a second open would wait on forever.
   const seedFifo = join(home, "channels-seed.fifo");
   spawnSync("mkfifo", ["-m", "600", seedFifo]);
-  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten"}}}', seedFifo], { stdio: "ignore" });
+  const feeder = spawn("sh", ["-c", 'printf %s "$1" > "$2"', "sh", '{"channels":{"news":{"description":"Neuigkeiten","deliveryClass":"live"}}}', seedFifo], { stdio: "ignore" });
   const coRooted = await json(["space", "add", "co-rooted-remote", "--server", DEAD, "--root", fresh, "--mode", "open", "--force"], fresh);
   check("a manual connection can register at the prepared root", coRooted.status === 0 && findMesh("co-rooted-remote")?.root === fresh, shown(coRooted));
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
@@ -1635,7 +1647,10 @@ if (process.platform === "linux") {
   feeder.kill();
   unlinkSync(seedFifo);
   const seeded = await run(["channel", "--space", "demo", "--plain"], {}, fresh);
-  check("it reads a --channels FIFO written once a single time and seeds the channel from it", fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten"), { up: shown(fifoUp), seeded: shown(seeded) });
+  const seededLive = await json(["channel", "show", "news", "--space", "demo"], fresh);
+  check("it reads a --channels FIFO once and seeds the live channel from it",
+    fifoUp.status === 0 && seeded.status === 0 && seeded.stdout.includes("Neuigkeiten") && seededLive.env?.result?.registry?.channels?.news?.deliveryClass === "live",
+    { up: shown(fifoUp), seeded: shown(seeded), live: shown(seededLive) });
   check("the selection still names it", getCurrent() === "demo", getCurrent());
   check("a default channels file that begins with a UTF-8 byte-order mark seeds its channels",
     bomSeeded.status === 0 && JSON.stringify(bomSeeded.env?.result ?? null).includes("saved with a BOM"), shown(bomSeeded));
@@ -1672,6 +1687,15 @@ if (process.platform === "linux") {
     bare.status === 0 && bare.env?.outcome === "no-op" && bare.env.result.space === "demo" && bare.env.result.server === server && findMesh("demo")?.root === fresh, shown(bare));
   check("...and its JSON says the selection still names the space and this up did not change it",
     bare.env?.result.selection?.current === "demo" && bare.env.result.selection.changed === false, bare.env?.result.selection);
+  const durableOps = '{"channels":{"ops":{"deliveryClass":"durable","replay":false}}}';
+  writeFileSync(defaultSeed, durableOps);
+  const seedRefresh = await json(["up", "--no-manager"], fresh);
+  const refreshedOps = await run(["channel", "show", "ops", "--plain"], {}, fresh);
+  check("a healthy open controller refresh keeps the registry live despite a durable default file",
+    seedRefresh.status === 0 && seedRefresh.env?.outcome === "no-op" && refreshedOps.status === 0 &&
+      /Delivery:\s+live/.test(refreshedOps.stdout) && !/Metadata:\s+configured/.test(refreshedOps.stdout),
+    { up: shown(seedRefresh), channel: shown(refreshedOps) });
+  unlinkSync(defaultSeed);
   // The receipt's Next runs as printed: down stops only the stack of the folder it runs in.
   check("up in its root offers unqualified up and down using the same launcher in its Next",
     ["cotal", "pnpm cotal"].some((launcher) =>
@@ -1739,8 +1763,12 @@ if (process.platform === "linux") {
   check("history at a different address still refers to that address, not the stopped stack",
     refused(stoppedHistoryOverride, 2, "TARGET_UNAVAILABLE") && stoppedHistoryOverride.env?.error.message === `can't reach a broker at ${DEAD}` &&
     stoppedHistoryOverride.env.error.remedy === "check that address and that a broker runs there", shown(stoppedHistoryOverride));
-  const seedRemedy = `fix or remove ${defaultSeed}`;
-  for (const [seed, problem] of [["{\n", "is not valid JSON"], ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay']] as const) {
+  const fixSeed = `fix or remove ${defaultSeed}`;
+  for (const [seed, problem, exit, seedRemedy] of [
+    ["{\n", "is not valid JSON", 1, fixSeed],
+    ['{"defaults":{"replay":"yes"}}', 'is invalid: "defaults" replay', 1, fixSeed],
+    [durableOps, 'requests durable delivery for channel "ops"', 2, 'set deliveryClass to "live" in those entries, or use an authenticated space for durable delivery'],
+  ] as const) {
     writeFileSync(defaultSeed, seed);
     const badUp = await json(["up", "--no-manager"], fresh);
     const status = await json(["status", "--space", "demo"], fresh);
@@ -1748,7 +1776,7 @@ if (process.platform === "linux") {
     const ps = await json(["ps", "--space", "demo"], elsewhere);
     const diagnosis = `the channels file ${defaultSeed} ${problem}`;
     check(`up, status and ps agree on the stopped stack's seed ${problem}`,
-      badUp.status === 1 && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
+      badUp.status === exit && badUp.env?.error?.message?.includes(diagnosis) && badUp.env.error.remedy === seedRemedy &&
         status.status === 0 && status.env?.result?.selected?.code === "not-started" && status.env.result.selected.message.includes("is stopped") && status.env.result.selected.channelSeedBlocksRestart === true &&
         status.env.result.hints.some((hint: string) => hint.includes(diagnosis) && hint.includes(seedRemedy)) &&
         statusText.stdout.includes(seedRemedy) && !statusText.stdout.includes(`start it again with \`${launcher} up`) && !/^ +(?:pnpm )?cotal up(?:\s|$)/m.test(statusText.stdout) &&
