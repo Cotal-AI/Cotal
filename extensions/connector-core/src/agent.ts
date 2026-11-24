@@ -226,6 +226,7 @@ export class MeshAgent extends EventEmitter {
     if (config.autoName && options.naming)
       this.naming = new AutoNaming({
         events: this,
+        owner: this.ep.principal.owner,
         lane: this.names,
         request: options.naming.request,
         clearPending: () => this.inOrder(() => this.ep.setCardMeta(AGENT_NAMING_META_KEY, undefined)),

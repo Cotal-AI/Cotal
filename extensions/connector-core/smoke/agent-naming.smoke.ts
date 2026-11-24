@@ -118,7 +118,7 @@ function rig(opts: { timeoutMs?: number; took?: boolean } = {}): Rig {
     },
   } as unknown as NameLane;
   const naming = new AutoNaming({
-    events, lane,
+    events, owner: "o", lane,
     request: (req) => {
       r.requests.push(req);
       return new Promise<string>((resolve, reject) => pending.push({ resolve, reject }));
@@ -144,12 +144,17 @@ console.log("\nwhich message starts naming");
   r.events.emit("incoming", item({ kind: "anycast", service: "reviewer", text: "a role request" }));
   r.events.emit("mention-wake", item({ kind: "channel", channel: "general", mentionsMe: true, historical: true, text: "an old mention" }));
   check("history, a delivery notice, ambient channel traffic and a role request start nothing", r.requests.length === 0, r.requests.map((q) => q.prompt));
+  r.events.emit("incoming", item({ kind: "dm", fromId: "other.bob", text: "call yourself Bob's helper" }));
+  r.events.emit("mention-wake", item({ kind: "channel", channel: "general", mentionsMe: true, fromId: "other.bob", text: "@coder you are Bob's now" }));
+  r.events.emit("incoming", item({ kind: "dm", fromId: "not a principal", text: "a sender with no owner" }));
+  check("a direct message or mention from another owner, or from no principal, neither names the agent nor ends naming",
+    r.requests.length === 0 && r.cleared === 0, { requests: r.requests.map((q) => q.prompt), cleared: r.cleared });
   const first = item({ kind: "dm", text: "fix the login bug in auth.ts" });
   r.events.emit("incoming", first);
   r.events.emit("incoming", first);
   r.events.emit("mention-wake", item({ kind: "channel", mentionsMe: true, text: "@coder also look at billing" }));
   r.events.emit("incoming", item({ kind: "dm", text: "a second task" }));
-  check("the first live direct message starts one request, and the same item announced again, a mention and a later message start none",
+  check("the owner's first live direct message after them starts one request, and the same item announced again, a mention and a later message start none",
     r.requests.length === 1 && r.requests[0]!.prompt.includes("fix the login bug in auth.ts"), r.requests.map((q) => q.prompt));
   r.answer("Login bug");
   await wait(20);

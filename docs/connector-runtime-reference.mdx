@@ -297,7 +297,8 @@ A manager keeps the last name a seat showed with the seat, apart from its alias.
 
 ### Naming from the first message [#naming-from-the-first-message]
 
-A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) names itself from the first message it gets: its launch prompt, else its first live direct message or `@mention`.
+A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) names itself from the first message it gets: its launch prompt, else its first live direct message or `@mention` from a principal of its own owner.
+A message from another owner neither names the seat nor ends naming.
 The connector passes `MeshAgent` a `nameFromMessage` hook, which makes one request to the session's own model outside its conversation, with no tools.
 The request asks for a short name for the message and caps the message at 8,000 characters.
 `MeshAgent` cleans the reply and applies it through the same queue as `set-name`, so an owner's rename is never overwritten.

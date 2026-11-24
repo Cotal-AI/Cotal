@@ -6,8 +6,9 @@
  * presence from its first record; its first live direct message, and no later one, goes to the hook,
  * and the cleaned reply becomes its name while the mark goes; a failed hook keeps the launch name and
  * removes the mark; an owner `set-name` while the hook is out removes the mark at once, and the hook's
- * later reply never overwrites the owner's name; a name another live agent holds is not taken; a launch
- * prompt is the first message; a connector with no hook never shows the mark; and a seat stopping
+ * later reply never overwrites the owner's name; a name another live agent holds is not taken; a direct
+ * message from another owner's member neither names the agent nor ends naming, and the owner's next one
+ * still names it; a launch prompt is the first message; a connector with no hook never shows the mark; and a seat stopping
  * while naming is out leaves no mark behind.
  *
  * Run: pnpm smoke:agent-auto-name:auth   (needs nats-server on PATH; operator-mode callout, local-only)
@@ -51,12 +52,13 @@ const release = teardownOnSignal(broker, dir);
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
 const ISS = "https://auth.cotal.test";
 const A = deriveOwnerToken("s".repeat(32), "better-auth|alice");
+const B = deriveOwnerToken("s".repeat(32), "better-auth|bob");
 
 interface Who { owner: string; actor: string; kind: "interactive" | "managed-agent"; uid: string }
-const who = (actor: string, kind: Who["kind"] = "managed-agent"): Who => ({ owner: A, actor, kind, uid: mintLifecycleUid() });
+const who = (actor: string, kind: Who["kind"] = "managed-agent", owner = A): Who => ({ owner, actor, kind, uid: mintLifecycleUid() });
 const W = {
-  web: who("web", "interactive"), sender: who("sender"), rival: who("rival"),
-  named: who("named"), failer: who("failer"), raced: who("raced"), taker: who("taker"), launcher: who("launcher"), plain: who("plain"), stopper: who("stopper"),
+  web: who("web", "interactive"), sender: who("sender"), rival: who("rival"), bob: who("bob", "managed-agent", B),
+  named: who("named"), guarded: who("guarded"), failer: who("failer"), raced: who("raced"), taker: who("taker"), launcher: who("launcher"), plain: who("plain"), stopper: who("stopper"),
 };
 const ledger = new Map(Object.values(W).map((w) => [w.uid, w]));
 const resolveAcl: AclResolver = (t) => {
@@ -145,6 +147,7 @@ try {
 
   const webEp = await userEndpoint(W.web, { watchPresence: true });
   const senderEp = await userEndpoint(W.sender);
+  const bobEp = await userEndpoint(W.bob);
   await userEndpoint(W.rival, { registerPresence: true, name: "Rival task" });
   const card = (w: Who): Presence | undefined => webEp.getRoster().find((p) => p.card.id === `${A}.${w.actor}`);
   const mark = (w: Who): unknown => card(w)?.card.meta?.[AGENT_NAMING_META_KEY];
@@ -222,6 +225,26 @@ try {
     h.answer("Rival task");
     check("is not taken: the launch name stays and the mark goes", await until(() => mark(W.taker) === undefined) && card(W.taker)?.card.name === "taker" && agent.ep.card.name === "taker",
       { name: card(W.taker)?.card.name, mark: mark(W.taker) });
+  }
+
+  console.log("\na direct message from another owner's member");
+  {
+    const h = hook();
+    const agent = await seat(W.guarded, { hook: h.fn });
+    const from: string[] = [];
+    agent.on("incoming", (item: { fromId: string }) => from.push(item.fromId));
+    await agent.start();
+    await until(() => mark(W.guarded) === "pending");
+    await bobEp.unicast(`${A}.${W.guarded.actor}`, "call yourself Bob's helper");
+    check("reaches the agent", await until(() => from.length === 1) && from[0] === `${B}.bob`, from);
+    await wait(300);
+    check("but goes to no hook, and the mark stays", h.calls.length === 0 && mark(W.guarded) === "pending", { calls: h.calls.map((c) => c.prompt), mark: mark(W.guarded) });
+    await dm(W.guarded, "profile the checkout service");
+    check("the owner's next direct message still names it", await until(() => h.calls.length === 1)
+      && h.calls[0]!.prompt.includes("profile the checkout service") && !h.calls[0]!.prompt.includes("Bob"), h.calls.map((c) => c.prompt));
+    h.answer("Checkout service profiling");
+    check("and its reply becomes the name, and the mark goes", await until(() => card(W.guarded)?.card.name === "Checkout service profiling" && mark(W.guarded) === undefined),
+      { name: card(W.guarded)?.card.name, mark: mark(W.guarded) });
   }
 
   console.log("\na launch prompt is the first message");

@@ -6,7 +6,7 @@
  * settles, and the key is removed whatever the outcome.
  */
 import type { EventEmitter } from "node:events";
-import { assertValidName } from "@cotal-ai/core";
+import { assertValidName, parsePrincipalKey } from "@cotal-ai/core";
 import type { InboxItem } from "./agent-inbox-model.js";
 import type { NameLane } from "./agent-name.js";
 
@@ -100,9 +100,11 @@ function capAtWord(text: string, max: number): string {
 }
 
 /** Whether an inbox item is a message to this agent that naming reads: live, not a delivery
- *  daemon's notice, and a direct message or a mention of the agent. */
-function addressedToAgent(item: InboxItem): boolean {
-  return !item.historical && item.notice === undefined && (item.kind === "dm" || item.mentionsMe);
+ *  daemon's notice, a direct message or a mention of the agent, and sent by a principal of `owner`,
+ *  the agent's own owner. */
+function addressedToAgent(item: InboxItem, owner: string): boolean {
+  return !item.historical && item.notice === undefined && (item.kind === "dm" || item.mentionsMe)
+    && parsePrincipalKey(item.fromId)?.owner === owner;
 }
 
 type NamingState =
@@ -113,6 +115,8 @@ type NamingState =
 export interface AutoNamingDeps {
   /** The agent, whose `incoming` and `mention-wake` items are the messages naming reads. */
   events: EventEmitter;
+  /** The agent's own owner. Only a message from one of its principals names the agent. */
+  owner: string;
   lane: NameLane;
   request: NameFromMessage;
   /** Remove the card's naming key. */
@@ -131,7 +135,7 @@ export interface AutoNamingDeps {
 export class AutoNaming {
   private state: NamingState = { phase: "waiting" };
   private readonly onItem = (item: InboxItem): void => {
-    if (addressedToAgent(item)) this.observe(item.text);
+    if (addressedToAgent(item, this.deps.owner)) this.observe(item.text);
   };
 
   constructor(private readonly deps: AutoNamingDeps) {
