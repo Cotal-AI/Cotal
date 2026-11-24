@@ -63,16 +63,20 @@ function assertIssuedBackupDirArgument(raw: string): void {
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", `--recreate-issued-stores names a new backup directory, and ${problem}; nothing was started`, { target: { backupDir: dir }, remedy: "name a directory that does not exist yet, inside one that does" });
 }
 
+function assertUpManifestArguments(values: ParsedArgs["values"]): void {
+  if (typeof values.file === "string" && !values.file.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
+  if (values.file !== undefined && values["service-endpoints"] === true)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--service-endpoints cannot be combined with --file/-f: manifest startup does not host service endpoints; nothing was started or written", {
+      remedy: `drop --service-endpoints to use the manifest, or ${legacyUserAuthRemedy({ serviceEndpoints: true, tls: true })} The new folder does not inherit broker settings from the manifest or the project's recorded policy.`,
+    });
+}
+
 /** Launch intent is checked by the kernel before seed or effect preparation. A recovery
  *  re-entry supplies its recorded mode explicitly rather than inheriting the new public default. */
 export function validateUpArguments(args: ParsedArgs): void {
   const presentation = presentationOf(args.values);
-  if (typeof args.values.file === "string" && !args.values.file.trim())
-    throw new CommandFailure("refused", "USAGE_INVALID", "--file is empty, so it names no manifest; nothing was started or written", { remedy: "name a manifest with --file <cotal.yaml>, or omit --file to start the folder's stack" });
-  if (args.values.file !== undefined && args.values["service-endpoints"] === true)
-    throw new CommandFailure("refused", "USAGE_INVALID", "--service-endpoints cannot be combined with --file/-f: manifest startup does not host service endpoints; nothing was started or written", {
-      remedy: `drop --service-endpoints to use the manifest, or ${legacyUserAuthRemedy({ serviceEndpoints: true, tls: true })} The new folder does not inherit broker settings from the manifest or the project's recorded policy.`,
-    });
+  assertUpManifestArguments(args.values);
   if (args.values.restore === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "--restore is empty, so it names no backup folder; nothing was started or written", { remedy: "pass the backup folder as --restore <dir>, or omit --restore to start without restoring", selfContained: true });
   // A `.cotal` that is a link, or leads nowhere, is refused before anything reads through it.
