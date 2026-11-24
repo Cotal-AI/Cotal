@@ -80,6 +80,38 @@ function sandboxRun(root: string, home: string): {
 
 interface Checkpoint { stream: string; name: string }
 
+function assertOverlappingRestoreTarget(root: string, artifact: string, run: ReturnType<typeof sandboxRun>["run"]): void {
+  const target = join(artifact, "target");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const manifest = join(artifact, "manifest.json");
+  const attempts = join(root, ".cotal", "maintenance", "attempts");
+  const journalBefore = readFileSync(journal);
+  const manifestBefore = readFileSync(manifest);
+  const attemptsBefore = readdirSync(attempts).sort();
+  const message = /restore target must not overlap the backup artifact\. No restore started\./;
+  const remedy = /choose an absent `--store-dir` path outside the backup artifact/;
+  const plain = run("backup", "restore", artifact, "--store-dir", target, "--plain");
+  const up = run("up", "--restore", artifact, "--store-dir", target, "--detach");
+  for (const result of [plain, up]) {
+    assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, message);
+    assert.match(result.stderr, remedy);
+    assert.doesNotMatch(result.stderr, /Outcome unconfirmed|cotal status/);
+  }
+  const json = run("backup", "restore", artifact, "--store-dir", target, "--json");
+  assert.equal(json.status, 1, `${json.stdout}${json.stderr}`);
+  const envelope = JSON.parse(json.stdout);
+  assert.equal(envelope.outcome, "refused");
+  assert.equal(envelope.error.code, "USAGE_INVALID");
+  assert.match(envelope.error.message, message);
+  assert.match(envelope.error.remedy, remedy);
+  assert.equal(envelope.target.storeDir, target);
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(readFileSync(manifest), manifestBefore);
+  assert.deepEqual(readdirSync(attempts).sort(), attemptsBefore);
+}
+
 async function scenario(mode: "open" | "auth"): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-backup-restore-${mode}-root-`)));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), `cotal-backup-restore-${mode}-home-`)));
@@ -307,12 +339,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(nestedArtifact.status, 1, `an artifact in the maintenance folder is a usage refusal\n${nestedArtifact.stderr}`);
     assert.ok(nestedArtifact.stderr.includes(`the restore artifact ${realpathSync(attemptArtifact)} is inside this root's maintenance folder ${realpathSync(join(root, ".cotal", "maintenance"))}, where it stages its attempt; nothing was restored`), `it names the artifact and the folder\n${nestedArtifact.stderr}`);
     rmSync(attemptArtifact, { recursive: true });
-    const nestedTarget = run(
-      "up", "--restore", artifact, "--store-dir", join(artifact, "target"), "--detach",
-      "--server", server, "--space", space,
-    );
-    assert.notEqual(nestedTarget.status, 0);
-    assert.match(nestedTarget.stderr, /target must not overlap the backup artifact/);
+    assertOverlappingRestoreTarget(root, artifact, run);
     // An explicit store that already exists, or whose parent is missing, is a usage refusal before
     // anything is staged, and the preserved cut stays as it was.
     const cutState = readMaintenanceJournal(root)?.state;

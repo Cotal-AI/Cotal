@@ -371,7 +371,11 @@ function assertRestoreTargetPath(source: string, artifact: string, attempts: str
   if (contains(attempts, canonicalTarget) || contains(canonicalTarget, attempts))
     throw new Error("restore target must not overlap the maintenance attempt directory");
   if (contains(artifact, canonicalTarget) || contains(canonicalTarget, artifact))
-    throw new Error("restore target must not overlap the backup artifact");
+    throw new CommandFailure("refused", "USAGE_INVALID", "restore target must not overlap the backup artifact. No restore started.", {
+      target: { storeDir: target },
+      remedy: "choose an absent `--store-dir` path outside the backup artifact, under an existing writable directory",
+      selfContained: true,
+    });
 }
 
 async function validateManifest(
