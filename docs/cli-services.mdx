@@ -255,8 +255,10 @@ If a custom service name has no saved definition in the requested space, `servic
 
 `service status <name>` reports `not started` and exits 0 for a saved definition with no recorded
 instances. It does not allocate an instance or start a process. With `--json`, the result has
-`recordedState: "not started"` and `instanceId: null`. If `--instance <id>` names an instance that
-does not belong to that service, `status` refuses with `TARGET_NOT_FOUND` (exit 2).
+`recordedState: "not started"` and `instanceId: null`. For a saved definition, `status` and `logs`
+refuse an explicit instance ID that does not belong to it with `TARGET_NOT_FOUND` (exit 2).
+The refusal names the definition and requested ID and points to `cotal service --space <space> --json`
+for the full IDs in that space.
 
 `status` names the file a running instance's process executes, as the kernel reports it, so the
 `stack-broker` row shows which `nats-server` serves the stack. `--json` carries it as `executable`.
