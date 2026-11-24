@@ -80,13 +80,13 @@ type HistoryReaderSlots = {
  *  1,000 is chosen from that sweep rather than from the failure point: it is a fifth of the largest
  *  count that still answered, and it answers in a quarter second, so a batch stays far away from
  *  both the timeout and the response-deadline budget the dashboard has to share with its DM read.
- *  A space with the 69 chat channels this was built for is still ONE read, so the round-trip claim
- *  in #1210 is unchanged at that size. */
+ *  A filter set within this count takes one read if no filter exceeds the depth budget. */
 export const MULTI_FILTER_BATCH = 1_000;
 
-// NATS intersects multi-filter pulls by retokenizing each dotted prefix. Beyond its inline token
-// buffer, deep subjects also allocate on that hot path. Give them single-filter pulls instead.
-const MULTI_FILTER_TOKEN_BUDGET = 64;
+// On NATS 2.14.0 with 2,002 posts, all-channel reads took 2.5–2.7s at 128 whole-subject
+// tokens, 4.7–5.0s at 256, and 13–15s at 512. Cap multi-filter pulls at the last measured
+// depth below 4s, half the first measured depth over that budget.
+const MULTI_FILTER_TOKEN_BUDGET = 128;
 
 
 /** How many filter batches may be in flight at once. Bounded because the point of #1210 was to stop
@@ -256,8 +256,9 @@ export class EndpointHistory {
    * each tagged with the channel the BROKER delivered it on.
    *
    * The CHAT stream interleaves every channel into one sequence space. Consumers take sets of
-   * filter subjects for the requested channels. Large filter sets are read in batches, and the
-   * pages are merged by stream sequence to select the newest `limit` messages overall.
+   * filter subjects for the requested channels. Batches are capped by filter count, and deep
+   * filters are isolated in their own batches. The pages are merged by stream sequence to select
+   * the newest `limit` messages overall.
    *
    * **The broker does the filtering, so the wire carries only what is asked for.** A channel left
    * out of `channels` costs nothing: its messages are never delivered, so a space whose volume is
@@ -271,13 +272,11 @@ export class EndpointHistory {
    * concrete channels. Otherwise every channel must be concrete: mixing a family with other
    * filters, or using other wildcard patterns, is refused rather than risking overlapping filters.
    *
-   * **The broker enforces read authority.** A multi-filter create
-   * cannot encode its filter in the API subject, so it rides the bare
-   * `$JS.API.CONSUMER.CREATE.<CHAT>` row that only the read-only dashboard profiles hold. An agent
-   * credential pins the filter into the subject per channel and is denied here by the broker, which
-   * is the correct answer: this method reads across channels, and an agent's read ACL is per
-   * channel. A single filter uses the filter-bearing create subject, including a channel family,
-   * so the broker checks the credential's grant for that filter. No additional authority is minted.
+   * **The broker enforces read authority.** A batch formed with multiple filters uses the bare
+   * `$JS.API.CONSUMER.CREATE.<CHAT>` subject. Any pieces split from it keep that create form,
+   * even if they contain one filter. A batch formed with just one filter, including a channel
+   * family, uses the filter-bearing create subject. The broker checks the caller's grant for
+   * the create subject. No additional authority is minted.
    */
   async multiChannelHistory(
     channels: readonly string[],
@@ -304,9 +303,8 @@ export class EndpointHistory {
     // request and the client's request timeout is what gives way, so past roughly 5,000 filters the
     // read does not answer at all and the route loses the whole chat source: measured on an
     // isolated broker, 10,000 channels failed `timeout` after 5,023ms while the fan-out this
-    // replaced still returned 2,739 messages on the same corpus. Reading in batches keeps the
-    // single-read cost at the sizes this was built for (69 channels is one batch, so #1210's
-    // round-trip numbers are unchanged) and degrades to a few reads instead of none above that.
+    // replaced still returned 2,739 messages on the same corpus. The count limit lets small sets
+    // of shallow filters share one read and splits larger sets across several reads.
     // `batch` is a knob rather than a constant so the batched path can be compared against the
     // single-create path on ONE corpus: forcing a small batch makes a space that would otherwise be
     // one read take many, which is the only way to assert the two select the same messages.
