@@ -6,16 +6,20 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
 import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
+import { scaffoldCheckCommand } from "../src/commands/endpoint-authoring.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
 import { hostPackageDir, isCommandFailure, MeshTargetError, seededCommandsMismatch, telemetrySettingsPath, writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery } from "@cotal-ai/workspace";
 import { executeUpdate, installedUpdatePrefix, parseNpmVersion, printLegacyReport, reportRunningManagers, update, validateUpdateArguments, verifyCurrentExtension, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
+import { runNpmAsync } from "../src/commands/update-process.js";
 import { supervisorMayServe } from "../src/lib/manager-proc.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -161,6 +165,22 @@ const noop = async (): Promise<void> => {};
     assert.equal(failedReceipt.error.code, "OPERATION_FAILED");
     assert.deepEqual(failedReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
 
+    writeFileSync(join(root, "bad-clock.json"), '{"clock":{"checkpoints":"1s"}}');
+    const badScript = ["run", "simulate", "warning-fail.js", "--handler", "bad-clock.json"];
+    const scriptJson = run([...badScript, "--json"]);
+    assert.equal(scriptJson.status, 1, scriptJson.stdout + scriptJson.stderr);
+    assert.equal(scriptJson.stderr, "");
+    const scriptReceipt = JSON.parse(scriptJson.stdout);
+    assert.equal(scriptReceipt.outcome, "refused");
+    assert.equal(scriptReceipt.error.code, "SCHEMA_INVALID");
+    assert.equal(scriptReceipt.target.file, "bad-clock.json");
+    assert.match(scriptReceipt.error.remedy, /use clock\.checkpoint in bad-clock\.json/);
+    assert.deepEqual(scriptReceipt.warnings.map(({ code }: { code: string }) => code), ["L3021"]);
+    const scriptPlain = run([...badScript, "--plain"]);
+    assert.equal(scriptPlain.status, 1, scriptPlain.stdout + scriptPlain.stderr);
+    assert.equal(scriptPlain.stdout, "");
+    assert.match(scriptPlain.stderr.replace(/\s+/g, " "), /L3021 .*Fix: Pass a key function.*unknown clock field 'checkpoints'.*use clock\.checkpoint in bad-clock\.json/);
+
     for (const [field, delay] of [["checkpoint", "soon"], ["turn", 100], ["ask", null], ["wait", "9007199254740992ms"]] as const) {
       writeFileSync(join(root, "bad-clock.json"), JSON.stringify({ checkpoints: { "approve-plan": { status: "resolved" } }, clock: { [field]: delay } }));
       const invalid = run(["run", "simulate", "workflow.cotal.js", "--handler", "bad-clock.json", "--json"]);
@@ -185,6 +205,37 @@ log("reply", reply === null ? "timed out" : "received", "elapsed", now() - start
     assert.equal(timedOut.status, 0, timedOut.stdout + timedOut.stderr);
     assert.match(timedOut.stdout, /Virtual time:\s+1000 ms/);
     assert.match(timedOut.stdout, /reply timed out elapsed 1000/);
+
+    for (const { effect, call, log, table, reply, code, deadlineMs, late, exact, timely, timelyMs, value } of [
+      { effect: "turn", call: 'turn(agent, { name: "review", deadline: "1s" })', log: "status",
+        table: "turns", reply: { status: "done" }, code: "L4003", deadlineMs: 1000,
+        late: "2s", exact: "1s", timely: "500ms", timelyMs: 500, value: "done" },
+      { effect: "ask", call: 'ask(agent, { name: "review", schema: { ok: "boolean" }, deadline: "3s", attempts: 2 })', log: "ok",
+        table: "asks", reply: [{ ok: "wrong type" }, { ok: true }], code: "L4006", deadlineMs: 3000,
+        late: "2s", exact: "1500ms", timely: "1s", timelyMs: 2000, value: true },
+    ]) {
+      writeFileSync(join(root, "review.js"), `const agent = await spawn("reviewer");\nconst result = await ${call};\nlog(result.${log});\n`);
+      for (const delay of [late, exact, timely]) {
+        const label = `${effect} with ${delay} per reply`;
+        writeFileSync(join(root, "results.json"), JSON.stringify({ [table]: { review: reply }, clock: { [effect]: delay } }));
+        const simulated = run(["run", "simulate", "review.js", "--handler", "results.json", "--json"]);
+        assert.equal(simulated.status, 0, `${label}: ${simulated.stdout}${simulated.stderr}`);
+        assert.equal(simulated.stderr, "", label);
+        const { outcome, completeness, result } = JSON.parse(simulated.stdout);
+        assert.equal(outcome, "ok", label);
+        assert.equal(completeness, "complete", label);
+        assert.equal(result.elapsedMs, delay === timely ? timelyMs : deadlineMs, label);
+        if (delay === timely) {
+          assert.equal(result.outcome, "completed", label);
+          assert.deepEqual(result.log, [{ scope: "", values: [value] }], label);
+        } else {
+          assert.equal(result.outcome, "failed", label);
+          assert.equal(result.failure.code, code, label);
+          assert.equal(result.failure.step, `/${effect}:review#0`, label);
+          assert.deepEqual(result.log, [], label);
+        }
+      }
+    }
 
     writeFileSync(join(root, "expiry-race.js"), `
 const raceResult = await race({
@@ -250,7 +301,8 @@ function updateRuntime(opts: {
     nodePath: "/node",
     version: () => opts.version ?? "0.13.1",
     reconcile: async () => void events.push("reconcile"),
-    refreshConnectors: async () => (events.push("refresh-connectors"), []),
+    refreshConnectors: async () => void events.push("refresh-connectors"),
+    refreshClients: async () => (events.push("refresh-clients"), []),
     automaticUpdateAdvice: async () => undefined,
     reportRunningManager: async () => {
       events.push("report-running-manager");
@@ -783,10 +835,9 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 // --- endpoint init's Next is the check command for the contract it created ------------------------
-{
-  const { scaffoldCheckCommand } = await import("../src/commands/endpoint-authoring.js");
-  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal ep check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
-  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal ep check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
+if (process.platform !== "win32") {
+  assert.equal(scaffoldCheckCommand("/run/ep/reviews"), "cotal endpoint check /run/ep/reviews/contract.json", "the scaffold's Next names its own contract, not a placeholder");
+  assert.equal(scaffoldCheckCommand("/run/it's here"), "cotal endpoint check '/run/it'\\''s here/contract.json'", "a scaffold path a shell would split is quoted");
   const { runCli } = await import("../src/command.js");
   const priorXdg = process.env.XDG_CONFIG_HOME;
   const scaffold = realpathSync(mkdtempSync(join(tmpdir(), "cotal-ep-init-")));
@@ -801,12 +852,15 @@ async function completionOut(positionals: string[]): Promise<string> {
     } finally {
       process.stdout.write = real;
     }
-    assert.ok(out.includes(scaffoldCheckCommand(dir)), "endpoint init's Next is the check command for the contract it created");
+    const expected = scaffoldCheckCommand(dir);
+    assert.ok(expected && [expected, `pnpm ${expected}`].some((command) => out.includes(command)), "endpoint init's Next is the check command for the contract it created");
   } finally {
     if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = priorXdg;
     rmSync(scaffold, { recursive: true, force: true });
   }
+} else {
+  assert.equal(scaffoldCheckCommand("C:\\work\\reviewer's copy"), undefined, "Windows does not get a POSIX-quoted scaffold command");
 }
 
 // --- up rejects pure flag conflicts before even checking a supplied project root ----------------
@@ -834,6 +888,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.resolve<Command>("command", "up")!;
   const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
+  const pair = "put the broker URL, including the intended port, in --server and the matching local IP address alone in --host";
   const refused: [string[], RegExp, string?][] = [
     [["--server", "nats://127.0.0.1"], /^--server names no port/],
     // The example keeps the scheme and port the person chose, and never the host or a credential.
@@ -843,10 +898,10 @@ async function completionOut(positionals: string[]): Promise<string> {
     [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
     [["--host", "::1"], /^--host names an IPv6 address/],
     [["--host", "[::1]"], /^--host names an IPv6 address/],
-    [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],
-    [["--host", "127.0.0.1:4222"], /^--host 127\.0\.0\.1:4222 is not a valid bind host/],
-    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/],
-    [["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.2"], /^--host 127\.0\.0\.2 and --server nats:\/\/127\.0\.0\.1:4222 name different addresses/],
+    [["--host", "nats://127.0.0.2:29888"], /^--host nats:\/\/127\.0\.0\.2:29888 looks like a URL/, pair],
+    [["--host", "127.0.0.2:29888"], /^--host 127\.0\.0\.2:29888 is not a valid bind host/, pair],
+    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/, pair],
+    [["--server", "nats://127.0.0.2:29888", "--host", "127.0.0.3"], /^--host 127\.0\.0\.3 and --server nats:\/\/127\.0\.0\.2:29888 name different addresses/, pair],
     [["--server", "nats://127.0.0.2:4222"], /^--server nats:\/\/127\.0\.0\.2:4222 names 127\.0\.0\.2, and with no --host the broker binds 127\.0\.0\.1/, "pass --host 127.0.0.2 to bind the broker there"],
   ];
   for (const [flags, said, remedy] of refused) {
@@ -1031,6 +1086,14 @@ async function completionOut(positionals: string[]): Promise<string> {
     events.indexOf("reconcile") < events.indexOf("refresh-connectors"),
     "update refreshes what connectors installed in their harnesses, after the connectors themselves",
   );
+  assert.ok(
+    events.findIndex((event) => event.startsWith("spawn:")) < events.indexOf("refresh-clients"),
+    "update refreshes client entries after the operator extensions that provide them are replayed",
+  );
+  assert.ok(
+    events.indexOf("release-mutation") < events.indexOf("refresh-clients"),
+    "update releases its extension pass before loading client providers, which take that lock",
+  );
 }
 
 // --- a first-party extension npm's prefix record proves current is verified, not reinstalled -------
@@ -1054,6 +1117,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
     writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
+    writeFileSync(join(installedDir, "index.js"), "");
   };
   const run = async (entry: InstalledExtension) => {
     const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
@@ -1075,6 +1139,7 @@ async function completionOut(positionals: string[]): Promise<string> {
       ["recorded at an older version", () => prefixAt("0.13.0"), installed(pkg, "0.13.0", `${pkg}@0.13.0`), "recorded at 0.13.0, not 0.13.1"],
       ["installed at an older version than recorded", () => prefixAt("0.13.1", "0.13.0"), installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is 0.13.0 on disk and 0.13.1 in the prefix lock`],
       ["missing its package tree", () => { prefixAt("0.13.1"); rmSync(installedDir, { recursive: true }); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), `node_modules/${pkg} is recorded in the prefix lock but not installed`],
+      ["missing its entry file", () => { prefixAt("0.13.1"); rmSync(join(installedDir, "index.js")); }, installed(pkg, "0.13.1", `${pkg}@0.13.1`), "entry file is missing"],
     ] as const) {
       setup();
       const stale = await run(entry);
@@ -1093,10 +1158,15 @@ async function completionOut(positionals: string[]): Promise<string> {
 // --- a connector refresh that fails fails the update ----------------------------------------------
 {
   const failing = updateRuntime({});
-  failing.rt = { ...failing.rt, refreshConnectors: async () => { throw new Error("plugin update failed (cotal, /p)"); } };
+  failing.rt.refreshConnectors = async (report) => {
+    report("Independent plugin: repaired");
+    throw new Error("plugin update failed (cotal, /p)");
+  };
   const code = await executeUpdate(false, failing.rt);
   assert.equal(code, 1, "a stale harness copy is not reported as a finished update");
+  assert.ok(failing.events.some((event) => event.includes("✓ Independent plugin: repaired")));
   assert.ok(failing.events.some((event) => event.includes("✗ connector installs: plugin update failed (cotal, /p)")));
+  assert.ok(!failing.events.some((event) => event.includes("✓ connector integrations refreshed")));
 }
 
 // --- a running legacy manager is reported, then blocks an update before replay --------------------
@@ -1462,6 +1532,11 @@ async function completionOut(positionals: string[]): Promise<string> {
   stopped.rt.reconcile = async () => { throw new Error("seed interrupted"); };
   assert.equal(await executeUpdate(false, stopped.rt), 1);
   assert.ok(!stopped.events.some((event) => event.startsWith("spawn:")), "seed failure blocks later prefix mutation");
+  assert.ok(!stopped.events.includes("refresh-clients"), "a failed update leaves the client entries alone");
+
+  const clientFails = updateRuntime({ extensions: [installed("@cotal-ai/orca")] });
+  clientFails.rt.refreshClients = async () => { throw new Error("T3 Code settings are not valid JSON"); };
+  assert.equal(await executeUpdate(false, clientFails.rt), 1, "a client entry Cotal cannot update fails the command");
 }
 
 // --- one mutation claim linearizes the whole operator pass through the default npm check ----------
@@ -1532,7 +1607,7 @@ async function completionOut(positionals: string[]): Promise<string> {
         }
         if (name === "@cotal-ai/cli" && ["connection-refused", "unsafe-code"].includes(scenario)) return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "connection-refused" ? "ECONNREFUSED" : "E401\nsecret-token", summary: "https://user:secret@registry.example/?token=secret" } }), stderr: "npm error secret-token" };
         if (scenario === "date-metadata") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET", summary: `No matching version found for ${spec} with a date before 1/1/2020.` } }) };
-        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
+        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404", summary: "Not Found - GET https://user:secret@registry.example/private-key/@cotal-ai%2fcore?token=secret - Not found" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         const metadata = {
           name, version: scenario === "wrong-version" || scenario === "array-wrong-version" ? "0.13.3" : requestedVersion,
@@ -1562,8 +1637,13 @@ async function completionOut(positionals: string[]): Promise<string> {
     } else {
       assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
       const error = fixture.events.filter(event => event.startsWith(arriving ? "out:" : "err:")).join("\n");
-      if (arriving) assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
-      else if (scenario.startsWith("date-")) {
+      if (arriving) {
+        assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
+        if (scenario === "metadata-404") {
+          assert.match(error, /npm E404 from https:\/\/registry\.example\)/);
+          assert.doesNotMatch(error, /secret|private-key/);
+        }
+      } else if (scenario.startsWith("date-")) {
         assert.match(error, /min-release-age.*before.*Adjust that date filter/);
         assert.doesNotMatch(error, /still reaching the registry|again in a few minutes/);
       } else {
@@ -1583,6 +1663,50 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const result = spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/smoke/update-registry-arrival.smoke.mjs"), "closed-scope"], { encoding: "utf8", timeout: 90_000 });
   assert.equal(result.status, 0, result.stdout + result.stderr);
+}
+
+// A reachable scoped mirror can serve one first-party package and return HTTP 404 for another.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-scoped-404-"));
+  const version = "0.13.2", npmrc = join(root, "mirror.npmrc");
+  const requests: string[] = [];
+  const mirror = createServer((request, response) => {
+    const path = decodeURIComponent(request.url ?? "");
+    requests.push(path);
+    response.setHeader("content-type", "application/json");
+    if (path !== "/@cotal-ai/cli") return response.writeHead(404).end('{"error":"Not found"}');
+    response.end(JSON.stringify({ name: "@cotal-ai/cli", "dist-tags": { latest: version }, versions: {
+      [version]: { name: "@cotal-ai/cli", version, dist: { tarball: "https://registry.invalid/cli.tgz", integrity: "sha512-fixture" } },
+    } }));
+  });
+  try {
+    await once(mirror.listen(0, "127.0.0.1"), "listening");
+    const address = mirror.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const config = `@cotal-ai:registry=${origin}/\n`;
+    writeFileSync(npmrc, config);
+    const fixture = updateRuntime({
+      npm: args => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
+      releaseNpm: () => ({ status: 0, stdout: JSON.stringify({ name: "cotal-ai", version, dependencies: { "@cotal-ai/cli": version, "@cotal-ai/core": version }, dist: { tarball: "https://registry.invalid/root.tgz", integrity: "sha512-fixture" } }) }),
+    });
+    fixture.rt.npmAsync = (args, cache) => args[1].startsWith("@cotal-ai/")
+      ? runNpmAsync([...args, "--userconfig", npmrc], cache) : Promise.resolve(fixture.rt.npm(args));
+    let clock = 0;
+    fixture.rt.now = () => clock;
+    fixture.rt.sleep = async () => { clock += 600_000; };
+    assert.equal(await executeUpdate(true, fixture.rt), 0);
+    assert.deepEqual(requests.sort(), ["/@cotal-ai/cli", "/@cotal-ai/cli", "/@cotal-ai/core", "/@cotal-ai/core"]);
+    const output = fixture.events.filter(event => event.startsWith("out:"));
+    const diagnostic = `@cotal-ai/core@${version} was not found (npm E404 from ${origin}). Check @cotal-ai:registry in .npmrc`;
+    assert.ok(output.some(line => line.startsWith("out:Waiting for ") && line.includes(diagnostic)), output.join("\n"));
+    assert.ok(output.at(-1)?.includes(`${diagnostic}. Keeping cotal-ai@0.13.1; no global install was attempted.`), output.join("\n"));
+    assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)));
+    assert.equal(readFileSync(npmrc, "utf8"), config);
+  } finally {
+    await new Promise<void>(done => mirror.close(() => done()));
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 // A listed release that becomes downloadable during the wait installs through the normal path.
@@ -2325,7 +2449,16 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.match(json?.message ?? "", /a spawn in this terminal takes no structured receipt/, "because a spawn in this terminal writes no receipt");
   assert.match(json?.remedy ?? "", /add -d/, "and the Next adds -d");
   assert.equal(refusal({ json: true, detach: true }), undefined, "with -d, --json is a manager's receipt");
-  assert.match(refusal({ restarts: "2", "restart-window": "1000" })?.remedy ?? "", /add -d, or --on/, "--restarts without a manager names -d or --on");
+  const spawnCommand = findCommand(registry.all<Command>("command"), "spawn")!;
+  const restart = ["--restarts", "2", "--restart-window", "1000"];
+  for (const [placement, change] of [[[], "add -d"], [["--foreground"], "replace --foreground with -d"]] as const) {
+    const preview = ["--dry-run", "--json"];
+    const denied = refusal(parseCommandArgs(spawnCommand, [...placement, ...restart, ...preview]).values);
+    assert.equal(denied?.code, "USAGE_INVALID");
+    assert.equal(denied.remedy, `${change} to keep restart supervision, or omit --restarts and --restart-window to launch in this terminal`);
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, ["-d", ...restart, ...preview])), "the managed retry keeps both restart flags");
+    assert.doesNotThrow(() => validateSpawnArguments(parseCommandArgs(spawnCommand, [...placement, ...preview])), "the direct retry omits both restart flags");
+  }
   assert.match(refusal({ on: "a".repeat(30) })?.message ?? "", /attaching to a manager's launch needs usable input and output terminals/, "--on without -d attaches, which needs terminals");
 }
 

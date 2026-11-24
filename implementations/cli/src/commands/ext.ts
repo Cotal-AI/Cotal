@@ -13,7 +13,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { npmInvocation } from "../lib/npm-invocation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { connectorConfigDir, extensionEntry, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec } from "@cotal-ai/workspace";
+import { connectorConfigDir, extensionReinstallAdvice, isExtensionPathSpec as isPathSpec, resolveExtensionEntry } from "@cotal-ai/workspace";
 import { CorruptExtensionPackageError, inspectLock, extensionNpmMutationPath, oneLine, type OutputWarning } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
@@ -59,8 +59,8 @@ export function validateExtArguments(args: ParsedArgs): void {
     throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
   }
   if ((sub === "add" || sub === "remove") && (args.positionals.length !== 2 || !operand)) throw usage(EXT_USAGE);
-  // npm accepts an initial underscore in the package part of a scoped name.
-  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
+  // npm accepts an initial underscore in either part of a scoped name.
+  if (sub === "remove" && operand && !/^(?:[a-z0-9-]|@[a-z0-9_-][a-z0-9._~-]*\/[a-z0-9_-])[a-z0-9._~-]*$/i.test(operand)) {
     throw usage(`invalid extension package name "${oneLine(operand)}". Give the package name as shown by \`cotal ext list\``);
   }
   if (sub === "seed" && args.positionals.length !== 1) throw usage("cotal ext seed takes no operands");
@@ -130,8 +130,8 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env);
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
@@ -327,7 +327,7 @@ export async function installExtensionSet(
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
-      const entry = join(extensionPackageDir(request.pkg), extensionEntry(meta));
+      const entry = resolveExtensionEntry(extensionPackageDir(request.pkg), meta);
       if (!existsSync(entry)) throw new Error(`extension set installed no entry for ${request.pkg} at ${entry}`);
     }
     const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;

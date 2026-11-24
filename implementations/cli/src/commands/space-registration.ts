@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import {
   CommandFailure,
   authDir,
+  brokerAddressForDisplay,
   brokerUrlKey,
   canonicalRoot,
   codeSpan,
@@ -15,6 +16,7 @@ import {
   rootControlProblem,
   clearCurrent,
   discoveryDocumentUrl,
+  explicitNoInputFlag,
   findMesh,
   findPreparedSpace,
   getCurrent,
@@ -111,7 +113,7 @@ export interface SpaceAdded {
   readonly kind: "space-added";
   /** The registration as `cotal space show` reports it. */
   readonly space: SpaceDetail;
-  /** Whether the broker was checked before the record was written; false under `--force`. */
+  /** Whether the broker was checked by this command. */
   readonly verified: boolean;
   /** Whether it replaced an earlier registration of the same name. */
   readonly replaced: boolean;
@@ -181,7 +183,8 @@ export function handAddedRegistration(name: string, force: boolean, target: unkn
     const problem = projectRootProblem(prepared.root);
     if (problem === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
       `restore the original project folder at its recorded path, or run ${codeSpan(`${displayCmd()} space forget ${shellWord(name)}`)} to register the other broker, then repeat the add with the same options`);
-    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `start it with \`cotal up\` in its root, or forget it with \`cotal space forget ${name}\``);
+    const start = codeSpan(`${displayCmd()} up --root ${shellWord(prepared.root)} --space ${name}`);
+    throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${codeSpan(`${displayCmd()} space forget ${name}`)}, then repeat the add with the same options`);
   }
   const existing = findMesh(name);
   // `--force` replaces only a registration added by hand, so the refusal offers it only for one.
@@ -192,14 +195,12 @@ export function handAddedRegistration(name: string, force: boolean, target: unkn
   return existing;
 }
 
-/** Only a registration added by hand can be replaced. An unchecked one can also be checked in
- *  place without `--force` when its broker, root, mode and transport policy match. */
-function replaceable(name: string, force: boolean, target: unknown, checksInPlace?: (existing: MeshEntry) => boolean): boolean {
+/** A manual registration can be replaced with `--force` or checked in place when it matches. */
+function registrationBeforeAdd(name: string, force: boolean, target: unknown, matches?: (existing: MeshEntry) => boolean): MeshEntry | undefined {
   const existing = handAddedRegistration(name, force, target);
-  if (!existing) return false;
-  if (!force && !(existing.unchecked === true && checksInPlace?.(existing)))
+  if (existing && !force && !matches?.(existing))
     throw refuse("CONFLICT", `"${name}" is already registered at ${existing.server}`, target, `forget it first with \`cotal space forget ${name}\`, or pass --force to replace it`);
-  return true;
+  return existing;
 }
 
 /** Shows what the registration will trust and asks before it is written. Without a terminal, or
@@ -230,20 +231,21 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
   if (v.mode === "user" && !bundled)
     throw usage("--mode user needs the space's pinned trust", "pass --file <bundle.json> exported where the space runs, or --from <https url> to fetch its discovery document");
   const prompt = presentation !== "json" && canPrompt();
-  const added = bundled ? await addFromBundle(name, v, prompt) : await addFromServer(name, v, prompt);
+  const added = bundled ? await addFromBundle(name, v, prompt, presentation) : await addFromServer(name, v, prompt);
   if (added === undefined) {
     const target = name ? { space: name } : null;
     const result: AddCancelled = { kind: "space-add-cancelled", space: name ?? null };
     writeResult(presentation, { command: "space", target, result, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "nothing was added" }] }, addedView);
     return;
   }
-  writeResult(presentation, { command: "space", target: { space: added.result.space.space }, result: added.result, warnings: added.warnings }, addedView);
+  const { result, warnings, noOp = false } = added;
+  writeResult(presentation, { command: "space", target: { space: result.space.space }, result, warnings, noOp }, (r) => addedView(r, noOp));
 }
 
-export type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[] } | undefined;
+export type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[]; readonly noOp?: true } | undefined;
 
 async function addFromServer(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
-  if (name === undefined) throw usage("name the space to add", "cotal space add <name> --server <url>");
+  if (name === undefined) throw usage("name the space to add", `repeat the same command with the space name after \`add\`${v.server === undefined ? " and its broker address in --server <url>" : ""}`);
   const target = { space: name };
   if (v.server === undefined) throw usage("--server <url> is required: a space that runs elsewhere has no address to infer", "pass its broker URL, for example --server nats://100.90.12.34:4222");
   const server = take(checkServer(v.server, "--server"), target);
@@ -256,22 +258,26 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   const accounts = take(spacesAtRoot(root), target);
   const mode = take(checkMode(name, root, accounts, v.mode, false), target);
   const auth = take(checkTrust(mode, root, name), target);
-  const replaced = replaceable(name, v.force === true, target, (existing) =>
-    brokerUrlKey(existing.server) === brokerUrlKey(server) && existing.root === root && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
+  const existing = registrationBeforeAdd(name, v.force === true, target, (existing) =>
+    brokerUrlKey(existing.server) === brokerUrlKey(server) && canonicalRoot(existing.root) === canonicalRoot(root) && existing.mode === mode && (existing.tlsRequired === true) === tlsRequired &&
     (existing.unencryptedOverlay === true) === Boolean(dial.residual));
   const verified = v.force !== true;
   if (verified) {
-    take(checkEnforcement(mode, await probeEnforcement(server), server, name, root), target);
-    const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired));
+    const options = { recheck: existing !== undefined };
+    take(checkEnforcement(mode, await probeEnforcement(server), server, name, root, options), target);
+    const reached = await verifyTarget(candidateTarget(name, server, root, mode, auth, tlsRequired), options);
     // Only a new registration needs the option to save it unchecked when a broker is down.
-    if (!replaced && !reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
+    if (!existing && !reached.ok && reached.code === "TARGET_UNAVAILABLE") throw refuse("TARGET_UNAVAILABLE", reached.message.replace(/^✗ /, ""), target, `${reached.remedy ? `${reached.remedy}; ` : ""}pass --force to add "${name}" unchecked, as for a space that is down right now`);
     take(reached, target);
-    if (mode === "open") take(await checkOpenSpace(server, name, tlsRequired), target);
+    if (mode === "open") take(await checkOpenSpace(server, name, tlsRequired, options), target);
   }
   const warnings: OutputWarning[] = [];
   if (dial.residual) warnings.push({ code: "UNENCRYPTED_OVERLAY", target, message: dial.residual });
   if (mode === "open" && accounts.includes(name))
     warnings.push({ code: "TRUST_NOT_USED", target, message: `${authDir(root)} holds trust for "${name}", but --mode open adds a connection with no credentials` });
+  if (existing && verified && existing.unchecked !== true) {
+    return { result: { kind: "space-added", space: detail(existing, getCurrent() ?? null, "reachable"), verified, replaced: false }, warnings, noOp: true };
+  }
   const rows: [string, string][] = [
     ["space", name],
     ["broker", `${server}${tlsRequired ? " (TLS required)" : ""}`],
@@ -282,28 +288,45 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
   if (!(await review(prompt, v.yes === true, rows, `Add ${name}`, true))) return undefined;
   const entry: MeshEntry = { space: name, server, root, mode, origin: "manual", ...(tlsRequired ? { tlsRequired: true } : {}), ...(dial.residual ? { unencryptedOverlay: true } : {}), ...(verified ? {} : { unchecked: true }), ts: new Date().toISOString() };
   recordMesh(entry);
-  return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, verified ? "reachable" : "not-checked"), verified, replaced }, warnings };
+  return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, verified ? "reachable" : "not-checked"), verified, replaced: existing !== undefined }, warnings };
 }
 
 /** A user-auth space: its pins come from a bundle exported where it runs, or from its HTTPS
  *  discovery document, which is fetched only after the operator agrees and is adopted only after
  *  they confirm the pins. Its checks run even under `--force`, which only replaces a record.
  *  `cotal setup --connection-file` registers a self-hosted space through it. */
-export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
+export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean, presentation: Presentation = "rich"): Promise<Added> {
   const target = name ? { space: name } : null;
   let bundle: UserBundle;
   if (v.file !== undefined) {
     bundle = readConnectionFile(v.file, "--file", target);
   } else {
+    let from: URL;
     let disco: URL;
     try {
-      const from = new URL(v.from!);
+      from = new URL(v.from!);
       disco = from.pathname.endsWith("/.well-known/cotal-mesh") ? from : discoveryDocumentUrl(from);
     } catch {
       throw usage("--from is not a URL");
     }
     if (disco.protocol !== "https:") throw usage("--from must be an https:// URL: the discovery document carries the trust pins, and a plaintext fetch lets the network choose them");
-    if (!prompt) throw usage("--from needs a terminal to show and confirm the fetched pins", "in a script, export the bundle where the space runs and pass it with --file");
+    if (!prompt) {
+      const file = "replace --from <url> with --file <bundle.json> exported where the space runs";
+      if (presentation === "json") throw usage("--from needs interactive prompts, which --json disables; no discovery document was fetched", `to review the pins, retry in a terminal with prompts enabled and without --json; for scripted or JSON output, ${file}`);
+      const noInput = explicitNoInputFlag();
+      const envDisabled = process.env.COTAL_NO_PROMPT === "1";
+      const reason = noInput ? "--no-input disables prompts" : envDisabled ? "COTAL_NO_PROMPT=1 disables prompts" : "stdin and stdout must both be connected to a terminal";
+      const showCommand = !from.username && !from.password && !from.search && !from.hash &&
+        (v.server === undefined || brokerAddressForDisplay(v.server) === v.server);
+      const flags = ADD_FLAGS.flatMap((flag) => {
+        const value = v[flag];
+        return value === true ? [`--${flag}`] : typeof value === "string" ? [`--${flag}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`] : [];
+      });
+      const retry = showCommand
+        ? codeSpan([`${displayCmd()} space add`, ...(name === undefined ? [] : [shellWord(name)]), ...flags, ...(presentation === "plain" ? ["--plain"] : [])].join(" "))
+        : `the same command${noInput ? " without --no-input" : ""}`;
+      throw usage(`--from needs interactive prompts: ${reason}. No discovery document was fetched`, `with stdin and stdout connected to a terminal${envDisabled ? " and COTAL_NO_PROMPT unset" : ""}, run ${retry}. For scripts, ${file}`);
+    }
     const io = clackIO();
     if ((await io.confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false })) !== true) return undefined;
     let res: Response;
@@ -325,7 +348,7 @@ export async function addFromBundle(name: string | undefined, v: AddValues, prom
   const dial = take(checkDialPolicy(server, { tlsRequired, allowUnencryptedOverlay: v["allow-unencrypted-overlay"] === true }), spaceTarget);
   const root = take(checkRoot(v.root, process.cwd()), spaceTarget);
   take(checkMode(space, root, [], "user", true), spaceTarget);
-  const replaced = replaceable(space, v.force === true, spaceTarget);
+  const replaced = registrationBeforeAdd(space, v.force === true, spaceTarget) !== undefined;
   take(await verifyUserExchange(bundle.userAuth.endpoints.url, userExchangeIssuer(bundle.space)), spaceTarget);
   take(await checkEnforcementAt("user", server, space, root, v.server === undefined ? "the bundle's server" : "--server"), spaceTarget);
   const rows: [string, string][] = [
@@ -405,10 +428,10 @@ export function checkSelfHostedSpace(space: string, project: string, connectionF
   return { kind: "registered", entry };
 }
 
-function addedView(r: SpaceAdded | AddCancelled): Report {
+function addedView(r: SpaceAdded | AddCancelled, noOp = false): Report {
   if (r.kind === "space-add-cancelled") return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "nothing was added", tone: "hint" }] }] }] };
   const s = r.space;
-  const head: Cell = { text: `${r.replaced ? "replaced" : "added"} ${s.space}`, tone: "ok", mark: "✓" };
+  const head: Cell = { text: noOp ? `${s.space} is already registered` : `${r.replaced ? "replaced" : "added"} ${s.space}`, tone: "ok", mark: "✓" };
   const fields: [string, Cell][] = [
     ["server", s.server],
     ["mode", s.mode],
@@ -568,7 +591,7 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
 
 /** Prepares a space {@link checkLocalSpace} cleared: makes `<root>/.cotal/` and records the space.
  *  Returns the record it wrote and when. */
-export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
+export function recordLocalSpace(name: string, root: string, flag: "--root" | "--project" = "--root"): { file: string; preparedAt: string } {
   protectedLocalDirectory(root, "the project root");
   const target = { space: name, root };
   const dir = join(root, ".cotal");
@@ -579,7 +602,7 @@ export function recordLocalSpace(name: string, root: string): { file: string; pr
     if ((error as NodeJS.ErrnoException).code === "ENOENT" && lstatSync(dir, { throwIfNoEntry: false })?.isSymbolicLink())
       throw refuse("TARGET_NOT_FOUND", `${dir} links to ${resolve(root, readlinkSync(dir))}, which does not exist; nothing was written`, target, "remove the link or make the folder it names, then run this create again");
     if (!unwritable(error)) throw localWriteFailure(error, dir, { requested: name, root });
-    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, "create the space in a folder you own, or pass --root <dir>");
+    throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`);
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
   const preparedAt = new Date().toISOString();
@@ -638,11 +661,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     || !/^space\.[0-9a-f]+$/.test(legacy) && e.file === join(homeCotalDir(), "meshes", `${legacy}.json`));
   const directory = damaged.find((e) => e.recordDirectory);
   if (directory) throw refuse("SCHEMA_INVALID", `${directory.summary}; nothing was forgotten`, { ...target, file: directory.file }, directory.remedy);
+  const denied = damaged.find((e) => e.refusal === "PERMISSION_DENIED");
+  if (denied) throw denied;
   const unrelated = registry.unusable.filter((e) => !damaged.includes(e));
   // Only the recovery offered for an exact damaged registration bypasses other damaged records.
   if (damaged.length === 0 && unrelated[0]) throw unrelated[0];
-  const damagedWarnings: OutputWarning[] = unrelated.map((error) =>
-    ({ code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${error.remedy ?? removeStep(error.file)}` }));
+  const damagedWarnings: OutputWarning[] = unrelated.map((error) => error.refusal === "PERMISSION_DENIED"
+    ? { code: "MESH_REGISTRY_UNREADABLE", target: { file: error.file }, message: `${error.summary}. ${error.remedy}` }
+    : { code: "MESH_REGISTRY_DAMAGED", target: { file: error.file }, message: `mesh registry file ${error.file} is still damaged: ${error.remedy ?? removeStep(error.file)}` });
   const removeDamaged = () => { for (const error of damaged) rmSync(error.file, { force: true }); };
   const m = registry.entries.find((entry) => entry.space === name);
   if (!m) {
@@ -652,9 +678,10 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     try {
       p = findPreparedSpace(name);
     } catch (e) {
-      // Its own record cannot be read, so it names no root to release definitions at: remove the file.
       if (!isMeshRegistryError(e) || preparedRecordSpace(e.file) !== name) throw e;
       if (e.recordDirectory) throw refuse("SCHEMA_INVALID", `${e.summary}; nothing was forgotten`, { ...target, file: e.file }, e.remedy);
+      if (e.refusal === "PERMISSION_DENIED") throw e;
+      // A malformed record names no root to release definitions at, so remove only the record.
       removeDamaged();
       removePreparedSpace(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: "prepared", releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
@@ -667,7 +694,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     }
     // A non-directory cannot contain root-local ownership records. The space-wide check above
     // still guards controller instances, and definition release checks their removability below.
-    const runningOwner = projectRootProblem(p.root) === "not-directory" ? undefined : liveMeshOwner(p.root, name);
+    let runningOwner: string | undefined;
+    try { if (projectRootProblem(p.root) !== "not-directory") runningOwner = liveMeshOwner(p.root, name); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code ?? ((error as Error)?.cause as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "EACCES" && code !== "EPERM") throw error;
+      throw refuse("PERMISSION_DENIED", "this account cannot check whether the prepared space is running; nothing was forgotten", { ...target, root: p.root },
+        "restore access to the project folder and its process records, then try again");
+    }
     if (runningOwner) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${p.root} (${runningOwner}); nothing was forgotten`, target, `stop it with \`cotal down\` in ${p.root}, then run \`cotal space forget ${name}\` again`);
     const release = releaseStackDefinitions(p.root, name), keptServices = savedServicesLeft(name, release.kept);
     removeDamaged();
@@ -745,7 +779,7 @@ async function refuseGoneFolderStack(m: MeshEntry, entries: readonly MeshEntry[]
   // A damaged record names no server, so only the usable records can name this broker address.
   if (entries.some((other) => other.space !== m.space && other.server === m.server)) return;
   const address = await listenerAt(m.server);
-  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `stop the process listening on ${address}, then run \`cotal space forget ${m.space}\` again`);
+  if (address) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but something still listens at ${m.server}, its recorded broker address, so the broker it started may still run; nothing was forgotten`, target, `identify the listener at ${address}. If it belongs to this space, have its owner stop the stack; otherwise leave it running. Retry \`cotal space forget ${m.space}\` when the address is free or after you restore the original project folder to ${m.root}`);
 }
 
 /** The `host:port` of a broker address when something accepts a TCP connection there within half a

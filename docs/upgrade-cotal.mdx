@@ -121,8 +121,11 @@ The package manifest and original dependencies stay as npm or pnpm installed the
 package-manager install therefore sees its own original record, replaces the package normally,
 and retires the superseded active descriptor.
 On Linux and macOS, self-update refreshes an existing npm launcher when it can safely preserve its recorded Node path. If the launcher cannot be refreshed, the update keeps it unchanged.
-On Linux and macOS, self-update uses the Node executable running Cotal for npm, including when it
-installs built-in connectors. It keeps the npm selected on `PATH` and does not change the caller's `PATH`.
+Self-update keeps the npm selected on `PATH`, including when it installs built-in connectors.
+If that npm requires a different Node version, Cotal tries the Node recorded by its installation
+launcher, when present, and then looks for a compatible Node alongside npm or on `PATH`.
+This also applies when npm is selected through Corepack or a compatible Node is available through Volta's `node` shim.
+This does not change the Node running Cotal or the caller's `PATH`.
 A timestamp-only change to the npm package manifest keeps the verified release in use.
 After a staged update, npm's listing can be behind; `cotal --version` is the version in use, and
 `cotal status --verbose` and `cotal status --json` report both (`npm lists <old>; in use <new>`).
@@ -263,7 +266,7 @@ Run `cotal version` and confirm that the selected binary is the target version b
 
 ## Reconcile the installation
 
-The first `cotal update --self` that runs more than an hour after an interrupted update of 0.174.1 or older reclaims private scratch that contains only the Node compile cache.
+After an interrupted update, a successful `cotal update --self` reclaims private scratch that has been idle for more than an hour and contains only the Node compile cache. On Linux, it also reclaims that scratch if the reconciliation cache holds only records that prove the updater and child process group have exited. Cotal keeps unrecorded reconciliation caches.
 
 On versions 0.159.1 through 0.160.7, a home that was never configured can refuse `cotal update --self` with `update snapshot refused: ENOENT` because its configuration directory does not exist. Rerun the installer:
 
@@ -392,7 +395,8 @@ so each package's registrations can be attributed and checked independently.
 Every update reads and verifies its own package closure without reusing results from an earlier command.
 On Linux and macOS, self-update stops staging if the download stops making progress or staging
 reaches its five-minute limit. Cotal leaves the installed version and running local spaces unchanged.
-When the registry is reachable again, run `cotal update --self` again.
+If npm did not report a network error, Cotal reports the staging time limit. Run `cotal update --self`
+again. If npm reported a network error, retry when the registry is reachable.
 Missing CLI release archives and missing target versions of installed first-party extensions share
 a ten-minute wait. If an installed extension's target version is still missing at the end, the
 command names it, exits with status 1 and leaves the installation unchanged. Try the update again

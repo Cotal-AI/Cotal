@@ -17,7 +17,7 @@ import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-op
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
 import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
-import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, readMember } from "./members.js";
+import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, membersForFanout, readMember } from "./members.js";
 import { parseSecretStoreIdentity, type SecretStoreIdentity } from "./secret-store.js";
 import { fanoutDurableConfig, inboxReaderConfig } from "./streams.js";
 import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_DURABLE, assertLifecycleToken, assertValidChannel, channelInAllow, chatStream, dlvDurable, dlvStream, dlvSubject, familiesCovering, inboxStream, isChannelFamily, isConcreteChannel, membershipInAllow, parseDinboxPrincipal, parsePrincipalKey, parseSubject } from "./subjects.js";
@@ -855,8 +855,7 @@ export class EndpointDeliveryPlane {
   /** Route ONE chat message to eligible owners' mixed inboxes. `durable` channel → its `durable-active`
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
    *  On either class, a mention of an agent whose read ACL excludes the channel is reported to the
-   *  sender with a mention notice. Members KV is scanned FRESH per message (no cache — red-team
-   *  BLOCKER-1 catch-up correctness). */
+   *  sender with a mention notice. Fan-out checks the broker's membership revision before routing. */
   private async fanOutMessage(m: JsMsg): Promise<void> {
     // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
     // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
@@ -896,7 +895,7 @@ export class EndpointDeliveryPlane {
     if (durable) {
       // The channel's own rows and every family row above it (`review.>`). A lifecycle holding two of
       // them gets two publishes and keeps one copy: the dedupe id is per message and lifecycle (#5404).
-      for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {
+      for (const rec of await membersForFanout(await this.membersRegistry(), channel)) {
         if (rec.owner === msg.from.id) continue;      // never backstop the sender's own post
         if (!durableEligible(rec, seq)) continue;     // routing fast-filter (reader re-checks)
         // Address the member row's RECORDED lifecycle: a retired row (tombstone pending) routes to the

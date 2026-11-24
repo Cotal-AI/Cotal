@@ -13,8 +13,9 @@
  * over a stack whose holder was killed says it takes the running stack over before a signal stops it.
  * A hangup cell sends SIGHUP to a ready foreground `up`: it exits 129, names `cotal down`, leaves the
  * broker running and removes its hold record, and the next `down --yes` stops the stack.
+ * After a root is moved, SIGHUP names a stop by space from another folder, and SIGTERM stops it.
  * A broker crash releases a controller foreground hold with a failed exit and prints a repair
- * command that keeps a broker-only stack broker-only.
+ * command that keeps a broker-only stack broker-only. A moved project still reports the crash.
  * A legacy foreground stop exits 130 on SIGINT and 143 on SIGTERM.
  * An external `down --yes` stops a named or folder-named legacy stack without a crash diagnostic.
  * Run: pnpm smoke:foreground-up-signals:live */
@@ -22,16 +23,19 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { recordsBucket } from "@cotal-ai/core";
-import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, shellPath, spaceKey, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, isCommandFailure, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readManagerName, shellPath, spaceKey, userAuthStateDir, verifyIdentityPin, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { finishOwnedChild, observeOwnedChild, ownedBirthLive as live, waitForOwnedChild } from "./_foreground-owned-child.js";
 import { foregroundCliProbe } from "./_foreground-cli-probe.js";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 import { observeServiceProcess, serviceInstances } from "../src/lib/service-instances.js";
+import { readStackJournal } from "../src/lib/stack-journal.js";
 import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
@@ -122,6 +126,57 @@ async function checkStoppedRestartAdvice(mesh: string, env: NodeJS.ProcessEnv, p
   }
 }
 
+async function checkStoppedOpenDiagnosis(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number): Promise<void> {
+  const config = join(mesh, ".cotal", "server-open.conf");
+  const original = readFileSync(config);
+  const journal = join(mesh, ".cotal", "stack-controller.json");
+  const diagnose = (...args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, ["doctor", "auth", ...args]);
+  assert.equal(existsSync(journal), false, "foreground up has no controller journal");
+  for (const flags of [[], ["--space", space, "--fix"]]) {
+    const plain = await diagnose(...flags, "--plain");
+    assert.equal(plain.code, 0, plain.out + plain.err);
+    assert.match(plain.out, /No credentials to check/);
+    assert.match(plain.out, /Mode:\s+open, as recorded/);
+    const json = await diagnose(...flags, "--json");
+    assert.equal(json.code, 0, json.out + json.err);
+    const report = JSON.parse(json.out);
+    assert.equal(report.outcome, "no-op");
+    assert.deepEqual(report.target, { root: realpathSync(mesh), space });
+    assert.equal(report.result.credentialScope, "open-space");
+    assert.equal(report.result.brokerAuthorization, "not-checked");
+    assert.equal(report.result.repair.attempted, false);
+    passed++;
+  }
+  const wrong = await diagnose("--space", "another-open-space", "--json");
+  assert.equal(wrong.code, 2, wrong.out + wrong.err);
+  assert.equal(JSON.parse(wrong.out).error.code, "AUTH_REQUIRED");
+  const unnamed = original.toString("utf8").replace(/^# space key: [0-9a-f]+\n/m, "");
+  assert.notEqual(unnamed, original.toString("utf8"));
+  writeFileSync(config, unnamed);
+  try {
+    const missingName = await diagnose("--plain");
+    assert.equal(missingName.code, 4, missingName.out + missingName.err);
+    assert.ok(missingName.err.includes(`restore \`${config}\` with its recorded space name`), missingName.out + missingName.err);
+    passed++;
+  } finally { writeFileSync(config, original); }
+  renameSync(config, `${config}.saved`);
+  try {
+    for (const [flags, code] of [[[], 4], [["--space", space], 2]] as const) {
+      const missing = await diagnose(...flags, "--plain");
+      assert.equal(missing.code, code, missing.out + missing.err);
+      assert.match(missing.err, flags.length ? /Run `cotal space` to check the name/ : /`cotal space` lists each space's root/);
+      assert.doesNotMatch(missing.out + missing.err, /server-open\.conf|No credentials to check/);
+      passed++;
+    }
+    assert.equal(existsSync(config), false, "doctor does not recreate the broker configuration");
+  } finally { renameSync(`${config}.saved`, config); }
+  assert.deepEqual(readFileSync(config), original, "doctor leaves the retained broker record alone");
+  assert.equal(existsSync(journal), false, "doctor does not prepare a stack");
+  assert.equal(await portOpen(port), false, "doctor does not restart the broker");
+  assert.equal(existsSync(join(env.COTAL_HOME!, "meshes", `space.${spaceKey(space)}.json`)), false, "doctor does not register the space");
+  passed++;
+}
+
 async function cell(name: string, options: { auth?: boolean; ready?: boolean; refusal?: boolean; managerCrash?: boolean; signal?: "SIGINT" | "SIGTERM"; twice?: boolean; crash?: boolean; nativeLog?: boolean; externalDown?: "named" | "folder"; repairDelivery?: boolean; openBrokerExit?: boolean; openManagerExit?: boolean }): Promise<boolean> {
   const root = join(base, name), home = join(root, "home"), folderNamed = options.externalDown === "folder" || options.openManagerExit;
   const mesh = join(root, folderNamed ? name : "mesh"), store = join(mesh, "store");
@@ -143,7 +198,7 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       connectors: [{ name: "status-fixture", requires: ["node"], eventPlane: false, setup: null }],
     }] }), { mode: 0o600 });
   }
-  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
+  const args = ["--import", tsx, cliEntry, "up", "--foreground", "--server", `nats://127.0.0.1:${port}`, ...(folderNamed ? [] : ["--space", space]), ...(options.auth ? [] : options.openBrokerExit || options.openManagerExit || options.externalDown ? ["--open"] : ["--open", "--no-manager"]), ...(options.openManagerExit || (!options.auth && options.externalDown) ? ["--store-dir", store] : []), ...(options.nativeLog ? ["--log-file", "./broker.log", "--logfile-size-limit", "1048576"] : [])];
   const child: ChildProcess = spawn(process.execPath, args, { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = "", timeline = "";
   child.stdout?.on("data", (b: Buffer) => { const text = b.toString(); out += text; timeline += text; });
@@ -386,9 +441,13 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
         } else {
           assert.match(meshes.out, /no meshes registered/); passed++;
           assert.match(spaces.out, /No spaces registered/); passed++;
+          if (!options.auth) await checkStoppedOpenDiagnosis(mesh, env, space, port);
           await checkStoppedRestartAdvice(mesh, env, port);
         }
-        if (!options.auth) await checkStoppedPreview(mesh, env, space, port);
+        if (!options.auth) {
+          await checkStoppedPreview(mesh, env, space, port);
+          if (options.externalDown === "named" && process.getuid?.() !== 0) await checkStoppedStore(mesh, env, space, port, store);
+        }
         console.log(`PASS foreground-up-signals ${name}: clean external down and expected registration`);
         return true;
       }
@@ -455,6 +514,32 @@ async function cell(name: string, options: { auth?: boolean; ready?: boolean; re
       writeFileSync(join(root, "exit.json"), JSON.stringify({ code: state.code, signal: state.signal, closed: state.closed, port, owned: [...owned.values()], storesDeleted: false }), { mode: 0o600 });
     }
   }
+}
+
+async function checkStoppedStore(mesh: string, env: NodeJS.ProcessEnv, space: string, port: number, store: string): Promise<void> {
+  const jetstream = join(store, "jetstream");
+  const mode = statSync(jetstream).mode & 0o777;
+  const saved = `nats://127.0.0.1:${port}`;
+  let other: number;
+  do { other = await freePort(); } while (other === port);
+  const ps = (...flags: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, ["ps", "--plain", ...flags]);
+  chmodSync(jetstream, mode & ~0o200);
+  try {
+    for (const flags of [[], ["--space", space, "--server", saved]]) {
+      const { code, out, err } = await ps(...flags);
+      assert.equal(code, 2, out + err);
+      assert.match(err, /PERMISSION_DENIED/);
+      assert.ok(err.includes(`${jetstream} is not writable`) && err.includes(`chmod -R u+w ${jetstream}`), err);
+      passed++;
+    }
+    for (const [name, address] of [[space, `nats://127.0.0.1:${other}`], ["other-open-space", saved]]) {
+      const { code, out, err } = await ps("--space", name, "--server", address);
+      assert.equal(code, 2, out + err);
+      assert.match(err, /TARGET_UNAVAILABLE/);
+      assert.ok(!err.includes(jetstream), err);
+      passed++;
+    }
+  } finally { chmodSync(jetstream, mode); }
 }
 async function restoreStartupCell(): Promise<void> {
   const mesh = join(base, "restore-startup"), home = join(mesh, "home");
@@ -554,7 +639,27 @@ async function controllerStartupCell(kind: "up" | "receipt" | "team" | "team-lau
   const server = `nats://127.0.0.1:${port}`;
   const launch = kind === "team-launch", team = launch || kind === "team";
   const launchEnv = launch ? await preparePendingLaunch(mesh, env, space, server) : env;
-  if (kind === "team") writeFileSync(join(mesh, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: {servers: "${server}", auth: false}\nchannels:\n  general: {deliveryClass: live}\n`);
+  if (kind === "team") {
+    const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args);
+    const prep = await probe(["up", "--detach", "--open", "--no-manager", "--server", server]);
+    assert.equal(prep.code, 0, prep.out + prep.err);
+    const down = ["down", "--yes"];
+    assertSmokeSandboxDown(sandbox, down, { cwd: mesh, env });
+    const stopped = await probe(down);
+    assert.equal(stopped.code, 0, stopped.out + stopped.err);
+    const manifest = (address: string) => writeFileSync(join(mesh, "mesh.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker: {servers: "${address}", auth: false}\nchannels:\n  general: {deliveryClass: live}\n`);
+    manifest(`nats://127.0.0.1:${await freePort()}`);
+    const moved = await probe(["team", "boot", "mesh.yaml", "--foreground"]);
+    assert.equal(moved.code, 2, moved.out + moved.err);
+    assert.match(moved.err, /recorded stopped stack in its broker address/);
+    manifest(`NATS://127.0.0.1:${port}/`);
+    const refused = await probe(["up", "-f", "mesh.yaml", "--foreground", "--dry-run"]);
+    assert.equal(refused.code, 2, refused.out + refused.err);
+    assert.match(refused.err.replace(/\s+/g, " "), /cotal team boot mesh\.yaml --foreground --dry-run/);
+    const preview = await probe(["team", "boot", "mesh.yaml", "--foreground", "--dry-run"]);
+    assert.equal(preview.code, 0, preview.out + preview.err);
+    assert.match(preview.out, /Lifetime request:\s+terminal-bound/);
+  }
   const preload = kind === "receipt" ? ["--import", join(import.meta.dirname, "_foreground-receipt-signal.ts")] : [];
   const args = team ? ["team", "boot", "mesh.yaml", "--foreground"] : ["up", "--foreground", "--server", server];
   const child: ChildProcess = spawn(process.execPath, ["--import", tsx, ...preload, cliEntry, ...args], { cwd: mesh, env: launchEnv, detached: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -752,7 +857,10 @@ async function controllerSighupCell(): Promise<void> {
     await until(() => { if (state.error) throw state.error; return state.exited; }, 30_000, () => err.slice(-3000));
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
     assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
-    assert.ok(err.includes(`\`cd ${shellPath(realpathSync(mesh))} && cotal down\` stops it.`), "the hangup stop command selects the project from the invoking folder"); passed++;
+    // The command word depends on whether the host has a `cotal` launcher on PATH; the project selection does not.
+    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && `;
+    const stopAt = err.indexOf(stopPrefix);
+    assert.ok(stopAt !== -1 && /^[^`\n]+ down` stops it\./.test(err.slice(stopAt + stopPrefix.length)), `the hangup stop command selects the project from the invoking folder: ${err}`); passed++;
     assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
     assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
     const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
@@ -774,12 +882,12 @@ async function controllerSighupCell(): Promise<void> {
   }
 }
 
-async function checkRecordedAddressWait(mesh: string, env: NodeJS.ProcessEnv, port: number): Promise<void> {
+async function checkAddressWait(mesh: string, env: NodeJS.ProcessEnv, port: number, args: string[]): Promise<void> {
   const listener = createServer((socket) => socket.resetAndDestroy());
   listener.listen(port, "127.0.0.1");
   await once(listener, "listening");
   try {
-    const refusal = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--no-manager"], 15_000);
+    const refusal = await foregroundCliProbe(cliEntry, tsx, mesh, env, args, 15_000);
     assert.ok(refusal.code === 2 && refusal.err.includes("address already in use"), refusal.out + refusal.err);
     assert.doesNotMatch(refusal.err, /Waiting .* for TIME-WAIT to clear/); passed++;
   } finally { await new Promise<void>((done) => listener.close(() => done())); }
@@ -823,7 +931,103 @@ async function checkMovedRootStop(moved: string, home: string, env: NodeJS.Proce
   assert.equal(await portOpen(port), false, "the stopped stack's broker is gone"); passed++;
 }
 
-async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
+async function movedRootSignalCell(mode: "sigterm" | "relative-path" | "absolute-path"): Promise<void> {
+  const signal = mode === "sigterm" ? "SIGTERM" : "SIGHUP";
+  const name = `controller-moved-root-${mode}`;
+  const root = join(base, name), mesh = join(root, "project"), moved = `${mesh} moved`, outside = join(root, "outside");
+  const home = join(root, "home"), space = "foreground-moved-root-signal", port = await freePort();
+  const env = { ...cleanEnv, PATH: process.env.PATH, HOME: home, COTAL_HOME: join(home, "owner's machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  mkdirSync(env.XDG_RUNTIME_DIR, { recursive: true, mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const created = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["space", "create", space, "--root", "."]);
+  assert.equal(created.code, 0, created.out + created.err);
+  const down = () => {
+    const args = ["down", "--yes"];
+    assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
+    return foregroundCliProbe(cliEntry, tsx, mesh, env, args, 120_000);
+  };
+  const children: { child: ChildProcess; state: ReturnType<typeof observeOwnedChild> }[] = [];
+  const cli = [process.execPath, "--import", tsx, cliEntry] as const;
+  const start = async ([program, ...prefix]: readonly [string, ...string[]], ...args: string[]) => {
+    const child = spawn(program, [...prefix, "up", "--foreground", ...args], { cwd: mesh, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const state = observeOwnedChild(child);
+    children.push({ child, state });
+    let out = "", err = "";
+    child.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+    const log = () => out + err;
+    await until(() => {
+      if (state.error) throw state.error;
+      if (state.exited) throw new Error(log());
+      return /Operation: +up completed/.test(out);
+    }, 120_000, log);
+    return { child, state, log };
+  };
+  let confirmed = false;
+  try {
+    const initial = await start(cli, "--server", `nats://127.0.0.1:${port}`);
+    const stopped = await down();
+    assert.equal(stopped.code, 0, stopped.out + stopped.err);
+    await until(() => initial.state.closed, 10_000, initial.log);
+    assert.equal(initial.state.code, 0, initial.log());
+    if (mode !== "sigterm") env.PATH = projectHangupPath(mesh, root, mode, env.PATH);
+    const holder = await start(signal === "SIGHUP" ? ["cotal"] : cli, "--root", mesh);
+    const pins = readStackJournal(mesh)?.journal.members.flatMap(({ process }) => process ? [process] : []);
+    assert.ok(pins?.length === 3 && pins.every(live), holder.log());
+    assert.equal(await portOpen(port), true, holder.log());
+    renameSync(mesh, moved);
+    assert.ok(holder.child.kill(signal), holder.log());
+    await until(() => holder.state.closed, 120_000, holder.log);
+    assert.equal(holder.state.code, signal === "SIGHUP" ? 129 : 143, holder.log()); passed++;
+    let stopOutput = holder.log();
+    if (signal === "SIGHUP") {
+      const command = /The terminal closed\. This stack is still running; run `([^`\n]+)` from another folder to stop it\./.exec(stopOutput)?.[1];
+      assert.ok(pins.every(live) && await portOpen(port), "the hangup left every stack member running"); passed++;
+      const args = ["down", "--space", space, "--yes"];
+      assert.ok(command, stopOutput);
+      const loaderPath = realpathSync(fileURLToPath(tsx));
+      const loader = mode === "relative-path" ? loaderPath : pathToFileURL(loaderPath).href;
+      const launcher = [realpathSync(process.execPath), "--import", loader, realpathSync(cliEntry), ...args];
+      assert.equal(command, `COTAL_HOME=${shellWord(env.COTAL_HOME)} ${launcher.map(shellWord).join(" ")}`, stopOutput); passed++;
+      const outsideSandbox = recordSmokeSandbox({ root: outside, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+      const shellEnv: NodeJS.ProcessEnv = { ...env };
+      delete shellEnv.COTAL_HOME;
+      assertSmokeSandboxDown(outsideSandbox, args, { cwd: outside, env });
+      const stopped = spawnSync("/bin/sh", ["-c", command], { cwd: outside, env: shellEnv, encoding: "utf8", timeout: 120_000 });
+      assert.equal(stopped.status, 0, stopped.error?.message ?? stopped.stdout + stopped.stderr); passed++;
+      stopOutput = stopped.stdout;
+    }
+    assert.match(stopOutput, /Stack stopped; its folder was gone/); passed++;
+    assert.ok(pins.every((pin) => !live(pin)), holder.log()); passed++;
+    assert.equal(await portOpen(port), false, holder.log()); passed++;
+    confirmed = true;
+    console.log(`PASS foreground-up-signals ${name}`);
+  } finally {
+    for (const { child, state } of children) if (!state.exited) child.kill("SIGKILL");
+    if (!confirmed) {
+      if (existsSync(moved)) {
+        if (existsSync(mesh)) renameSync(mesh, `${mesh}-recreated`);
+        renameSync(moved, mesh);
+      }
+      await down();
+    }
+  }
+}
+
+function projectHangupPath(mesh: string, root: string, mode: "relative-path" | "absolute-path", path: string | undefined): string {
+  const tools = join(mesh, "tools"), other = join(root, "other-bin");
+  for (const dir of [tools, other]) mkdirSync(dir, { mode: 0o700 });
+  const entryLink = join(tools, "entry.ts");
+  symlinkSync(cliEntry, entryLink);
+  const loader = mode === "relative-path" ? join(tools, "local tsx.mjs") : tsx;
+  if (mode === "relative-path") symlinkSync(fileURLToPath(tsx), loader);
+  writeFileSync(join(tools, "cotal"), `#!/bin/sh\nexec ${[process.execPath, "--import", loader, entryLink].map(shellWord).join(" ")} "$@"\n`, { mode: 0o700 });
+  writeFileSync(join(other, "cotal"), "#!/bin/sh\necho 'wrong cotal' >&2\nexit 99\n", { mode: 0o700 });
+  const inherited = (path ?? "").split(":").filter((dir) => dir.startsWith("/"));
+  return [mode === "absolute-path" ? tools : "tools", other, ...inherited].join(":");
+}
+
+async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-crash" | "broker-only-crash" | "moved-broker-crash" | "time-wait" | "moved-root" = "takeover"): Promise<void> {
   const otherHome = kind === "other-home";
   const brokerOnly = kind === "broker-only-crash" || kind === "time-wait";
   const name = kind === "takeover" ? "controller-hold" : `controller-hold-${kind}`;
@@ -861,7 +1065,7 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       assert.equal(down.code, 0, down.out + down.err);
       await until(() => holder.state.closed, 10_000, () => holder.io.err);
       assert.equal(holder.state.code, 0, holder.io.err);
-      await checkRecordedAddressWait(mesh, env, port);
+      await checkAddressWait(mesh, env, port, ["up", "--foreground", "--no-manager"]);
       taker = foreground(["--no-manager"]);
       await until(() => {
         if (taker!.state.exited) throw new Error(taker!.io.out + taker!.io.err);
@@ -881,16 +1085,32 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       console.log(`PASS foreground-up-signals ${name}`);
       return;
     }
-    if (kind === "broker-crash" || brokerOnly) {
+    if (kind === "broker-crash" || kind === "moved-broker-crash" || brokerOnly) {
+      if (brokerOnly) {
+        const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--max-payload", "131072"]);
+        assert.equal(conflict.code, 2, conflict.out + conflict.err);
+        assert.match(conflict.err, /run `(?:pnpm )?cotal up --foreground --no-manager` again/); passed++;
+      }
       const broker = controllerBroker(space, machine);
       assert.ok(broker?.process && observeServiceProcess(broker) === "running", "the isolated stack owns this broker process");
+      if (kind === "moved-broker-crash") {
+        renameSync(mesh, moved);
+        await sleep(1500);
+        assert.ok(!holder.state.exited && await portOpen(port) && observeServiceProcess(broker) === "running", "moving the root alone leaves the holder and its broker running"); passed++;
+      }
       process.kill(broker.process.pid, "SIGKILL");
       brokerKilled = true;
       await until(() => holder.state.exited, 10_000, () => holder.io.err.slice(-3000));
       await waitForOwnedChild(() => holder.state.closed, 3_000, `${root}: holder streams drained`);
       assert.equal(holder.state.code, 5, "broker loss is a failed foreground run"); passed++;
       assert.match(holder.io.err, new RegExp(`nats-server exited unexpectedly \\(pid ${broker.process.pid}\\)`)); passed++;
-      assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false, "the failed launcher releases its hold"); passed++;
+      if (kind === "moved-broker-crash") {
+        assert.ok(!existsSync(mesh) && existsSync(join(moved, ".cotal", "stack-controller.json")), "the holder exits before the move is reversed and keeps the journal"); passed++;
+        assert.ok(holder.io.err.includes(`Move the project back to ${shellPath(mesh)}, then run `), holder.io.err); passed++;
+        renameSync(moved, mesh);
+      } else {
+        assert.equal(existsSync(join(mesh, ".cotal", "stack-foreground.hold")), false, "the failed launcher releases its hold"); passed++;
+      }
       const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status"]);
       assert.ok(status.code === 0 && status.out.includes(`nats://127.0.0.1:${port}`) && /Connection:.*unreachable/.test(status.out), status.out + status.err); passed++;
       const repairArgs = [...(brokerOnly ? ["--no-manager"] : []), "--root", mesh];
@@ -901,6 +1121,8 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
         if (taker!.state.exited) throw new Error(`the repair exited: ${taker!.io.err}`);
         return /Operation: +up completed/.test(taker!.io.out);
       }, 120_000, () => taker!.io.err.slice(-3000));
+      assert.match(taker.io.out, /This terminal holds the stack's lifetime/);
+      assert.doesNotMatch(taker.io.out, /This stack is already running/); passed++;
       assert.equal(await portOpen(port), true, "the next foreground up repairs the recorded listener"); passed++;
       if (brokerOnly) {
         const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--json"]);
@@ -970,11 +1192,146 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
   }
 }
 
+async function openBrokerOnlyRestartCell(): Promise<void> {
+  const home = join(base, "open-restart-home"), mesh = join(base, "open-restart-project");
+  for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const space = "open-restart", port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const upArgs = ["up", "--foreground", "--open", "--no-manager", "--max-payload", "262144", "--space", space, "--server", server];
+  let output = "";
+  const foreground = () => {
+    output = "";
+    const child = spawn(process.execPath, ["--import", tsx, cliEntry, ...upArgs], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    return { child, state: observeOwnedChild(child) };
+  };
+  let run = foreground();
+  const untilRunning = (timeout: number) => until(async () => {
+    const { state } = run;
+    if (state.error) throw state.error;
+    if (state.exited) throw new Error(output);
+    return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+  }, timeout, () => output);
+  const downArgs = ["down", "--yes"];
+  const stop = async () => {
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
+    assert.equal(down.code, 0, down.out + down.err);
+    await waitForOwnedChild(() => run.state.closed, 15_000, output);
+    assert.equal(run.state.code, 0, output);
+    assert.equal(await portOpen(port), false);
+    return down;
+  };
+  const config = join(mesh, ".cotal", "server-open.conf");
+  try {
+    await untilRunning(30_000);
+    const down = await stop();
+    const restart = /^\s*(?:pnpm )?cotal (up.*?)\s+Start it again$/m.exec(down.out)?.[1];
+    assert.equal(restart, "up --no-manager", down.out);
+    const bare = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up"]);
+    assert.equal(bare.code, 1, bare.out + bare.err);
+    assert.match(bare.err, /--max-payload 262144 is below 263168 bytes/);
+    if (process.platform === "linux") {
+      await checkAddressWait(mesh, env, port, upArgs);
+      run = foreground();
+      const notice = `Waiting up to 65 seconds for TIME-WAIT to clear on the broker address 127.0.0.1:${port}`;
+      await until(() => {
+        if (run.state.exited) throw new Error(output);
+        return output.includes(notice);
+      }, 15_000, () => output);
+      await untilRunning(85_000);
+      assert.equal(output.split(notice).length, 2, output); passed++;
+      const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--space", space, "--server", server]);
+      assert.equal(who.code, 0, who.out + who.err); passed++;
+      await stop();
+      console.log("PASS foreground-up-signals legacy foreground restart waits for TIME-WAIT and reuses the broker address");
+    }
+    const started = await foregroundCliProbe(cliEntry, tsx, mesh, env, restart.split(" "));
+    assert.equal(started.code, 0, started.out + started.err);
+    assert.match(started.out, new RegExp(`^Mesh: ${space}$`, "m"));
+    assert.match(started.out, /running in the background: nats-server \(pid \d+\) - stop with:/);
+    assert.equal(await portOpen(port), true);
+    assert.match(readFileSync(config, "utf8"), /^max_payload:\s*262144$/m);
+    passed++;
+    console.log("PASS foreground-up-signals legacy open stop restarts broker-only at its saved payload limit");
+  } finally {
+    if (!run.state.exited) run.child.kill("SIGTERM");
+    await waitForOwnedChild(() => run.state.closed, 30_000, output);
+    assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
+    if (await portOpen(port)) await foregroundCliProbe(cliEntry, tsx, mesh, env, downArgs);
+    assert.equal(await portOpen(port), false, "the owned broker stopped");
+  }
+}
+
+async function managerNameCell(): Promise<void> {
+  const space = "foreground-manager-name", mesh = join(base, space), home = join(mesh, "home");
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const probe = (args: string[]) => foregroundCliProbe(cliEntry, tsx, mesh, env, args, 60_000);
+  const created = await probe(["space", "create", space]);
+  assert.equal(created.code, 0, created.out + created.err);
+  const port = await freePort();
+  const up = ["up", "--foreground", "--server", `nats://127.0.0.1:${port}`];
+  const savedName = () => readManagerName({ root: mesh, space });
+
+  const refuseWhileBusy = async (expected: string | undefined, ...names: (string | undefined)[]) => {
+    const listener = createServer((socket) => socket.resetAndDestroy());
+    listener.listen(port, "127.0.0.1");
+    await once(listener, "listening");
+    try {
+      for (const name of names) {
+        const refused = await probe([...up, ...(name === undefined ? [] : ["--manager-name", name])]);
+        assert.equal(refused.code, 2, refused.out + refused.err);
+        assert.match(refused.err, /CONFLICT/);
+        assert.match(refused.err, /no broker was launched/);
+        assert.equal(savedName(), expected);
+      }
+    } finally { await new Promise<void>((done) => listener.close(() => done())); }
+  };
+  const bootAndStop = async (...args: string[]) => {
+    const child = spawn(process.execPath, ["--import", tsx, cliEntry, ...up, ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
+    const state = observeOwnedChild(child);
+    let out = "", err = "";
+    child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
+    child.stderr.on("data", (data: Buffer) => { err += data.toString(); });
+    try {
+      await until(() => {
+        if (state.exited || state.error) throw new Error(out + err);
+        return out.includes("Controller stack started");
+      }, 120_000, () => out + err);
+      assert.equal(savedName(), "KeptManager");
+      const who = await probe(["who", "--all"]);
+      assert.equal(who.code, 0, who.out + who.err);
+      assert.match(who.out, /\bKeptManager\b/);
+    } finally {
+      try {
+        if (!state.exited) child.kill("SIGTERM");
+        await waitForOwnedChild(() => state.closed, 60_000, out + err);
+      } finally {
+        if (!state.exited) child.kill("SIGKILL");
+        assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
+        if (await portOpen(port)) await probe(["down", "--yes"]);
+      }
+    }
+    assert.equal(state.code, 143, out + err);
+    assert.equal(await portOpen(port), false, out + err);
+  };
+
+  await refuseWhileBusy(undefined, undefined, "RefusedManager");
+  await bootAndStop("--manager-name", "KeptManager");
+  await refuseWhileBusy("KeptManager", "RefusedOverride");
+  await bootAndStop();
+  passed++;
+  console.log("PASS foreground-up-signals refused starts leave the manager name unchanged");
+}
+
 async function userAuthRestartCell(): Promise<void> {
   const home = join(base, "user-auth-home"), mesh = join(base, "user-auth-project");
   for (const p of [home, mesh]) mkdirSync(p, { mode: 0o700 });
   const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const key = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" });
   const idp = createHttpServer((req, res) => {
     if (req.url !== "/auth/jwks") { res.writeHead(404).end(); return; }
@@ -985,7 +1342,16 @@ async function userAuthRestartCell(): Promise<void> {
   await listening;
   try {
     const space = "restart-user-auth", port = await freePort(), server = `nats://127.0.0.1:${port}`;
+    const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
     const restart = ["--user-auth", "--space", space, "--server", server];
+    const foreground = ["--foreground", "--no-manager", ...restart];
+    const invalid = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground,
+      "--idp", idpUrl, "--exchange-public-port", String(await freePort()), "--exchange-public-url", "http://127.0.0.1"]);
+    assert.equal(invalid.code, 1, invalid.out + invalid.err);
+    assert.match(invalid.err, /--exchange-public-url must be an https:\/\/ URL/);
+    assert.equal(existsSync(join(mesh, ".cotal")), false);
+    assert.equal(await portOpen(port), false);
+    const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
     const bootAndStop = async (args: string[]) => {
       const child = spawn(process.execPath, ["--import", tsx, cliEntry, "up", ...args], { cwd: mesh, env, stdio: ["ignore", "pipe", "pipe"] });
       const state = observeOwnedChild(child);
@@ -995,7 +1361,9 @@ async function userAuthRestartCell(): Promise<void> {
         await until(async () => {
           if (state.error) throw state.error;
           if (state.exited) throw new Error(output);
-          return output.includes("Press Ctrl-C to stop.") && await portOpen(port);
+          return output.includes("Press Ctrl-C to stop.") && /✓ user-auth service up - sign in with: `(?:pnpm )?cotal login --idp /.test(output) &&
+            output.includes(`--idp ${idpUrl}\``) &&
+            !existsSync(join(mesh, ".cotal", "maintenance", "lock.json")) && await portOpen(port);
         }, 90_000, () => output);
       } finally {
         if (!state.exited) child.kill("SIGTERM");
@@ -1004,12 +1372,27 @@ async function userAuthRestartCell(): Promise<void> {
       assert.equal(state.code, 143, output);
       assert.equal(await portOpen(port), false, output);
     };
-    await bootAndStop(["--foreground", "--no-manager", ...restart, "--idp", `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`]);
+    await bootAndStop([...foreground, "--idp", idpUrl]);
+    const pinPath = join(userAuthStateDir(mesh, space, { readOnly: true }), "idp.json");
+    const pin = readFileSync(pinPath);
+    const otherIdp = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/different`;
+    const conflict = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["up", ...foreground, "--idp", otherIdp]);
+    const conflictText = (conflict.out + conflict.err).replace(/\s+/g, " ");
+    assert.equal(conflict.code, 2, conflictText);
+    assert.match(conflictText, /AUTH_PREFLIGHT_CONFLICT/);
+    assert.match(conflictText, /retry the same start without `--idp`/);
+    assert.match(conflictText, /keep `--user-auth` and the other startup options/);
+    assert.ok(!conflictText.includes(otherIdp), conflictText);
+    assert.doesNotMatch(conflictText, /run bare `(?:pnpm )?cotal up`/);
+    assert.equal(await portOpen(port), false, conflictText);
+    assert.deepEqual(readFileSync(pinPath), pin);
+    await bootAndStop(foreground);
+    assert.deepEqual(readFileSync(pinPath), pin);
     for (const args of [["whoami"], ["send", "--server", server, "-c", "general", "test message"]]) {
       const r = await foregroundCliProbe(cliEntry, tsx, mesh, env, [...args, "--space", space, "--plain"]);
       const text = (r.out + r.err).replace(/\s+/g, " ");
       assert.equal(r.code, 2, text);
-      assert.ok(text.includes(`cotal up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}`), text);
+      assert.ok(["cotal", "pnpm cotal"].some((cli) => text.includes(`\`${cli} up --user-auth --space ${shellPath(space)} --server ${shellPath(server)}\``)), text);
     }
     const downArgs = ["down", "--yes", "--plain"];
     assertSmokeSandboxDown(sandbox, downArgs, { cwd: mesh, env });
@@ -1027,6 +1410,8 @@ async function userAuthRestartCell(): Promise<void> {
 }
 
 console.log(`foreground-up-signals retained evidence: ${base}`);
+await openBrokerOnlyRestartCell();
+await managerNameCell();
 await userAuthRestartCell();
 await cell("external-named", { auth: true, ready: true, externalDown: "named" });
 await cell("external-folder", { auth: true, ready: true, externalDown: "folder" });
@@ -1062,7 +1447,13 @@ await controllerHoldCell();
 await controllerHoldCell("other-home");
 await controllerHoldCell("broker-crash");
 await controllerHoldCell("broker-only-crash");
+await controllerHoldCell("moved-broker-crash");
 if (process.platform === "linux") await controllerHoldCell("time-wait");
 await controllerHoldCell("moved-root");
+if (process.platform === "linux") {
+  await movedRootSignalCell("sigterm");
+  await movedRootSignalCell("relative-path");
+  await movedRootSignalCell("absolute-path");
+}
 console.log(`foreground-up-signals: ${passed} passed, 0 failed`);
 emitSentinel({ cells: passed, passed, failed: 0 });

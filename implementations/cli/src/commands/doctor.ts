@@ -24,31 +24,41 @@ import {
   CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, writeResult,
   agentCredsDir,
   authDir,
+  cotalDirLink,
   CONNECTION_EVICTOR_CREDS_KIND,
   DELIVERY_CREDS_KIND,
   findCotalRoot,
   findMesh,
+  findPreparedSpace,
   folderSpaceHeld,
   getSoleSpaceAuth,
   getSpaceAuth,
   hasUserAuthState,
+  isGenuineSpace,
   legacyRenewalRecord,
+  legacyStackOtherHome,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
   meshesForRoot,
   WEB_CREDS_KIND,
   MeshTargetError,
   migrateLegacyCotalMaterial,
+  preparedSpaceAt,
   preflightTarget,
   preparedRootRemedy,
   projectRootProblemText,
+  readPreparedSpaces,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
+  retainedLegacyBroker,
+  retainedOpenSpace,
+  rootHoldsAccount,
   SHOWN_VALUE_MAX,
   spaceKey,
   spaceNameTooLong,
+  stackJournalPath,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -57,6 +67,7 @@ import {
   workspaceSecretStore,
   writeRenewalRecord,
   recordOperationSpace,
+  isMeshRegistryError,
   agentGrants,
   grantMintFlags,
   type AgentGrants,
@@ -64,6 +75,7 @@ import {
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
+import { rootStoreProblem } from "../lib/store-dir.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "../lib/delivery-responder.js";
 import { noExpiryRecordPath, noExpiryRequestedAt } from "../lib/no-expiry-record.js";
 import { credentialExportStore } from "../lib/credential-exports.js";
@@ -158,12 +170,26 @@ function recordedOpenSpace(root: string, space: string | undefined, fix: boolean
     }
     const entry = here.find((m) => m.space === target.space) ?? findMesh(target.space);
     return { root: child ? target.root : root, space: target.space, checked: entry !== undefined && entry.unchecked !== true };
-  } catch { return undefined; }
+  } catch (error) {
+    if (isMeshRegistryError(error)) throw error;
+    return undefined;
+  }
+}
+
+/** A stopped unprepared open root can retain its mode and name in the rendered broker file. */
+function legacyOpenRecord(root: string): { path: string; space?: string } | undefined {
+  if (!isGenuineSpace(root) || cotalDirLink(root) !== undefined || existsSync(stackJournalPath(root)) ||
+      meshesForRoot(root).length || preparedSpaceAt(root) || rootHoldsAccount(root) || legacyStackOtherHome(root) !== undefined) return undefined;
+  if (!retainedLegacyBroker(root)?.open) return undefined;
+  const path = join(root, ".cotal", "server-open.conf");
+  const space = retainedOpenSpace(root);
+  if (space !== undefined && (findMesh(space) || findPreparedSpace(space))) return undefined;
+  return { path, space };
 }
 
 /** The next step for a diagnostic scope this root holds no signing trust for. Known spaces can
  *  name their root, while an explicitly unknown space needs a corrected name or preparation. */
-function trustRootStep(root: string, space: string | undefined, fix: boolean): string {
+function trustRootStep(root: string, space: string | undefined, fix: boolean, missingModeStep?: string): string {
   const command = `cotal doctor auth${space === undefined ? "" : ` --space ${space}`}${fix ? " --fix" : ""}`;
   let named = space;
   if (named === undefined) try { const held = folderSpaceHeld(root); if (held?.state === "prepared") named = held.space; } catch { /* the general step */ }
@@ -172,6 +198,7 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
     try { const target = resolveMeshTarget(root, { space: named, readOnly: true }); if (space !== undefined && canonicalRoot(target.root) !== canonicalRoot(root)) registered = target.root; }
     catch (error) {
       if (space !== undefined && error instanceof MeshTargetError && error.code === "unknown-space") {
+        if (missingModeStep) return missingModeStep;
         const correct = `Unknown space ${JSON.stringify(boundedValue(space, SHOWN_VALUE_MAX))}. Run \`cotal space\` to check the name`;
         return checkSpaceName(space).ok && !spaceNameTooLong(space)
           ? `${correct}. For a new local space, run \`cotal space create ${space}\` in its project folder, then run \`cotal up\` there.`
@@ -189,10 +216,15 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    const block = channelSeedRestartBlock(prepared);
+    const block = rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
     return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
+  if (!registered && missingModeStep) return missingModeStep;
+  if (named === undefined && isGenuineSpace(root)) {
+    const { unusable } = readPreparedSpaces();
+    if (unusable.length) return `Check the unreadable prepared records before retrying: ${unusable.map(({ summary, remedy }) => remedy ? `${summary}. To resolve it, ${remedy}.` : summary).join("\n")}`;
+  }
   return registered ? `run \`${command}\` in the folder space ${space} is registered at: ${registered}` : `run \`${command}\` in ${space === undefined ? "a" : "that"} space's root folder; \`cotal space\` lists each space's root`;
 }
 
@@ -218,7 +250,11 @@ export async function doctor(args: ParsedArgs): Promise<void> {
     try { files = accountInventory(authDir(root)).corrupt.map((file) => join(authDir(root), file)); } catch { /* the trust folder itself could not be read */ }
     throw new CommandFailure("refused", "SCHEMA_INVALID", `the local authority inventory under ${authDir(root)} could not be validated${files.length ? ` (${files.join(", ")})` : ""}; no repair was attempted`, { target: { root, space: values.space ?? null }, remedy: `restore ${files.length ? files.join(", ") : "the trust records in that folder"} from backup; do not remove other account records, then re-run \`cotal up\`` });
   }
-  const open = recordedOpenSpace(root, values.space ?? auth?.space, values.fix === true, values.space && !auth ? cwd : undefined);
+  const registeredOpen = recordedOpenSpace(root, values.space ?? auth?.space, values.fix === true, values.space && !auth ? cwd : undefined);
+  const legacy = !registeredOpen && !auth ? legacyOpenRecord(root) : undefined;
+  const retained = legacy?.space !== undefined && (values.space === undefined || values.space === legacy.space)
+    ? { root, space: legacy.space, checked: true } : undefined;
+  const open = registeredOpen ?? retained;
   if (open !== undefined && (!auth || auth.space === open.space)) {
     const target = { root: open.root, space: open.space };
     const warnings = open.checked ? [] : [{ code: "MODE_NOT_CHECKED", target, message: `The registration records open mode without checking the broker. Run ${codeSpan(`cotal space show ${shellWord(open.space)}`)} to see how to verify its mode.` }];
@@ -226,14 +262,16 @@ export async function doctor(args: ParsedArgs): Promise<void> {
       command: "doctor auth", target, warnings, noOp: true,
       result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), ...target, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair },
     }, () => ({ sections: [{ title: open.checked ? "No credentials to check" : "Credential check skipped", blocks: [
-      { kind: "fields", rows: [["Root", target.root], ["Space", open.space], ["Mode", open.checked ? "open, as registered" : "open, not checked"]] },
+      { kind: "fields", rows: [["Root", target.root], ["Space", open.space], ["Mode", retained ? "open, as recorded" : open.checked ? "open, as registered" : "open, not checked"]] },
       { kind: "lines", lines: [{ text: open.checked ? "This space is open: it authenticates no one and issues no credentials, so there are none to check." : "No credentials were inspected or repaired.", tone: "hint" }] },
     ] }] }));
     return;
   }
   if (!auth) {
-    if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy: trustRootStep(root, values.space, values.fix === true) });
-    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: trustRootStep(root, undefined, false) } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
+    const missingModeStep = legacy && legacy.space === undefined ? `restore ${codeSpan(legacy.path)} with its recorded space name to diagnose a stopped open stack here` : undefined;
+    const remedy = trustRootStep(root, values.space, values.fix === true, missingModeStep);
+    if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy });
+    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
   }
   const target = { root, space: auth.space };

@@ -1,5 +1,91 @@
 # @cotal-ai/workspace
 
+## 0.176.6
+
+### Patch Changes
+
+- 664698a: Keep the running folder space marked in `cotal space` and `cotal status` when an offline registration shares its folder.
+- d91500c: Report a full disk, quota or file-size limit when startup or shutdown cannot write the initial maintenance lock. The command names the file and how to retry instead of reporting an unknown outcome.
+- @cotal-ai/core@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- 8c884a8: Keep your requested startup options in foreground and busy-port retries, and report a verified startup in progress instead of telling you to stop it.
+- e9f798e: When `cotal update --self` skips its version check because npm is in offline mode, report that it restored owner write permission on the Cotal connector configuration and that no installed packages were replaced. A retry that changes no permissions prints no notice.
+- @cotal-ai/core@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- d482720: Broker URL errors tell you to remove the embedded user name and password without suggesting a credential file to commands that cannot use one for the connection.
+- e0a0bb7: Plain chat accepts multiline drafts at the stated limit, chat retry guidance keeps your original options, and the terminal console quits cleanly after the broker stops.
+- 99e0752: Quitting the console from the space overview returns to the shell even if you backed out while a space was still connecting. Stopping the observer prevents its pending startup from opening subscriptions or starting refresh timers.
+- 8176b19: Make CLI retry hints usable for dash-leading manifest files, space names and roles, and tell callers to drop unknown endpoint options when all operands are supplied.
+- dd96500: Install npm extensions with extensionless main entries and show how to finish managed shell completion when the startup file is read-only.
+- d31ba81: Keep the output format in space retries, select the only running project space over an adopted selection, show the correct broker-only restart in `whoami`, and report exited owned processes as gone.
+- 87465c9: When self-update repairs connector permissions or recovers connector state before a registry outage, it reports that no installed packages were replaced instead of saying nothing changed.
+- c82c548: Cotal keeps using your installed connectors after a verified home move and tells you how to preserve them if it cannot verify the move.
+- e73a285: Start dashboards under custom names with `--no-open`, check manager replacement options before advising a stop, and show how to reach a direct foreground agent.
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [73f4306]
+  - @cotal-ai/core@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- fc7712c: When a moved stack still has an instance recorded on this machine, the adoption refusal directs the operator back to the existing stack without asking for a second adoption.
+- @cotal-ai/core@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 56b6dc1: Overlapping CLI commands now report an installation at most once per UTC day. Each command still reports its own outcome.
+- 5c49fdd: Keep space registrations that cannot be read, show the correct broker-only restart command, and omit the unsupported `--new-instance` flag from manager preset start help.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- 3e4e94e: Extension add now installs packages whose entry points at a directory, resolving it to the directory's index file the way Node does instead of failing the import and rolling the install back.
+- 03b122e: Show a usable `cotal auth mint` correction for channel names that start with a hyphen. The suggested `--allow-subscribe` or `--allow-publish` flag uses `=` so the channel is read as its value.
+- 1d07abd: A file-only credential mint names its stopped space with the broker address the space last ran at. The retained local signing authority resolves when the given address matches the recorded one instead of refusing the space as unknown.
+- 5406c82: Use the same CLI launcher in moved-folder recovery instructions, including `pnpm cotal` in a source checkout without `cotal` on PATH.
+- Updated dependencies [35e08ac]
+  - @cotal-ai/core@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 138db65: Show how to fix blocked first starts, recover a space record path occupied by a directory, or start a service that has no instance to restart.
+- 5bf58dd: The store symlink and prepared registry recovery instructions now quote paths with spaces or shell special characters so the commands can be pasted as printed.
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+  - @cotal-ai/core@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

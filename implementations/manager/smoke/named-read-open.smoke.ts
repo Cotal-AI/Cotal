@@ -37,6 +37,7 @@ const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js
 const release = teardownOnSignal(broker, dir);
 let manager: InstanceType<typeof Manager> | undefined;
 let duplicate: InstanceType<typeof CotalEndpoint> | undefined;
+let direct: InstanceType<typeof CotalEndpoint> | undefined;
 let checks = 0;
 const failures: string[] = [];
 const check = (label: string, condition: boolean, detail: unknown) => {
@@ -69,11 +70,18 @@ try {
   const iid = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
   const ps = await cli(["ps"]);
   check("positive control: raw-open ps sees the held seat", ps.code === 0 && ps.out.includes("raw-seat"), ps);
-  const row = (JSON.parse(ps.out).result.items as { name: string; id: string }[]).find(p => p.name === "raw-seat")!;
+  const row = (JSON.parse(ps.out).result.items as { name: string; id: string; lifecycleUid: string }[]).find(p => p.name === "raw-seat")!;
   for (const pin of [[], ["--on", iid]]) {
     const status = await cli(["status", "raw-seat", ...pin]);
     check(`raw-open named status ${pin.length ? "with" : "without"} explicit owner`, status.code === 0 && status.out.includes("raw-seat") && status.out.includes("raw-pin") && status.out.includes(iid), status);
   }
+  const absentPin = `${iid.slice(0, -1)}${iid.endsWith("7") ? "6" : "7"}`;
+  const wrongPin = await cli(["status", "raw-seat", "--on", absentPin]);
+  const wrongPinError = JSON.parse(wrongPin.out).error;
+  check("a named read refuses an absent pin without a describe deadline or rerouting to the seat's owner",
+    wrongPin.code === 2 && wrongPinError?.code === "TARGET_NOT_FOUND"
+      && wrongPinError.message.includes(`--on ${absentPin} names no manager running`)
+      && wrongPinError.remedy === `run it again with --on ${iid}, or without --on`, wrongPin);
   // The text Next names the agent it found, with the --space and --server it was read with; it
   // printed a literal <agent>, which a shell reads as a redirection (#7640).
   const text = await cli(["status", "raw-seat"], "--plain");
@@ -102,6 +110,21 @@ try {
   check("removing duplicate restores pinned uppercase status on original seat", restored.code === 0 && restored.out.includes("raw-pin"), restored);
   const absent = await cli(["status", "absent-seat"]);
   check("raw-open absent name is TARGET_NOT_FOUND", absent.code === 2 && absent.out.includes("TARGET_NOT_FOUND"), absent);
+  direct = new CotalEndpoint({ space, servers: server, card: { id: "direct_seat", name: "direct-seat", kind: "agent" }, lifecycleUid: randomUUID().replaceAll("-", ""), channels: [], consume: false, registerPresence: true });
+  await direct.start();
+  for (const args of [["status", "direct-seat"], ["input", "--name", "direct-seat", "--text=--verbose", "--no-enter"], ["stop", "direct-seat"]]) {
+    const result = await cli(args);
+    const error = JSON.parse(result.out).error;
+    check(`${args[0]} keeps the direct-seat refusal and names the terminal and roster`, result.code === 2 && error?.code === "TARGET_UNAVAILABLE"
+      && error.remedy?.includes("original terminal to type or quit") && error.remedy.includes(`cotal who --space ${space} --server ${server} --all`), result);
+  }
+  const roster = await cli(["who", "--all"]);
+  check("the suggested roster reads the live direct seat", roster.code === 0 && JSON.parse(roster.out).result.items.some((item: { name: string; managed: boolean }) => item.name === "direct-seat" && item.managed === false), roster);
+  duplicate = new CotalEndpoint({ space, servers: server, card: { id: "missing_hint", name: "missing-hint", kind: "agent" }, lifecycleUid: row.lifecycleUid, channels: [], consume: false, registerPresence: true });
+  await duplicate.start();
+  const missingHint = await cli(["status", "missing-hint"]);
+  const missingHintError = JSON.parse(missingHint.out).error;
+  check("an agent whose lifecycle is held by a manager is not given a foreground remedy", missingHint.code === 2 && missingHintError?.code === "TARGET_UNAVAILABLE" && missingHintError.remedy === undefined, missingHint);
   recordMesh({ space, server, root, mode: "open", ts: new Date().toISOString() });
   const registered = await cli(["status", "raw-seat"]);
   check("positive control: registered-open named status still works", registered.code === 0 && registered.out.includes("raw-pin"), registered);
@@ -112,6 +135,7 @@ try {
   assert.deepEqual(failures, []);
   console.log(`NAMED READ OPEN SMOKE OK (${checks} passed)`);
 } finally {
+  await direct?.stop();
   await duplicate?.stop();
   await manager?.stop({ withAgents: true });
   await killAndAwaitExit(broker);

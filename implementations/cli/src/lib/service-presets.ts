@@ -152,6 +152,12 @@ export function presetUnfilledDefaults(preset: ServicePreset, space: string, roo
   return unfilled;
 }
 
+/** The flag forms a new preset definition needs in this space, with value placeholders. */
+export function presetRequiredInputs(preset: ServicePreset, space: string, root: string): string[] {
+  const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
+  return [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
+}
+
 /** The option values a preset's defaults supply in `space`, for the options the person did not give.
  *  A default that cannot be resolved refuses with the flag that replaces it; nothing is invented. */
 export function presetDefaultOptions(preset: ServicePreset, space: string, root: string, values: ParsedArgs["values"], migrate = true): Record<string, string | boolean> {

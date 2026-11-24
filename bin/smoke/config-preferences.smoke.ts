@@ -74,6 +74,10 @@ const ansi = /\x1b\[/;
   check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor", "name"]), res?.settings.map((s) => s.key));
   check("each key with a product default resolves to it, and the editor to nothing", settingOf(r, "harness")?.winner?.source === "default" && settingOf(r, "persona")?.value === "default" && settingOf(r, "detach-key")?.value === "ctrl-]" && settingOf(r, "color")?.value === "auto" && settingOf(r, "editor")?.value === null && settingOf(r, "editor")?.winner === null, res?.settings);
   check("reading writes nothing", !existsSync(file));
+  const get = run(["config", "get", "name", "--user", "--json"]);
+  const name = (get.envelope?.result as { setting?: Setting } | null)?.setting;
+  check("an unset name has a null winner and no shadowed layers", get.status === 0 &&
+    name?.value === null && name.winner === null && name.shadowed.length === 0, shown(get));
   // The file is in the Storage section, which only --verbose prints.
   const plain = run(["config", "--plain", "--verbose"]);
   check("the plain view names the file, the scope and each key's source", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout.includes(file) && /^ {2}your defaults$/m.test(plain.stdout) && /Setting\s+Value\s+Source/.test(plain.stdout) && /harness\s+claude\s+the default/.test(plain.stdout), shown(plain));
@@ -90,6 +94,8 @@ const ansi = /\x1b\[/;
   const get = run(["config", "get", "harness", "--json"]);
   const s = (get.envelope?.result as { setting?: Setting } | null)?.setting;
   check("get names the winner and the default it shadows", get.status === 0 && s?.value === "opencode" && s.winner?.source === "user" && s.shadowed.length === 1 && s.shadowed[0]!.source === "default" && s.shadowed[0]!.value === "claude", s);
+  check("user and default layers omit the name property", !!s?.winner && !("name" in s.winner) &&
+    s.shadowed.length === 1 && !("name" in s.shadowed[0]!), s);
   const again = run(["config", "set", "harness", "opencode", "--json"]);
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
   // A per-space value is saved only for a space this machine knows, so prepare demo first.
@@ -199,6 +205,15 @@ const ansi = /\x1b\[/;
     check(`\`${args.join(" ")}\` is refused, naming the known spaces, and writes nothing`,
       r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered, prepared or holding a saved value here; known spaces: demo$/.test(r.envelope.error.message) && fileText() === before, shown(r));
   }
+  const occupied = join(home, "demo");
+  const missing = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  const create = /`cotal (space create other_lab --root) <dir>`/.exec(missing.envelope?.error?.remedy ?? "")?.[1];
+  const prepared = create === undefined ? undefined : run([...create.split(" "), join(home, "other-lab"), "--json"], {}, occupied);
+  const found = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  check("config keeps the unknown-space refusal and gives a preparation command usable from an occupied root",
+    missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && prepared?.status === 0 &&
+      found.status === 0 && (found.envelope?.result?.scope as { space?: string } | undefined)?.space === "other_lab" && fileText() === before, shown(missing));
+  run(["space", "forget", "other_lab", "--json"]);
   writeFileSync(file, JSON.stringify({ ...saved(), spaces: { ...saved().spaces, gone: { persona: "old" } } }));
   const goneGet = run(["config", "get", "persona", "--space", "gone", "--json"]);
   check("a value left for a removed space can still be read", goneGet.status === 0 && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.winner?.source === "space" && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.value === "old", shown(goneGet));
@@ -514,12 +529,12 @@ if (process.platform !== "win32") {
   chmodSync(dir, 0o757);
   try {
     const write = run(["config", "set", "editor", "ed", "--json"]);
-    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
-      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
+    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod, and leaves stderr empty",
+      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}` && write.stderr === "", shown(write));
     check("and the file is left as it was", fileText() === before);
     const read = run(["config", "--json"]);
-    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",
-      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr.includes("! the preferences folder is not protected"), shown(read));
+    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod, and keeps it off stderr",
+      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr === "", shown(read));
     const status = run(["status", "--json"]);
     const hints = ((status.envelope?.result as { hints?: string[] } | null)?.hints ?? []);
     check("status warns too, and its Next protects the folder", status.status === 0 && (status.envelope?.warnings ?? []).some(unprotected) && hints.includes(`protect the preferences folder: chmod o-w ${dir}`), shown(status));
@@ -625,6 +640,34 @@ if (process.platform !== "win32") {
   check("status leaves the file as it was", fileText()?.includes("spaces") === true);
   rmSync(file);
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
+}
+
+{
+  const malformed = "{\n";
+  writeFileSync(file, malformed);
+  const finite = run(["history", "general", "--json"]);
+  const error = finite.envelope?.error;
+  check("finite JSON history reports malformed preferences in one refusal envelope",
+    finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history" && finite.envelope.outcome === "refused"
+      && error?.code === "SCHEMA_INVALID" && error.message.includes(`the preferences file ${file} is invalid: not JSON`)
+      && error.remedy === `fix or remove ${file}; nothing resets it`, shown(finite));
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "general", "--follow"], { space: null, channel: "general", dms: false }],
+    ["membership", ["channel", "members", "general", "--follow"], { space: null, channel: "general" }],
+  ] as const) {
+    const r = run([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames malformed preferences as a setup failure without a snapshot`,
+      r.status === 1 && r.stderr === "" && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream
+          && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+        && error !== undefined && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message
+        && records[0]?.data?.remedy === error.remedy && records[1]?.data?.reason === "setup-failed"
+        && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  check("the JSON observers leave malformed preferences untouched", fileText() === malformed);
+  rmSync(file);
 }
 
 // ── a COTAL_HOME that is not a directory stops every command but help and completion ─────────────

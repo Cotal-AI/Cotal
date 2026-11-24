@@ -64,10 +64,10 @@ export function stackJournalRoot(root: string): string | undefined {
 /** The way back for a project folder moved away from `recordedRoot`, the folder its records name. A
  *  broker from an earlier release that kept running there may have created empty folders at that path,
  *  which a plain move back would nest the project inside. */
-export function movedRootRemedy(recordedRoot: string): string {
+export function movedRootRemedy(recordedRoot: string, next = "run the command again there"): string {
   return existsSync(recordedRoot)
-    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move this folder back to ${recordedRoot} and run the command again there`
-    : `move this folder back to ${recordedRoot}, then run the command again there`;
+    ? `move what is now at ${recordedRoot} aside, such as empty folders a running broker created there, then move this folder back to ${recordedRoot} and ${next}`
+    : `move this folder back to ${recordedRoot}, then ${next}`;
 }
 
 /** The longest space name `space create` and `cotal up` accept. A local file that carries a space

@@ -1,12 +1,22 @@
-import { epScatterService, type ResolvedService } from "@cotal-ai/core";
+import { credsClaims, epRequestSubject, epScatterService, importNativeSubjectPermissions, issuedPermitsPattern, type ResolvedService } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { CommandFailure, writeResult, type Presentation, type RefusalCode, type Report, nativeEndpointRefusal } from "@cotal-ai/workspace";
 
 /** One native frozen-set gather, without instance probes, a bind, repair or a second publication. */
-export async function invokeEndpointScatter(nc: NatsConnection, space: string, service: ResolvedService, command: string, args: Record<string, unknown> | undefined, requestId: string, deadlineMs: number) {
+export async function invokeEndpointScatter(nc: NatsConnection, space: string, service: ResolvedService, command: string, args: Record<string, unknown> | undefined, requestId: string, deadlineMs: number, instrumentCreds?: string) {
   const declaration = service.commands.get(command)!;
   if (service.pinnedInstanceId !== undefined || declaration.targeted) throw new CommandFailure("refused", "CONFLICT", "a class scatter cannot carry an instance pin or a per-agent target");
+  // The local instrument grants complete nonce rails. Check this one before the gather,
+  // where a denied publication would otherwise look like silence from every member.
+  const pub = instrumentCreds === undefined ? undefined : credsClaims(instrumentCreds).nats?.pub;
+  if (pub !== undefined) {
+    const subject = epRequestSubject(space, { route: { mode: "all" }, endpoint: service.endpoint, command, caller: service.caller, nonce: requestId });
+    const rail = `${subject.slice(0, subject.lastIndexOf(".") + 1)}*`;
+    if (!issuedPermitsPattern(importNativeSubjectPermissions({ pub }).publish, rail)) {
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `the caller has no class scatter grant for ${service.endpoint} ${command}; no invocation was sent`);
+    }
+  }
   const input = args === undefined && !declaration.contract.input.validate(null) && declaration.contract.input.validate({}) ? {} : args;
   const jsm = await jetstreamManager(nc, { checkAPI: false });
   const gathered = await epScatterService(nc, jsm, space, {

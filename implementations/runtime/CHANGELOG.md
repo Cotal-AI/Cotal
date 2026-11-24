@@ -1,5 +1,131 @@
 # @cotal-ai/runtime
 
+## 0.176.6
+
+### Patch Changes
+
+- ea08bc8: Report the results filename and how to fix it when a workflow simulation receives a JSON array or another non-object value as its results script.
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/lang@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- e6810ad: When a local workflow resume is missing its run ID, show how to list runs on the same target without a manager and add the ID to the original command.
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/lang@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- 7a6895d: Use a matching endpoint import space from the file, explain how to proceed with relative `ZDOTDIR` or invalid simulation results, and document which JSON modes stream records.
+- 959cd61: `run show` checks its journal limit before suggesting how to look up a run ID, so the suggested read no longer repeats an incompatible limit and JSON format.
+- 3696130: When a local workflow revoke finds no admission, suggest a run list for the same space that works without a manager, and document how to take a full backup after system-account rotation.
+- 0f60f11: When `cotal run check` cannot find a run, suggest a local listing on the same target so the command works without a manager.
+- 871ccaa: When a journal read needs a run ID, keep its space, broker and Manager or local endpoint in the suggested list and journal commands.
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [99e0752]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [dd96500]
+- Updated dependencies [d31ba81]
+- Updated dependencies [87465c9]
+- Updated dependencies [c82c548]
+- Updated dependencies [e73a285]
+- Updated dependencies [0758948]
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/lang@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [a38ed1d]
+  - @cotal-ai/lang@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/lang@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/lang@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+- bedf4ee: Quote workflow simulation retry paths and reject local admission lists with no patterns before contacting the broker.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+- Updated dependencies [7266240]
+- Updated dependencies [28b97c7]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/lang@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- 806ac82: Reject an empty `--handler` for a workflow simulation as a usage error, and say how to name the results file or leave the option out.
+- 7b16e50: Reject a local workflow start that omits an admission option as a usage error before any broker contact, naming the missing option and how to supply it.
+- a943a0e: Keep validation problems visible when JSON output cannot be written, and retain workflow warnings when the simulation results script is refused.
+- a023cff: Waiting hosted workflows check for timer fires and settlements without replaying the journal on every empty poll.
+- a70411d: Refuse a simulation results file whose clock.start is past the safe-integer range, so a one-millisecond sleep is never reported as zero elapsed time; name the supported range and how to fix it.
+- 2017841: A simulation stopped by a missing scripted result now says to save the result in a results file and rerun with `--handler`, instead of only showing the result object.
+- 56ff44a: When a hosted workflow command finds no registered Manager, its recovery names the local stack's project folder or directs the operator to its host.
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/lang@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 1afa1b1: Keep the original CLI options when correcting an attach manager ID, removing a source file from hosted resume, or adding a missing run ID to local revoke.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [8cf0871]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/lang@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

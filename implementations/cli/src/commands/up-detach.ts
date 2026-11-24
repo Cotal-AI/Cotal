@@ -76,7 +76,7 @@ import { knownStackRecoveryHost, readStackJournal } from "../lib/stack-journal.j
 import { warnForeignStoreEntries } from "../lib/store-dir.js";
 import { brokerAddressConflict } from "../lib/broker-service.js";
 import { pendingOrdinaryResumes } from "./up-pending.js";
-import { authTimeoutArgs, loadChannelsFile, commitTransportPolicy, assertServesDialHost } from "./up-transport.js";
+import { authTimeoutArgs, commitTransportPolicy, assertServesDialHost } from "./up-transport.js";
 import { postStart, recreateMemoryBuckets } from "./up-stores.js";
 import { type BrokerFacts, brokerVersion, writeOpenBrokerConf, authSetup } from "./up-broker-auth.js";
 import { folderSpace } from "./up-args.js";
@@ -190,6 +190,7 @@ export async function startDeliveryWithBroker(
     /** P2 item 6: broker ws listener port for the console session client. */
     wsPort?: number;
     maxSessions?: number;
+    managerName?: string;
     managerSeatCap?: SeatCap;
     /** #1417 broker-only mode: ensure the delivery daemon and not the manager. */
     noManager?: boolean;
@@ -344,6 +345,7 @@ export async function serveReadyListener(l: {
   /** The raw `--host` flag, so the record can tell an operator's address from the loopback default. */
   host?: string;
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   maxFileStore?: number;
   publicExchange?: string[];
@@ -361,7 +363,8 @@ export async function serveReadyListener(l: {
   try {
     if (l.resumeAttempt) {
       const ordinaryResume = pendingOrdinaryResumes.has(l.resumeAttempt);
-      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined);
+      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined,
+        ordinaryResume ? l.seedFile : undefined);
     } else {
       await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     }
@@ -416,6 +419,7 @@ export async function serveReadyListener(l: {
     // is never a side effect of anything but the operator binding the mesh somewhere reachable.
     attachHost,
     maxSessions,
+    managerName: l.managerName,
     managerSeatCap: l.managerSeatCap,
     noManager: l.noManager,
     resumeAttempt: l.resumeAttempt,
@@ -474,10 +478,8 @@ export interface DetachOpts {
   recreateIssuedStores?: string;
   /** Explicitly replace the stopped space's legacy File membership feed during setup. */
   recreateMembershipStore?: boolean;
-  channels?: string;
   host?: string;
-  /** Channel-registry seed in memory (the `cotal up -f` manifest path), used instead of reading a
-   *  `--channels` file. Takes precedence over {@link channels}. */
+  /** Validated channel-registry seed from the startup file or manifest. */
   seed?: ChannelRegistryFile;
   /** PUBLIC-exchange daemon argv (`--exchange-public-port` et al), threaded verbatim to the
    *  auth-service daemon when THIS boot starts it. */
@@ -489,6 +491,7 @@ export interface DetachOpts {
   resumeAttempt?: string;
   resumeCommit?: { path: string; sha256: string };
   maxSessions?: number;
+  managerName?: string;
   managerSeatCap?: SeatCap;
   /** #1417 broker-only boot (`--no-manager`): no manager starts with this broker. An `up -f` under
    *  the flag boots the broker + channels and launches NO agents from this host — a manifest's
@@ -530,7 +533,6 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     recheckExistingStore(opts.existingStore, { space, storeDir });
   } else mkdirSync(storeDir, { recursive: true, mode: 0o700 });
   await claimSpace(space, server, root);
-  const seedFile = opts.seed ?? loadChannelsFile(opts.channels);
   const host = opts.host ?? "127.0.0.1";
   // The transport arrives decided. The dial-host SAN is re-checked here because THIS is where the
   // effective server is finally known — a manifest may name a different host than the flags did, and
@@ -559,7 +561,7 @@ export async function prepareBrokerStart(opts: DetachOpts) {
     ...(opts.boundListener ? ["--name", opts.boundListener.serverName] : []),
   ];
   const { path: bin, source, version } = renderingBinary;
-  return { root, server, space, useAuth, storeDir, seedFile, host, transport, setup, maxPayload, confPath, args, bin, source, version };
+  return { root, server, space, useAuth, storeDir, host, transport, setup, maxPayload, confPath, args, bin, source, version };
 }
 
 /**
@@ -572,7 +574,7 @@ export async function startMeshDetached(
   // entirely cannot carry a mandatory decision.
   opts: DetachOpts,
 ): Promise<{ server: string; pid: number; executable: string; controlPlane: boolean; authService: boolean; deliveryResponderBound: boolean | null; delivery: boolean; deliveryLost?: string; manager: boolean }> {
-  const { server, space, useAuth, storeDir, seedFile, transport, setup: brokerSetup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
+  const { server, space, useAuth, storeDir, transport, setup: brokerSetup, maxPayload, args, bin, source, version } = await prepareBrokerStart(opts);
   await seedBeforeLaunch();
   const setup = brokerSetup && { ...brokerSetup, creds: await brokerSetup.mintProvisioner() };
   const logPath = cotalPath("nats.log");
@@ -586,11 +588,12 @@ export async function startMeshDetached(
 
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
-    child, server, space, storeDir, setup, seedFile, transport, maxPayload,
+    child, server, space, storeDir, setup, seedFile: opts.seed, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
     maxSessions: opts.maxSessions,
+    managerName: opts.managerName,
     managerSeatCap: opts.managerSeatCap,
     maxFileStore: opts.maxFileStore,
     publicExchange: opts.publicExchange,
@@ -622,8 +625,10 @@ export async function startMeshDetached(
 /** Refuse a broker address another program holds without answering NATS, such as a web server, as
  *  the controller stack refuses it. nats-server would exit on its bind with only a log line, and the
  *  readiness probe would wait on that program instead. `command` is the start the remedy reruns. */
-export async function assertBrokerAddressFree(server: string, command: string, bindHost?: string): Promise<void> {
-  const conflict = await brokerAddressConflict(server, command, bindHost);
+export async function assertBrokerAddressFree(server: string, command: Parameters<typeof brokerAddressConflict>[1], bindHost?: string, waitForTimeWait = false): Promise<void> {
+  const conflict = await brokerAddressConflict(server, command, bindHost, waitForTimeWait ? (address, seconds) => {
+    process.stderr.write(`Waiting up to ${seconds} seconds for TIME-WAIT to clear on the broker address ${address}\n`);
+  } : undefined);
   if (!conflict) return;
   throw new CommandFailure("refused", "CONFLICT", `${conflict.message} (bind failed: address already in use); no broker was launched`, {
     target: { root: cotalRoot(), server, bindError: "EADDRINUSE" }, remedy: conflict.remedy,
@@ -663,7 +668,7 @@ export function refuseStartOverUserState(open: boolean, userAuth: boolean, space
  *  before the boot could reach the config render - so a `cotal up --space alpha` against a root that
  *  legitimately holds alpha and beta refused on ambiguity that its own `--space` had already
  *  resolved. The tenant list answers the real question without picking. */
-export function ensureRootForSpace(space: string): void {
+export function ensureRootForSpace(space: string, separateRootNeedsPreparation = false): void {
   const root = cotalRoot();
   const cwd = process.cwd();
   // A prepared space starts only in the root `cotal space create` gave it. Checked before the mkdir
@@ -692,9 +697,12 @@ export function ensureRootForSpace(space: string): void {
     console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
     return;
   }
+  const separate = separateRootNeedsPreparation
+    ? `prepare a different folder with ${codeSpan(`cotal space create --root <new-folder> -- ${shellWord(space)}`)}, then repeat the startup from the original working directory with --root set to that folder and the other options unchanged`
+    : `start "${space}" from a different folder (it becomes that mesh's own root)`;
   throw new CommandFailure("refused", "CONFLICT", `this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}"`, {
     target: { space, root, hosted: existing },
-    remedy: `run ${existing.length === 1 ? names : "one of those"} with ${codeSpan(`cotal up --root ${shellWord(root)} --space ${existing.length === 1 ? shellWord(existing[0]!) : "<name>"}`)}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
+    remedy: `run ${existing.length === 1 ? names : "one of those"} with ${codeSpan(`cotal up --root ${shellWord(root)} --space ${existing.length === 1 ? shellWord(existing[0]!) : "<name>"}`)}, or ${separate}`,
   });
 }
 
@@ -793,7 +801,7 @@ export async function claimSpace(space: string, server: string, root: string): P
         target,
         remedy: `run \`cotal up\` here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}`,
       });
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in a new project folder outside this one with \`cotal up --space <name>\`, using an unused name and keeping --server if you specified a free address, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
   }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
   // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name

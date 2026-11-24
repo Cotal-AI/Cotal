@@ -1,6 +1,6 @@
 import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, parse, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
@@ -26,6 +26,7 @@ import {
   isMeshRegistryError,
   isSeededCommand,
   isWorkspaceTargetError,
+  jsonFlag,
   localeIsUtf8,
   operationWarnings,
   outputDeclarationProblems,
@@ -62,7 +63,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
-import { historySetupFailureRecords } from "./commands/history.js";
+import { historySetupFailureRecords, membershipSetupFailureRecords } from "./lib/follow-setup-failure.js";
 import { watchSetupFailureRecords } from "./commands/watch.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
@@ -72,10 +73,11 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
+import { preserveUpdatePath } from "./lib/npm-invocation.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { displayRemedy } from "./lib/self-exec.js";
-import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
+import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
+import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
@@ -85,13 +87,6 @@ import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./te
 // or a failure needs them, so a process that runs one daemon command never loads them.
 const serviceSurfaces = () => Promise.all([import("./lib/service-presets.js"), import("./commands/manager-service.js")]);
 const managerChoice = () => import("./lib/manager-choice.js");
-
-/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
-function asksForHelp(args: readonly string[]): boolean {
-  const end = args.indexOf("--");
-  const options = end === -1 ? args : args.slice(0, end);
-  return options.includes("--help") || options.includes("-h");
-}
 
 /** Whether a global flag ({@link GLOBAL_FLAG_WORDS}: `--no-color`, `--no-input`) is `word`, applying
  *  it when it is. */
@@ -103,18 +98,30 @@ function takeGlobalFlag(word: string): boolean {
   return true;
 }
 
-/** Separate globals before `--` without applying them to a command that takes its words raw. */
-function splitGlobalFlags(words: readonly string[], leading: ReadonlySet<string>): { rest: string[]; flags: Set<string>; repeated?: string } {
-  const end = words.indexOf("--");
+/** Apply leading global flags and move command-owned output flags after the command word. */
+function prepareLeadingFlags(leading: readonly string[]) {
+  const output: string[] = [];
+  const leadingGlobals = new Set<string>();
+  let repeatedLeading: string | undefined;
+  for (const word of leading) {
+    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
+    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
+    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
+  }
+  return { output, leadingGlobals, repeatedLeading };
+}
+
+/** Collect globals before `--`; the parser still needs their original positions. */
+function collectGlobalFlags(words: readonly string[], leading: ReadonlySet<string>): { flags: Set<string>; repeated?: string } {
   const flags = new Set<string>();
   let repeated: string | undefined;
-  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => {
-    if (!GLOBAL_FLAG_WORDS.has(word)) return true;
+  for (const word of words) {
+    if (word === "--") break;
+    if (!GLOBAL_FLAG_WORDS.has(word)) continue;
     if (leading.has(word) || flags.has(word)) repeated ??= word;
     flags.add(word);
-    return false;
-  });
-  return { rest: end === -1 ? head : [...head, ...words.slice(end)], flags, repeated };
+  }
+  return { flags, repeated };
 }
 
 /** Whether `cmd` takes its words raw: it declares so, or it is an internal command, whose words are
@@ -128,9 +135,18 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
   const { cmd: found, rest } = await serviceSurface(takesWordsRaw(cmd) ? undefined : cmd, words, true);
   const end = rest.indexOf("--");
   const options = end === -1 ? rest : rest.slice(0, end);
+  // A global word in a string option's value slot cannot supply that value.
+  const tokens = found && parseArgs({ args: options, options: parserOptions(found), strict: false, allowPositionals: true, tokens: true }).tokens;
+  const missing = tokens?.find((token) => token.kind === "option" && token.inlineValue === false && token.value === word);
+  const flag = missing?.kind === "option" ? found?.flags?.find(({ name }) => name === missing.name) : undefined;
+  const refusal = found && flag && missing
+    ? !flag.multiple && tokens?.some((token) => token.kind === "option" && token.name === flag.name && token.index < missing.index)
+      ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
+      : missingValue(found, rest, flag)
+    : { message: `Option '${word}' cannot be repeated` };
   const json = found !== undefined && asksForJson(found, rest);
   if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
-  return runOperation({ warnings }, () => usageExit(`Option '${word}' cannot be repeated`, found, json, options.includes("--plain"), undefined, rest));
+  return runOperation({ warnings }, () => usageExit(refusal.message, found, json, options.includes("--plain"), refusal.remedy, rest));
 }
 
 /** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
@@ -152,8 +168,7 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
     let json = false;
     for (const ch of word.slice(1)) {
       const type = shorts.get(ch);
-      if (type === undefined) return false;
-      if (type === "string") break;
+      if (type === undefined || type === "string") break;
       if (ch === "j") json = true;
     }
     return json;
@@ -191,12 +206,24 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
   else try {
-    // Mint receipts identify the operation, not the auth namespace used by account reports.
-    const command = cmd.name === "auth" && findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value)?.name === "mint"
-      ? "auth mint" : cmd.name;
-    const historyFollow = cmd.name === "history" && validationArgs?.values.follow === true && !plain
+    const recognize = cmd.name === "backup" ? typographicOptions(cmd) : undefined;
+    const subcommand = cmd.name === "backup" || cmd.name === "auth" || cmd.name === "doctor" || cmd.name === "endpoint"
+      ? findSubcommand(cmd, metadataPositionals(cmd, words, recognize && { optionSpelling: (word) => recognize(word)?.spelling }).positionals[0]?.value)?.name
+      : undefined;
+    const command = subcommand && (cmd.name === "backup" ||
+      (cmd.name === "auth" && subcommand === "mint") || (cmd.name === "doctor" && subcommand === "auth") ||
+      (cmd.name === "endpoint" && (subcommand === "init" || subcommand === "check")))
+      ? `${cmd.name} ${subcommand}` : cmd.name;
+    const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
+    const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
+    const membershipFollow = cmd.name === "channel" && follow && validationArgs.positionals[0] === "members";
+    const space = validationArgs?.values.space;
     const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
+      : membershipFollow ? membershipSetupFailureRecords({
+        space: typeof space === "string" && space.trim() ? space : null,
+        channel: validationArgs.positionals[1]?.replace(/^#/, "") ?? null,
+      }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
     const lines = records ? records.map((record) => `${JSON.stringify(record)}\n`).join("") : envelopeLine(failureEnvelope(command, failure, warnings, scope));
     writeAllSync(1, Buffer.from(lines));
@@ -394,12 +421,30 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr)));
 }
 
+/** Recover the requested stream output and target for a refusal, without running the command. */
+function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs | undefined {
+  if (cmd.name !== "history" && cmd.name !== "channel" && cmd.name !== "watch") return undefined;
+  const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+  const args = [...words];
+  for (;;) {
+    const { values, positionals, tokens } = parseArgs({ args, options, strict: false, allowPositionals: true, tokens: true });
+    // The loose parser consumes an option-looking word after a missing value. Leave that word
+    // available as an option (or the separator), as it is in the usage diagnostic.
+    const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
+      && token.value?.startsWith("-") && token.value !== "-"
+      && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
+    // The caller already detected a valid JSON switch. Watch needs no separate stream selector.
+    if (!missing) return cmd.name === "watch" || (values.json === true && values.follow === true)
+      ? { values: values as ParsedArgs["values"], positionals, raw: words } : undefined;
+    args.splice(missing.index + 1, 0, "");
+  }
+}
+
 /** A usage error, written by {@link usageRefusal} with the help of the command or subcommand `words`
  *  name when there is one, and with `remedy` under the message when the parser can name one. Exit 1. */
 function usageExit(message: string, cmd?: Command, json = false, plain = false, remedy?: string, words: readonly string[] = []): never {
-  // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
-  // the remedy names stays out of it.
-  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words);
+  // A JSON caller gets only its receipt or stream records, without help text on stdout.
+  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: remedy ?? `run \`cotal help ${cmd.name}\`` }), true, false, undefined, words, streamRefusalArgs(cmd, words));
   recordTelemetryFailure("refused", "USAGE_INVALID", message);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
@@ -409,17 +454,24 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
 
 /** The refusal for a named or short option typed with a typographic dash pasted from
  *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
-function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []): { message: string; remedy?: string } | undefined {
+function typographicOption(word: string, names: ReadonlySet<string>, flags: readonly FlagSpec[] = []) {
   const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)(?:=(.*))?$/su.exec(word);
   if (!typed) return undefined;
   const [, name, value] = typed;
   const long = names.has(name!);
   const flag = flags.find((flag) => long ? flag.name === name : flag.short === name);
   if (!long && !flag) return undefined;
+  const option = `${long ? "--" : "-"}${name}`;
+  const spelling = value === undefined ? option : `${option}=${value}`;
   const message = `${word} starts with a typographic dash, so it is not an option`;
-  if (value === undefined) return { message, remedy: `type the option with hyphens: ${long ? "--" : "-"}${name}` };
-  if (flag?.type !== "string") return { message };
-  return { message, remedy: `type the option with hyphens: --${flag.name}=${shellWord(value)}` };
+  const correction = value === undefined ? option : flag?.type === "string" ? `--${flag.name}=${shellWord(value)}` : undefined;
+  return { message, spelling, flagName: flag?.name, remedy: correction && `type the option with hyphens: ${correction}` };
+}
+
+function typographicOptions(cmd: Command, flagNames?: readonly string[]) {
+  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS, "help"]);
+  const flags: FlagSpec[] = [...(cmd.flags ?? []), { name: "help", short: "h", type: "boolean" }];
+  return (word: string) => typographicOption(word, names, flags);
 }
 
 /** Identify seed before recovery, even when a typographic maintenance flag precedes it. */
@@ -437,8 +489,7 @@ function extSeedSubcommand(cmd: Command, words: readonly string[]): Subcommand |
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
 function misspelledOption(cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined): { message: string; remedy?: string } | undefined {
-  const names = new Set<string>([...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)), ...GLOBAL_FLAGS, "help"]);
-  const flags: FlagSpec[] = [...(cmd.flags ?? []), { name: "help", short: "h", type: "boolean" }];
+  const recognize = typographicOptions(cmd, flagNames);
   const positionals = new Set(metadataPositionals(cmd, rest).positionals.map(({ index }) => index));
   for (const [index, word] of rest.entries()) {
     if (word === "--") return undefined;
@@ -453,38 +504,71 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
-    const typed = positionals.has(index) ? typographicOption(word, names, flags) : undefined;
+    const typed = positionals.has(index) ? recognize(word) : undefined;
+    if (typed && cmd.name === "ext" && typed.flagName && typed.flagName !== "help") {
+      const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
+      const sub = findSubcommand(cmd, first);
+      const accepted = sub ? sub.flagNames : cmd.flagNames;
+      if (accepted && !accepted.includes(typed.flagName))
+        return { message: typed.message, remedy: `omit this option; \`cotal ext${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
+    }
     if (typed) return typed;
   }
   return undefined;
 }
 
+function parserOptions(cmd: Command) {
+  return Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+}
+
+/** Strip standalone globals, but keep any global where a string option needs its value. */
+function stripGlobalFlags(cmd: Command, words: string[]): string[] {
+  if (takesWordsRaw(cmd)) return words;
+  const end = words.indexOf("--");
+  const head = end === -1 ? words : words.slice(0, end);
+  if (!head.some((word) => GLOBAL_FLAG_WORDS.has(word))) return words;
+  const { tokens } = parseArgs({ args: head, options: parserOptions(cmd), strict: false, allowPositionals: true, tokens: true });
+  const globals = new Set(tokens.filter((token) => token.kind === "option" && GLOBAL_FLAG_WORDS.has(head[token.index]!)).map((token) => token.index));
+  return words.filter((_, index) => !globals.has(index));
+}
+
+function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, beforeSeparator = false) {
+  if (cmd.name === "run" && (flag.name === "adopt" || flag.name === "release") && helpPath(cmd, words).path[0] === "check")
+    return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
+  return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
+}
+
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
- *  goes after `--` only where the command takes operands and there is no spelling suggestion.
+ *  goes after `--` only where the command has room for an operand and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last, before `--`, or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean): { message: string; remedy?: string } {
+function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean, operandsFull: boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
+    const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
+    if (flag && !flag.multiple && typeof parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === flag.type) {
+      const value = flag.type === "string" ? " and its value, if any" : "";
+      return { message: reason, remedy: `drop the unknown option${value}; --${flag.name} is already set` };
+    }
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
     const remedy = cmd.name === "completion" ? "drop the unknown option"
-      : !takesOperands ? undefined : spellings ? `use ${spellings}` : "to pass a word that starts with \"-\", put -- before it";
+      : !takesOperands ? undefined : spellings ? `use ${spellings}`
+      : operandsFull ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
     return { message, remedy };
   }
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {
     return { message: error.message.replace(/\. This command does not take positional arguments\.?$/u, "") };
   }
-  const missingValue = (flag: FlagSpec, beforeSeparator = false) => ({ message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` });
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(cmd, rest, last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
-    const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
+    const options = parserOptions(cmd);
     const { tokens } = parseArgs({ args: [...rest], options, strict: false, allowPositionals: true, tokens: true });
     let seen = false;
     for (const token of tokens) {
@@ -494,10 +578,11 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       const numeric = rest[token.index] === token.rawName && /^-\d/.test(value ?? "");
       if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
         if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
-        if (value === "--") return missingValue(flag, true);
+        if (value === "--") return missingValue(cmd, rest, flag, true);
+        if (GLOBAL_FLAG_WORDS.has(value)) return missingValue(cmd, rest, flag);
         const next = parseArgs({ args: [value], options, strict: false, allowPositionals: true, tokens: true });
         if (next.tokens.every((item) => item.kind === "option" && Object.hasOwn(options, item.name)))
-          return missingValue(flag);
+          return missingValue(cmd, rest, flag);
         return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
       }
       seen = true;
@@ -508,6 +593,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
+  rest = stripGlobalFlags(cmd, rest);
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
   const plain = !seed && rest.includes("--plain");
@@ -529,28 +615,27 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands);
+      const operandsFull = (cmd.name === "config" && selected.name === "get" && positionals.length >= 2)
+        || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
+        || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
+        || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
+          || (first === "work" && selected.name === "lease" && positionals.length >= 4)));
+      const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands, operandsFull);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }
     throw e;
   }
   const first = parsed.positionals[0];
-  // History also accepts a root channel positional; only its reserved clear token is a mode.
-  if (cmd.subcommands?.length && first !== undefined && cmd.name !== "history" && !findSubcommand(cmd, first))
-    usageExit(unknownSubcommandMessage(cmd.name, cmd, first), cmd, json, plain);
-  // Target resolution reads an empty space as no space and falls back to the selected one, so a script
-  // whose variable is unset would act on whichever space is selected.
-  const spaceFlag = cmd.flags?.find((flag) => flag.name === "space");
-  if (spaceFlag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
-    failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `--space${spaceFlag.short ? `/-${spaceFlag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" }), json, parsed.values.plain === true, undefined, rest, parsed);
+  const canonical = canonicalSubcommand(cmd, parsed, json, plain);
+  const spaceFailure = emptySpaceFailure(cmd, parsed);
+  if (spaceFailure) failureExit(cmd, spaceFailure, json, parsed.values.plain === true, undefined, rest, parsed);
   // An empty --store-dir reads as no value and opens the default store, and a ~ no shell expanded
   // names a folder called ~ in the working folder.
   const storeDir = parsed.values["store-dir"];
   if (!(cmd.name === "clean" && first === "history") && typeof storeDir === "string" && (!storeDir.trim() || storeDir.startsWith("~")))
-    failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true);
+    failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true, undefined, rest);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
-  const canonical = canonicalSubcommand(cmd, parsed);
   refuseRemovedFolder(cmd, canonical, rest);
   try {
     cmd.validate?.(canonical);
@@ -559,21 +644,48 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     if (isArgError(error)) usageExit((error as Error).message.split(".")[0]!, cmd, json, plain, undefined, rest);
     throw error;
   }
+  const serverFailure = serverFlagFailure(cmd, canonical);
+  if (serverFailure) failureExit(cmd, serverFailure, json, canonical.values.plain === true, undefined, rest, canonical);
+  return canonical;
+}
+
+/** Check a suggested spawn without changing input mode, resolving its target or running it. */
+export function validateSpawnRetry(cmd: Command, words: string[]): void {
+  const rest = stripGlobalFlags(cmd, words);
+  const spelling = misspelledOption(cmd, rest, cmd.flagNames);
+  if (spelling) throw new CommandFailure("refused", "USAGE_INVALID", spelling.message, { remedy: spelling.remedy });
+  const parsed = parseCommandArgs(cmd, rest);
+  const spaceFailure = emptySpaceFailure(cmd, parsed);
+  if (spaceFailure) throw spaceFailure;
+  cmd.validate?.(parsed);
+  const serverFailure = serverFlagFailure(cmd, parsed);
+  if (serverFailure) throw serverFailure;
+}
+
+function emptySpaceFailure(cmd: Command, parsed: ParsedArgs): CommandFailure | undefined {
+  // An explicitly empty space must not resolve to the selected one.
+  const flag = cmd.flags?.find((flag) => flag.name === "space");
+  if (flag && typeof parsed.values.space === "string" && !parsed.values.space.trim())
+    return new CommandFailure("refused", "USAGE_INVALID", `--space${flag.short ? `/-${flag.short}` : ""} is empty; name one space`, { remedy: "name the space; `cotal space` lists the spaces this machine knows" });
+  return undefined;
+}
+
+function serverFlagFailure(cmd: Command, parsed: ParsedArgs): CommandFailure | undefined {
   // The TCP client drops URL components beyond host and port. Apply registration's syntax rule
   // before any command connects. A command's narrower rule, such as `up`'s, has run above.
-  if (cmd.flags?.some((flag) => flag.name === "server") && typeof canonical.values.server === "string") {
+  if (cmd.flags?.some((flag) => flag.name === "server") && typeof parsed.values.server === "string") {
     // Manifest up owns the single-listener refusal. Check each entry first so a credential or
     // malformed entry is still refused before that command reads the manifest or starts anything.
-    const servers = cmd.name === "up" && typeof canonical.values.file === "string"
-      ? canonical.values.server.split(",").map(server => server.trim())
-      : [canonical.values.server];
+    const servers = cmd.name === "up" && typeof parsed.values.file === "string"
+      ? parsed.values.server.split(",").map(server => server.trim())
+      : [parsed.values.server];
     for (const server of servers) {
       const checked = checkServer(server, "--server");
       if (!checked.ok)
-        failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true }), json, canonical.values.plain === true, undefined, rest, canonical);
+        return new CommandFailure("refused", "USAGE_INVALID", `${checked.message.replace(/^✗ /, "")}; the command did not run`, { remedy: checked.remedy, selfContained: true });
     }
   }
-  return canonical;
+  return undefined;
 }
 
 /** The refusal of a `--store-dir` that is empty, or that starts with a `~` no shell expanded. */
@@ -597,27 +709,32 @@ function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly st
     const root = removed ? undefined : findCotalRoot();
     if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
       parsed.values.creds = resolve(parsed.values.creds);
-    if (!removed && process.env.PATH !== undefined)
-      process.env.PATH = process.env.PATH.split(delimiter).map(dir => dir && !isAbsolute(dir) ? resolve(dir) : dir).join(delimiter);
+    if (!removed) preserveUpdatePath();
     process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
     return;
   }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
-  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
 }
 
-/** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
- *  only ever sees canonical subcommands. */
-function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
+/** Resolve subcommand aliases and refuse a word that names no subcommand before checking operands. */
+function canonicalSubcommand(cmd: Command, parsed: ParsedArgs, json: boolean, plain: boolean): ParsedArgs {
   const positionals = [...parsed.positionals];
   let surface: Pick<Command, "subcommands"> = cmd;
   let changed = false;
-  for (let index = 0; index < positionals.length; index++) {
-    const sub = findSubcommand(surface, positionals[index]);
-    if (!sub) break;
-    changed ||= sub.name !== positionals[index]; positionals[index] = sub.name;
+  for (let index = 0; index < positionals.length && surface.subcommands?.length; index++) {
+    const word = positionals[index]!;
+    const sub: Subcommand | undefined = findSubcommand(surface, word);
+    if (!sub) {
+      // History also accepts a channel as its first positional.
+      if (index === 0 && cmd.name === "history") break;
+      const message = unknownSubcommandMessage([cmd.name, ...positionals.slice(0, index)].join(" "), surface, word);
+      if (index === 0) usageExit(message, cmd, json, plain);
+      failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message), json, plain, undefined, parsed.raw);
+    }
+    changed ||= sub.name !== word;
+    positionals[index] = sub.name;
     surface = sub;
-    if (!sub.subcommands?.length) break;
   }
   return changed ? { ...parsed, positionals } : parsed;
 }
@@ -659,7 +776,7 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
-    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"));
+    return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
   }
 }
 
@@ -676,32 +793,15 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
  */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   const startedAt = Date.now();
-  // Global flags before the command word apply whatever the command is. The output flags are the
-  // command's own, so one written before the command word moves after it, and a `--` there ends
-  // the leading flags. A command that takes its words raw has no flags to read them as, so it
-  // refuses them there. The built-in surface decides that before any extension overlay is read.
-  const output: string[] = [];
-  const leadingGlobals = new Set<string>();
-  let repeatedLeading: string | undefined;
-  let lead = 0;
-  for (; lead < argv.length; lead++) {
-    const word = argv[lead]!;
-    if (OUTPUT_FLAG_WORDS.has(word)) output.push(word);
-    else if (leadingGlobals.has(word)) repeatedLeading ??= word;
-    else if (takeGlobalFlag(word)) leadingGlobals.add(word);
-    else break;
-  }
-  if (argv[lead] === "--") lead++;
-  const original = argv[lead];
-  const word = original === "--version" || original === "-V" ? "version"
-    : original === "--help" || original === "-h" ? "help" : original;
-  const words = [...output, ...argv.slice(lead + 1)];
+  const { leading, original, word, args } = leadingInvocation(argv);
+  const { output, leadingGlobals, repeatedLeading } = prepareLeadingFlags(leading);
+  const words = [...output, ...args];
+  const wantsHelp = asksForHelp(args);
   const builtin = findCommand(registry.all<Command>("command"), word);
-  const globals = splitGlobalFlags(words, leadingGlobals);
+  const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
-    if (takesWordsRaw(cmd)) return [...words];
-    for (const option of globals.flags) takeGlobalFlag(option);
-    return [...globals.rest];
+    if (!takesWordsRaw(cmd)) for (const option of globals.flags) takeGlobalFlag(option);
+    return [...words];
   };
   const duplicate = (cmd: Command | undefined) => repeatedLeading ?? (takesWordsRaw(cmd) ? undefined : globals.repeated);
   if (repeatedLeading && (word === undefined || takesWordsRaw(builtin))) return repeatedGlobalFlag(repeatedLeading, undefined, []);
@@ -731,12 +831,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (word === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   // The built-in check reports an unreadable inventory itself. Do not require that inventory to
   // construct its command surface, or recover an installation as a prelude to this read-only mode.
-  const updateCheck = builtin?.name === "update" && words.includes("--check") && !asksForHelp(words)
+  const updateCheck = builtin?.name === "update" && words.includes("--check") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.check === true;
   // Structured version reports inventory failures itself and needs no extension commands.
-  const versionJson = builtin?.name === "version" && !asksForHelp(words) && asksForJson(builtin, words);
+  const versionJson = builtin?.name === "version" && !wantsHelp && asksForJson(builtin, words);
   // The built-in updater repairs its connector paths before opening any promotion journal.
-  const selfUpdate = builtin?.name === "update" && words.includes("--self") && !asksForHelp(words)
+  const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
   // The removed start command only gives migration advice and needs no extension inventory.
   let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
@@ -757,7 +857,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       if (builtin?.name === "ext" && await extSeedGate(builtin, ownWords(builtin), configFolder, opts.startupNotice)) return;
       // Topology only renders a manifest. Read the installed overlay normally without finishing an install.
-      if (builtin?.name !== "topology") recoverExtensionPromotion();
+      if (!configFolder && builtin?.name !== "topology") recoverExtensionPromotion();
     } catch (e) {
       if (!skipUnreadableConnectorOverlay(e)) {
         if (repeatedLeading) {
@@ -779,7 +879,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionJson && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
       else {
@@ -808,7 +908,6 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const repeated = duplicate(cmd);
   if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
   for (const warning of pendingWarnings) console.error(c.red(`! ${warning.message}`));
-  const wantsHelp = asksForHelp(rest);
   ({ cmd, rest } = await serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
@@ -828,7 +927,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
   // A leading flag typed with a typographic dash is read as the command word, so it is refused as the
   // same word after the command word is.
-  const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))));
+  const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
+    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
+  ]);
   if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
   if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
@@ -842,7 +943,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // the extensions, so a command that could use them stops here, before the seed would write there.
   // Help, shell completion, version and docs use none of them.
   if (configFolder && cmd && parsed && !cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name))
-    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    failureExit(cmd, configFolderRefusal(configFolder), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
   const controlOnlyManager = parsed?.values.execution === "none" && (cmd?.name === "supervise" || cmd?.name === "__daemon-manager");
@@ -907,20 +1008,20 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // COTAL_HOME that cannot be a directory can hold no record: both stop them before any command
     // reads it.
     const home = process.env.COTAL_HOME;
-    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
     const homeProblem = cotalHomeProblem();
     if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
     // records, and every reader would otherwise report a different wrong cause. The machine daemon
     // uses its selected home, not the invoking project's records.
     const dirProblem = cmd.name === "version" || cmd.name === "daemon" || workingFolderRemoved() ? undefined : cotalDirProblem(typeof parsed.values.root === "string" ? resolve(parsed.values.root) : findCotalRoot());
-    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (dirProblem) failureExit(cmd, new CommandFailure("refused", "CONFLICT", `${dirProblem}; the command did not run`, { remedy: "rename or move that file, then run the command again" }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
     if (!["version", "docs", "status", "daemon"].includes(cmd.name)) {
       try {
         cachedPreferences();
       } catch (e) {
         if (!isCommandFailure(e)) throw e;
-        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+        failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
       }
     }
   }
@@ -937,7 +1038,12 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       // them says so, with the change that protects their folder.
       if (!cmd.name.startsWith("__") && !["help", "completion", "version", "docs"].includes(cmd.name)) {
         const folder = preferencesFolderWarning();
-        if (folder) recordOperationWarning(folder.warning);
+        // Under --json the warning lives in the envelope only: an immediate echo would put it on
+        // stderr as well, so a JSON refusal would break the "envelope on stdout, nothing on
+        // stderr" contract (docs/UPGRADING.md, "JSON refusals after 0.100.2"). Human mode still
+        // prints it at once, as before.
+        const jsonOutput = structured(cmd, parsed.positionals[0]) && parsed.values.json === true;
+        if (folder) recordOperationWarning(folder.warning, { echo: !jsonOutput });
       }
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
@@ -970,8 +1076,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd, mode)) {
-      const spaceRemedy = spaceChoiceRemedy(isConnectRefusal(e) ? e.cause : e, cmd.name, parsed, rest);
-      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy : ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
+      const targetError = isConnectRefusal(e) ? e.cause : e;
+      const spaceRemedy = spaceChoiceRemedy(targetError, cmd.name, parsed, rest);
+      const renderRemedy = spaceRemedy !== undefined ? () => spaceRemedy
+        : hasMovedStackRemedy(targetError) || ["status", "ps", "space", "whoami"].includes(cmd.name) ? displayRemedy : undefined;
       if (isConnectRefusal(e)) {
         const failure = e.failure(renderRemedy), cause = e.cause;
         if (isWorkspaceTargetError(cause) && cause.code === "not-started" && cause.details.stopped && !cause.details.unsettled && cause.details.root && cause.details.space) {

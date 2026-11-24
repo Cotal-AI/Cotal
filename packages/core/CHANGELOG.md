@@ -1,5 +1,57 @@
 # @cotal-ai/core
 
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- e0a0bb7: Plain chat accepts multiline drafts at the stated limit, chat retry guidance keeps your original options, and the terminal console quits cleanly after the broker stops.
+- 73f4306: All-channel history returns retained posts in order even when a deeply dotted channel shares a large history with other channels.
+
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Minor Changes
+
+- e9bcb31: `cotal setup` now adds Cotal to T3 Code and Zed when it finds them, so a thread in either app can start and drive Cotal agents without editing their settings by hand. Setup installs `@cotal-ai/acp` and adds one entry per space that runs this computer's `cotal acp --space <space>` by absolute path. It updates an entry you added by hand in place instead of adding a second one, keeps your other settings and Zed's comments, and backs up each file before it changes it. `cotal update` points the entries at the Cotal it installed, and `cotal status` shows an entry whose command is gone. The ACP bridge gains `/name`, which names a thread's agent before it starts or renames a running one on a space where people sign in, and `/open`, which drives an agent that is already running from a new thread. A thread reopens on the agent it spawned or opened. `npx @cotal-ai/acp` starts the Cotal installed on this computer, and when there is none or it lacks the ACP extension, it offers a terminal sign-in that installs what is missing. Core adds the `client-setup` extension kind (`ClientSetupProvider`) and passes the space to a setup action.
+
+### Patch Changes
+
+- 089f68d: Foreground spawn and persona show explain how to recover from unreadable persona files, persona show suggests a valid name override when needed, and the local catalog flags blank filenames as invalid selectors.
+
+## 0.175.3
+
+### Patch Changes
+
+- 35e08ac: Durable channel delivery and the membership feed read only changed registry rows after their initial snapshot instead of listing every membership on each post or connection event.
+
+## 0.175.2
+
+### Patch Changes
+
+- 7ca1d02: The service-account and daemon permission builders now live in their own core module, with no change in behavior.
+- d4ecdff: Internal refactor: the endpoint's connection and the handles opened on it (JetStream clients, KV buckets, membership watches, owned connections and pending replies) live in one `ConnectionState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- c940ed9: Internal refactor: the endpoint's start/stop/rebuild state, its presented credential and renewal state, and its channel-registry cache each live in one state object (`LifecycleState`, `CredentialState`, `ChannelRegistryState`) that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- a2486a2: Internal refactor: the endpoint's subscriptions, stream consumers, chat subscriptions, liveness responders, principal serves, durable-backstop channels, goal followers and DM-only handler live in one `DeliveryState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+
 ## 0.175.1
 
 No changes in this release.

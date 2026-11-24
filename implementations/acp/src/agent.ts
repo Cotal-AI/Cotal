@@ -15,16 +15,24 @@
  *
  * Every update of a turn is sent before the prompt answers. A client may drop updates that arrive
  * after a prompt settled, so nothing is left to send afterwards.
+ *
+ * A thread that spawns a seat, or opens one with `/open`, stores a link from its id to the seat's
+ * run. The list names a linked seat by its thread, and a load resolves a thread through its link
+ * before it looks for a seat of that name, so a thread whose seat has another name (`/name` before
+ * the first prompt, or `/open`) reopens on it.
  */
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
+import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
+  { name: "name", description: "Name this session's agent: before the first prompt, the name it starts with; after, the name it shows.", input: { hint: "new name" } },
+  { name: "open", description: "Drive an agent that is already running from this session.", input: { hint: "agent name" } },
   { name: "despawn", description: "Stop this session's agent. The session stays, and the reply says whether a new prompt can start another." },
   { name: "roster", description: "List who is on the mesh and what each is doing." },
   { name: "channels", description: "List the space's channels." },
@@ -49,10 +57,24 @@ export interface HiddenSessions {
   add(lifecycleUid: string): void;
 }
 
+/** One link from a thread to the seat run it drives. */
+export interface ThreadLink {
+  readonly thread: string;
+  readonly lifecycleUid: string;
+}
+
+/** The links threads stored in each space, in the order they were stored. A thread's last link is the
+ *  one that holds. */
+export interface ThreadLinks {
+  read(space: string): readonly ThreadLink[];
+  add(space: string, link: ThreadLink): void;
+}
+
 export interface CotalAgentOptions {
   /** Opens the space on first use. A failure here is reported on the request that needed it. */
   readonly mesh: () => Promise<Mesh>;
   readonly hidden: HiddenSessions;
+  readonly links: ThreadLinks;
   readonly log: (line: string) => void;
   readonly version: string;
   /** Whether the terminal action can sign in to the selected space or set one up. */
@@ -90,6 +112,8 @@ interface Turn {
 
 interface Session {
   readonly id: string;
+  /** The name the thread's next spawn gives its seat, as `/name` set it. Absent: the session's id. */
+  name?: string;
   cwd: string;
   offer: Offer;
   selection: Selection;
@@ -108,6 +132,23 @@ interface Session {
 }
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
+
+/** Each thread's current run, and the thread each run is linked from, of the links in one space. */
+function linksIn(store: ThreadLinks, space: string): { byThread: Map<string, string>; byRun: Map<string, string> } {
+  const links = store.read(space);
+  const byThread = new Map<string, string>();
+  for (const link of links) byThread.set(link.thread, link.lifecycleUid);
+  const byRun = new Map<string, string>();
+  for (const link of links) if (byThread.get(link.thread) === link.lifecycleUid) byRun.set(link.lifecycleUid, link.thread);
+  return { byThread, byRun };
+}
+
+/** The seats a thread id names: the run its link names, else the seats listed under that name. */
+function threadRows(store: ThreadLinks, m: Mesh, listed: SeatList, thread: string): SeatRow[] {
+  const run = linksIn(store, m.space).byThread.get(thread);
+  const linked = run === undefined ? [] : listed.rows.filter((row) => row.lifecycleUid === run);
+  return linked.length > 0 ? linked : listed.rows.filter((row) => row.name === thread);
+}
 
 /** A seat no manager listed. When a manager did not answer, the seat may run there, so that is the
  *  answer, not that the seat does not exist. On a space where people sign in, a registration of the
@@ -150,6 +191,8 @@ interface Bridge {
   readonly mesh: () => Promise<Mesh>;
   readonly bind: (session: Session, seat: SeatRef) => void;
   readonly unbind: (session: Session) => void;
+  /** The session here that holds a seat, if any. */
+  readonly holder: (seat: SeatRef) => Session | undefined;
   readonly sessionOf: (id: string) => Session;
   readonly announce: (session: Session) => Promise<void>;
   /** Fails the running prompts and closes the space, once the client disconnected. */
@@ -239,6 +282,8 @@ function bridge(options: CotalAgentOptions): Bridge {
     session.open = new Map();
   };
 
+  const holder = (seat: SeatRef): Session | undefined => byPrincipal.get(principal(seat));
+
   const sessionOf = (id: string): Session => {
     const s = sessions.get(id);
     if (!s) throw RequestError.sessionNotFound(id);
@@ -254,7 +299,7 @@ function bridge(options: CotalAgentOptions): Bridge {
     for (const s of sessions.values()) if (s.turn) s.turn.fail(new Error("the client disconnected"));
     if (opened) await (await opened.catch(() => undefined))?.close();
   };
-  return { options, sessions, send, mesh, bind, unbind, sessionOf, announce, close };
+  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, close };
 }
 
 function launchOffers(options: CotalAgentOptions) {
@@ -288,7 +333,27 @@ function launchOffers(options: CotalAgentOptions) {
     if (channels.length >= MAX_CHOICES) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel option is not offered`);
     return { catalogs, personas, channels, managers, defaultAgent: catalogs.find((c) => c.agent === m.defaultAgent)?.agent };
   };
-  return { seatOffer, offerFor };
+
+  /** What a thread that drives a running seat opens with: the launch lists of the seat's manager, or
+   *  only the seat's own model when the caller may not read them, with the seat's model selected. A
+   *  person whose grant does not let them spawn may not read the lists; their thread controls the
+   *  agent they have and offers nothing to launch. */
+  const seatThread = async (m: Mesh, row: SeatRow): Promise<Pick<Session, "offer" | "selection" | "held">> => {
+    let launch = true;
+    const offer = await offerFor(m, row.managerInstanceId, row.managerInstanceId).catch((e: unknown) => {
+      if (!(e instanceof LaunchListsRefused)) throw e;
+      options.log(`${row.name} opens with only its own model: ${e.message}`);
+      launch = false;
+      return seatOffer(row);
+    });
+    // Only the launch lists say whether an application has an event plane.
+    const why = launch ? refusal(offer.catalogs, row.agent) : undefined;
+    if (why) throw RequestError.invalidParams(undefined, why);
+    const held = row.managerInstanceId ? offer.managers.find((x) => x.instanceId === row.managerInstanceId) : undefined;
+    const selection = { ...initialSelection(offer), model: `${row.agent}/${row.model ?? "default"}`, ...(row.managerInstanceId ? { machine: row.managerInstanceId } : {}) };
+    return { offer, selection, ...(held ? { held } : {}) };
+  };
+  return { seatOffer, offerFor, seatThread };
 }
 
 type Offers = ReturnType<typeof launchOffers>;
@@ -382,13 +447,22 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
   return runTurn;
 }
 
-function slashCommands(b: Bridge) {
+function slashCommands(b: Bridge, offers: Offers) {
   const { send, unbind } = b;
+  const name = nameCommand(b);
+  const open = openCommand(b, offers);
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
     const match = /^\/([a-z]+)\b\s*(.*)$/s.exec(text);
     if (!match || !COMMANDS.some((c) => c.name === match[1])) return undefined;
     const say = (line: string) => send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } });
+    const arg = match[2]!.trim();
     switch (match[1]) {
+      case "name":
+        await say(await name(session, m, arg));
+        return "end_turn";
+      case "open":
+        await say(await open(session, m, arg));
+        return "end_turn";
       case "despawn": {
         if (text !== "/despawn") return undefined;
         if (!session.seat) {
@@ -417,9 +491,60 @@ function slashCommands(b: Bridge) {
   return slash;
 }
 
+/** `/name`: before the first prompt, the name the thread's spawn gives its seat; on a running seat, the
+ *  name it shows. Answers with the line the thread shows. */
+function nameCommand(b: Bridge) {
+  return async (session: Session, m: Mesh, want: string): Promise<string> => {
+    const seat = session.seat;
+    if (!want) return seat ? `This session's agent is ${seat.name}. Rename it with /name <new name>.` : `This session's agent will start as ${session.name ?? session.id}. Pick another name with /name <new name>.`;
+    if (session.spawning) return "The agent is starting. Name it once it has started.";
+    if (!seat) {
+      const why = m.spawnNameError(want);
+      if (why) return `The agent cannot start as ${want}: ${why}.`;
+      session.name = want;
+      return `This session's agent will start as ${want}.`;
+    }
+    try {
+      return `${seat.name} now shows as ${await m.rename(seat, want)}.`;
+    } catch (e) {
+      b.options.log(`session ${session.id}: rename refused: ${(e as Error).message}`);
+      return `Could not rename ${seat.name}: ${(e as Error).message}`;
+    }
+  };
+}
+
+/** `/open <name>`: in a thread with no agent, drive the running seat with that name or display name.
+ *  The thread shows what the space retains of the seat, then follows it live, and its link is stored
+ *  so the thread reopens on that seat. Answers with the line the thread shows. */
+function openCommand(b: Bridge, offers: Offers) {
+  const { options, send, bind, unbind, holder } = b;
+  return async (session: Session, m: Mesh, want: string): Promise<string> => {
+    if (!want) return "Name the agent to open: /open <name>.";
+    const current = session.seat?.name ?? (session.spawning ? session.name ?? session.id : undefined);
+    if (current) return `This session already drives ${current}. Open ${want} in a new session.`;
+    const listed = await m.seats();
+    const exact = listed.rows.filter((row) => row.name === want);
+    const lower = want.toLowerCase();
+    const rows = exact.length > 0 ? exact : listed.rows.filter((row) => row.name.toLowerCase() === lower || row.display?.toLowerCase() === lower);
+    if (rows.length === 0) return listed.silent.length > 0 ? notListed(m, want, listed).message : `No agent named ${want} is running.`;
+    if (rows.length > 1) return `${rows.length} agents are named ${want} (${rows.map((row) => row.name).join(", ")}). Open one by the name its manager lists.`;
+    const row = rows[0]!;
+    const opened = await offers.seatThread(m, row);
+    const other = holder(row);
+    if (other && other !== session) unbind(other);
+    Object.assign(session, opened, { mapper: new FrameMapper(), open: new Map() });
+    const replay = [...(await m.frameHistory(row)).flatMap((frame) => session.mapper.map(frame).updates), ...session.mapper.closeOpen("completed")];
+    for (const update of replay) await send(session, update);
+    bind(session, row);
+    options.links.add(m.space, { thread: session.id, lifecycleUid: row.lifecycleUid });
+    // A client joins consecutive message chunks into one message, so the line keeps clear of the replay.
+    return `${replay.length > 0 ? "\n\n" : ""}This session now drives ${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""}). A prompt here is typed into its terminal.`;
+  };
+}
+
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
-  const { sessions, mesh, bind, sessionOf, announce } = b;
+  const { options, sessions, mesh, bind, sessionOf, announce } = b;
   const { offerFor } = offers;
   return {
     newSession: async (params: NewSessionRequest, client: AgentContext) => {
@@ -480,7 +605,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (why) throw RequestError.invalidParams(undefined, why);
       const stopReason = await runTurn(session, m, "run", async () => {
         const spawning = m.spawn({
-          name: session.id,
+          name: session.name ?? session.id,
           agent: harness,
           ...(model ? { model } : {}),
           ...(session.selection.variant !== DEFAULT_VARIANT ? { variant: session.selection.variant } : {}),
@@ -496,6 +621,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         // delete hides it.
         if (sessions.get(session.id) !== session) return;
         bind(session, seat);
+        options.links.add(m.space, { thread: session.id, lifecycleUid: seat.lifecycleUid });
       });
       return { stopReason };
     },
@@ -504,19 +630,19 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
 
 /** The handlers that list, load and delete threads. */
 function historyHandlers(b: Bridge, offers: Offers) {
-  const { options, sessions, send, mesh, bind, unbind, announce } = b;
-  const { seatOffer, offerFor } = offers;
+  const { options, sessions, send, mesh, bind, unbind, holder, announce } = b;
   return {
     list: async (params: ListSessionsRequest) => {
       const m = await mesh();
       const want = params.cwd ? canonical(params.cwd) : undefined;
       const hidden = options.hidden.read();
+      const { byRun } = linksIn(options.links, m.space);
       const rows = (await m.seats()).rows.filter((row) => !hidden.has(row.lifecycleUid) && (want === undefined || (row.cwd !== undefined && canonical(row.cwd) === want)));
       return {
         sessions: rows.map((row) => ({
-          sessionId: row.name,
+          sessionId: byRun.get(row.lifecycleUid) ?? row.name,
           cwd: row.cwd ?? params.cwd ?? "",
-          title: `${row.name} (${row.agent}${row.model ? ` ${row.model}` : ""})`,
+          title: `${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""})`,
           ...(row.uptimeMs !== undefined ? { updatedAt: new Date(Date.now() - row.uptimeMs).toISOString() } : {}),
         })),
       };
@@ -524,37 +650,16 @@ function historyHandlers(b: Bridge, offers: Offers) {
     load: async (params: LoadSessionRequest, client: AgentContext) => {
       const m = await mesh();
       const listed = await m.seats();
-      const matches = listed.rows.filter((row) => row.name === params.sessionId);
+      const matches = threadRows(options.links, m, listed, params.sessionId);
       if (matches.length === 0) throw notListed(m, params.sessionId, listed);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);
       const row: SeatRow = matches[0]!;
-      // A person whose grant does not let them spawn may not read the launch lists. Their thread
-      // controls the agent they have and offers nothing to launch.
-      let launch = true;
-      const offer = await offerFor(m, row.managerInstanceId, row.managerInstanceId).catch((e: unknown) => {
-        if (!(e instanceof LaunchListsRefused)) throw e;
-        options.log(`${row.name} opens with only its own model: ${e.message}`);
-        launch = false;
-        return seatOffer(row);
-      });
-      // Only the launch lists say whether an application has an event plane.
-      const why = launch ? refusal(offer.catalogs, row.agent) : undefined;
-      if (why) throw RequestError.invalidParams(undefined, why);
-      const base = initialSelection(offer);
-      const held = row.managerInstanceId ? offer.managers.find((x) => x.instanceId === row.managerInstanceId) : undefined;
-      const session: Session = {
-        id: row.name,
-        cwd: params.cwd,
-        offer,
-        selection: { ...base, model: `${row.agent}/${row.model ?? "default"}`, ...(row.managerInstanceId ? { machine: row.managerInstanceId } : {}) },
-        mapper: new FrameMapper(),
-        open: new Map(),
-        client,
-        ...(held ? { held } : {}),
-      };
-      const previous = sessions.get(row.name);
+      const session: Session = { id: params.sessionId, cwd: params.cwd, ...(await offers.seatThread(m, row)), mapper: new FrameMapper(), open: new Map(), client };
+      const previous = sessions.get(params.sessionId);
       if (previous) unbind(previous);
-      sessions.set(row.name, session);
+      const other = holder(row);
+      if (other && other !== previous) unbind(other);
+      sessions.set(params.sessionId, session);
       // Replay what the space still holds, then follow live. The mapper drops a frame it already sent.
       for (const frame of await m.frameHistory(row)) {
         const { updates } = session.mapper.map(frame);
@@ -563,7 +668,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
       for (const update of session.mapper.closeOpen("completed")) await send(session, update, true);
       bind(session, row);
       setImmediate(() => void announce(session).catch(() => {}));
-      return { configOptions: configOptions(offer, session.selection) };
+      return { configOptions: configOptions(session.offer, session.selection) };
     },
     delete: async (params: DeleteSessionRequest) => {
       const session = sessions.get(params.sessionId);
@@ -579,7 +684,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
       }
       const m = await mesh();
       const listed = await m.seats();
-      const rows = listed.rows.filter((row) => row.name === params.sessionId);
+      const rows = threadRows(options.links, m, listed, params.sessionId);
       if (rows.length === 0 && listed.silent.length > 0) throw notListed(m, params.sessionId, listed);
       for (const row of rows) options.hidden.add(row.lifecycleUid);
       return {};
@@ -591,7 +696,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   const b = bridge(options);
   const { sessions } = b;
   const offers = launchOffers(options);
-  const threads = threadHandlers(b, offers, turnRunner(b, options.waits?.startMs ?? START_MS, options.waits?.settleMs ?? SETTLE_MS), slashCommands(b), options.newName ?? defaultName);
+  const threads = threadHandlers(b, offers, turnRunner(b, options.waits?.startMs ?? START_MS, options.waits?.settleMs ?? SETTLE_MS), slashCommands(b, offers), options.newName ?? defaultName);
   const history = historyHandlers(b, offers);
   const app = agent({ name: "cotal" })
     .onRequest(methods.agent.initialize, async ({ params }) => ({
@@ -602,9 +707,7 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
         sessionCapabilities: { list: {}, delete: {} },
       },
-      authMethods: params.clientCapabilities?.auth?.terminal && (await options.canSignIn?.() ?? true)
-        ? [{ type: "terminal" as const, id: "cotal-sign-in", name: "Sign in to Cotal", description: "Signs in to a hosted space, or sets up a local one.", args: ["--auth"] }]
-        : [],
+      authMethods: params.clientCapabilities?.auth?.terminal && (await options.canSignIn?.() ?? true) ? [TERMINAL_AUTH] : [],
     }))
     .onRequest(methods.agent.authenticate, async () => {
       await b.mesh();

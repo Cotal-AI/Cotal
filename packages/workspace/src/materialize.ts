@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
@@ -86,16 +87,33 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
   }
 }
 
-/** Select the same package-relative entry for on-disk checks and import. */
-export function extensionEntry(meta: InstalledExtensionPackage): string {
-  let entry = meta.main ?? "index.js";
+/** Select the package's explicit export, if it has one. */
+function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
+  if (typeof dot === "string") return dot;
+  if (dot && typeof dot === "object") {
     const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  return entry;
+    return d.import ?? d.default;
+  }
+  return typeof meta.exports === "string" ? meta.exports : undefined;
+}
+
+/**
+ * Resolve the entry for both on-disk checks and import. Node allows `main` to omit the file
+ * extension. Directory entries use their own main or index file. Keep the declared path when
+ * neither resolves so the caller can report it as missing or unimportable.
+ */
+export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPackage): string {
+  const exported = exportedEntry(meta);
+  const path = join(dir, exported ?? meta.main ?? "index.js");
+  const entry = statSync(path, { throwIfNoEntry: false });
+  if (entry && !entry.isDirectory()) return path;
+  if (!entry && (exported !== undefined || meta.main === undefined)) return path;
+  try {
+    return createRequire(join(dir, "package.json")).resolve(path);
+  } catch {
+    return path;
+  }
 }
 
 /**
@@ -110,8 +128,7 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   try {
-    const entry = extensionEntry(meta);
-    await import(pathToFileURL(join(dir, entry)).href);
+    await import(pathToFileURL(resolveExtensionEntry(dir, meta)).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }

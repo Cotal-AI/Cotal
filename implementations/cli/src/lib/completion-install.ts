@@ -20,6 +20,7 @@ const blockFor = (path: string, shell: string) => `${BEGIN}\n${completionSourceL
  *  marker with no begin marker among them, and that end marker. */
 const MARKED = new RegExp(`^${BEGIN}\\n(?:(?!${BEGIN}\\n)[^\\n]*\\n)*?${END}(?:\\n|$)`, "gm");
 const recordPath = (paths: Paths) => `${paths.stub}.ownership.json`;
+const hasStartupWiring = (startup: string, stub: string) => startup.includes(stub) || startup.includes(BEGIN) || startup.includes("# cotal shell completion");
 
 /** Ask the installed shell for its current-user all-hosts profile; profile directories vary by host. */
 function powershellProfile(): string | undefined {
@@ -213,16 +214,17 @@ function ownership(paths: Paths, shell: string): { record?: Ownership; snapshot?
   return { record, snapshot };
 }
 
-export function completionOwnership(shell: string, paths: Paths): "managed" | "unrecorded" | "modified" {
+export function completionOwnership(shell: string, paths: Paths, startup: string): ["managed" | "unrecorded" | "modified", boolean] {
   const { record } = ownership(paths, shell);
-  if (!record) return "unrecorded";
+  const customStartup = !record?.wiring && hasStartupWiring(startup, paths.stub);
+  if (!record) return ["unrecorded", customStartup];
   const stub = read(paths.stub);
-  if (stub?.hash !== record.stubHash) return "modified";
+  if (stub?.hash !== record.stubHash) return ["modified", customStartup];
   if (record.wiring) {
-    const startup = text(read(record.wiring.path)) ?? "";
-    if (startup.split(record.wiring.block).length !== 2) return "modified";
+    const recordedStartup = text(read(record.wiring.path)) ?? "";
+    if (recordedStartup.split(record.wiring.block).length !== 2) return ["modified", customStartup];
   }
-  return "managed";
+  return ["managed", customStartup];
 }
 
 export function readCompletionText(path: string): string | undefined {
@@ -254,7 +256,8 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     }
     // A startup file linked from elsewhere, as a dotfile manager such as stow links it, is never
     // written through. The load line needs no stub, so it works from the file the link points to.
-    if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink())
+    if (lstatSync(paths.rc, { throwIfNoEntry: false })?.isSymbolicLink() && (operation === "install" ||
+      lstatSync(paths.stub, { throwIfNoEntry: false }) || lstatSync(recordPath(paths), { throwIfNoEntry: false })))
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is a symlink, and completion does not write through one; nothing was changed`, {
         target: { shell, path: paths.rc },
         remedy: operation === "install" ? `add this line to the file it points to yourself: ${LOAD_NOW[shell]}` : "remove the `cotal completion` lines from the file it points to yourself",
@@ -267,7 +270,8 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
   const held = acquireLock(`${recordPath(paths)}.lock`, { label: "shell completion ownership", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another completion writer holds this shell integration") });
   const changed: string[] = [];
   try {
-    const owned = ownership(paths, shell), stub = read(paths.stub), startup = paths.rc ? read(paths.rc) : undefined;
+    const owned = ownership(paths, shell), stub = read(paths.stub);
+    const startup = paths.rc && (operation === "install" || owned.record || stub) ? read(paths.rc) : undefined;
     const current = text(startup) ?? "";
     let record = owned.record;
     if (!record && operation === "uninstall") {
@@ -294,7 +298,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
     const created = record.wiring?.created === true || (paths.rc !== undefined && startup === undefined);
     if (record.wiring) {
       const count = current.split(record.wiring.block).length - 1;
-      if (count > 1 || count === 0 && (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion"))) {
+      if (count > 1 || count === 0 && hasStartupWiring(current, paths.stub)) {
         // Only complete marked blocks can be rewritten; without one, the owner has to say which lines are cotal's.
         const marked = current.match(MARKED)?.length ?? 0;
         if (!force || !marked) throw new CommandFailure("refused", "CONFLICT", "the recorded startup block is modified or ambiguous; custom startup content was not rewritten", { target: { shell, path: paths.rc }, remedy: marked
@@ -320,7 +324,10 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
         const line = liveLine.trim();
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${paths.rc} still names this stub outside the cotal block, in ${JSON.stringify(line)}; removing the stub would break that line`, { target: { shell, path: paths.rc }, remedy: `remove that line from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
       }
-      if (readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion line was not removed; nothing was changed`, { target: { shell, path: paths.rc }, remedy: `remove the line ${completionSourceLine(paths.stub, shell)} from ${paths.rc} yourself, then run \`cotal completion uninstall ${shell}\` again` });
+      if (paths.rc && readOnly()) throw new CommandFailure("refused", "PERMISSION_DENIED", `${paths.rc} is read-only, so its completion block was not removed; nothing was changed`, {
+        target: { shell, path: paths.rc },
+        remedy: `restore owner write permission with ${codeSpan(`chmod u+w ${shellPath(paths.rc)}`)}, then run ${codeSpan(`cotal completion uninstall ${shell}${force ? " --force" : ""}`)} again without editing the startup block`,
+      });
       if (paths.rc && nextStartup !== current) {
         // A startup file install created, with nothing else in it now, goes rather than staying empty.
         if (created && nextStartup === "" && startup) remove(paths.rc, startup);
@@ -331,7 +338,7 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (owned.snapshot) { remove(recordPath(paths), owned.snapshot); changed.push(recordPath(paths)); }
     } else {
       if (paths.rc && !record.wiring) {
-        if (current.includes(paths.stub) || current.includes(BEGIN) || current.includes("# cotal shell completion")) throw new CommandFailure("refused", "CONFLICT", "custom startup wiring already refers to this stub; it was not adopted or rewritten", { remedy: "keep custom wiring and use completion script, or review it before managed installation" });
+        if (hasStartupWiring(current, paths.stub)) throw new CommandFailure("refused", "CONFLICT", "custom startup wiring already refers to this stub; it was not adopted or rewritten", { remedy: "keep custom wiring and use completion script, or review it before managed installation" });
         installedBlock = (current && !current.endsWith("\n") ? "\n" : "") + blockFor(paths.stub, shell);
         nextStartup = current + installedBlock;
       }
@@ -342,7 +349,10 @@ export function changeCompletion(operation: "install" | "uninstall", shell: stri
       if (!readOnly()) record.wiring = paths.rc ? { path: paths.rc, block: installedBlock, ...(created ? { created: true as const } : {}) } : null;
       const serialized = JSON.stringify(record, null, 2) + "\n";
       if (text(owned.snapshot) !== serialized) { write(recordPath(paths), owned.snapshot, serialized, 0o600); changed.push(recordPath(paths)); }
-      if (readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, { target: { shell, path: paths.rc }, remedy: `add this line to ${paths.rc} yourself: ${completionSourceLine(paths.stub, shell)}` });
+      if (paths.rc && readOnly()) throw new CommandFailure("failed", "OPERATION_FAILED", `${changed.includes(paths.stub) ? "wrote" : "kept the current"} ${paths.stub} but could not add its line to ${paths.rc}, which is read-only; that file was not changed`, {
+        target: { shell, path: paths.rc },
+        remedy: `restore owner write permission with ${codeSpan(`chmod u+w ${shellPath(paths.rc)}`)}, then run ${codeSpan(`cotal completion install ${shell}${force ? " --force" : ""}`)} again without editing the startup file`,
+      });
     }
     return { operation, shell, changed, noOp: !changed.length, forced, stub: paths.stub, startup: paths.rc ?? null, parentShellUnloaded: false };
   } catch (error) {

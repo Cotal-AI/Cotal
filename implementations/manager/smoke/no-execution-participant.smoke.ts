@@ -118,8 +118,13 @@ async function main() {
     const target = { mode: "owner" as const, owner, actor: "native", lifecycleUid: row.lifecycleUid };
     const badUid = await call("attach", undefined, { ...target, lifecycleUid: mintLifecycleUid() });
     check("wrong lifecycle UID cannot establish participant session", !badUid.ok && badUid.error?.code === "expired" && /current mapping/.test(badUid.error.message));
-    const deniedInput = await call("input", { text: "native" }, target).then(() => false, (e: Error) => /REFUSED BY THE BROKER/.test(e.message));
-    check("ordinary selected user cannot mint operator-only input reach", deniedInput && readFileSync(sink).length === 0);
+    // A person's own view carries owner-mode input with the target owner pinned to their own
+    // (SPEC 13.21), so it types into their agent and is broker-refused for anyone else's.
+    const inputFrom = readFileSync(sink).length;
+    const ownInput = await call("input", { text: "native", enter: false }, target);
+    check("a person's own view types into their own agent", ownInput.ok && await until(() => readFileSync(sink).subarray(inputFrom).includes("native")));
+    const foreignInput = await call("input", { text: "foreign", enter: false }, { ...target, owner: otherOwner }).then(() => false, (e: Error) => /REFUSED BY THE BROKER/.test(e.message));
+    check("input naming another owner stays broker-refused", foreignInput && !readFileSync(sink).subarray(inputFrom).includes("foreign"));
     const attached = await call("attach", undefined, target); assert.ok(attached.ok); const grant = (attached.data as any).grant;
     const sc = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: grant }, false);
     check("real redeemed session exchanges for holder session-caller bearer", sc.status === 200 && typeof sc.body.token === "string");

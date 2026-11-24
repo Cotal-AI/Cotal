@@ -78,8 +78,8 @@ try {
   await mgr.start();
   const M = mgr as unknown as {
     managerInstanceId: string;
-    serviceServe?: { creds?: string };
     goalWriterComponent: { goalWriterIdentity?: { id: string }; };
+    servePlane: { serviceServe?: { creds?: string }; };
   };
   // The registration gate + §13.1 family are keyed by the persisted registration instanceId
   // (item 3's split), NOT the per-process lifecycleUid — read/drive at the same key the manager registers under.
@@ -100,7 +100,7 @@ try {
 
   // ── M7: WRITER SEPARATION (serve cred DENIED a goal write) ──────────────────────────────────
   {
-    const serveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.serviceServe!.creds!, tls: false }), maxReconnectAttempts: 0 });
+    const serveNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.servePlane.serviceServe!.creds!, tls: false }), maxReconnectAttempts: 0 });
     // The serve cred lacks every goal row: a KV goal-record write acks only if permitted, so a
     // request-timeout is the broker's silent denial (the manager-service KV-denial pattern).
     let denied = false;

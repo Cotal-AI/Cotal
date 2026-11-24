@@ -23,7 +23,9 @@ Model variants, MCP tool sharing, and arbitrary launch options are refused.
 ## Choose how to run pi [#surfaces]
 
 For a managed seat, use `cotal spawn --harness pi --detach` after the installation below.
-Cotal launches the installed `pi` binary and loads its bundled Cotal extension.
+Cotal launches npm-installed `pi` on Node and loads its bundled Cotal extension.
+You can keep the standalone copy installed.
+Spawn leaves discovered copies of Cotal's released standalone bundle inactive and keeps Pi's other extensions enabled.
 
 For an existing interactive pi installation, copy the standalone extension into pi's extension directory.
 SDK applications using pi's default resource loader discover that same copy.
@@ -33,6 +35,8 @@ See the [pi host reference](pi-connector-reference.mdx#host-integration) for act
 ## Install pi [#install]
 
 Use Node 22.19 or later, which satisfies both Cotal and this pi release.
+Foreground spawn is also tested with npm Pi `0.84.3` and `1.6.0`.
+The standalone Pi release executable lacks the Node loader hooks `cotal spawn` needs to skip duplicate copies.
 Install Cotal and the supported host:
 
 ```bash

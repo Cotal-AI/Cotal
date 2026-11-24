@@ -14,7 +14,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -54,17 +54,18 @@ export async function personas(args: ParsedArgs): Promise<void> {
   }
   const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
+  const catalogTarget = { space: values.space, server: values.server };
   switch (positionals[0] ?? "list") {
     case "list":
       return list(values.verbose === true, values.running === true, values);
     case "show":
-      return show(positionals[1], values);
+      return show(positionals[1], catalogTarget);
     case "edit":
-      return edit(positionals[1], values);
+      return edit(positionals[1], catalogTarget);
     case "new":
       return create(positionals[1], values);
     case "rm":
-      return remove(positionals[1], values.force === true, values);
+      return remove(positionals[1], values.force === true, catalogTarget);
     default:
       return usage();
   }
@@ -163,11 +164,12 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     if (e.error) {
       const prefix = `agent file ${e.path}: `;
       const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
-      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
+      const blankSelector = hasBlankPersonaSelector(e);
+      console.log(`${c.red(blankSelector ? JSON.stringify(e.name) : name)}  ${c.red(blankSelector ? "⨯ invalid selector" : "⨯ unparseable")} ${c.dim(oneLine(reason))}`);
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const live = present ? (present.has(d.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -198,7 +200,7 @@ function show(name: string | undefined, values: { space?: string; server?: strin
   if (!name) return usage();
   // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
   const path = personaPath(targetRoot(values), name, "show");
-  const bytes = requirePersonaSource(path).bytes;
+  const bytes = requirePersonaSource(path, targetWords(values)).bytes;
   validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
   // byte and nothing else, so `show p > p.md` copies it. A catalog travels with a cloned repo, so on
@@ -291,7 +293,7 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   const path = personaPath(targetRoot(values), name, "legacy-remove");
-  const expected = requirePersonaSource(path);
+  const expected = requirePersonaSource(path, targetWords(values));
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
     const target = targetWords({ space: values.space, server: values.server });

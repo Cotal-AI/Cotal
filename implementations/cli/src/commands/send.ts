@@ -96,7 +96,8 @@ export function sendArguments(args: ParsedArgs): SendInput {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
     throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: sendAgain(destination, values, '"<message>"', `<${what}>`) });
   }
-  const again = (body: string) => sendAgain(destination, values, body);
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
+  const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
@@ -154,9 +155,10 @@ function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Valu
 interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
 
 function fileRefusal(input: SendInput, values: Values): FileRefusal {
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
   return {
     target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
-    instead: `or ${sendAgain(input, values, '"<message>"')}`,
+    instead: `or ${sendAgain(input, values, `${output}"<message>"`)}`,
   };
 }
 

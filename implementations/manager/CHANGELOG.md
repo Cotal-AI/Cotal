@@ -1,5 +1,126 @@
 # @cotal-ai/manager
 
+## 0.176.6
+
+### Patch Changes
+
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/seat@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/seat@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- 7fd5c5c: Adopt released seats on local user-auth spaces when their granted permissions match, even if the saved persona lists capabilities the space did not grant.
+- 6831283: Manager parts now call the parts that own these operations directly, through the Manager's parts record, instead of through a Manager method that only forwarded the call. Exports, commands and wire behaviour are unchanged.
+- 0b62901: Show how to retry a launch with a valid persona name, identify broken persona links, and keep the selected catalog in persona list suggestions.
+- 8339e33: Keep the requested space and broker in the roster command shown for an invalid manager ID, so it lists the manager the retry can use.
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [99e0752]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [dd96500]
+- Updated dependencies [d31ba81]
+- Updated dependencies [87465c9]
+- Updated dependencies [c82c548]
+- Updated dependencies [e73a285]
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/seat@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- 4d8b2e3: The Manager's start-time state object now also holds its instance id, and is renamed for what it holds: what start learns about the manager. The internal parts read the instance id from it instead of through a callback each. Exports, commands and wire behaviour are unchanged.
+- @cotal-ai/core@0.176.3
+  - @cotal-ai/seat@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- bd5afe9: Remote Managers briefly wait and retry when another Manager in the same space is still registering, before requesting host repair.
+- dcccbd9: Foreground spawn previews name unavailable working directories and explain how to retry, prepared persona catalogs work offline with a planned broker address, and manager start help explains when to select by name or by instance ID.
+- a51906d: The Manager now keeps its space authentication state (the trust material and whether the space is user-auth) in one object that start fills in, and passes it to the internal parts that read it instead of a callback per value. Exports, commands and wire behaviour are unchanged.
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/seat@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/seat@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 9f6623a: Plain chat points to `:to` for channel history, `pending` lists its broker and credential options, and service and manager help show that `--foreground` and `--dry-run` can be used together.
+- 5f75575: A Claude seat that your organization's managed settings stop at startup now fails with Claude's full reason, such as `disableSideloadFlags` refusing `--plugin-dir`. The manager kept only the last 160 characters of the agent's final output line, which cut off the cause that Claude prints first. It now keeps that line whole, up to 4096 characters. The Claude connector docs also describe how an administrator installs the Cotal plugin through managed settings.
+- e1c3f6c: Fix the CLI smoke test so it recognizes the live replacement manager in model catalog refresh guidance.
+- 86b1acd: The Manager now keeps its hosting authority in its read-only config, and its internal parts read it from there instead of through a callback each. Exports, commands and wire behaviour are unchanged.
+- 3fd972e: Remove nine private Manager forwarders that only the Manager itself called (boot's start and execution-record claim, the stop path's goal-writer, session-plane, chat-session and reconcile-drain steps, the release of managed agents and a stopped seat's goal cancel), so the Manager calls the owning part directly. Exports, commands and wire behaviour are unchanged.
+- 4d2a366: Move the manager's service-endpoint serve state (the serve handle, its connection, identity, grant and current credential) from the Manager into the serve plane that registers it, which boot, credential renewal, the goal writer, seat launch, seat stop, spawn-goal and retirement now read directly instead of through per-field accessors. Exports, commands and wire behaviour are unchanged.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/seat@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- d3b463e: Batch the workflow inventory at manager startup so a long history of finished runs does not prevent recovery of interrupted runs.
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/seat@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 6da28b5: Move the manager's goal-writer state (the goal-writer connection, its identity and credential, the boot goal-index reconcile flag, and the accepted-goal map) from the Manager into the goal writer, which credential renewal, the serve plane, spawn-goal, seat stop and command dispatch now read directly instead of through per-field accessors. Exports, commands and wire behaviour are unchanged.
+- 8a4092a: Move the manager's session plane state (the session plane, the session-ledger connection, identity and credential, and the session-key renewal timer) from the Manager into the serve plane that creates it, which credential renewal and terminal input now read directly instead of through per-field accessors. Exports, commands and wire behaviour are unchanged.
+- a4ed1cf: Retry Manager credential renewal promptly after a temporary authority failure, and tell callers when to retry a hosted workflow status read.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/workspace@0.175.2
+  - @cotal-ai/seat@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

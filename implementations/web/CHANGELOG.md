@@ -1,5 +1,47 @@
 # @cotal-ai/web
 
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+No changes in this release.
+
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Patch Changes
+
+- 9f3f3c9: Clarify which workflow commands accept credentials, when preference layers omit fields, how `team check --space` works, and the dashboard's history limit.
+
+## 0.175.3
+
+### Patch Changes
+
+- 151c810: Fix the dashboard smoke test for unfiltered channel history so it checks the history handler instead of the GET-only guard. Dashboard behavior is unchanged.
+
+## 0.175.2
+
+### Patch Changes
+
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+
 ## 0.175.1
 
 No changes in this release.

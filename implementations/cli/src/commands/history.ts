@@ -31,6 +31,7 @@ import {
 import { credentialEnded } from "../lib/connect.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { historySetupFailureRecords } from "../lib/follow-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -39,6 +40,7 @@ import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 import { registryFailure } from "../lib/registry-errors.js";
+import { displayRemedy, hasMovedStackRemedy } from "../lib/self-exec.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
@@ -286,21 +288,6 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");
 }
 
-/** A JSON history follow that refused before writing its snapshot. */
-export function historySetupFailureRecords(args: ParsedArgs, failure: CommandFailure) {
-  const first = args.positionals[0];
-  const target = {
-    space: args.values.space ?? null,
-    ...(typeof failure.target === "object" && failure.target !== null ? failure.target : {}),
-    channel: first === undefined ? null : channelOf(first),
-    dms: Boolean(args.values.dms),
-  };
-  return [
-    streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
-    streamRecord("history", "end", target, { reason: "setup-failed" }),
-  ];
-}
-
 /** `cotal history [channel]`: the newest retained messages in the selected space within the caller's
  *  read grant, or `history clear` or `history limit`. */
 export async function history(args: ParsedArgs): Promise<void> {
@@ -324,7 +311,9 @@ export async function history(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
     // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
-    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : isMeshRegistryError(error) ? registryFailure(error)
+    const failure = isCommandFailure(error) ? error
+      : isConnectRefusal(error) ? error.failure(hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
+      : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);
     for (const record of historySetupFailureRecords(args, failure)) writeStreamRecord(record);

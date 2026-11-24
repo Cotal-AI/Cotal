@@ -72,9 +72,8 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 /** The scope a run reads through or writes to: the user's defaults, or one space's values. */
 interface Scope {
   readonly space: string | null;
-  /** How the space was chosen: `--space`, or the space a launch here uses. A running space registered
-   *  for this folder is `folder`, even when another space is selected. With none running here, the
-   *  selected space is `selected`, and the only running space elsewhere is `running`. */
+  /** How the space was chosen: `--space`, the saved selection, this folder's space, or the only
+   *  running space elsewhere. */
   readonly from: "flag" | "selected" | "folder" | "running" | null;
 }
 
@@ -145,7 +144,7 @@ export async function config(args: ParsedArgs): Promise<void> {
   if (sub === undefined) {
     if (rest.length) throw usage("usage: cotal config [--user | --space <name>]");
     if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
-    const scope = readScope(v);
+    const scope = await readScope(v);
     const result: PreferencesResult = { kind: "preferences", file: preferencesPath(), revision: prefs.revision, scope, settings: PREFERENCE_KEYS.map((key) => setting(key, scope, prefs)) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues(result.settings) }, (value) => preferencesView(value, Boolean(v.verbose)));
     return;
@@ -154,7 +153,7 @@ export async function config(args: ParsedArgs): Promise<void> {
     if (rest.length !== 1) throw usage("usage: cotal config get <key> [--user | --space <name>]");
     const key = keyOf(rest[0]!);
     if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
-    const scope = readScope(v);
+    const scope = await readScope(v);
     const result: PreferenceResult = { kind: "preference", file: preferencesPath(), revision: prefs.revision, scope, setting: setting(key, scope, prefs) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues([result.setting]) }, preferenceView);
     return;
@@ -180,7 +179,7 @@ export async function config(args: ParsedArgs): Promise<void> {
     let missing: OutputWarning | undefined;
     let unread: OutputWarning | undefined;
     try {
-      const here = readScope({ ...v, user: undefined });
+      const here = await readScope({ ...v, user: undefined });
       effective = setting(key, here, changed ? cachedPreferences() : prefs);
       if (key === "persona" && value?.trim()) missing = missingPersona(value, here);
     } catch (error) {
@@ -204,18 +203,15 @@ function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): vo
   if (findMesh(space) || findPreparedSpace(space) || (saved && holdsValue(space))) return;
   const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space), ...(saved ? Object.keys(prefs.spaces).filter(holdsValue) : [])])].sort();
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is ${saved ? "registered, prepared or holding a saved value here" : "registered or prepared here"}${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
-    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space} --root <dir>\` or register it with \`cotal space add ${space} --server <url>\``,
   });
 }
 
-/** A read looks through `--space`, or when neither scope flag is given, the space a launch here uses,
- *  the one `spawn` resolves from this folder. A running space registered for this folder is that space
- *  even when `cotal use` selected another. Where a launch has no space, the selection is the scope, as
- *  it is outside a project and in a folder whose own space is not running. */
-function readScope(v: FlagValues<typeof configFlags>): Scope {
+/** With neither scope flag, use the launch target here, then the saved selection if there is one. */
+async function readScope(v: FlagValues<typeof configFlags>): Promise<Scope> {
   if (v.space !== undefined) return { space: v.space, from: "flag" };
   if (v.user) return { space: null, from: null };
-  const here = launchSpace(process.cwd());
+  const here = await launchSpace(process.cwd());
   if (here) {
     const from = here.source === "current" ? "selected"
       : here.source === "local-recorded" || here.source === "prepared" ? "folder"

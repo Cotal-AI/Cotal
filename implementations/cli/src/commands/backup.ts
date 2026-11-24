@@ -32,6 +32,7 @@ import {
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
+  preparedSpaceAt,
   protectedLocalDirectory,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
@@ -40,6 +41,7 @@ import {
   readStoreIdentity,
   releaseMaintenanceClaim,
   releaseMaintenanceLock,
+  retainedLegacyBroker,
   sameStoreIdentity,
   workspaceSecretStore,
   type MaintenanceLock,
@@ -60,6 +62,7 @@ import { liveMeshProcesses, localIdentityCleanupTargets } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
 import { backupRestore } from "./backup-restore.js";
+import { controllerStackApplies } from "./stack-up.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -114,9 +117,13 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  // Both callers run after the liveness check, so the stack is stopped here, and a plain `cotal down`
-  // records no cut: `down --preserve-state` only works on a running stack (#7330).
-  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "a plain `cotal down` records no cut: start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup" });
+  if (!record) {
+    const prepared = preparedSpaceAt(root);
+    const remedy = prepared && !retainedLegacyBroker(root) && controllerStackApplies(root, prepared.space, {})
+      ? "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or backup in this release"
+      : "a plain `cotal down` records no cut: start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup";
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy });
+  }
   // A restore that still runs is named and waited for; only a stale one is rolled back.
   if (record.state === "restore-ready") {
     const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });
@@ -490,9 +497,13 @@ export function validateBackupArguments(args: ParsedArgs): void {
   const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run", ...(mode === "cleanup-fallback" ? ["discard-history"] : [])] : [])]);
   const unsupported = Object.keys(args.values).filter((flag) => !allowed.has(flag));
   if (unsupported.length) {
+    const flags = unsupported.map((flag) => `--${flag}`).join(", ");
+    if (mode === "create") {
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup create does not accept ${flags}`, { remedy: `remove ${flags} to create the backup` });
+    }
     if (maintenance) {
       const selection = mode === "cleanup-fallback" && unsupported.includes("store-dir") ? ". The full attempt ID alone selects its recorded fallback" : "";
-      throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${unsupported.map((flag) => `--${flag}`).join(", ")}${selection}`);
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${flags}${selection}`);
     }
     throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
   }

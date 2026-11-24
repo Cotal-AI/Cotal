@@ -1,7 +1,7 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { CommandFailure, isCommandFailure, oneLine, presentationOf, recordOperationWarning, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -76,18 +76,34 @@ function scriptOf(file: string | undefined): SimScript {
   if (duplicate.duplicate) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} names ${JSON.stringify(duplicate.name)} twice in one object`, {
     target: { file }, remedy: "keep each key once. To give a step multiple sequential results, put them in an array under its key",
   });
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const actual = value === null ? "null" : Array.isArray(value) ? "an array" : `a ${typeof value}`;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} must be a top-level JSON object, not ${actual}`, {
+      target: { file }, remedy: `save a JSON results object in ${file} and rerun the simulation. Use {} if no scripted results are needed`,
+    });
+  }
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
     if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
-    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item))
-      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid simulation script field '${key}'`);
+    if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item)) {
+      const shape = key === "faults" ? "an array of fault objects" : key === "clock" ? "an object of clock settings"
+        : `an object keyed by ${key === "checkpoints" ? "checkpoint" : "step"} name`;
+      const actual = item === null ? "null" : Array.isArray(item) ? "an array" : `a ${typeof item}`;
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `${key} in the simulation results script ${file} must be ${shape}, not ${actual}`, {
+        target: { file }, remedy: `replace ${key} in ${file} with ${shape}, then rerun the simulation`,
+      });
+    }
   }
   const clock = script.clock as Record<string, unknown> | undefined;
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
     throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+  // A start the clock cannot step from by whole milliseconds reports a successful simulation
+  // with the delay lost: 9007199254740992 + 1ms rounds back to the start, so elapsedMs is 0.
+  // Refuse it before simulation, naming the supported range.
+  if (start !== undefined && typeof start === "number" && Number.isFinite(start) && !Number.isSafeInteger(start))
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.start must be a safe integer in milliseconds so the clock can advance by whole milliseconds; ${start} cannot represent a one-millisecond step`, { target: { file }, remedy: `use a clock.start between -9007199254740991 and 9007199254740991 in ${file}, then rerun the simulation` });
   // A misspelled clock key is silently ignored: the simulator falls back to the 1m default,
   // so `clock.checkpoints` measures a delay the author never asked for. Refuse it before
   // simulation, naming the singular key when the typo is a plural of one.
@@ -133,8 +149,13 @@ function scriptOf(file: string | undefined): SimScript {
   for (const [name, entry] of Object.entries((script.turns ?? {}) as Record<string, unknown>)) {
     for (const [index, result] of (Array.isArray(entry) ? entry : [entry]).entries()) {
       const path = `turns.${name}${Array.isArray(entry) ? `[${index}]` : ""}`;
-      const problem = turnResultProblem(result, path);
-      if (problem) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}': ${problem}`, { target: { file } });
+      const problem = turnResultProblem(result);
+      if (problem) {
+        const field = problem.field === undefined ? path : `${path}.${problem.field}`;
+        throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid scripted turn '${name}' in ${file}: ${field} ${problem.message}`, {
+          target: { file }, remedy: `correct ${field} in ${file}, then rerun the simulation`,
+        });
+      }
     }
   }
   return script as SimScript;
@@ -174,24 +195,24 @@ function checkpointResultProblem(result: unknown): { message: string; field?: "s
 
 /** Why a scripted turn result is not one `turn()` can return, or undefined. The simulator hands the
  *  entry to the program as it is, so invalid results are refused before simulation. */
-function turnResultProblem(result: unknown, path: string): string | undefined {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return "a result must be an object";
+function turnResultProblem(result: unknown): { field?: string; message: string } | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return { message: "must be an object" };
   const fields = result as Record<string, unknown>;
-  if (fields.status !== "done" && fields.status !== "blocked" && fields.status !== "handoff") return "status must be \"done\", \"blocked\" or \"handoff\"";
-  if ("at" in fields) return "at is stamped from virtual time and cannot be scripted";
+  if (fields.status !== "done" && fields.status !== "blocked" && fields.status !== "handoff") return { field: "status", message: 'must be "done", "blocked" or "handoff"' };
+  if ("at" in fields) return { field: "at", message: "is stamped from virtual time and cannot be scripted" };
   const known = new Set(["status", "to", "note"]);
   const unknown = Object.keys(fields).find((key) => !known.has(key));
-  if (unknown !== undefined) return `unknown field '${unknown}'`;
-  if (fields.status === "handoff" && fields.to === undefined) return `${path}.to is required when status is "handoff"`;
+  if (unknown !== undefined) return { field: unknown, message: "is not a supported field" };
+  if (fields.status === "handoff" && fields.to === undefined) return { field: "to", message: 'is required when status is "handoff"' };
   if (fields.to !== undefined) {
-    if (fields.status !== "handoff") return `${path}.to is only allowed when status is "handoff"`;
+    if (fields.status !== "handoff") return { field: "to", message: 'is only allowed when status is "handoff"' };
     const to = fields.to as Record<string, unknown> | null;
     if (!to || typeof to !== "object" || Array.isArray(to) || typeof to.agent !== "string" || !to.agent.length || typeof to.persona !== "string"
       || (to.kind !== undefined && to.kind !== "spawned" && to.kind !== "participant")
       || (to.worktree !== undefined && typeof to.worktree !== "string") || (to.role !== undefined && typeof to.role !== "string"))
-      return `${path}.to must be an agent handle with string agent and persona fields`;
+      return { field: "to", message: "must be an agent handle with string agent and persona fields" };
   }
-  if (fields.note !== undefined && typeof fields.note !== "string") return "note must be a string";
+  if (fields.note !== undefined && typeof fields.note !== "string") return { field: "note", message: "must be a string" };
   return undefined;
 }
 
@@ -209,7 +230,9 @@ function callSites(ast: ReturnType<typeof validate>["ast"]): { call: string; lin
       const simple = callee.type === "Identifier" ? callee.name : undefined;
       const object = callee.object as Record<string, unknown> | undefined;
       const property = callee.property as Record<string, unknown> | undefined;
-      const call = typeof simple === "string" ? simple : object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string" ? `${object.name}.${property.name}` : "derived call";
+      const call = typeof simple === "string" ? simple : callee.type === "MemberExpression" && callee.computed === false
+        && object?.type === "Identifier" && typeof object.name === "string" && property?.type === "Identifier" && typeof property.name === "string"
+        ? `${object.name}.${property.name}` : "derived call";
       const { start, loc } = node as typeof ast;
       if (!loc) throw new Error("validated call is missing its source location");
       sites.push({ call, offset: start, line: loc.start.line });
@@ -229,14 +252,25 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
 
 /** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
  *  the program, and `target.step` names the step it stopped at. */
-function simulationFailure(error: unknown, file: string, journal: Journal): CommandFailure {
+function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
   const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
   const step = failed === undefined ? undefined : journalEntryKeyString(failed);
   const { title, cause, fix } = faultParts(error);
   const why = (cause ?? title).replace(/\.$/, "");
-  const remedy = fix ?? (native?.startsWith("L6") ? "script a result for that step; unscripted effects are not invented" : undefined);
+  // A missing scripted result has no file to edit yet when no results file was passed: the
+  // remedy names the file to save and the command that passes it to the simulator, instead of
+  // only showing the result object. When a results file was passed, it names that file.
+  const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
+  const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}`);
+  const rerun = handler !== undefined
+    ? `add it to ${oneLine(handler)} and rerun with ${command}`
+    : `save it in a results file, for example results.json, and rerun with ${command}`;
+  const remedy = native?.startsWith("L6")
+    ? `${fix ?? "script a result for that step; unscripted effects are not invented"}; ${rerun}`
+    : fix;
   return new CommandFailure("failed", "OPERATION_FAILED", `the offline simulation did not complete: ${why.charAt(0).toLowerCase()}${why.slice(1)}`, {
     target: { file, ...(step !== undefined ? { step } : {}) }, ...(native !== undefined ? { native: { code: native } } : {}), ...(remedy !== undefined ? { remedy } : {}),
   });
@@ -273,13 +307,22 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     const problems = error.errors.map((item) => ({ code: item.code, title: item.title, span: item.span, cause: item.cause, fix: item.fix }));
     const count = `${problems.length} problem${problems.length === 1 ? "" : "s"}`;
     const failure = new CommandFailure("refused", "SCHEMA_INVALID", `the workflow is not valid cotal-lang (${count})`, { target: { file }, native: { code: "LANG_INVALID", detail: error.errors.map((item) => ({ code: item.code, span: item.span })) } });
-    writeResult(presentation, { command: "run", target: { file }, result: { kind: "workflow-validation", valid: false, problems }, failure }, (result): Report => ({ sections: [
+    const result = { kind: "workflow-validation", valid: false, problems };
+    const view = (): Report => ({ sections: [
       { title: "Workflow not valid", blocks: [
-        { kind: "fields", rows: [["File", file], ["Problems", String(result.problems.length)]] },
-        ...result.problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
+        { kind: "fields", rows: [["File", file], ["Problems", String(problems.length)]] },
+        ...problems.map((problem) => ({ kind: "lines" as const, lines: [{ text: `${problem.code} ${problem.title} (${problem.span.file}:${problem.span.line}:${problem.span.column})`, tone: "failed" as const }, `  ${problem.cause}`, `  fix: ${problem.fix}`] })),
         { kind: "lines", lines: [{ text: "Language validation only. No mesh, authority, runtime, application or broker message limit was checked.", tone: "hint" }] },
       ] },
-    ] }));
+    ] });
+    if (presentation === "json") {
+      process.exitCode = exitCode(failure.outcome, failure.code);
+      process.stdout.write(envelopeLine({ ...failureEnvelope("run", failure), completeness: "complete", result }), (error) => {
+        if (!error || (error as NodeJS.ErrnoException).code === "EPIPE") return;
+        // The write callback runs before the binary's stdout error listener reports the error and exits.
+        try { writeSync(2, `${renderReport(view(), "rich", process.stderr)}\n`); } catch { /* stderr failed too */ }
+      });
+    } else writeResult(presentation, { command: "run", target: { file }, result, failure }, view);
     return;
   }
   // A warning says what it found and how to fix it, as a problem does: L3021 on a literal list is a
@@ -299,16 +342,14 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
     ] }));
     return;
   }
-  const script = scriptOf(values.handler);
   const journal = new Journal({ run: "dry-run" });
   let report: Awaited<ReturnType<typeof dryRunOutcome>>;
-  // A simulation that throws never reaches the report, so the validation warnings go into the
-  // run's recorded warnings first: the failure envelope carries them, and text mode prints them
-  // with the failure.
-  try { report = await dryRunOutcome(source, script, { file, journal }); }
+  // A refused script or failed simulation keeps the validation warnings in its failure receipt.
+  try { report = await dryRunOutcome(source, scriptOf(values.handler), { file, journal }); }
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
-    throw simulationFailure(error, file, journal);
+    if (isCommandFailure(error)) throw error;
+    throw simulationFailure(error, file, journal, values.handler);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;

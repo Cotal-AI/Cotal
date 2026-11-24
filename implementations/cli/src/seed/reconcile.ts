@@ -11,10 +11,10 @@ import {
   bindExtensionPeers,
   connectorConfigDir,
   connectorMetadataStale,
-  extensionEntry,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  resolveExtensionEntry,
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
@@ -866,7 +866,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
     encoding: "utf8",
-    env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
+    env: { ...process.env, COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
   // The child's `✓ added …` line is seeding progress, not the invoking command's output: the boot gate
@@ -942,7 +942,7 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
 /** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
-  return existsSync(join(extensionPackageDir(pkg), extensionEntry(installed)));
+  return existsSync(resolveExtensionEntry(extensionPackageDir(pkg), installed));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND

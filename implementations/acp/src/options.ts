@@ -2,8 +2,12 @@
  * A session's config options, built from what the managers offer.
  *
  * The model select lists `<agent>/<model>` grouped by agent, with a `<agent>/default` choice for
- * the application's own default. A client must be able to select the default again after a named
- * model ran, so it is a real choice rather than an absent value. Applications without an event
+ * the application's own default. Each choice's name starts with its agent, because a client may
+ * flatten the groups and drop their names (T3 Code does). A Harness select names the application on
+ * its own. The model value names it too, so the two always agree: choosing a model moves the harness
+ * to its application, and choosing another harness starts it on that application's default model.
+ * A client must be able to select the default again after a named model ran, so it is a real choice
+ * rather than an absent value. Applications without an event
  * plane are not offered: the bridge reads a seat's turns from that plane and has nothing to show
  * without it. A model the catalog does not list is accepted as a custom id, as a client's own model
  * field sends it, and the manager validates it at launch.
@@ -117,6 +121,11 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
       // A variant belongs to one model; it does not carry to another.
       return variantsOf(offer, next).includes(selection.variant) ? next : { ...next, variant: DEFAULT_VARIANT };
     }
+    case "agent": {
+      const why = refusal(offer.catalogs, value);
+      if (why) throw new Error(why);
+      return parseModel(selection.model).agent === value ? selection : { ...selection, model: `${value}/${DEFAULT_MODEL}`, variant: DEFAULT_VARIANT };
+    }
     case "variant":
       if (value !== DEFAULT_VARIANT && !variantsOf(offer, selection).includes(value))
         throw new Error(`the selected model has no variant "${value}"`);
@@ -137,24 +146,34 @@ export function applyOption(offer: Offer, selection: Selection, configId: string
 
 /** The full option set for a selection. Every reply that changes an option carries all of them. */
 export function configOptions(offer: Offer, selection: Selection): SessionConfigOption[] {
+  const apps = usable(offer.catalogs);
   const options: SessionConfigOption[] = [{
     id: "model",
     name: "Model",
     category: "model",
     type: "select",
     currentValue: selection.model,
-    options: usable(offer.catalogs).map((c) => {
+    options: apps.map((c) => {
       // A seat-only thread offers the model its agent runs, and the default only when it names none.
       const choices = [
-        ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent} default` }]),
-        ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: m.name ?? m.id })),
+        ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
+        ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
       ];
       // The current value is always a choice, a custom id included.
       if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))
-        choices.push({ value: selection.model, name: selection.model.slice(c.agent.length + 1) });
+        choices.push({ value: selection.model, name: `${c.agent}: ${selection.model.slice(c.agent.length + 1)}` });
       return { group: c.agent, name: c.agent, options: choices };
     }),
   }];
+  if (!offer.seatOnly && apps.length > 1 && apps.length < MAX_CHOICES)
+    options.push({
+      id: "agent",
+      name: "Harness",
+      description: "The application the new agent runs. Applies at spawn.",
+      type: "select",
+      currentValue: parseModel(selection.model).agent,
+      options: apps.map((c) => ({ value: c.agent, name: c.agent })),
+    });
   const variants = variantsOf(offer, selection);
   if (variants.length && variants.length < MAX_CHOICES)
     options.push({

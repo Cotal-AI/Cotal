@@ -1,5 +1,5 @@
 {
-  "modules": ["./native-wake.js"],
+  "modules": ["./index.js"],
   "hooks": {
     "SessionStart": [
       {

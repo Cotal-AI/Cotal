@@ -1,5 +1,469 @@
 # cotal-ai
 
+## 0.176.6
+
+### Patch Changes
+
+- 699a957: Tell users to remove `--adopt` or `--release` from `cotal run check` instead of asking for a handle.
+- d91500c: Report a full disk, quota or file-size limit when startup or shutdown cannot write the initial maintenance lock. The command names the file and how to retry instead of reporting an unknown outcome.
+- Updated dependencies [664698a]
+- Updated dependencies [6765f7f]
+- Updated dependencies [699a957]
+- Updated dependencies [63458fc]
+- Updated dependencies [447b4a4]
+- Updated dependencies [4275980]
+- Updated dependencies [f363540]
+- Updated dependencies [16df2b0]
+- Updated dependencies [2df52e0]
+- Updated dependencies [b448684]
+- Updated dependencies [ea08bc8]
+- Updated dependencies [2ee0a1b]
+- Updated dependencies [5aacef7]
+- Updated dependencies [d91500c]
+- Updated dependencies [43931d7]
+- Updated dependencies [8304bd2]
+  - @cotal-ai/cli@0.176.6
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/runtime@0.176.6
+  - @cotal-ai/auth@0.176.6
+  - @cotal-ai/delivery@0.176.6
+  - @cotal-ai/manager@0.176.6
+  - @cotal-ai/connector-core@0.176.6
+  - @cotal-ai/registry@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/seat@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- d6ab4a9: Running `cotal` without a command shows the entry screen without checking npm for updates or writing the update cache.
+- 6228e12: Backup restore reports a usage error for a store path inside the backup folder and tells you to choose an absent path outside it.
+- 4aca5c3: When a restore refuses a symbolic link as its store directory, it tells you to choose an unused path under an existing writable directory.
+- 6dd2e41: Retry a partial manifest teardown by run ID without passing the manifest path.
+- 1380bb4: Report invalid preferences as an error and an end record in JSON watch, history follow, and channel membership follow streams.
+- Updated dependencies [e7e6da6]
+- Updated dependencies [8c884a8]
+- Updated dependencies [2ec6796]
+- Updated dependencies [0a40e6e]
+- Updated dependencies [a53b944]
+- Updated dependencies [57dd126]
+- Updated dependencies [e6810ad]
+- Updated dependencies [cfb3c96]
+- Updated dependencies [4361c47]
+- Updated dependencies [1afc00e]
+- Updated dependencies [55bcc18]
+- Updated dependencies [e9f798e]
+- Updated dependencies [e9ec688]
+- Updated dependencies [b13f6e9]
+- Updated dependencies [6228e12]
+- Updated dependencies [f4c3814]
+- Updated dependencies [426469e]
+- Updated dependencies [4aca5c3]
+- Updated dependencies [6dd2e41]
+- Updated dependencies [ee3c94b]
+- Updated dependencies [1380bb4]
+- Updated dependencies [8719090]
+- Updated dependencies [0fda34d]
+- Updated dependencies [08c34f8]
+  - @cotal-ai/cli@0.176.5
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/runtime@0.176.5
+  - @cotal-ai/auth@0.176.5
+  - @cotal-ai/delivery@0.176.5
+  - @cotal-ai/manager@0.176.5
+  - @cotal-ai/connector-core@0.176.5
+  - @cotal-ai/registry@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/seat@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- d482720: Broker URL errors tell you to remove the embedded user name and password without suggesting a credential file to commands that cannot use one for the connection.
+- 7a6895d: Use a matching endpoint import space from the file, explain how to proceed with relative `ZDOTDIR` or invalid simulation results, and document which JSON modes stream records.
+- 5e7f073: Reject a blank `daemon setup --wait` value before service setup instead of treating it as zero. The range error explains how to continue with or without a Manager. An explicit `--wait 0` still skips the wait.
+- 073a18b: Keep the selected daemon home in the status command printed after a foreground start finds its lock held or its socket occupied. Copying the command no longer checks the default daemon instead.
+- 3071548: Self-update on Linux and macOS can find npm through an empty PATH entry that points to the folder where you ran the command.
+- d08cfed: CLI help prints without checking npm for updates or writing update state, even in an interactive terminal.
+- e327c36: Startup and persona edits now distinguish a read-only file system from missing directory permissions. Persona commands explain how to recover a broken definition link and no longer suggest editing an unrecognized uppercase file extension after a case collision.
+- c6d6949: The CLI guides now show where to find prepared broker logs, how to remove a team in its deployment space, and when history limits require signing trust.
+- d8ce619: The migration execution smoke can install its historical CLI fixture again. The release-era npm cutoff applies only to the fixture install, so the smoke still exercises an ordinary update to the current release.
+- 48081c4: Persona creation and spawn suggest a channel spelling without leading `#` characters only when that spelling is valid. Persona creation also explains that the 1 MiB size limit includes frontmatter as well as instructions.
+- 0b62901: Show how to retry a launch with a valid persona name, identify broken persona links, and keep the selected catalog in persona list suggestions.
+- bf936fc: Report a blocked config folder in structured output, include the broker and manager in duplicate spawn attach commands, and correct the split upgrade guide's channel inventory command.
+- 488c225: When a file or a looping link occupies the persona catalog path, explain how to restore existing definitions or retry a create with its original source and target options.
+- c77c3eb: `cotal update --self` now skips the version check when npm is offline and the temporary cache has no registry metadata. It does not retry with network access and reports any extension promotion it recovered before the check.
+- d005be2: Team commands distinguish an unreadable manifest or a path through a non-directory from invalid manifest content. A missing persona diagnostic now suggests a catalog path only if it leads to a readable regular file.
+- Updated dependencies [3433dd4]
+- Updated dependencies [1632910]
+- Updated dependencies [b212d8a]
+- Updated dependencies [235ac9a]
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [a447639]
+- Updated dependencies [7a6895d]
+- Updated dependencies [99e0752]
+- Updated dependencies [9bceb76]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [82b8ccd]
+- Updated dependencies [a2847f0]
+- Updated dependencies [3071548]
+- Updated dependencies [dd96500]
+- Updated dependencies [6f216a1]
+- Updated dependencies [7f64ed4]
+- Updated dependencies [2761590]
+- Updated dependencies [233ea4b]
+- Updated dependencies [d08cfed]
+- Updated dependencies [959cd61]
+- Updated dependencies [894c23b]
+- Updated dependencies [937d28e]
+- Updated dependencies [db93f37]
+- Updated dependencies [f80ee72]
+- Updated dependencies [32c02be]
+- Updated dependencies [e327c36]
+- Updated dependencies [c6d6949]
+- Updated dependencies [7fd5c5c]
+- Updated dependencies [3696130]
+- Updated dependencies [0f60f11]
+- Updated dependencies [d31ba81]
+- Updated dependencies [c4f04b3]
+- Updated dependencies [6831283]
+- Updated dependencies [6a3d511]
+- Updated dependencies [87465c9]
+- Updated dependencies [eaa5e0c]
+- Updated dependencies [48081c4]
+- Updated dependencies [0b62901]
+- Updated dependencies [b7e9657]
+- Updated dependencies [d5dff94]
+- Updated dependencies [5b2c6be]
+- Updated dependencies [36f5399]
+- Updated dependencies [c82c548]
+- Updated dependencies [bf936fc]
+- Updated dependencies [7ad34b1]
+- Updated dependencies [1463a46]
+- Updated dependencies [61ba7a6]
+- Updated dependencies [b7f1a99]
+- Updated dependencies [488c225]
+- Updated dependencies [9ab52ab]
+- Updated dependencies [ba0c256]
+- Updated dependencies [3aeffda]
+- Updated dependencies [133c786]
+- Updated dependencies [871ccaa]
+- Updated dependencies [8339e33]
+- Updated dependencies [d59c728]
+- Updated dependencies [bd04bfc]
+- Updated dependencies [c77c3eb]
+- Updated dependencies [8903038]
+- Updated dependencies [e3350b3]
+- Updated dependencies [4381467]
+- Updated dependencies [a92b251]
+- Updated dependencies [73caa74]
+- Updated dependencies [d005be2]
+- Updated dependencies [e73a285]
+- Updated dependencies [191b461]
+- Updated dependencies [0758948]
+  - @cotal-ai/cli@0.176.4
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/runtime@0.176.4
+  - @cotal-ai/connector-core@0.176.4
+  - @cotal-ai/manager@0.176.4
+  - @cotal-ai/auth@0.176.4
+  - @cotal-ai/delivery@0.176.4
+  - @cotal-ai/registry@0.176.4
+  - @cotal-ai/seat@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [3cc24ee]
+- Updated dependencies [a461dd2]
+- Updated dependencies [542c965]
+- Updated dependencies [4d8b2e3]
+- Updated dependencies [9b757d5]
+- Updated dependencies [a99a26e]
+  - @cotal-ai/cli@0.176.3
+  - @cotal-ai/manager@0.176.3
+  - @cotal-ai/auth@0.176.3
+  - @cotal-ai/runtime@0.176.3
+  - @cotal-ai/connector-core@0.176.3
+  - @cotal-ai/delivery@0.176.3
+  - @cotal-ai/registry@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/seat@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- 0187b5d: Document the watch credential selector, show structured formats in endpoint work help, keep the live contract shortcut on the same target, and explain why endpoint describe does not take `--live`.
+- 662b968: Fix the upgrade guide link in the workflow operations troubleshooting steps.
+- dcccbd9: Foreground spawn previews name unavailable working directories and explain how to retry, prepared persona catalogs work offline with a planned broker address, and manager start help explains when to select by name or by instance ID.
+- Updated dependencies [303aba0]
+- Updated dependencies [0187b5d]
+- Updated dependencies [bd5afe9]
+- Updated dependencies [c687d10]
+- Updated dependencies [662b968]
+- Updated dependencies [dcccbd9]
+- Updated dependencies [a51906d]
+- Updated dependencies [b32129d]
+- Updated dependencies [9dcb30d]
+  - @cotal-ai/cli@0.176.2
+  - @cotal-ai/connector-core@0.176.2
+  - @cotal-ai/manager@0.176.2
+  - @cotal-ai/auth@0.176.2
+  - @cotal-ai/delivery@0.176.2
+  - @cotal-ai/registry@0.176.2
+  - @cotal-ai/runtime@0.176.2
+  - @cotal-ai/core@0.176.2
+  - @cotal-ai/seat@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+- Updated dependencies [509deb5]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/cli@0.176.1
+  - @cotal-ai/auth@0.176.1
+  - @cotal-ai/delivery@0.176.1
+  - @cotal-ai/manager@0.176.1
+  - @cotal-ai/runtime@0.176.1
+  - @cotal-ai/connector-core@0.176.1
+  - @cotal-ai/registry@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/seat@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 9f6623a: Plain chat points to `:to` for channel history, `pending` lists its broker and credential options, and service and manager help show that `--foreground` and `--dry-run` can be used together.
+- 5f75575: A Claude seat that your organization's managed settings stop at startup now fails with Claude's full reason, such as `disableSideloadFlags` refusing `--plugin-dir`. The manager kept only the last 160 characters of the agent's final output line, which cut off the cause that Claude prints first. It now keeps that line whole, up to 4096 characters. The Claude connector docs also describe how an administrator installs the Cotal plugin through managed settings.
+- 9f3f3c9: Clarify which workflow commands accept credentials, when preference layers omit fields, how `team check --space` works, and the dashboard's history limit.
+- e6a8f62: Get actionable retry advice when `config get` already has a key, `stop` lacks an agent name and has an invalid manager ID, or `backup create` receives an unsupported option.
+- dc754d4: Explain how to reach a daemon started with a different `XDG_RUNTIME_DIR`, and make clear when a local space has no machine service to disconnect.
+- 29832da: Daemon setup now reports why a recorded service unit could not be verified instead of treating the daemon as uninstalled or suggesting another sign-in.
+- 9469733: Daemon service previews distinguish a missing recorded unit file from one they cannot inspect. If access is denied or the path cannot be inspected, the refusal tells you to keep the install receipt and retry after correcting the problem.
+- 089f68d: Foreground spawn and persona show explain how to recover from unreadable persona files, persona show suggests a valid name override when needed, and the local catalog flags blank filenames as invalid selectors.
+- c982413: Self-update can use a compatible Node.js when Corepack supplies npm or Volta supplies Node.js.
+- badd54b: Report how to fix a daemon runtime path that points to a file or a directory that blocks a demo persona.
+- df9f0b8: On Linux, a foreground daemon can return to its original runtime directory after a crash and a temporary runtime switch without manual socket cleanup.
+- f700d39: Spawn previews warn when a broken default persona link blocks the launch, and foreground spawn explains how to fix the link without replacing it.
+- 08acc02: Foreground spawn previews explain how to fix looping persona links, and detached spawn reports that it is waiting without promising a time limit.
+- 4df01e6: Verify that `cotal status` recommends enabling JetStream instead of launching an agent when the selected broker lacks JetStream.
+- a334492: Find the correct Codex model ID format, the roster command for a missing pending recipient, and the alternate directory option for an existing endpoint scaffold.
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+- Updated dependencies [a1432f6]
+- Updated dependencies [e9bcb31]
+- Updated dependencies [9f6623a]
+- Updated dependencies [34819f8]
+- Updated dependencies [d4f8140]
+- Updated dependencies [5f75575]
+- Updated dependencies [2e7626c]
+- Updated dependencies [660f6bc]
+- Updated dependencies [c510d29]
+- Updated dependencies [9f3f3c9]
+- Updated dependencies [111824d]
+- Updated dependencies [c96bbb9]
+- Updated dependencies [4efcb59]
+- Updated dependencies [e6a8f62]
+- Updated dependencies [96dcb15]
+- Updated dependencies [bc03c8b]
+- Updated dependencies [821207c]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [be29f08]
+- Updated dependencies [f58f315]
+- Updated dependencies [a04a6e6]
+- Updated dependencies [6b44b81]
+- Updated dependencies [7640299]
+- Updated dependencies [d473913]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [578e339]
+- Updated dependencies [e1c3f6c]
+- Updated dependencies [089f68d]
+- Updated dependencies [d1779ab]
+- Updated dependencies [86b1acd]
+- Updated dependencies [3fd972e]
+- Updated dependencies [44f7180]
+- Updated dependencies [4d2a366]
+- Updated dependencies [bb563e1]
+- Updated dependencies [c982413]
+- Updated dependencies [ec4ab86]
+- Updated dependencies [88b2111]
+- Updated dependencies [eb442eb]
+- Updated dependencies [f00167b]
+- Updated dependencies [57f9039]
+- Updated dependencies [22d1200]
+- Updated dependencies [badd54b]
+- Updated dependencies [7fea7ce]
+- Updated dependencies [3c1e3b0]
+- Updated dependencies [36617af]
+- Updated dependencies [1baede5]
+- Updated dependencies [c384d97]
+- Updated dependencies [f84695a]
+- Updated dependencies [49f3375]
+- Updated dependencies [7266240]
+- Updated dependencies [3fd4e25]
+- Updated dependencies [1563b0b]
+- Updated dependencies [f700d39]
+- Updated dependencies [769237d]
+- Updated dependencies [08acc02]
+- Updated dependencies [40f56e3]
+- Updated dependencies [efbc107]
+- Updated dependencies [a334492]
+- Updated dependencies [985813a]
+- Updated dependencies [efe525c]
+- Updated dependencies [28b97c7]
+- Updated dependencies [bedf4ee]
+  - @cotal-ai/cli@0.176.0
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/delivery@0.176.0
+  - @cotal-ai/manager@0.176.0
+  - @cotal-ai/connector-core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/auth@0.176.0
+  - @cotal-ai/runtime@0.176.0
+  - @cotal-ai/registry@0.176.0
+  - @cotal-ai/seat@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- 450ccb6: Explain when retrying `cotal_spawn` would start a duplicate helper and point callers to `cotal_invoke` to inspect a helper whose model pin could not be audited.
+- dcb7b2b: Self-update uses a compatible installed Node.js to run npm when the Node.js running Cotal is too old for npm.
+- 03b122e: Show a usable `cotal auth mint` correction for channel names that start with a hyphen. The suggested `--allow-subscribe` or `--allow-publish` flag uses `=` so the channel is read as its value.
+- e580278: The models reference now distinguishes a named catalog read from an all-catalog read: naming the one unreadable catalog with `--harness` fails with exit 5, while an all-catalog read with unreadable rows stays partial with exit 4.
+- Updated dependencies [d3b463e]
+- Updated dependencies [c70e10c]
+- Updated dependencies [c051e2b]
+- Updated dependencies [3b83325]
+- Updated dependencies [4cb5d4c]
+- Updated dependencies [450ccb6]
+- Updated dependencies [b5b4a8e]
+- Updated dependencies [dcb7b2b]
+- Updated dependencies [3e4e94e]
+- Updated dependencies [f114800]
+- Updated dependencies [85fcd8f]
+- Updated dependencies [806ac82]
+- Updated dependencies [2f3f625]
+- Updated dependencies [b7c10da]
+- Updated dependencies [4fb0306]
+- Updated dependencies [3f82277]
+- Updated dependencies [4d95c41]
+- Updated dependencies [506fb9c]
+- Updated dependencies [403a331]
+- Updated dependencies [d370f3b]
+- Updated dependencies [6079050]
+- Updated dependencies [c74d5a9]
+- Updated dependencies [7b16e50]
+- Updated dependencies [03b122e]
+- Updated dependencies [48d042f]
+- Updated dependencies [a943a0e]
+- Updated dependencies [c52e2f2]
+- Updated dependencies [a8a1804]
+- Updated dependencies [a023cff]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [ae1e371]
+- Updated dependencies [a70411d]
+- Updated dependencies [a885864]
+- Updated dependencies [bdfbf7c]
+- Updated dependencies [67d0971]
+- Updated dependencies [faed3de]
+- Updated dependencies [5406c82]
+- Updated dependencies [2017841]
+- Updated dependencies [4429734]
+- Updated dependencies [79a9546]
+- Updated dependencies [8d1cd63]
+- Updated dependencies [1b861dc]
+- Updated dependencies [0342cf6]
+- Updated dependencies [56ff44a]
+  - @cotal-ai/manager@0.175.3
+  - @cotal-ai/cli@0.175.3
+  - @cotal-ai/connector-core@0.175.3
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/runtime@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/auth@0.175.3
+  - @cotal-ai/delivery@0.175.3
+  - @cotal-ai/registry@0.175.3
+  - @cotal-ai/seat@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 29aeddc: ACP hides sign-in on spaces without user authentication, sends prose beginning with `/despawn` to the agent, explains how to start a missing manager, and documents that `--server` overrides the recorded broker.
+- 5828f27: Resolve dotted default persona names from the catalog for direct launches and previews, and give usable advice when a persona link points to a missing file.
+- 2c9d06c: The daemon's hosted Manager child control moves into its own module, with no change in behaviour.
+- cc3d82c: When self-update restores write access to an installation directory and then cannot reach the registry, report that no installed packages were replaced. Keep the existing exit status.
+- bc64c9a: Self-update finds npm in relative PATH entries from the folder where you ran the command.
+- 3d6dcc7: Show the required name for every scripted `service add` form and, if it is missing, explain how to add it without changing the original flags.
+- 1afa1b1: Keep the original CLI options when correcting an attach manager ID, removing a source file from hosted resume, or adding a missing run ID to local revoke.
+- beddddf: Read captured delivery logs after stopping a stack, start the read-only dashboard without requesting unauthorized live traffic, and show how to restart a stopped open space when `watch` names it.
+- e06a2a4: Self-update waits for installed first-party connectors and extensions to reach the registry and keeps the existing installation if a required version is still missing.
+- Updated dependencies [5795212]
+- Updated dependencies [3c50054]
+- Updated dependencies [04680eb]
+- Updated dependencies [9983e6f]
+- Updated dependencies [a4f500d]
+- Updated dependencies [5828f27]
+- Updated dependencies [71b06f2]
+- Updated dependencies [12e22cf]
+- Updated dependencies [42aae23]
+- Updated dependencies [7ca1d02]
+- Updated dependencies [b6f3750]
+- Updated dependencies [f7eac15]
+- Updated dependencies [8faf6ba]
+- Updated dependencies [a79695b]
+- Updated dependencies [d164d0d]
+- Updated dependencies [cfbc1c1]
+- Updated dependencies [6da28b5]
+- Updated dependencies [8a4092a]
+- Updated dependencies [744ba35]
+- Updated dependencies [cc3d82c]
+- Updated dependencies [aaa3e93]
+- Updated dependencies [5c86786]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [bc64c9a]
+- Updated dependencies [a4ed1cf]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [ccc74e4]
+- Updated dependencies [bc2e9c5]
+- Updated dependencies [2c8ac32]
+- Updated dependencies [3d6dcc7]
+- Updated dependencies [ad0f7c7]
+- Updated dependencies [1afa1b1]
+- Updated dependencies [43cecd8]
+- Updated dependencies [beddddf]
+- Updated dependencies [df874d6]
+- Updated dependencies [e4fb5de]
+- Updated dependencies [43cad4b]
+- Updated dependencies [e06a2a4]
+- Updated dependencies [da49122]
+  - @cotal-ai/cli@0.175.2
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/delivery@0.175.2
+  - @cotal-ai/manager@0.175.2
+  - @cotal-ai/workspace@0.175.2
+  - @cotal-ai/auth@0.175.2
+  - @cotal-ai/runtime@0.175.2
+  - @cotal-ai/connector-core@0.175.2
+  - @cotal-ai/registry@0.175.2
+  - @cotal-ai/seat@0.175.2
+
 ## 0.175.1
 
 ### Patch Changes

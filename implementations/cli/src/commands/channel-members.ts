@@ -4,6 +4,7 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { onRerun } from "../lib/control.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { membershipSetupFailureRecords } from "../lib/follow-setup-failure.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -30,8 +31,7 @@ export async function channelMembers(values: Values, channel: string, presentati
     recordTelemetryFailure(failure.outcome, failure.code, error);
     const refusedSpace = refusal?.target?.space;
     const target = { space: state.space ?? (typeof refusedSpace === "string" ? refusedSpace : values.space ?? null), channel };
-    writeStreamRecord(streamRecord("membership", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
-    writeStreamRecord(streamRecord("membership", "end", target, { reason: "setup-failed", lastAsOf: null }));
+    for (const record of membershipSetupFailureRecords(target, failure)) writeStreamRecord(record);
     process.exitCode = exitCode(failure.outcome, failure.code);
   }
 }

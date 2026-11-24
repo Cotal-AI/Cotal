@@ -158,6 +158,18 @@ function resolveJoinChannel(flag: string | undefined, linked: string | undefined
   return channel;
 }
 
+function readJoinCreds(path: string, channel: string, space: string | undefined): string {
+  const read = `--allow-subscribe${channel.startsWith("-") ? "=" : " "}${shellWord(channel)}`;
+  const replacement = "If you need a replacement, ask the space's owner to mint it with " +
+    `\`cotal auth mint <name> --provision ${read}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
+  try {
+    return readCredsFile(path, { malformedRemedy: `pass the complete credential file as it was issued. ${replacement}` });
+  } catch (e) {
+    if (isConnectRefusal(e) && e.code === "TARGET_NOT_FOUND") throw e.failure(() => `check the path. ${replacement}`);
+    throw e;
+  }
+}
+
 async function joinSpace(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean; "expires-in"?: string; "expires-at"?: string };
   const expiresAt = seatExpiryAt(values);
@@ -175,15 +187,11 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
   const channel = resolveJoinChannel(values.channel, link?.channels?.[0]);
-  const mintSpace = values.space ?? link?.space;
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds, {
-      malformedRemedy: "pass the complete credential file as it was issued. If you need a replacement, ask the space's owner to mint it with " +
-        `\`cotal auth mint <name> --provision --allow-subscribe ${shellWord(channel)}${mintSpace === undefined ? "" : ` --space ${shellWord(mintSpace)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`,
-    }) : undefined,
+    creds: values.creds ? readJoinCreds(values.creds, channel, values.space ?? link?.space) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /

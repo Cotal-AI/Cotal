@@ -29,11 +29,12 @@ import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
-import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRootGone, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { lostRecordsStackDown, stackRecordsLost } from "./stack-lost-records.js";
+import { goneRootStackDown } from "./stack-gone.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -68,7 +69,7 @@ function assertServiceRecordsWritable(root: string, space: string, values: Parse
   const dir = serviceRecordsWriteProblem(space, ["instances"]);
   if (dir) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each member's stop; no member was stopped`, {
     target: { root, space, path: dir },
-    remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+    remedy: `make it writable with chmod u+w ${shellWord(dir)}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
   });
 }
 
@@ -412,11 +413,17 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"],
 }
 
 /** A foreground signal runs the guarded whole-stack stop and supplies the terminal exit code. */
-export async function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM", duringStartup = false): Promise<void> {
-  try { await stackDown(root, { yes: true }, duringStartup); }
-  catch (error) {
-    const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome; its members were retained");
-    process.stderr.write(`${renderReport(commandFailureReport(failure), "rich", process.stderr)}\n`);
+export async function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM", duringStartup = false, space?: string): Promise<void> {
+  const gone = space !== undefined && stackRootGone(space, root);
+  try {
+    if (gone) await goneRootStackDown(space, root, { yes: true });
+    else await stackDown(root, { yes: true }, duringStartup);
+  } catch (error) {
+    const retry = gone ? `run \`cotal down --space ${shellWord(space)} --yes\` from another folder to finish the stop` : undefined;
+    const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome", { target: { space, root }, cause: error, remedy: retry });
+    const report = commandFailureReport(failure);
+    const sections = retry && !failure.remedy ? [...report.sections, { title: "Next", blocks: [{ kind: "lines" as const, lines: [retry] }] }] : report.sections;
+    process.stderr.write(`${renderReport({ ...report, sections }, "rich", process.stderr)}\n`);
   } finally { process.exitCode = signal === "SIGINT" ? 130 : 143; }
 }
 

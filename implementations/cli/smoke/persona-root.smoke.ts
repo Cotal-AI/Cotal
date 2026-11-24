@@ -112,6 +112,13 @@ function checkCreateInputGuidance(run: (args: string[], input?: Buffer) => Spawn
     check(`persona create ${flag} names a missing file and offers stdin without writing a persona`,
       missing.status === 2 && missing.stderr.includes("TARGET_NOT_FOUND") && missing.stderr.includes(source) &&
       missing.stderr.includes(`with ${flag} -`) && !existsSync(destination), missing.stderr);
+    const directory = join(".cotal", "agents");
+    const wrongKind = run(["persona", "create", "input-check", flag, directory, ...extra, "--plain"]);
+    const fileKind = flag === "--file" ? "complete persona file" : "persona body file";
+    check(`persona create ${flag} names a directory and asks for a file without writing a persona`,
+      wrongKind.status === 2 && wrongKind.stderr.includes("TARGET_NOT_FOUND") && !wrongKind.stderr.includes("PERMISSION_DENIED") &&
+      wrongKind.stderr.includes(`is a directory: ${directory}`) &&
+      wrongKind.stderr.includes(`pass the path to a ${fileKind} with ${flag}`) && !existsSync(destination), wrongKind.stderr);
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       writeFileSync(source, "not readable", { mode: 0o000 });
       try {
@@ -511,6 +518,41 @@ try {
   const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
+  const offlineRoot = join(scratch, "offline-project");
+  const prepared = native(["space", "create", "offline-audit", "--root", offlineRoot, "--plain"], CWD);
+  check("a separate project is prepared without starting a broker", prepared.status === 0, prepared.stdout + prepared.stderr);
+  const args = ["persona", "--space", "offline-audit", "--plain"];
+  const offline = native(args, CWD);
+  const plannedServer = native([...args, "--server", "nats://127.0.0.1:1"], CWD);
+  check("a planned server still lists the named prepared project's local catalog",
+    offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
+    /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  const only = "offline-only";
+  writeFileSync(agentFilePath(offlineRoot, only), `---\nname: ${only}\n---\nOnly in the other catalog.\n`);
+  const listReceipt = native(args, CWD);
+  const show = listReceipt.stdout.match(/(?:cotal|pnpm cotal) (p show <name> --space offline-audit)/)?.[1];
+  const showReceipt = show ? native([...show.replace("<name>", only).split(" "), "--plain"], CWD) : undefined;
+  check("persona list's show command reads the explicitly selected catalog",
+    listReceipt.status === 0 && showReceipt?.status === 0 && showReceipt.stdout.includes("Only in the other catalog."), listReceipt.stdout + listReceipt.stderr);
+  const create = plannedServer.stdout.match(/(?:cotal|pnpm cotal) (p create <name> --file <persona.md> --space offline-audit --server nats:\/\/127\.0\.0\.1:1)/)?.[1];
+  const sourcePath = join(scratch, "catalog-input.md");
+  const source = "---\nname: catalog-created\n---\nCreated in the other catalog.\n";
+  writeFileSync(sourcePath, source);
+  const created = create ? native(create.split(" ").map(word => word === "<name>" ? "catalog-created" : word === "<persona.md>" ? sourcePath : word), CWD) : undefined;
+  check("persona list's create command keeps both selectors and writes only to the selected catalog",
+    created?.status === 0 && readFileSync(agentFilePath(offlineRoot, "catalog-created"), "utf8") === source &&
+    !existsSync(agentFilePath(CWD, "catalog-created")), plannedServer.stdout + (created?.stderr ?? ""));
+  check("persona list's process command retains both explicit selectors",
+    ["cotal", "pnpm cotal"].some(cli => plannedServer.stdout.includes(`${cli} ps --space offline-audit --server nats://127.0.0.1:1`)), plannedServer.stdout);
+  writeFileSync(agentFilePath(CWD, "catalog-created"), source);
+  const removal = native(["persona", "remove", "catalog-created", "--space", "offline-audit", "--server", "nats://127.0.0.1:1", "--yes", "--plain"], CWD);
+  const browse = removal.stdout.match(/(?:pnpm cotal|cotal) (p --space offline-audit --server nats:\/\/127\.0\.0\.1:1)\s+Browse the local catalog/)?.[1];
+  const browsed = browse ? native(browse.split(" "), CWD) : undefined;
+  check("persona removal's browse command lists the changed catalog and leaves the origin copy intact",
+    removal.status === 0 && browsed?.status === 0 && browsed.stdout.includes("Mesh: offline-audit") &&
+    browsed.stdout.includes(only) && !browsed.stdout.includes("catalog-created") &&
+    readFileSync(agentFilePath(CWD, "catalog-created"), "utf8") === source && !existsSync(agentFilePath(offlineRoot, "catalog-created")),
+    removal.stdout + removal.stderr + (browsed?.stdout ?? "") + (browsed?.stderr ?? ""));
   checkCreateInputGuidance((args, input) => native(args, MESH, childEnv, input), MESH);
   if (process.platform !== "win32") {
     const server = "nats://[::1]:43002";
@@ -650,6 +692,53 @@ try {
     unlinkSync(path);
   }
 
+  for (const name of ["qa+plus", "révision", "qa trailing "]) {
+    const path = agentFilePath(MESH, name);
+    const source = "---\nname: reviewer\nagent: claude\n---\nFixture body.\n";
+    writeFileSync(path, source);
+    const listed = native(["persona", "--json"]);
+    const shown = native(["persona", "show", "--json", "--", name]);
+    const preview = native(["spawn", "--dry-run", "--json", "--", name]);
+    check(`persona list, show and spawn preview agree on ${JSON.stringify(name)}`,
+      listed.status === 0 && JSON.parse(listed.stdout).result.items.some((item: { name: string }) => item.name === name) &&
+      shown.status === 0 && JSON.parse(shown.stdout).result.source === source &&
+      preview.status === 0 && JSON.parse(preview.stdout).result.persona.path === path, shown.stdout + preview.stdout);
+    unlinkSync(path);
+  }
+
+  if (process.platform !== "win32") {
+    const original = agentFilePath(ALPHA, "mismatch");
+    const decoy = agentFilePath(MESH, "mismatch");
+    const source = "---\nname: displayed\n---\nOriginal instructions.\n";
+    const added = "Edited instructions.\n";
+    const temp = join(scratch, "draft folder's space");
+    const editor = join(scratch, "remove-source-editor");
+    mkdirSync(temp);
+    writeFileSync(original, source);
+    writeFileSync(decoy, source);
+    writeFileSync(editor, `#!/bin/sh\nmv "$SOURCE" "$SOURCE.moved"\nprintf '%s\\n' 'Edited instructions.' >> "$1"\n`, { mode: 0o700 });
+    const refused = native(["persona", "edit", "mismatch", "--space", "alpha", "--json"], scratch,
+      { ...childEnv, TMPDIR: temp, VISUAL: editor, SOURCE: original });
+    const receipt = JSON.parse(refused.stdout);
+    const draft = receipt.error?.remedy.match(/kept in (.*?);/)?.[1];
+    const retry = receipt.error?.remedy.match(/restore it with `([^`]+)`/)?.[1];
+    check("a removed persona preserves the edited draft and prints a recovery command",
+      refused.status === 2 && receipt.error?.code === "CONFLICT" && !existsSync(original) &&
+      draft && readFileSync(draft, "utf8") === source + added && retry, refused.stdout);
+    const restore = () => spawnSync("sh", ["-c", retry], { cwd: scratch, env: childEnv, encoding: "utf8", timeout: 30_000 });
+    writeFileSync(original, "Concurrent replacement\n");
+    restore();
+    check("draft recovery leaves a concurrent replacement untouched", readFileSync(original, "utf8") === "Concurrent replacement\n");
+    unlinkSync(original);
+    const restored = restore();
+    const shown = native(["persona", "show", "mismatch", "--space", "alpha", "--json"], scratch);
+    check("the printed command restores the exact draft to the original catalog without changing the display name",
+      restored.status === 0 && shown.status === 0 && JSON.parse(shown.stdout).result.definition.name === "displayed" &&
+      readFileSync(original, "utf8") === source + added && readFileSync(decoy, "utf8") === source, restored.stderr + shown.stdout);
+    unlinkSync(original);
+    unlinkSync(decoy);
+  }
+
   const spacedSource = "sample card.md";
   const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
   writeFileSync(join(scratch, spacedSource), importBytes);
@@ -692,6 +781,13 @@ try {
     const otherCard = alphaCard.replace("Alpha", "Other");
     const invalid = "---\nname: Reviewer\nsubscribe: [\n---\nInvalid draft.\n";
     const editor = join(scratch, "invalid-editor");
+    const uppercase = join(ALPHA, ".cotal", "agents", "Other.MD");
+    writeFileSync(uppercase, alphaCard);
+    if (!existsSync(agentFilePath(ALPHA, "other"))) {
+      const blocked = native(["persona", "create", "other", "--prompt", "Never saved.", "--subscribe=", "--space", "alpha", "--json"], scratch);
+      const failure = JSON.parse(blocked.stdout).error;
+      check("an uppercase extension still collides but is not an editable catalog stem", blocked.status === 2 && failure?.code === "CONFLICT" && failure.message.includes("Other.MD") && failure.remedy === "choose another persona name" && readFileSync(uppercase, "utf8") === alphaCard, blocked.stdout);
+    }
     writeFileSync(alphaFile, alphaCard);
     writeFileSync(otherFile, otherCard);
     writeFileSync(editor, `#!/bin/sh\ncat > "$1" <<'EOF'\n${invalid}EOF\n`, { mode: 0o700 });
@@ -707,11 +803,11 @@ try {
       const receipt = JSON.parse(refused.stdout);
       const draft = receipt.error?.remedy.match(/kept in (.*?); correct it/)?.[1];
       const retry = receipt.error?.remedy.match(/`([^`]+)`/)?.[1];
-      check(`invalid draft keeps ${selector[0]} in the retry and leaves both catalogs intact`,
+      check(`invalid draft keeps ${selector[0]} and JSON in the retry and leaves both catalogs intact`,
         refused.status === 1 && receipt.target?.space === "alpha" && receipt.error?.code === "SCHEMA_INVALID" &&
-        retry === edit && draft && readFileSync(draft, "utf8") === invalid &&
+        retry === `${edit} --json` && draft && readFileSync(draft, "utf8") === invalid &&
         readFileSync(alphaFile, "utf8") === alphaCard && readFileSync(otherFile, "utf8") === otherCard, refused.stdout);
-      const retried = native([...retry.split(" ").slice(1), "--json"], scratch, { ...childEnv, VISUAL: "true" });
+      const retried = native(retry.split(" ").slice(1), scratch, { ...childEnv, VISUAL: "true" });
       const retriedReceipt = JSON.parse(retried.stdout);
       check(`the printed retry with ${selector[0]} opens alpha`,
         retried.status === 0 && retriedReceipt.target?.space === "alpha" && retriedReceipt.outcome === "no-op", retried.stdout + retried.stderr);
@@ -848,12 +944,15 @@ try {
     const json = native(next[2]!.split(" ").slice(1));
     check("the printed JSON command returns the correct persona", json.status === 0 &&
       JSON.parse(json.stdout).result?.definition?.name === "reviewer", json.stdout + json.stderr);
+    const plain = native(["persona", "remove", "--plain", "--no-input", "--", "-reviewer"]);
+    check("persona remove keeps plain output before the end of options in its confirmation", plain.status === 1 && plain.stderr.includes("`cotal persona remove --yes --plain -- -reviewer`") && existsSync(path), plain.stderr);
     const refused = native(["persona", "remove", "--json", "--", "-reviewer"]);
-    const remove = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
-    check("persona remove prints copyable confirmation for a hyphen-leading catalog name",
-      refused.status !== 0 && remove === "cotal persona remove --yes -- -reviewer" && existsSync(path), refused.stdout);
-    const removed = native(remove.split(" ").slice(1));
-    check("the printed remove command removes the existing definition", removed.status === 0 && !existsSync(path), removed.stdout + removed.stderr);
+    const remove: string | undefined = JSON.parse(refused.stdout).error?.remedy?.match(/`([^`]+)`/)?.[1];
+    check("persona remove prints a JSON confirmation for a hyphen-leading catalog name",
+      refused.status === 1 && remove === "cotal persona remove --yes --json -- -reviewer" && existsSync(path), refused.stdout);
+    const removed = remove ? native(remove.split(" ").slice(1)) : undefined;
+    check("the printed remove command removes the existing definition with a JSON receipt",
+      removed?.status === 0 && !existsSync(path) && JSON.parse(removed.stdout).result?.action === "removed", removed && removed.stdout + removed.stderr);
   }
   {
     const path = agentFilePath(MESH, "nul-endpoints");
