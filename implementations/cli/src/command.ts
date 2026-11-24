@@ -187,9 +187,12 @@ function routeCollisionWarnings(warnings: OutputWarning[], cmd: Command | undefi
   if (cmd && !wantsHelp && !isExtensionStub(cmd) && !takesWordsRaw(cmd) && asksForJson(cmd, words)) {
     const sub = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
     const outputs = sub ? sub.outputs : cmd.outputs;
-    const values = outputs?.includes("ndjson")
-      ? parseArgs({ args: words, options: parserOptions(cmd), strict: false, allowPositionals: true }).values : undefined;
-    finiteJson = outputs?.includes("json") === true && !values?.follow && !values?.wait;
+    if (outputs?.includes("json")) {
+      const values = !outputs.includes("ndjson") ? undefined
+        : cmd.name === "history" || cmd.name === "channel" ? streamRefusalArgs(cmd, words)?.values
+        : parseArgs({ args: words, options: parserOptions(cmd), strict: false, allowPositionals: true }).values;
+      finiteJson = values?.follow !== true && values?.wait !== true;
+    }
   }
   for (const warning of warnings) {
     if (finiteJson) recordOperationWarning(warning, { echo: false });

@@ -119,6 +119,15 @@ const collisionSuccess = run(["cfg", "get", "color", "-j"], collisionConfig);
 check("JSON success keeps the built-in alias and the retained extension warning", collisionSuccess.status === 0 && collisionSuccess.stderr === "" &&
   collisionSuccess.envelope?.command === "config" && collisionSuccess.envelope.outcome === "ok" &&
   collisionSuccess.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionSuccess));
+for (const args of [["history", "general"], ["channel", "members", "general"]]) {
+  const finite = run([...args, "--json", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision in its finite JSON refusal`, finite.status === 1 && finite.stderr === "" &&
+    finite.envelope?.error?.code === "USAGE_INVALID" && finite.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(finite));
+  const stream = run([...args, "--json", "--follow", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision on stderr for its JSON stream refusal`, stream.status === 1 &&
+    stream.envelope === undefined && stream.stdout.includes('"type":"error"') && stream.stdout.includes('"type":"end"') &&
+    stream.stderr.includes("output-fixture@1.0.0"), shown(stream));
+}
 
 for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--json", "version"], ["--json", "--no-input", "version"]]) {
   const r = run(args);
