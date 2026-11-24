@@ -38,6 +38,17 @@ async function startupFailureDetail(a: ManagedAgent, outcome: "failed" | "exited
   return `${a.name}: ${failure}. See the manager log.`;
 }
 
+/** Why a runtime that starts seats outside this host (`delegatedBy`) cannot take `opts`: a choice
+ *  only this host can honour. Undefined when there is none. */
+function hostOnlyChoice(opts: StartAgentOpts, delegatedBy: string): string | undefined {
+  if (opts.resume) return `${delegatedBy}, so it cannot resume a session held on this host (resume)`;
+  if (opts.autoName) return `${delegatedBy}, so it cannot name the seat from its first message (autoName)`;
+  if (opts.resolved?.continuity === "exact") return `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)`;
+  if (typeof opts.cwd === "string" && opts.cwd !== "")
+    return `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`;
+  return undefined;
+}
+
 /** The {@link SeatLaunch} methods {@link SeatStart.startActive} calls. Each is read at call time. */
 export interface SeatStartLaunch {
   checkSpawnCwd: (...args: Parameters<SeatLaunch["checkSpawnCwd"]>) => ReturnType<SeatLaunch["checkSpawnCwd"]>;
@@ -258,14 +269,8 @@ export class SeatStart {
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
       }
-      if (opts.resume)
-        return { ok: false, error: `${delegatedBy}, so it cannot resume a session held on this host (resume)` };
-      if (opts.autoName)
-        return { ok: false, error: `${delegatedBy}, so it cannot name the seat from its first message (autoName)` };
-      if (opts.resolved?.continuity === "exact")
-        return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
-      if (typeof opts.cwd === "string" && opts.cwd !== "")
-        return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
+      const hostOnly = hostOnlyChoice(opts, delegatedBy);
+      if (hostOnly) return { ok: false, error: hostOnly };
       const shared = Object.keys(hostFields.mcpServers!);
       if (shared.length)
         return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
