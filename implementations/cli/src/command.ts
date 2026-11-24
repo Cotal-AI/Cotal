@@ -823,7 +823,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const requestedBuiltin = builtin?.name === "help" && !wantsHelp
     ? findCommand(builtins, metadataPositionals(builtin, words).positionals[0]?.value) : builtin;
   // The bundled reference and its help must open even when the extension inventory needs repair.
-  const extensions = opts.extensions === true && requestedBuiltin?.name !== "docs";
+  const allowInventory = requestedBuiltin?.name !== "docs";
+  const extensions = opts.extensions === true && allowInventory;
   const globals = collectGlobalFlags(words, leadingGlobals);
   const ownWords = (cmd: Command | undefined): string[] => {
     if (!takesWordsRaw(cmd)) for (const option of globals.flags) takeGlobalFlag(option);
@@ -945,7 +946,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const arm = (): void => {
     if (!cmd) return;
     try {
-      armTelemetry(registry, cmd, words, startedAt);
+      armTelemetry(registry, cmd, words, { startedAt, allowInventory });
     } catch (e) {
       if (isCommandFailure(e)) failureExit(cmd, e, asksForJson(cmd, rest), rest.includes("--plain"), undefined, rest);
       throw e;

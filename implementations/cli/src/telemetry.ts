@@ -182,7 +182,10 @@ export function recordTelemetryError(error: unknown): void {
  * uncaught failure. Throws the typed refusal of a bad `COTAL_TELEMETRY` or settings file, and of a
  * bad `COTAL_TELEMETRY_URL` at a level that sends; the kernel reports it as it reports any refusal.
  */
-export function armTelemetry(registry: Registry, cmd: Command, words: readonly string[], startedAt: number): void {
+export function armTelemetry(registry: Registry, cmd: Command, words: readonly string[], { startedAt, allowInventory }: {
+  startedAt: number;
+  allowInventory: boolean;
+}): void {
   if (pending || silent(cmd)) return;
   const raw = cmd.rawArgs === true;
   const subcommand = raw || !cmd.subcommands?.length ? null : subcommandName(cmd, words);
@@ -207,7 +210,7 @@ export function armTelemetry(registry: Registry, cmd: Command, words: readonly s
   };
   process.once("exit", (code) => {
     try {
-      sendTelemetry(url, eventsAtExit(registry, pending!, code, new Date()));
+      sendTelemetry(url, eventsAtExit(registry, pending!, code, new Date(), allowInventory));
     } catch {
       // Telemetry never changes a command's outcome.
     }
@@ -224,10 +227,9 @@ function whenSettingsFree<T>(read: () => T): T | undefined {
 const sameUtcDay = (a: string, b: Date): boolean => a.slice(0, 10) === b.toISOString().slice(0, 10);
 
 /** The bodies to send: at `regular`, the day's install event first when none was sent today. */
-function eventsAtExit(registry: Registry, p: Pending, code: number, now: Date): string[] {
+function eventsAtExit(registry: Registry, p: Pending, code: number, now: Date, allowInventory: boolean): string[] {
   const bodies: string[] = [];
-  // Bundled docs never open the extension inventory. Leave the install event due for another command.
-  if (p.command !== "docs" && p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
+  if (allowInventory && p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
     try {
       const body = JSON.stringify(installEvent(registry, p, now));
       if (claimTelemetryInstallEvent(p.settings.installId, now)) bodies.push(body);

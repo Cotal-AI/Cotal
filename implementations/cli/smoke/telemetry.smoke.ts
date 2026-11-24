@@ -154,6 +154,16 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
     docs.status === 0 && docs.stderr === "" && docs.envelope?.outcome === "ok" && docs.sent.length === 1 &&
     docs.sent[0]?.event === "command" && docs.sent[0]?.command === "docs" && s.settings().lastInstallEventAt === undefined,
     { ...shown(docs), events: docs.sent.map((event) => event.event) });
+  for (const [args, command] of [
+    [["docs", "--help"], "docs"],
+    [["help", "docs"], "help"],
+  ] as const) {
+    const help = await s.run([...args]);
+    check(`${args.join(" ")} sends command telemetry without collecting the install inventory`,
+      help.status === 0 && help.stderr === "" && help.stdout.includes("Usage") && help.sent.length === 1 &&
+      help.sent[0]?.event === "command" && help.sent[0]?.command === command && s.settings().lastInstallEventAt === undefined,
+      { ...shown(help), events: help.sent.map((event) => event.event) });
+  }
   const version = await s.run(["version"]);
   await settled();
   check("another command still sends the deferred install event",

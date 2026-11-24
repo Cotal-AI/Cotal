@@ -83,10 +83,10 @@ opt-outs; it does not establish the receiving service's IP handling or retention
 
 One `command` event is posted as the CLI process exits, whatever the exit path. At `regular`, the
 first eligible command to finish each UTC day also posts an `install` event first. Commands that
-overlap share the same daily record. `cotal docs` leaves that event for another command so it
-can run without reading the extension inventory. If another process is still creating the install
-ID, the command runs without sending telemetry. Each event
-is one `POST` of JSON, `content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The
+overlap share the same daily record. `cotal docs` and both forms of its help leave that event for
+another command so they can run without reading the extension inventory. If another process is
+still creating the install ID, the command runs without sending telemetry. Each event is one
+`POST` of JSON, `content-type: application/json`, to `https://cotal.ai/v1/telemetry`. The
 command and install posts share one 1.5 second send deadline, with no retry. Send failures are
 ignored and do not change the command's exit code; the exit hook waits at most 1.5 seconds for delivery.
 `COTAL_TELEMETRY_URL` points to a self-hosted intake. An invalid value refuses with `USAGE_INVALID`
