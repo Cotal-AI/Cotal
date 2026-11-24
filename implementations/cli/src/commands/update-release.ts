@@ -3,13 +3,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
-import { processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { c } from "../ui.js";
 import { type CommandResult, RegistryUnavailable, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
+export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
+
+type LatestVersionFailure = { ok: false; error: string; missingNpm?: true; offline?: true; npmResult?: CommandResult };
+
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string; missingNpm?: true; offline?: true; npmResult?: CommandResult } {
+export function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | LatestVersionFailure {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
     const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
@@ -34,8 +39,33 @@ function npmOfflineCacheMiss(result: CommandResult): boolean {
   catch { return false; }
 }
 
+export async function handleLatestVersionFailure(latest: LatestVersionFailure, current: string, rt: UpdateRuntime, unavailable: string): Promise<number> {
+  if (latest.missingNpm) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+    rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${MISSING_NPM_REMEDY}`));
+    return 1;
+  }
+  if (latest.offline) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm offline mode to be disabled", true);
+    rt.onOfflineVersionCheckSkipped?.();
+    rt.out(`${latest.error}. The latest-version check was skipped.`);
+    return 0;
+  }
+  if (!latest.npmResult || !(releaseReadError(latest.npmResult, "cotal-ai version check failed") instanceof RegistryUnavailable)) {
+    rt.err(c.red(`✗ cotal-ai version check failed: ${oneLine(latest.error.split(/\r?\n/, 1)[0]!)}`));
+    return 1;
+  }
+  if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
+  else if (await npmProxyRefused(latest.npmResult, rt.env)) {
+    rt.err("The npm proxy refused the connection (ECONNREFUSED). The update did not start. Check HTTP_PROXY and HTTPS_PROXY, then retry.");
+    return 1;
+  }
+  rt.out(unavailable);
+  return 0;
+}
+
 /** npm gives a generic proxy hint even for direct failures. Match the refused socket instead. */
-export async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
+async function npmProxyRefused(result: CommandResult, env: NodeJS.ProcessEnv): Promise<boolean> {
   const httpsProxy = env.https_proxy || env.HTTPS_PROXY;
   const httpProxy = env.http_proxy || env.HTTP_PROXY;
   if ((!httpsProxy && !httpProxy) || result.status === null || result.error) return false;
@@ -83,7 +113,7 @@ function checkInstalledClosure(version: string, releasePackages: ReadonlySet<str
     if (result.status !== 0) {
       const detail = `installed extension dependency closure is unavailable: ${failure(result.stderr.trim() ? { ...result, stdout: "" } : result)}`;
       if (/^npm (?:error|ERR!) code ENOSPC\s*$/m.test(result.stderr)) throw new DependencyCheckNoSpace(detail);
-      throw releaseReadError(result, detail, specs);
+      throw releaseReadError(result, detail, { installedSpecs: specs });
     }
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -114,7 +144,7 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
         const result = manifests[index]!;
         if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
         const manifest = result.value;
-        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`);
+        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`, { metadataSpec: spec });
         let meta: Record<string, unknown>;
         try {
           const payload: unknown = JSON.parse(manifest.stdout);
@@ -153,7 +183,9 @@ export async function checkReleaseArchives(version: string, rt: UpdateRuntime): 
   }
 }
 
-export class ReleaseNotAvailable extends Error {}
+export class ReleaseNotAvailable extends Error {
+  constructor(message: string, readonly scopedMetadataMissing = false) { super(message); }
+}
 export class ReleaseDateExcluded extends Error {}
 export class DependencyCheckInterrupted extends Error {}
 export class DependencyCheckNoSpace extends Error {}
@@ -166,7 +198,7 @@ export function registryNetworkFailure(error: unknown): boolean {
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
 }
 
-export function releaseReadError(result: CommandResult, detail: string, installedSpecs?: readonly string[]): Error {
+export function releaseReadError(result: CommandResult, detail: string, { installedSpecs, metadataSpec }: { installedSpecs?: readonly string[]; metadataSpec?: string } = {}): Error {
   if (result.status !== null && !result.error) {
     try {
       const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown; detail?: unknown } }).error;
@@ -175,6 +207,13 @@ export function releaseReadError(result: CommandResult, detail: string, installe
       // A first-party scoped read can fail while the public registry still answers.
       if (!detail.includes("@cotal-ai/") && typeof error?.code === "string" && NETWORK_ERROR_CODE.test(error.code)) return new RegistryUnavailable(detail);
       if (error?.code === "E404" || error?.code === "ETARGET") {
+        if (error.code === "E404" && metadataSpec?.startsWith("@cotal-ai/")) {
+          const request = typeof error.summary === "string" ? /\bGET (https?:\/\/\S+) - /.exec(error.summary)?.[1] : undefined;
+          // Use only the origin so npm diagnostics cannot expose credentials or URL tokens.
+          const origin = request ? URL.parse(request)?.origin : undefined;
+          const registryDetail = `${metadataSpec} was not found (npm E404${origin ? ` from ${origin}` : ""}). Check @cotal-ai:registry in .npmrc`;
+          return new ReleaseNotAvailable(registryDetail, true);
+        }
         if (!installedSpecs) return new ReleaseNotAvailable(detail);
         // A scoped registry 404 or a missing third-party dependency does not prove release lag.
         const missing = error.code === "ETARGET" && installedSpecs.find(spec => error.summary === `No matching version found for ${spec}.`);
@@ -209,10 +248,12 @@ export async function waitForReleasePreflight(version: string, current: string, 
       if (remaining <= 0) {
         if (releasePackages) throw error;
         recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
-        rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
+        const reason = error.scopedMetadataMissing ? `cotal-ai@${version} release archives are still unavailable. ${error.message}.` : `cotal-ai@${version} is still reaching the registry.`;
+        rt.out(`${reason} Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
         return "deferred";
       }
-      const pending = releasePackages ? `an installed extension: ${error.message}` : `cotal-ai@${version} release archives to reach the registry`;
+      const pending = releasePackages ? `an installed extension: ${error.message}`
+        : `cotal-ai@${version} release archives${error.scopedMetadataMissing ? `: ${error.message}` : " to reach the registry"}`;
       rt.out(`Waiting for ${pending} (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
       await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
     }

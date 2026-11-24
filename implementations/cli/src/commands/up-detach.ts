@@ -360,7 +360,8 @@ export async function serveReadyListener(l: {
   try {
     if (l.resumeAttempt) {
       const ordinaryResume = pendingOrdinaryResumes.has(l.resumeAttempt);
-      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined);
+      await recreateMemoryBuckets(server, space, setup, ordinaryResume ? { convertMembership: l.recreateMembershipStore === true } : undefined,
+        ordinaryResume ? l.seedFile : undefined);
     } else {
       await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     }
@@ -587,7 +588,7 @@ export async function startMeshDetached(
 
   await awaitSpawnedListener({ child, executable: { path: bin, source, version }, server, space, creds: setup?.creds, tls: transport.kind === "tls-required", log: logPath, boundListener: opts.boundListener });
   const { authService, controlPlane } = await serveReadyListener({
-    child, server, space, storeDir, setup, seedFile, transport, maxPayload,
+    child, server, space, storeDir, setup, seedFile: !opts.resumeAttempt || opts.channels ? seedFile : undefined, transport, maxPayload,
     ...(opts.recreateIssuedStores !== undefined ? { recreateIssuedStores: opts.recreateIssuedStores } : {}),
     ...(opts.recreateMembershipStore ? { recreateMembershipStore: true } : {}),
     host: opts.host,
@@ -665,7 +666,7 @@ export function refuseStartOverUserState(open: boolean, userAuth: boolean, space
  *  before the boot could reach the config render - so a `cotal up --space alpha` against a root that
  *  legitimately holds alpha and beta refused on ambiguity that its own `--space` had already
  *  resolved. The tenant list answers the real question without picking. */
-export function ensureRootForSpace(space: string): void {
+export function ensureRootForSpace(space: string, separateRootNeedsPreparation = false): void {
   const root = cotalRoot();
   const cwd = process.cwd();
   // A prepared space starts only in the root `cotal space create` gave it. Checked before the mkdir
@@ -692,9 +693,12 @@ export function ensureRootForSpace(space: string): void {
     console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
     return;
   }
+  const separate = separateRootNeedsPreparation
+    ? `prepare a different folder with ${codeSpan(`cotal space create --root <new-folder> -- ${shellWord(space)}`)}, then repeat the startup from the original working directory with --root set to that folder and the other options unchanged`
+    : `start "${space}" from a different folder (it becomes that mesh's own root)`;
   throw new CommandFailure("refused", "CONFLICT", `this folder is the root of ${names} (${root}/.cotal), so it can't also run "${space}"`, {
     target: { space, root, hosted: existing },
-    remedy: `run ${existing.length === 1 ? names : "one of those"} with ${codeSpan(`cotal up --root ${shellWord(root)} --space ${existing.length === 1 ? shellWord(existing[0]!) : "<name>"}`)}, or start "${space}" from a different folder (it becomes that mesh's own root)`,
+    remedy: `run ${existing.length === 1 ? names : "one of those"} with ${codeSpan(`cotal up --root ${shellWord(root)} --space ${existing.length === 1 ? shellWord(existing[0]!) : "<name>"}`)}, or ${separate}`,
   });
 }
 
@@ -793,7 +797,7 @@ export async function claimSpace(space: string, server: string, root: string): P
         target,
         remedy: `run \`cotal up\` here with no --server or --host to reach the mesh at ${existing.server}, or stop it first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}`,
       });
-    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
+    throw new CommandFailure("refused", "CONFLICT", `space "${space}" is already in use by a mesh at ${existing.server} (${existing.root})`, { target, remedy: `start a separate space in a new project folder outside this one with \`cotal up --space <name>\`, using an unused name and keeping --server if you specified a free address, or stop "${space}" first with \`cotal down${controller ? " --yes" : ""}\` in ${shellWord(existing.root)}` });
   }
   // The recorded root is this root only where it physically resolves, so it is resolved before any
   // comparison, and one that cannot be resolved refuses. A dead holder at another root keeps its name

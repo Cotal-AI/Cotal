@@ -265,6 +265,19 @@ const installed = (pkg: string) => loadExtensionsManifest().extensions.find((e) 
 
 const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--destination", "local", "--harness", harness, "--project", dir, "--space", space];
 
+if (process.getuid && process.getuid() !== 0) {
+  const dir = project("p-readonly");
+  chmodSync(dir, 0o500);
+  try {
+    const setup = await json([...FULL("readonly-test", dir), "--yes"], dir);
+    check("setup recommends --project for a writable destination", refused(setup, 2, "PERMISSION_DENIED")
+      && setup.env?.error?.remedy?.endsWith("pass --project <dir>") && !existsSync(join(dir, ".cotal")), shown(setup));
+    const create = await json(["space", "create", "readonly-test", "--root", dir], dir);
+    check("space create recommends --root for a writable destination", refused(create, 2, "PERMISSION_DENIED")
+      && create.env?.error?.remedy?.endsWith("pass --root <dir>") && !existsSync(join(dir, ".cotal")), shown(create));
+  } finally { chmodSync(dir, 0o700); }
+}
+
 // ── A script names every input, and a refusal writes nothing ──────────────────────────────────────
 {
   const dirs = { cloud: project("p-cloud"), mars: project("p-mars"), harness: project("p-harness"), name: project("p-name"), file: project("p-file"), runtime: project("p-runtime") };
@@ -819,6 +832,26 @@ if (process.platform !== "win32") {
   check("rerunning configure-only after moving the file seeds the persona and keeps the prepared record",
     retried.status === 0 && retried.env?.result?.spaceState === "prepared" && retried.env.result.startup?.state === "not-requested"
       && saved !== undefined && findPreparedSpace("blocked-persona")?.ts === saved.ts && existsSync(join(agents, "default.md")), shown(retried));
+}
+
+{
+  const dir = project("blocked-demo");
+  const agents = join(dir, ".cotal", "agents");
+  const path = join(agents, "david.md");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, "keep"), "untouched");
+  const args = [...FULL("blocked-demo", "."), "--yes", "--demo"];
+  const blocked = await json(args, dir);
+  check("a directory blocking a demo persona refuses before writing space or personas",
+    refused(blocked, 2, "CONFLICT") && blocked.env?.target?.space === "blocked-demo" && blocked.env.target.path === path
+      && blocked.env.error.message.includes(path) && blocked.env.error.remedy === `move the directory at ${path} aside, then run the same setup again`
+      && findPreparedSpace("blocked-demo") === undefined && !existsSync(join(agents, "default.md"))
+      && readFileSync(join(path, "keep"), "utf8") === "untouched", shown(blocked));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup prepare the space and seed the demo team",
+    retried.status === 0 && findPreparedSpace("blocked-demo")?.root === dir
+      && ["default", "david", "sven", "me"].every((name) => existsSync(join(agents, `${name}.md`))), shown(retried));
 }
 
 {

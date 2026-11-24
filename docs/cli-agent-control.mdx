@@ -68,6 +68,9 @@ still alive but does not answer, they name its PID and, if it stays unresponsive
 that process with `kill -KILL <pid>` before starting it again with bare `cotal up`. Neither command
 stops or restarts the manager.
 
+When managers answer but the `attach` picker has no agents to offer, its suggested `cotal ps` and
+`cotal spawn` commands keep the explicit space, broker and manager selectors.
+
 When no manager runs or is registered, the refusal's Next names the root of this machine's own stack
 for the space, as bare `cotal up` in that folder, because bare `up` in another project acts on that
 project's stack. When this machine only registered the space, records no stack for it, or reached
@@ -640,3 +643,5 @@ claim.
 Managed imperative spawn accepts `--restarts <n> --restart-window <ms>` as a pair, using the
 existing native `supervise` object. Both values must be positive safe integers. Direct foreground
 launch and the legacy manifest form reject these flags instead of ignoring them.
+Omit both flags to stay in this terminal. To keep restart supervision, use a managed launch with `-d`
+instead of `--foreground` and omit any options that only apply to direct launches.

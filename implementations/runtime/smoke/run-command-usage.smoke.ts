@@ -15,7 +15,7 @@ import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, read
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
-import { CommandFailure, exitCode, isCommandFailure, runOperation } from "@cotal-ai/workspace";
+import { CommandFailure, exitCode, isCommandFailure, runOperation, shellPath } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
 import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -112,9 +112,11 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   for (const [flag, values] of [
     ["admit-read", { "admit-read": "", "admit-publish": "none" }],
     ["admit-publish", { "admit-read": "none", "admit-publish": "   " }],
+    ["admit-read", { "admit-read": " , , ", "admit-publish": "none" }],
+    ["admit-publish", { "admit-read": "none", "admit-publish": " , , " }],
   ] as const) {
     const empty = local(values);
-    c(`start --local with empty --${flag} refuses before contact naming the flag`,
+    c(`start --local with --${flag} ${JSON.stringify(values[flag])} refuses before contact naming the flag`,
       usageRefusal(empty, `run start --local requires --${flag} <channels>`), empty);
   }
   c("start --local with both ceilings named still passes the grammar",
@@ -193,6 +195,16 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   const refused = malformed.map(([positionals, values]) => [positionals.join(" "), gate(positionals, values)] as const);
   c("a malformed run id is refused USAGE_INVALID, naming the id format, on every verb that takes one",
     refused.every(([, got]) => usageRefusal(got, idFormat)), refused.filter(([, got]) => !usageRefusal(got, idFormat)).map(([line, got]) => [line, (got as Error)?.message ?? got]));
+  const server = "nats://127.0.0.1:4422", on = "a".repeat(26);
+  for (const operands of [[], ["bad/id"], ["first", "second"]]) {
+    const got = gate(["show", ...operands], { space: "beta", server, on, json: true });
+    const target = ` --space beta --server '${server}' --on ${on} --json`;
+    c("the suggested list and show read the requested manager", isCommandFailure(got) && got.remedy === `\`cotal run${target}\` lists the runs; run \`cotal run show <run-id>${target}\``, got);
+  }
+  const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
+  c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
+  const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
+  c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
   c("and a well-formed id passes the gate, so an unknown run is still the manager's TARGET_NOT_FOUND", !(unknown instanceof Error) && unknown.a === "RUN-0123", unknown);
 }
@@ -369,10 +381,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   // when unused. A valid handoff still delivers the handle.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
   c("a scripted turn status other than done, blocked or handoff is refused SCHEMA_INVALID, exit 1",
-    scriptRefusal(fertig, `invalid scripted turn 'build': status must be "done", "blocked" or "handoff"`), fertig);
+    scriptRefusal(fertig, `invalid scripted turn 'build' in ${handler}: turns.build.status must be "done", "blocked" or "handoff"`), fertig);
   const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
   c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
-    scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+    scriptRefusal(turnAt, `invalid scripted turn 'build' in ${handler}: turns.build[1].at is stamped from virtual time`), turnAt);
   for (const [build, path] of [
     [{ status: "handoff" }, "turns.build.to"],
     [[{ status: "done" }, { status: "handoff" }], "turns.build[1].to"],
@@ -518,14 +530,14 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a script with no result for an effect names the step and the entry to add",
     isCommandFailure(missing) && missing.code === "OPERATION_FAILED" && missing.message.includes('no checkpoints entry for "go" (step /checkpoint:go#0)')
       && (missing.detail().remedy ?? "").includes('{ checkpoints: { "go": <result> } }') && (missing.target as { step?: string } | undefined)?.step === "/checkpoint:go#0"
-      && (missing.detail().remedy ?? "").includes(`add it to ${join(dir, "results.json")} and rerun with \`cotal run simulate ${program} --handler ${join(dir, "results.json")}\``), missing);
+      && (missing.detail().remedy ?? "").includes(`add it to ${join(dir, "results.json")} and rerun with \`cotal run simulate ${shellPath(program)} --handler ${shellPath(handler)}\``), missing);
   // Without a results file there is nothing to edit: the remedy says to save one and pass it
   // with --handler, instead of only showing the result object.
   const noHandler = await runWorkflow({ values: {}, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
   c("a simulation run without a results file is told to save one and pass it with --handler",
     isCommandFailure(noHandler) && noHandler.code === "OPERATION_FAILED"
       && (noHandler.detail().remedy ?? "").includes("save it in a results file, for example results.json")
-      && (noHandler.detail().remedy ?? "").includes(`rerun with \`cotal run simulate ${program} --handler results.json\``), noHandler);
+      && (noHandler.detail().remedy ?? "").includes(`rerun with \`cotal run simulate ${shellPath(program)} --handler results.json\``), noHandler);
   writeFileSync(program, 'await checkpoint("go", "Proceed?", { timeout: "4s" });\n');
   const out: string[] = [];
   const write = process.stdout.write;
@@ -585,6 +597,86 @@ log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => 
   c("a list one result short says the second step needs result 2",
     isCommandFailure(short) && short.code === "OPERATION_FAILED" && short.message.includes('the script gives 1 checkpoints result for "go", and step /checkpoint:go#1 needs result 2'), short);
   rmSync(dir, { recursive: true, force: true });
+}
+
+if (process.platform !== "win32") {
+  const dir = mkdtempSync(join(tmpdir(), "run-simulate-retry-"));
+  try {
+    const entry = join(dir, "run-cli.mts");
+    writeFileSync(entry, `
+      import ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+      import { registry } from ${JSON.stringify(import.meta.resolve("@cotal-ai/core"))};
+      import { runCli } from ${JSON.stringify(new URL("../../cli/src/command.ts", import.meta.url).href)};
+      await runCli(registry, process.argv.slice(2));
+    `);
+    const program = "timer file.cotal.js";
+    writeFileSync(join(dir, program), 'await sleep("20s");\nawait checkpoint("expiry", "Let this expire", { timeout: "3s", onExpiry: "proceed" });\n');
+    const cli = [process.execPath, "--import", import.meta.resolve("tsx"), entry];
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+    Object.assign(env, { HOME: dir, COTAL_HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), COTAL_TELEMETRY: "off", NO_COLOR: "1" });
+    const options = { cwd: dir, env, encoding: "utf8", timeout: 30_000 } as const;
+    const run = (...args: string[]) => spawnSync(cli[0]!, [...cli.slice(1), "run", ...args], options);
+    const turnProgram = "turn.cotal.js", turnHandler = "malformed.json";
+    writeFileSync(join(dir, turnProgram), 'const r = await spawn("reviewer");\nawait turn(r, { name: "review" });\nawait turn(r, { name: "review" });\n');
+    writeFileSync(join(dir, turnHandler), '{"turns":{"review":[{"status":"handoff","to":"reviewer"}]}}');
+    const plain = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
+    const json = run("simulate", turnProgram, "--handler", turnHandler, "--json");
+    const refusal = JSON.parse(json.stdout);
+    const remedy = `correct turns.review[0].to in ${turnHandler}, then rerun the simulation`;
+    c("a malformed scripted handoff names the file and exact destination in plain output and JSON",
+      plain.status === 1 && plain.stderr.includes(`in ${turnHandler}: turns.review[0].to must be an agent handle`) &&
+      plain.stderr.includes(`\nNext\n  ${remedy}`) && json.status === 1 && refusal.target?.file === turnHandler &&
+      refusal.error?.code === "SCHEMA_INVALID" && refusal.error?.remedy === remedy, { plain, json });
+    writeFileSync(join(dir, turnHandler), '{"turns":{"review":{"status":"done"}}}');
+    const corrected = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
+    c("correcting the named file lets the same command complete both turns", corrected.status === 0 &&
+      /Program outcome:\s+completed/.test(corrected.stdout) && corrected.stdout.includes("/turn:review#1"), corrected);
+
+    const checkpointProgram = "checkpoint.cotal.js", badTable = "bad-table.json";
+    writeFileSync(join(dir, checkpointProgram), 'const approval = await checkpoint("approve", "Proceed with review?", { timeout: "10m" });\nif (approval.status === "resolved" && approval.value === true) {\n  await sleep("1ms", { name: "approved" });\n}\n');
+    writeFileSync(join(dir, badTable), '{"checkpoints":[]}');
+    const table = run("simulate", checkpointProgram, "--handler", badTable, "--json");
+    const tableError = JSON.parse(table.stdout);
+    c("a malformed checkpoint table names the file, required shape and correction",
+      table.status === 1 && table.stderr === "" && tableError.target?.file === badTable && tableError.error?.code === "SCHEMA_INVALID"
+      && tableError.error?.message === `checkpoints in the simulation results script ${badTable} must be an object keyed by checkpoint name, not an array`
+      && tableError.error?.remedy === `replace checkpoints in ${badTable} with an object keyed by checkpoint name, then rerun the simulation`, table);
+    writeFileSync(join(dir, badTable), '{"checkpoints":{"approve":{"status":"resolved","value":true}}}');
+    const validTable = run("simulate", checkpointProgram, "--handler", badTable, "--json");
+    const accepted = JSON.parse(validTable.stdout);
+    c("a corrected checkpoint table lets the same simulation reach the approved step", validTable.status === 0
+      && accepted.result?.outcome === "completed" && accepted.result.effects[1]?.step === "/sleep:approved#0", validTable);
+
+    const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
+    writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
+    const step = "/parallel:batch#0";
+    writeFileSync(join(dir, parallelHandler), JSON.stringify({ faults: [{ at: step, kind: "error", code: "L4002", message: "simulated batch failure" }] }));
+    const parallel = run("simulate", parallelProgram, "--handler", parallelHandler, "--json");
+    const report = JSON.parse(parallel.stdout);
+    c("a fault at the parallel step completes the simulation with a failed program and no branch effects",
+      parallel.status === 0 && parallel.stderr === "" && report.outcome === "ok" && report.result?.outcome === "failed"
+      && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
+      && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
+
+    for (const handler of [undefined, "timer's $results file.json"]) {
+      if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
+      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
+      const retry = /rerun with `([^`]+)`/.exec(missing.stderr ?? "")?.[1];
+      writeFileSync(join(dir, handler ?? "results.json"), '{"checkpoints":{"expiry":{"status":"expired"}}}');
+      const replayed = retry?.startsWith("cotal run simulate ")
+        ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\n${retry}`], options)
+        : undefined;
+      c(`the printed simulation retry runs verbatim with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
+        missing.status === 5 && replayed?.status === 0 && /Program outcome:\s+completed/.test(replayed.stdout)
+        && /Virtual time:\s+23000 ms/.test(replayed.stdout), { missing, replayed });
+    }
+    for (const [empty, named] of [["--admit-read", "--admit-publish"], ["--admit-publish", "--admit-read"]]) {
+      const refused = run("start", program, "--local", "--server", "nats://127.0.0.1:1", empty!, " , , ", named!, "none");
+      c(`the CLI refuses a separator-only ${empty} as missing before contacting the broker`, refused.status === 1
+        && refused.stderr.includes(`run start --local requires ${empty} <channels>`)
+        && refused.stderr.includes(`pass ${empty} <channels> (comma-separated channel patterns, or \`none\`)`), refused);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
 // Handler bytes must reach the simulated program unchanged, just as source bytes do. Reject

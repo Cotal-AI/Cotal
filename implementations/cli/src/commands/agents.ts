@@ -937,7 +937,7 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
     if (stackManagerStarting(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: `run ${psRerun(v, command === "slots")} again once \`cotal up\` reports the manager started` });
     if (stackManagerAbsent(t.root, t.space))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: startStackManagerRemedy(t.space, t.server) });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: psManagerStartRemedy(t) });
   }
   const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
   if (!scatter.ok && silentPid !== undefined)
@@ -946,9 +946,20 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   // manager was asked. It is not proof that no manager process runs, since one that is starting or
   // cannot register is not listed, so the refusal says only what the registry showed.
   if (!scatter.ok && scatter.noLiveManager)
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: startStackManagerRemedy(t.space, t.server) });
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: psManagerStartRemedy(t) });
   if (!scatter.ok) throw readFailure(scatter, target);
   return seatCensus(target, scatter.instances, command, t.mode, v);
+}
+
+/** Diagnose the channel seed only for the recorded local stack at the broker we asked. */
+function psManagerStartRemedy(t: Awaited<ReturnType<typeof resolveControlTarget>>): string {
+  let entry: ReturnType<typeof findMesh>;
+  try { entry = findMesh(t.space); } catch { entry = undefined; }
+  if (entry?.origin === "up" && entry.root === t.root && brokerUrlKey(entry.server) === brokerUrlKey(t.server)) {
+    const block = channelSeedRestartBlock(entry.root);
+    if (block) return `${block.message}. ${block.remedy}`;
+  }
+  return startStackManagerRemedy(t.space, t.server);
 }
 
 /** A census from the slots of a scatter: each answered instance's rows as it returned them, every
@@ -1077,7 +1088,12 @@ async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ nam
     return { name: row.name, on, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid }, status: typeof row.status === "string" ? row.status : "not reported" };
   });
   if (census.partial) console.error(renderReport({ space: census.target.space, sections: [{ title: "Agent list is partial", blocks: [{ kind: "lines", lines: [{ text: census.partial.message, tone: "waiting" }] }] }] }, "rich", process.stderr));
-  if (!choices.length) throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy: "run `cotal ps`, or launch an agent with `cotal spawn`" });
+  if (!choices.length) {
+    const remedy = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
+      ? "list or launch agents on the same broker"
+      : `run ${psRerun(values)}, or launch an agent with ${codeSpan(onRerun("cotal spawn", values, values.on === undefined ? [] : ["--on", values.on]))}`;
+    throw new CommandFailure("refused", census.partial ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND", census.partial ? "no attachable agent was returned; some managers did not answer" : "the answering managers report no agents to attach", { target: census.target, remedy });
+  }
   const choice = await prompts.select({
     message: `Return to an agent in ${oneLine(census.target.space)}`,
     options: choices.map((item, index) => ({ value: index, label: attachChoiceLabel({ name: item.name, id: item.expectedTarget.id, status: item.status }), hint: oneLine(`${item.expectedTarget.id} · manager ${item.on}`) })),

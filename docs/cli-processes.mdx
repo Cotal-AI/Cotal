@@ -1079,6 +1079,8 @@ If setup needs the machine daemon and it is already answering without an install
 setup refuses `CONFLICT` (`RUNNING_WITHOUT_UNIT`). The lifetime lock refuses a second daemon, and
 the running one is not a persistent service. Stop it and run setup again. For a user-auth
 participant space, you can instead keep it and use `register` and `service-connect` by hand.
+If the install receipt exists but setup cannot verify the unit, setup reports the unit inspection
+error. It keeps the receipt and does not offer a new installation or sign-in.
 
 `install` runs the daemon as the signed-in user's own service, through the native supervisor of
 each OS. It runs as that user, never as root or LocalSystem. A system-wide headless profile, such as
@@ -1212,8 +1214,9 @@ local control listener is bound and verified, not that a mesh or Cloud connectio
 
 On Linux the endpoint is `$XDG_RUNTIME_DIR/cotal/daemon.sock`. The configured directory must already
 exist. If `XDG_RUNTIME_DIR` is unset, the daemon and its clients use `/run/user/<effective uid>` if it
-is a private directory owned by that user with mode `0700`. If the selected directory is missing,
-`serve` and `status` refuse `TARGET_UNAVAILABLE` (`NO_RUNTIME_DIR`) without creating it. Set
+is a private directory owned by that user with mode `0700`. If the selected path is missing or
+`XDG_RUNTIME_DIR` points to a file, `serve` and `status` refuse `TARGET_UNAVAILABLE`
+(`NO_RUNTIME_DIR`) before creating the socket or its lifetime lock. Set
 `XDG_RUNTIME_DIR` to an existing private directory you own with mode `0700` before retrying.
 On macOS the endpoint is `cotal/daemon.sock` in your cache
 directory under `/var/folders`, the one `confstr(_CS_DARWIN_USER_CACHE_DIR)` names. No environment
@@ -1250,7 +1253,9 @@ ends when the connection closes.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
-including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
+including closing the terminal, leaves a stale socket. On Linux, a `serve` in a different runtime
+directory also removes the recorded stale socket if it can verify the old private path and that
+nothing listens there. A missing, inaccessible or foreign endpoint there does not block the start.
 
 That recovery rests on the lifetime lock below. Each `serve` holds a kernel lock on its lock file
 (`flock` on Linux and macOS, `LockFileEx` on Windows), which the system releases when the holder

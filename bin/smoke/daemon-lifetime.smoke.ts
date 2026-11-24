@@ -87,7 +87,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb, peerCredentials } from "@cotal-ai/seat";
-import { daemonPaths } from "../daemon/endpoint.js";
+import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
 import { serveDaemon } from "../daemon/server.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-lifetime smoke: Linux only; skipped on ${process.platform}`);
@@ -184,8 +184,8 @@ async function shippedCli(env: NodeJS.ProcessEnv, ...args: string[]): Promise<{ 
 }
 
 /** Start a serving child and wait for its ready line, returning its pid and what it printed so far. */
-async function serveChild(directory?: string): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
-  const c = child(["serve"], { ...(directory === undefined ? {} : { directory }) });
+async function serveChild(directory?: string, env?: NodeJS.ProcessEnv, args: string[] = []): Promise<{ proc: ChildProcess; pid: number; out: () => string; err: () => string }> {
+  const c = child(["serve", ...args], { directory, env });
   let out = "", err = "";
   c.stdout!.on("data", (b) => { out += String(b); });
   c.stderr!.on("data", (b) => { err += String(b); });
@@ -351,6 +351,46 @@ try {
     const retry = await serve();
     try { check("L3c a retry starts without recovering the consumed socket again", retry.status().state === "ready" && retry.counters.socketsRecovered === 0); }
     finally { await retry.close(); }
+  });
+
+  await cell("L3d switching Linux runtimes clears only the recorded dead socket", async () => {
+    const daemonHome = join(root, "switch-home");
+    const rt2 = join(root, "r2");
+    mkdirSync(daemonHome, { mode: 0o700 });
+    mkdirSync(rt2, { mode: 0o700 });
+    const original = { XDG_RUNTIME_DIR: rtDir };
+    const temporary = { XDG_RUNTIME_DIR: rt2 };
+    const args = ["--daemon-home", daemonHome];
+    const first = daemonPathsFor(daemonHome, original);
+    const second = daemonPathsFor(daemonHome, temporary);
+    chmodSync(rt2, 0o755);
+    const predecessor = await serveChild(undefined, original, args);
+    await kill(predecessor.proc, "SIGKILL");
+    check("L3d SIGKILL leaves the recorded socket in the original runtime", predecessor.proc.signalCode === "SIGKILL" && lstatSync(first.socket).isSocket());
+    const switched = await serveChild(undefined, temporary, args);
+    const status = await cliEnv(temporary, "status", ...args, "--json");
+    check("L3d the temporary runtime answers for the same daemon home", status.status === 0 && status.doc.result?.pid === switched.pid);
+    await kill(switched.proc, "SIGTERM");
+    check("L3d the temporary runtime stops cleanly", switched.proc.exitCode === 0 && !existsSync(second.socket));
+    const stopped = await cliEnv(original, "status", ...args, "--json");
+    check("L3d status in the original runtime reports not running", stopped.status === 2 && stopped.doc.error?.cause?.code === "NOT_RUNNING");
+    const returned = await serveChild(undefined, original, args);
+    const ready = await cliEnv(original, "status", ...args, "--json");
+    check("L3d the original runtime can serve again", ready.status === 0 && ready.doc.result?.pid === returned.pid, ready.doc);
+    await kill(returned.proc, "SIGTERM");
+    const readable = await serveChild(undefined, temporary, args);
+    await kill(readable.proc, "SIGKILL");
+    const recovered = await serveChild(undefined, original, args);
+    check("L3d recovery also works when the old runtime is mode 0755", !existsSync(second.socket));
+    await kill(recovered.proc, "SIGKILL");
+    unlinkSync(first.socket);
+    const other = await impostor(first.socket);
+    const live = lstatSync(first.socket);
+    const record = JSON.parse(readFileSync(first.lock, "utf8"));
+    writeFileSync(first.lock, `${JSON.stringify({ ...record, socket: { path: first.socket, dev: live.dev, ino: live.ino } })}\n`);
+    const next = await serveChild(undefined, temporary, args);
+    check("L3d switching runtimes leaves a live foreign listener in place even with matching numbers", ino(first.socket) === live.ino && !other.gotBytes());
+    await kill(next.proc, "SIGTERM");
   });
 
   await cell("L4 a socket the record does not name is refused, never removed", async () => {
@@ -533,6 +573,16 @@ try {
       check("L8 setup refuses CONFLICT / RUNNING_WITHOUT_UNIT, exit 2", r.status === 2 && r.doc.error?.code === "CONFLICT" && r.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", { status: r.status, out: r.out.slice(0, 300) });
       check("L8 it installed nothing: no unit receipt", !existsSync(receipt));
       check("L8 the running daemon is untouched and still answers its own pid", (await cli("status", "--json")).doc.result?.pid === running.pid);
+      const saved = JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath: join(root, "missing.service"), unitSha256: "0".repeat(64), installedAt: new Date().toISOString() });
+      writeFileSync(receipt, saved, { flag: "wx", mode: 0o600 });
+      try {
+        const inspection = await cli("uninstall", "--dry-run", "--json");
+        check("L8 the receipt names a missing unit", inspection.status === 2 && inspection.doc.error?.code === "TARGET_NOT_FOUND", inspection.doc.error);
+        for (const flags of [[], ["--space", "demo"]]) {
+          const setup = await cli("setup", ...flags, "--json");
+          check("L8 setup keeps the unit inspection failure without offering sign-in", setup.status === 2 && setup.doc.error?.code === inspection.doc.error.code && setup.doc.error.message === inspection.doc.error.message && setup.doc.error.remedy === inspection.doc.error.remedy && !setup.err.includes("Signing in") && readFileSync(receipt, "utf8") === saved, setup.doc.error);
+        }
+      } finally { rmSync(receipt); }
     } finally {
       await kill(running.proc, "SIGTERM");
     }

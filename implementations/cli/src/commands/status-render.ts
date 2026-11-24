@@ -251,7 +251,8 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * A row in its good state says nothing a reader acts on, and a piece of an application this machine
  * does not have is what `cotal setup` adds, which the applications line already counts. So an
  * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
- * IS set up, and only when they are not current; the broker executable appears when it is missing or
+ * IS set up, and only when they are not current; an ACP client's entry appears when it is stale or
+ * cannot be read; the broker executable appears when it is missing or
  * refused and local broker records make it relevant; the dashboard, which is optional, appears
  * when its record cannot be read. `--all` and
  * `--wide` print every row, and `--verbose` adds the installation paths ({@link machineSection}).
@@ -268,7 +269,7 @@ function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, s
   const ownedBySetUp = (label: string) => setUp.some((name) => label.toLowerCase().includes(name.toLowerCase()));
   const rows: [string, Cell][] = wide
     ? m.integrations.map((item) => [item.name, stateCell(item.text, tones[item.state])])
-    : m.integrations.filter((item) => item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
+    : m.integrations.filter((item) => item.client ? item.state === "warn" || item.state === "error" : item.state !== "ok" && ownedBySetUp(item.name)).map((item) => [item.name, stateCell(item.text, tones[item.state])]);
   rows.unshift(["Agent applications", applicationsCell(m, interactive)]);
   if (wide)
     for (const connector of m.connectors ?? []) {
@@ -600,10 +601,11 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
       extra.push(`${absent.message}; ${absent.remedy}`);
     }
   } else if (!storeBlocked && !seedBlocksRestart && own && r.selected.resolved && r.store?.state !== "full" && (memberGone || !elsewhere && r.selected.connection !== "ok" && r.selected.connection !== "reachable")) {
+    restartBlock = channelSeedRestartBlock(stack.root);
     // `up` neither adopts nor replaces a service outside the stack that runs one of this root's
     // records, so each is stopped first, with the stop `up` names.
     const held = r.folder.heldServices ?? [], space = r.selected.space;
-    items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
+    if (!restartBlock) items.unshift(...held.map((row) => ({ command: `${cmd} svc stop ${row.definition} --instance ${row.instanceId} --space ${shellWord(space)} --yes`, description: `Stop the ${row.definition} service, which runs this root's ${row.record} (pid ${row.pid}) outside the stack` })),
       { command: `${cmd} up --root ${shellWord(r.selected.root)}${r.folder.noManager ? " --no-manager" : ""}`, description: held.length ? "Then restart this stack's stopped members from its recorded inputs" : "Restart this stack's stopped members from its recorded inputs" });
   } else if (!elsewhere && legacy && dialed.mode === "open" && dialed.connection === "ok" && origin === "up" && exited.includes("manager") && r.folder.processes?.some((row) => row.name === "nats" && row.state === "running")) {
     restartBlock = channelSeedRestartBlock(dialed.root);
