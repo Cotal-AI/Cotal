@@ -5,7 +5,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { createServer as createRegistry } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
@@ -226,9 +226,10 @@ function npmNodeEngine(): void {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
+    const cwdRecord = join(root, "npm-cwd");
     const recordedRuntimes = () => readFileSync(record, "utf8").trim().split(/\r?\n/);
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
-    writeFileSync(cli, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
+    writeFileSync(cli, `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.appendFileSync(${JSON.stringify(record)}, process.execPath + '\\n');\nfs.writeFileSync(${JSON.stringify(cwdRecord)}, process.cwd());\nconsole.log(JSON.stringify(${JSON.stringify(version)}));\n`, { mode: 0o755 });
     if (process.platform === "win32") writeFileSync(join(npmBin, "npm.cmd"), '@node "%~dp0node_modules\\npm\\bin\\npm-cli.js" %*\r\n');
     else symlinkSync(cli, join(npmBin, "npm"));
     const prefix = join(root, "prefix");
@@ -256,13 +257,13 @@ function npmNodeEngine(): void {
     mkdirSync(onlyNode);
     if (process.platform === "win32") copyFileSync(process.execPath, join(onlyNode, exe));
     else symlinkSync(process.execPath, join(onlyNode, exe));
-    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin) => spawnSync(join(onlyNode, exe), [entry, "update", flag], {
-      cwd: root, encoding: "utf8", timeout: 60_000,
+    const run = (flag: string, extraPath: string[] = [], npmPath = npmBin, cwd = root, node = join(onlyNode, exe)) => spawnSync(node, [entry, "update", flag], {
+      cwd, encoding: "utf8", timeout: 60_000,
       env: { ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
         COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
         COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
-        NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`,
-        PATH: [onlyNode, npmPath, ...extraPath].join(delimiter) },
+        NODE_OPTIONS: cwd === root ? `--import=${pathToFileURL(versionOverride).href}` : undefined,
+        PATH: (cwd === root ? [onlyNode, npmPath, ...extraPath] : ["."]).join(delimiter) },
     });
     const first = run("--check", posixLauncher ? [] : [dirname(alternate)]);
     assert.equal(first.status, 0, first.stdout + first.stderr);
@@ -306,6 +307,17 @@ function npmNodeEngine(): void {
     assert.deepEqual(readFileSync(entry), before);
     const projectNode = process.platform === "win32" ? join(onlyNode, exe) : process.execPath;
     assert.equal(realpathSync(recordedRuntimes().at(-1)!), realpathSync(projectNode), "npm can succeed on the project Node even when its declared range excludes it");
+    if (process.platform !== "win32") {
+      const cwd = join(root, "native:tools"), node = join(cwd, "node");
+      mkdirSync(cwd);
+      copyFileSync(process.execPath, node);
+      symlinkSync(cli, join(cwd, "npm"));
+      const viaColon = run("--self", [], npmBin, cwd, node);
+      assert.equal(viaColon.status, 0, viaColon.stdout + viaColon.stderr);
+      assert.match(viaColon.stdout, /Registry latest:/);
+      assert.equal(recordedRuntimes().at(-1), realpathSync(node));
+      assert.equal(readFileSync(cwdRecord, "utf8"), parse(root).root, "npm still runs outside the caller's project");
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
