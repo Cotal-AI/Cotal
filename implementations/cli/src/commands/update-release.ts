@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { isIP, SocketAddress } from "node:net";
 import { join } from "node:path";
 import { oneLine, processStartToken, recordUpdateDeferral } from "@cotal-ai/workspace";
+import { displayRemedy } from "../lib/self-exec.js";
 import { c } from "../ui.js";
-import { type CommandResult, RegistryUnavailable, parseNpmVersion, failure, message } from "./update-process.js";
+import { type CommandResult, RegistryUnavailable, StagingTimeout, parseNpmVersion, failure, message } from "./update-process.js";
 import type { UpdateRuntime } from "./update.js";
 
 export const MISSING_NPM_REMEDY = "Install npm or add it to this command's PATH, then retry.";
@@ -196,8 +197,24 @@ const NETWORK_ERROR_CODE = /^(?:ENETUNREACH|EHOSTUNREACH|ENETDOWN|EHOSTDOWN|ECON
 
 export function registryNetworkFailure(error: unknown): boolean {
   if (error instanceof RegistryUnavailable) return true;
-  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(message(error))?.[1];
+  const detail = error instanceof StagingTimeout ? error.npmOutput : message(error);
+  const code = /(?:^|\n|^target staging failed: )npm (?:error|ERR!) code ([A-Z_]+)(?:\s|$)/.exec(detail)?.[1];
   return code !== undefined && NETWORK_ERROR_CODE.test(code);
+}
+
+export function offlineUpdateMessage(repaired: boolean): string {
+  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
+}
+
+export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
+  if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || message(error).startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
+    recordUpdateDeferral(version, "waiting for registry access", true);
+    rt.out(offlineUpdateMessage(repaired));
+  } else if (error instanceof StagingTimeout) {
+    recordUpdateDeferral(version, error.message, true);
+    rt.out(displayRemedy(`${error.message}. The previous version remains installed. Run \`cotal update --self\` again.`));
+  } else return false;
+  return true;
 }
 
 export function releaseReadError(result: CommandResult, detail: string, { installedSpecs, metadataSpec }: { installedSpecs?: readonly string[]; metadataSpec?: string } = {}): Error {

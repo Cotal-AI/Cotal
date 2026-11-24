@@ -64,7 +64,6 @@ import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { onFlag } from "../lib/control.js";
 import {
   type CommandResult,
-  RegistryUnavailable,
   STRICT_SEMVER,
   installedUpdatePrefix,
   verifyGlobalEntry,
@@ -86,6 +85,8 @@ import {
   DependencyCheckInterrupted,
   DependencyCheckNoSpace,
   registryNetworkFailure,
+  deferStagingFailure,
+  offlineUpdateMessage,
   waitForReleasePreflight,
 } from "./update-release.js";
 import { refusal, reportRunningManagers } from "./update-continuity.js";
@@ -861,10 +862,6 @@ export function verifyCurrentExtension(entry: InstalledExtension, generation: st
   return undefined;
 }
 
-function offlineUpdateMessage(repaired: boolean): string {
-  return repaired ? "The registry cannot be reached; no installed packages were replaced." : "The registry cannot be reached; nothing was changed.";
-}
-
 function preflightDetail(error: unknown): string {
   return message(error).replace(/[\r\n\u001b]+/g, " ").replace(/(?:[A-Za-z]:[\\/]|\/)[^\s,;"']+/g, "<config path>").slice(0, 500);
 }
@@ -1018,11 +1015,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     } catch (error) {
       try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
-      if (!execution && (error instanceof RegistryUnavailable || message(error).startsWith("target staging failed: ") && registryNetworkFailure(error))) {
-        recordUpdateDeferral(targetVersion, "waiting for registry access", true);
-        rt.out(offlineUpdateMessage(preflightChanged || repairedSelection));
-        return 0;
-      }
+      if (!execution && deferStagingFailure(error, targetVersion, rt, preflightChanged || repairedSelection)) return 0;
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages were replaced`);
       return 1;

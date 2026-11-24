@@ -614,11 +614,13 @@ Losing registry connectivity during release checks, extension-dependency checks 
 also exits 0 before replacement.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
-and local spaces unchanged. Automatic updates defer the attempt without counting it as a failure.
+and local spaces unchanged. Unless npm reports a network error, the command reports the staging
+time limit rather than a registry connection failure. It exits 0, and you can run
+`cotal update --self` again. Automatic updates defer the attempt without counting it as a failure.
 A failed first-party scoped metadata read still names the `@cotal-ai:registry` setting and exits 1.
 Authentication, permission, integrity and target pre-install refusals still exit nonzero. A staging
 refusal leaves installed packages in place. Preflight may already have changed connector state.
-Retry `cotal update --self` when connectivity returns. The version read has no retries and a
+After a registry connection failure, retry `cotal update --self` when connectivity returns. The version read has no retries and a
 15-second network timeout. Unknown availability is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
 the output includes every failure; an unavailable npm registry does not undo a completed local
