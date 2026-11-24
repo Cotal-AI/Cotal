@@ -98,6 +98,19 @@ const ansi = /\x1b\[/;
     s.shadowed.length === 1 && !("name" in s.shadowed[0]!), s);
   const again = run(["config", "set", "harness", "opencode", "--json"]);
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
+  const before = fileText();
+  for (const operands of [["unset", "harness"], ["set", "harness", "claude"]]) {
+    const unknown = run(["config", ...operands, "--user", "--json", "--wibble"]);
+    const error = unknown.envelope?.error;
+    check(`config ${operands.join(" ")} tells the caller to drop an unknown option without writing`,
+      unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.outcome === "refused" && error?.code === "USAGE_INVALID"
+      && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option" && fileText() === before, shown(unknown));
+  }
+  for (const operands of [["unset"], ["set", "harness"]]) {
+    const missing = run(["config", ...operands, "--space", "demo", "--json", "--wibble"]);
+    check(`config ${operands.join(" ")} does not count a space option's value as an operand`,
+      missing.status === 1 && missing.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(missing));
+  }
   // A per-space value is saved only for a space this machine knows, so prepare demo first.
   mkdirSync(join(home, "demo"), { recursive: true });
   const prepared = run(["space", "create", "demo", "--root", join(home, "demo"), "--json"]);
@@ -640,6 +653,34 @@ if (process.platform !== "win32") {
   check("status leaves the file as it was", fileText()?.includes("spaces") === true);
   rmSync(file);
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
+}
+
+{
+  const malformed = "{\n";
+  writeFileSync(file, malformed);
+  const finite = run(["history", "general", "--json"]);
+  const error = finite.envelope?.error;
+  check("finite JSON history reports malformed preferences in one refusal envelope",
+    finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history" && finite.envelope.outcome === "refused"
+      && error?.code === "SCHEMA_INVALID" && error.message.includes(`the preferences file ${file} is invalid: not JSON`)
+      && error.remedy === `fix or remove ${file}; nothing resets it`, shown(finite));
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "general", "--follow"], { space: null, channel: "general", dms: false }],
+    ["membership", ["channel", "members", "general", "--follow"], { space: null, channel: "general" }],
+  ] as const) {
+    const r = run([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames malformed preferences as a setup failure without a snapshot`,
+      r.status === 1 && r.stderr === "" && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream
+          && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+        && error !== undefined && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message
+        && records[0]?.data?.remedy === error.remedy && records[1]?.data?.reason === "setup-failed"
+        && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  check("the JSON observers leave malformed preferences untouched", fileText() === malformed);
+  rmSync(file);
 }
 
 // ── a COTAL_HOME that is not a directory stops every command but help and completion ─────────────

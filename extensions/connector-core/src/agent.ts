@@ -33,6 +33,7 @@ import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { claimOnceHandoff } from "./once.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+import { takeFirstCommand } from "./first-command.js";
 import type { CommandDispatch } from "./agent-commands.js";
 import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
@@ -515,6 +516,7 @@ export class MeshAgent extends EventEmitter {
         warn: (msg) => this.log(msg),
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
+        first: takeFirstCommand(),
       });
       if (this._stopping) return void served.close();
       this.agentEndpoint = served;

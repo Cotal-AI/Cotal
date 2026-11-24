@@ -33,6 +33,7 @@ export {
   COMMAND_LIST_MS, CommandRefused, ENDED_COMMANDS_KEPT, MAX_QUEUED_COMMANDS,
   type AgentCommand, type CommandDispatch, type CommandDispatcher, type CommandQueue,
 } from "./agent-commands.js";
+export { firstCommandEnv } from "./first-command.js";
 export {
   PromptRefused, PROMPT_ANSWER_REPLY_MS, PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_OPEN_MS, PROMPT_SETTLE_MS,
   PROMPT_SUMMARY_MAX_BYTES,

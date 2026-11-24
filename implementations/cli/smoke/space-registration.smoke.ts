@@ -212,6 +212,20 @@ setCurrent("keep");
   check("an add flag on another form is USAGE_INVALID", refused(await json(["space", "--server", LIVE]), 1, "USAGE_INVALID") && refused(await json(["space", "forget", "keep", "--force"]), 1, "USAGE_INVALID"));
   const fromScript = await json(["space", "add", "--from", "https://hosted.test"]);
   check("discovery with JSON explains why it cannot prompt and how to keep JSON output", refused(fromScript, 1, "USAGE_INVALID") && fromScript.env?.error?.message.includes("--json disables") && fromScript.env.error.remedy.includes("without --json") && fromScript.env.error.remedy.includes("replace --from <url> with --file <bundle.json>"), shown(fromScript));
+  const fromUrl = "https://127.0.0.1:37831/example";
+  const plainDiscovery = ["space", "add", "remote", "--from", fromUrl, "--plain"];
+  for (const [args, env, reason] of [
+    [["--no-input"], {}, "--no-input disables prompts"],
+    [[], {}, "stdin and stdout must both be connected to a terminal"],
+    [[], { COTAL_NO_PROMPT: "1" }, "COTAL_NO_PROMPT=1 disables prompts"],
+  ] as const) {
+    const result = await run([...plainDiscovery, ...args], env);
+    const refusal = result.stderr.split("\n\n").slice(0, 2).join("\n\n");
+    check(`plain discovery refuses before fetching: ${reason}`, result.status === 1 && result.stdout === "" &&
+      refusal.includes("USAGE_INVALID") && refusal.includes(reason) && refusal.includes("No discovery document was fetched") &&
+      ["cotal", "pnpm cotal"].some((cli) => refusal.includes(`\`${cli} space add remote --from ${fromUrl} --plain\``)) &&
+      refusal.includes("replace --from <url> with --file <bundle.json>") && !refusal.includes("--json"), shown(result));
+  }
   check("--from over http is USAGE_INVALID", refused(await json(["space", "add", "--from", "http://hosted.test"]), 1, "USAGE_INVALID"));
   // A name that starts with - reads as an option, so use, --space and the stack's own children could not take it.
   const dashed = await json(["space", "add", "--server", LIVE, "--root", root, "--force", "--", "-x"]);
@@ -1070,12 +1084,22 @@ if (process.platform === "linux") {
   const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--max-payload", "131072"], {}, second);
   check("with another space selected, up keeps it and says it stays selected outside this folder",
     kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays automatically selected outside this folder`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+  const before = await json(["space"], second);
+  check("space inventory marks the running folder target without changing the selection",
+    before.status === 0 && before.env?.result.current === "selfirst" && before.env.result.folder === "selsecond", shown(before));
   const added = await json(["space", "add", "seloffline", "--force", "--server", DEAD, "--root", second], second);
   const who = await json(["who"], second);
   const show = await json(["space", "show"], second);
+  const inventory = await json(["space"], second);
+  const status = await json(["status"], second);
   check("the only running registration in this folder takes precedence over an adopted selection",
     added.status === 0 && who.status === 0 && who.env?.target?.space === "selsecond" &&
       readCurrentSelection()?.source === "adopted" && getCurrent() === "selfirst" && findMesh("seloffline")?.server === DEAD, shown(who));
+  check("space inventory marks the roster target and still lists the offline registration",
+    inventory.status === 0 && inventory.env?.result.current === "selfirst" && inventory.env.result.folder === who.env?.target?.space &&
+      inventory.env.result.items.some((row: { space: string; check: string }) => row.space === "seloffline" && row.check === "unreachable"), shown(inventory));
+  check("status inventory also marks the roster target while keeping the saved selection",
+    status.status === 0 && status.env?.result.meshes.current === "selfirst" && status.env.result.meshes.folder === who.env?.target?.space, shown(status));
   check("space show still refuses to choose among the folder's registrations", refused(show, 2, "TARGET_AMBIGUOUS"), shown(show));
   check("forget the offline registration", (await json(["space", "forget", "seloffline"], second)).status === 0);
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });

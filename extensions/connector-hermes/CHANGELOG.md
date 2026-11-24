@@ -1,5 +1,19 @@
 # @cotal-ai/connector-hermes
 
+## 0.176.6
+
+### Patch Changes
+
+- 7f38d9d: Hermes seats share one session per Cotal channel across all senders. Direct messages still keep a session per peer, and correlated answers return to the session that asked.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+No changes in this release.
+
 ## 0.176.3
 
 No changes in this release.

@@ -43,7 +43,7 @@ import "@cotal-ai/manager";
 import "@cotal-ai/delivery";
 import "@cotal-ai/runtime";
 import "@cotal-ai/auth";
-import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { DEFAULT_AGENT } from "../../implementations/cli/src/lib/default-persona.js";
 import { readDocument } from "@cotal-ai/docs-content";
 
@@ -1154,10 +1154,12 @@ require('node:module').syncBuiltinESMExports();`);
     ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
     ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],
     ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
-    ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ['m.yaml:7:16: "ghost" is not declared in agents: (at channels.ops.subscribe)']],
+    ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ["has a problem,", 'm.yaml:7:17: "ghost" is not declared in agents: (at channels.ops.subscribe.0)']],
     ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],
     ["a missing channels map and the missing persona behind it", `${head}agents:\n  ghost: ./agents/ghost.md\n`, ["2 problems", "m.yaml:1:1: `channels:` is required (at channels)", "m.yaml:6:10: persona file not found: ", "ghost.md (at agents.ghost)"]],
     ["a missing persona alone", `${head}agents:\n  ghost: ./agents/ghost.md\nchannels:\n  ops:\n    subscribe: [ghost]\n`, ["m.yaml:6:10: persona file not found: ", "ghost.md (at agents.ghost)"]],
+    ["a subscriber after repeated names", `${head}agents: { worker: { instructions: Review. } }\nchannels:\n  ops:\n    subscribe:\n      - worker\n      - worker\n      - ghost\n      - ghost\n`, ["has a problem,", 'm.yaml:11:9: "ghost" is not declared in agents: (at channels.ops.subscribe.2)']],
+    ["two references to the same missing persona", `${head}agents:\n  first: ./shared.md\n  second:\n    role: helper\n    persona: ./shared.md\nchannels: {}\n`, ["2 problems", "m.yaml:6:10: persona file not found: ", "shared.md (at agents.first)", "m.yaml:9:14: persona file not found: ", "shared.md (at agents.second.persona)"]],
     ["an empty file", "", ["m.yaml:1:1: the manifest is empty; it needs apiVersion, kind, space and channels"]],
     ["a list where a mapping goes", `${head}channels: [ops]\n`, ["m.yaml:5:11: expected a mapping, not a list (at channels)"]],
     ["a kind other than Mesh", `${head.replace("kind: Mesh", "kind: Team")}channels: {}\n`, ['m.yaml:2:7: must be "Mesh" (at kind)']],
@@ -1313,44 +1315,66 @@ require('node:module').syncBuiltinESMExports();`);
 
 // A retained teardown ledger uses the manifest source hash, without reading launch-time personas.
 {
+  const manifest = "old team.yaml";
+  const server = `nats://127.0.0.1:${await freePort()}`;
   let ledgerPath = "", ledgerBefore = "";
-  const prepare = (home: string, ledger: boolean): void => {
-    const root = dirname(home), file = join(root, "old.yaml");
+  const prepare = (home: string, ledger: boolean, runId = "oldrun"): void => {
+    const root = dirname(home), file = join(root, manifest);
     mkdirSync(join(root, ".cotal", "manifests"), { recursive: true });
     mkdirSync(join(home, "meshes"), { recursive: true });
     writeFileSync(join(home, "meshes", `${spaceSegment("retiredledger")}.json`), JSON.stringify({
-      space: "retiredledger", server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-11-09T00:00:00.000Z",
+      space: "retiredledger", server, root, mode: "open", origin: "up", ts: "2026-11-09T00:00:00.000Z",
     }));
     const source = "apiVersion: cotal/v1\nkind: Mesh\nspace: retiredledger\nagent: claude\nagents:\n  worker: ./removed-persona.md\nchannels: {}\n";
     writeFileSync(file, source);
     if (ledger) {
-      ledgerPath = join(root, ".cotal", "manifests", "oldrun.json");
-      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId: "oldrun",
-        space: "retiredledger", server: "nats://127.0.0.1:1", manifestPath: file,
+      ledgerPath = join(root, ".cotal", "manifests", `${runId}.json`);
+      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId,
+        space: "retiredledger", server, manifestPath: file,
         manifestHash: createHash("sha256").update(source).digest("hex").slice(0, 16), teardownMode: "ledger-scoped",
         created: { channels: ["oldchannel"], agents: [] } });
       writeFileSync(ledgerPath, ledgerBefore);
     }
   };
-  for (const run of [[], ["--run", "oldrun"]]) {
-    const r = cotal(["down", "-f", "old.yaml", "--dry-run", ...run], (home) => prepare(home, true), noSeed);
-    check(`ledger dry-run ${run.length ? "by explicit run" : "by source hash"} needs no launch persona`,
+  for (const [runId, args] of [["oldrun", ["--run", "oldrun"]], ["-legacy", ["--run=-legacy"]]] as const) {
+    const partial = cotal(["down", ...args], (home) => prepare(home, true, runId), noSeed);
+    const retry = /finish later \(broker up \/ members gone\): `(\b(?:pnpm )?cotal (down --run=[A-Za-z0-9_-]+))`/.exec(partial.stdout);
+    check(`partial ledger teardown offers a file-free retry for ${runId} even when the manifest path has spaces`,
+      partial.status === 1 && retry?.[2] === `down --run=${runId}`
+        && partial.stdout.includes(`the ledger is RETAINED for a later \`${retry[1]}\``)
+        && isDeepStrictEqual(JSON.parse(readFileSync(ledgerPath, "utf8")), JSON.parse(ledgerBefore)), partial);
+    if (!retry) continue;
+    const preview = cotal([...retry[2].split(" "), "--dry-run"], (home) => {
+      prepare(home, true, runId);
+      rmSync(join(dirname(home), manifest));
+    }, noSeed);
+    check(`the printed retry for ${runId} previews the run without its manifest`,
+      preview.status === 0 && preview.stdout.includes("Would remove (dry run):") && preview.stdout.includes("#oldchannel")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(preview));
+  }
+  for (const [lookup, args] of [
+    ["by source hash", ["-f", manifest]],
+    ["by explicit run with file", ["-f", manifest, "--run", "oldrun"]],
+    ["by run ID alone", ["--run", "oldrun"]],
+  ] as const) {
+    const r = cotal(["down", "--dry-run", ...args], (home) => prepare(home, true), noSeed);
+    check(`ledger dry-run ${lookup} needs no launch persona`,
       r.status === 0 && r.stdout.includes("Would remove (dry run)") && r.stdout.includes("#oldchannel")
         && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
   }
   for (const format of ["--json", "--plain"]) {
-    const r = cotal(["down", "-f", "old.yaml", "--dry-run", format], (home) => prepare(home, true), noSeed);
+    const r = cotal(["down", "-f", manifest, "--dry-run", format], (home) => prepare(home, true), noSeed);
     check(`ledger preview retains its ${format} refusal without loading personas`,
       r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && !(r.stdout + r.stderr).includes("SCHEMA_INVALID")
         && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
   }
   for (const format of [[], ["--json"], ["--plain"]]) {
-    const r = cotal(["down", "-f", "old.yaml", ...format], (home) => prepare(home, false), noSeed);
+    const r = cotal(["down", "-f", manifest, ...format], (home) => prepare(home, false), noSeed);
     check(`file-form apply ${format[0] ?? "text"} names the recorded stack's stop without inventing a run ID`,
       r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && (r.stdout + r.stderr).includes("no run ID is needed")
         && !(r.stdout + r.stderr).includes("--run <id>"), shown(r));
   }
-  const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
+  const noLedger = cotal(["down", "-f", manifest, "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
   for (const [file, code, remedy] of [["absent.yaml", "TARGET_NOT_FOUND", "check the file path"], ["old.yaml/child", "TARGET_NOT_FOUND", "check the file path"], [".", "USAGE_INVALID", "name the manifest file in it"]] as const) {

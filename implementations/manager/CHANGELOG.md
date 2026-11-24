@@ -1,5 +1,47 @@
 # @cotal-ai/manager
 
+## 0.176.6
+
+### Patch Changes
+
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/seat@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/seat@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- 7fd5c5c: Adopt released seats on local user-auth spaces when their granted permissions match, even if the saved persona lists capabilities the space did not grant.
+- 6831283: Manager parts now call the parts that own these operations directly, through the Manager's parts record, instead of through a Manager method that only forwarded the call. Exports, commands and wire behaviour are unchanged.
+- 0b62901: Show how to retry a launch with a valid persona name, identify broken persona links, and keep the selected catalog in persona list suggestions.
+- 8339e33: Keep the requested space and broker in the roster command shown for an invalid manager ID, so it lists the manager the retry can use.
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [99e0752]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [dd96500]
+- Updated dependencies [d31ba81]
+- Updated dependencies [87465c9]
+- Updated dependencies [c82c548]
+- Updated dependencies [e73a285]
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/seat@0.176.4
+
 ## 0.176.3
 
 ### Patch Changes

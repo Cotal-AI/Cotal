@@ -103,6 +103,16 @@ export class SeatStart {
   private checkSpawnCwd(...args: Parameters<SeatLaunch["checkSpawnCwd"]>): ReturnType<SeatLaunch["checkSpawnCwd"]> { return this.launch.checkSpawnCwd(...args); }
   private harnessUnavailableError(...args: Parameters<SeatLaunch["harnessUnavailableError"]>): ReturnType<SeatLaunch["harnessUnavailableError"]> { return this.launch.harnessUnavailableError(...args); }
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
+
+  /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
+   *  on its `agent` endpoint, which only a user-auth mesh serves, as its first turn. */
+  private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
+    if (!this.userMode) return "a first command runs on the agent endpoint, which only a user-auth mesh serves (firstCommand)";
+    if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
+    if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
+    if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
+    return undefined;
+  }
   private spawnerName(...args: Parameters<SeatLaunch["spawnerName"]>): ReturnType<SeatLaunch["spawnerName"]> { return this.launch.spawnerName(...args); }
   private spawnPersona(...args: Parameters<SeatLaunch["spawnPersona"]>): ReturnType<SeatLaunch["spawnPersona"]> { return this.launch.spawnPersona(...args); }
   private spawnRun(...args: Parameters<SeatLaunch["spawnRun"]>): ReturnType<SeatLaunch["spawnRun"]> { return this.launch.spawnRun(...args); }
@@ -486,7 +496,8 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, prompt, exact });
+    const unsupported = this.capabilityRefusal(connector, { variant, prompt, firstCommand: opts.firstCommand, exact })
+      ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }));
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
     if (onceRefused) return { ok: false, error: onceRefused };
@@ -871,6 +882,8 @@ export class SeatStart {
         // A reopened session already had its kickoff turn, so it is not submitted again. A once
         // seat gets its prompt as its one relayed task instead.
         prompt: reopenSession === undefined && opts.once === undefined ? prompt : undefined,
+        // Never recorded on the launch, so no restart or resume runs it again.
+        firstCommand: opts.firstCommand,
         ...(opts.once !== undefined ? { once: true } : {}),
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent

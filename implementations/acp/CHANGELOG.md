@@ -1,5 +1,27 @@
 # @cotal-ai/acp
 
+## 0.176.6
+
+### Patch Changes
+
+- 665c8df: The T3 Code and Zed entries that `cotal setup` writes keep working after Node or Cotal is upgraded.
+  Under the get.cotal.ai launcher, an entry now runs the launcher's Node link instead of the folder of one Node version, such as Homebrew's `Cellar/node/<version>`, which Homebrew removes when Node upgrades. It also runs the install's own entry instead of the copy one update loaded. Status counts a link to the running Node as current.
+
+## 0.176.5
+
+### Patch Changes
+
+- afccf80: A Cotal thread in T3 Code and other ACP clients now has a Harness option for picking which application the agent runs.
+  The option lists the applications that can run a thread, such as claude, codex, jcode and pi. Choosing another harness starts it on that application's default model, and choosing a model moves the harness to that model's application, so the two always agree. The model list stays complete, because T3 Code checks a thread's saved model against it before it applies the other options. A thread that only drives an agent it loaded does not offer it.
+
+## 0.176.4
+
+### Patch Changes
+
+- 234a808: T3 Code users can now see which application each model runs on and pick it from the model list.
+  Each model choice's name now starts with its application, such as `claude: Claude Opus 4.5` or `jcode: default`. T3 Code flattens the grouped model list and drops the group names, so the application was not shown anywhere, and the model choice is the only place a thread picks it. Clients that show groups keep them.
+- eeacc43: Cotal setup adds a separate T3 Code provider without changing unrelated ACP providers, even when they use the same space arguments or already hold Cotal's preferred provider ID.
+
 ## 0.176.3
 
 No changes in this release.

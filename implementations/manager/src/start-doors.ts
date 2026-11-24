@@ -1,5 +1,5 @@
 import { MAX_SCHEDULE_MS, parsePrincipalKey, rejectionText } from "@cotal-ai/core";
-import type { ControlReply, EpCaller, InlinePersona } from "@cotal-ai/core";
+import type { ControlReply, EpCaller, FirstCommand, InlinePersona } from "@cotal-ai/core";
 import { authorizeLaunch } from "./authorize.js";
 import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import type { Manager } from "./manager.js";
@@ -115,6 +115,7 @@ export class StartDoors {
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
+        firstCommand: args.firstCommand as FirstCommand | undefined,
         subscribe: args.subscribe as string[] | undefined,
         allowSubscribe: args.allowSubscribe as string[] | undefined,
         allowPublish: args.allowPublish as string[] | undefined,
