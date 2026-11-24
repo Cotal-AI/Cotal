@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { buffer } from "node:stream/consumers";
 import * as prompts from "../lib/prompts.js";
-import { assertValidChannel, assertValidRole, oneLine, personaDir, resolveReadAcl, spawnNameError, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { parseChannelFlag } from "../lib/channel-flags.js";
+import { assertValidRole, oneLine, personaDir, resolveReadAcl, spawnNameError, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  codeSpan, parseCommaList, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
+  codeSpan, CommandFailure, jsonFlag, plainFlag, presentationOf, spaceFlag, serverFlag,
   writeResult, type Presentation, type Report,
   personaDefinitionProblem, recordOperationSpace,
 } from "@cotal-ai/workspace";
@@ -121,7 +122,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;
     if (!values.yes) {
-      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove${personaNameWords(name!, `${target} --yes${presentation === "json" ? " --json" : ""}`)}\`` });
+      if (presentation === "json" || !canPrompt()) throw new ConfirmationRequired(yesRequired(`removing '${name}' at ${path}`, presentation === "json"), { remedy: `confirm with \`cotal persona remove${personaNameWords(name!, `${target} --yes${presentation === "rich" ? "" : ` --${presentation}`}`)}\`` });
       let confirmed = false;
       if (presentation === "plain") {
         confirmed = (await prompts.askLine(`${question}\n1) Cancel\n2) Remove\nChoice [1]: `))?.trim() === "2";
@@ -196,18 +197,10 @@ async function createSource(name: string, path: string, values: Values): Promise
     body = bytes.toString("utf8");
   }
   if (!body.trim()) throw usage("persona body is empty");
-  // Each entry passes the channel rules here, so a refusal names the flag and the entry rather than
-  // the private draft the flags are written to.
-  const channels = (flag: string, text: string | undefined) => parseCommaList(text)?.map(channel => {
-    try { return assertValidChannel(channel); }
-    catch (error) {
-      throw new CommandFailure("refused", "USAGE_INVALID", `${flag}: ${oneLine((error as Error).message)}`, channel.startsWith("#") ? { remedy: `name the channel without its #, as ${oneLine(channel.slice(1))}` } : {});
-    }
-  });
-  const subscribe = channels("--subscribe", values.subscribe), allowSubscribe = channels("--allow-subscribe", values["allow-subscribe"]);
+  const subscribe = parseChannelFlag("--subscribe", values.subscribe), allowSubscribe = parseChannelFlag("--allow-subscribe", values["allow-subscribe"]);
   try { resolveReadAcl(subscribe ?? [], allowSubscribe); }
   catch (error) { throw usage(`${(error as Error).message}; every --subscribe channel must be within --allow-subscribe`); }
-  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: channels("--allow-publish", values["allow-publish"]) });
+  return serializePersona({ name, persona: body, role: values.role, model: values.model, agent: values.harness, subscribe, allowSubscribe, allowPublish: parseChannelFlag("--allow-publish", values["allow-publish"]) });
 }
 
 function list(catalog: PersonaCatalog, presentation: Presentation): void {

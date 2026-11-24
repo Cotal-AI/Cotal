@@ -141,6 +141,8 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
+For a stopped local open or static-auth stack, the report says it is stopped. If the stack runs
+without a Manager, the restart step names `cotal up --no-manager` in its project folder.
 If a local user-auth space has stopped and lost its registration, the restart command names
 `--user-auth`, the space and its last broker address.
 In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` reports the space
@@ -609,6 +611,8 @@ instance. Invocation receipts attribute resolution to the native responder that 
 
 ### Native registration inventory
 
+`endpoint --space <s>` lists saved references for that space without contacting a broker.
+For inventory, `--server` and `--creds` require `--live`.
 `endpoint --live` adds authorized native service-registration metadata to the local reference
 inventory. It uses the existing scoped service-record read rows, without adding grants or reading
 message bodies. The SDK paginates the filtered metadata list; per-key spec/status reads come from

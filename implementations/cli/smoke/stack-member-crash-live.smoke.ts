@@ -387,7 +387,7 @@ try {
   const down = cli("down", "--yes");
   check("down stops the stack", down.status === 0, down.out);
   const forgot = cli("space", "forget", "crash");
-  const prepareAgain = /prepare it again with `cotal space create crash --root (.+?)`/.exec(cli("status").out)?.[1];
+  const prepareAgain = /prepare it again with `(?:pnpm )?cotal space create crash --root (.+?)`/.exec(cli("status").out)?.[1];
   check("after a forget, status names space create --root with the folder quoted", forgot.status === 0 && shellWords(prepareAgain) === `${root}\n`, prepareAgain);
   const prepared = cli("space", "create", "crash");
   cli("use", "crash");
@@ -397,7 +397,7 @@ try {
   cli("space", "forget", "crash");
   const moved = join(base, "moved $x 'q'");
   renameSync(root, moved);
-  const adopt = /adopt it with `cotal space create crash --adopt --root (.+?)`; this machine/.exec(cliIn(moved, "whoami").out)?.[1];
+  const adopt = /adopt it with `(?:pnpm )?cotal space create crash --adopt --root (.+?)`; this machine/.exec(cliIn(moved, "whoami").out)?.[1];
   check("a folder moved with its stack journal names space create --adopt with the new folder quoted", shellWords(adopt) === `${moved}\n`, adopt);
   rmSync(home, { recursive: true, force: true });
   rmSync(base, { recursive: true, force: true });

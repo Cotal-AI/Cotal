@@ -888,6 +888,7 @@ if (process.platform !== "win32") {
 {
   const cmd = registry.resolve<Command>("command", "up")!;
   const missingRoot = join(tmpdir(), "cotal-up-address-no-project", `${process.pid}-${Date.now()}`);
+  const pair = "put the broker URL, including the intended port, in --server and the matching local IP address alone in --host";
   const refused: [string[], RegExp, string?][] = [
     [["--server", "nats://127.0.0.1"], /^--server names no port/],
     // The example keeps the scheme and port the person chose, and never the host or a credential.
@@ -897,10 +898,10 @@ if (process.platform !== "win32") {
     [["--server", "nats://localhost:4222"], /^--server names the host localhost/, "pass the IP address the local broker listens on, for example --server nats://127.0.0.1:4222"],
     [["--host", "::1"], /^--host names an IPv6 address/],
     [["--host", "[::1]"], /^--host names an IPv6 address/],
-    [["--host", "nats://127.0.0.1"], /^--host nats:\/\/127\.0\.0\.1 looks like a URL/],
-    [["--host", "127.0.0.1:4222"], /^--host 127\.0\.0\.1:4222 is not a valid bind host/],
-    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/],
-    [["--server", "nats://127.0.0.1:4222", "--host", "127.0.0.2"], /^--host 127\.0\.0\.2 and --server nats:\/\/127\.0\.0\.1:4222 name different addresses/],
+    [["--host", "nats://127.0.0.2:29888"], /^--host nats:\/\/127\.0\.0\.2:29888 looks like a URL/, pair],
+    [["--host", "127.0.0.2:29888"], /^--host 127\.0\.0\.2:29888 is not a valid bind host/, pair],
+    [["--host", "localhost:4222"], /^--host localhost:4222 is not a valid bind host/, pair],
+    [["--server", "nats://127.0.0.2:29888", "--host", "127.0.0.3"], /^--host 127\.0\.0\.3 and --server nats:\/\/127\.0\.0\.2:29888 name different addresses/, pair],
     [["--server", "nats://127.0.0.2:4222"], /^--server nats:\/\/127\.0\.0\.2:4222 names 127\.0\.0\.2, and with no --host the broker binds 127\.0\.0\.1/, "pass --host 127.0.0.2 to bind the broker there"],
   ];
   for (const [flags, said, remedy] of refused) {

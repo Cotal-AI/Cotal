@@ -21,7 +21,8 @@ export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedA
     ? ["remove", args.positionals[1]!, ...(args.values.json ? ["--json"] : args.values.plain ? ["--plain"] : [])].map(shellWord)
     : (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
   const words = show ? [cli, "space", "show"] : [cli, command, ...flags, "--space"];
-  return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space)].join(" "))).join(" or ")}`;
+  const format = show && args.values.json ? ["--json"] : show && args.values.plain ? ["--plain"] : [];
+  return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space), ...format].join(" "))).join(" or ")}`;
 }
 
 /**

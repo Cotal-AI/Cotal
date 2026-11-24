@@ -46,6 +46,7 @@ import {
   mintLifecycleUid,
   newIdentity,
   openChannelRegistry,
+  openServerConfig,
   provisionAgent,
   seedChannelRegistry,
   serverConfig,
@@ -91,12 +92,15 @@ const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { std
 const releaseBroker = teardownOnSignal(broker, storeDir);
 // An open broker for the retention gap, so the auth space's channels stay small.
 const openSpace = `histgap-${randomUUID().slice(0, 8)}`;
+const dottedSpace = `histdotted-${randomUUID().slice(0, 8)}`;
 // A space on the open broker that nothing has set up, so it has no channel registry bucket.
 const bareSpace = `histbare-${randomUUID().slice(0, 8)}`;
 const openPort = await pickFreePort();
 const openServers = `nats://127.0.0.1:${openPort}`;
 const openStore = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const openBroker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(openPort), "-sd", join(openStore, "js")], { stdio: "ignore" });
+const openConfig = join(openStore, "server.conf");
+writeFileSync(openConfig, openServerConfig({ transport: { kind: "plaintext" }, port: openPort, storeDir: join(openStore, "js") }));
+const openBroker = spawn("nats-server", ["-c", openConfig], { stdio: "ignore" });
 const releaseOpenBroker = teardownOnSignal(openBroker, openStore);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-history-home-"));
@@ -116,9 +120,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}, timeout = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -126,6 +130,39 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+
+async function checkDottedHistory(): Promise<void> {
+  const dotted = "a.".repeat(2047) + "bc";
+  const writer = await connect({ servers: openServers });
+  try {
+    const js = jetstream(writer);
+    const post = (actor: string, channel: string, text: string) => js.publish(chatSubject(dottedSpace, "local", actor, channel), JSON.stringify({
+      id: `${actor}-${text}`, ts: Date.now(), space: dottedSpace, from: { id: `local.${actor}`, name: actor },
+      channel, parts: [{ kind: "text", text }],
+    }));
+    await post("seed", "ordinary", "first");
+    await post("seed", dotted, "dotted");
+    await Promise.all(Array.from({ length: 4 }, async (_, sender) => {
+      for (let i = 0; i < 500; i++) await post(`audit${sender}`, "ordinary", String(i));
+    }));
+  } finally {
+    await writer.close();
+  }
+  const history = (limit: string, ...selection: string[]) =>
+    run(["history", ...selection, "--space", dottedSpace, "--limit", limit, "--json"], shell, {}, 25_000);
+  const named = await history("3000", "ordinary");
+  check("named history reads the ordinary backlog", named.status === 0 && texts(named).length === 2001, shown(named));
+  const all = await history("3000");
+  const rows = all.envelope?.result?.items ?? [];
+  check("all-channel history returns a deep dotted post and the backlog in stream sequence order",
+    all.status === 0 && rows.length === 2002 && rows.every((item, i) => item.seq === i + 1)
+      && rows[1]?.channel === dotted && rows[1]?.text === "dotted", shown(all));
+  const tail = await history("2000", "--dms");
+  const tailRows = tail.envelope?.result?.items ?? [];
+  check("history with DMs selects the newest rows across the split channel windows",
+    tail.status === 0 && tailRows.length === 2000 && tailRows.every((item, i) => item.seq === i + 3)
+      && tail.envelope?.result?.window.olderRetained === true, shown(tail));
+}
 
 async function checkChannelReplayRetry(): Promise<void> {
   const name = "remedy.probe";
@@ -151,6 +188,14 @@ async function checkChannelReplayRetry(): Promise<void> {
     retried?.status === 0 && retried.envelope?.outcome === "ok" && after.status === 0
       && Object.entries(changed).every(([key, value]) => saved?.[key as keyof typeof changed] === value),
     { command, retried: retried && shown(retried), after: shown(after) });
+  const show = await run(["channel", "show", name, "--replay", "off", ...scope]);
+  const read = /^run `(.+)`$/.exec(show.envelope?.error?.remedy ?? "")?.[1];
+  const shownAgain = read ? await run(execWords(read).slice(1)) : undefined;
+  check("a channel show replay refusal suggests a read without replay flags and keeps JSON",
+    show.status === 1 && show.stderr === "" && show.envelope?.error?.code === "USAGE_INVALID"
+      && read === `cotal channel show ${name} --space ${openSpace} --json`
+      && shownAgain?.status === 0 && entry(shownAgain)?.replay === false,
+    { show: shown(show), shownAgain: shownAgain && shown(shownAgain) });
 }
 
 async function checkFollowUsageRefusals(): Promise<void> {
@@ -384,6 +429,7 @@ try {
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" }, ops: { replay: false } } } });
   await setupSpaceStreams({ servers: openServers, space: openSpace });
+  await setupSpaceStreams({ servers: openServers, space: dottedSpace });
   const watchedSpace = `histwatch-${randomUUID().slice(0, 8)}`;
   await setupSpaceStreams({ servers: openServers, space: watchedSpace });
   saveSpaceAuth(authDir(meshRoot), auth);
@@ -392,6 +438,7 @@ try {
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: dottedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: bareSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: watchedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
@@ -399,6 +446,7 @@ try {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;
   }
+  await checkDottedHistory();
   try { await checkWatchHistoryHint(watchedSpace); }
   finally {
     process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;

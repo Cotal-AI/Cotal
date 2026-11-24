@@ -243,7 +243,7 @@ const QUESTION = "Which one?";
       const error = envelope(show)?.error;
       check(`bare space show refuses a shared folder with ${selected === undefined ? "no" : "an unrelated adopted"} selection`,
         show.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /registered spaces: beta, gamma/.test(error.message) &&
-          ["beta", "gamma"].every((space) => error.remedy?.includes(` space show ${space}\``)) && !error.remedy.includes("space show alpha") && getCurrent() === selected, shown(show));
+          ["beta", "gamma"].every((space) => error.remedy?.includes(` space show ${space} --json\``)) && !error.remedy.includes("space show alpha") && getCurrent() === selected, shown(show));
     }
   } finally {
     clearCurrent();
