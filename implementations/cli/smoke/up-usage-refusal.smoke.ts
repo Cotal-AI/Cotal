@@ -148,6 +148,14 @@ for (const { args, message } of cases) {
         || /Lifetime request:\s+terminal-bound/.test(foregroundPreview.stdout))
         && !existsSync(join(manifests, ".cotal")), shown(foregroundPreview));
   }
+  writeFileSync(join(manifests, "-mesh.yaml"), readFileSync(openManifest));
+  const dashPreviewRefusal = run(["up", "--file=-mesh.yaml", "--dry-run", "--foreground"], manifests);
+  const dashPreviewCommand = /preview with `(?:pnpm )?cotal ([^`]+)`/.exec(dashPreviewRefusal.stderr)?.[1];
+  const dashPreview = dashPreviewCommand && run(dashPreviewCommand.split(" "), manifests);
+  check("the printed foreground retry previews a dash-leading manifest without writes",
+    dashPreviewRefusal.status === 2 && !!dashPreview && dashPreview.status === 0
+      && /Lifetime request:\s+terminal-bound/.test(dashPreview.stdout) && !existsSync(join(manifests, ".cotal")),
+    { refusal: shown(dashPreviewRefusal), retry: dashPreview && shown(dashPreview) });
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },

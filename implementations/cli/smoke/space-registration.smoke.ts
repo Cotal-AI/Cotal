@@ -2223,6 +2223,23 @@ if (process.platform !== "win32") {
     { inventory: shown(inventory), move: pasted ? shown(pasted) : move, recovered: shown(recovered) });
 }
 
+// A selection hint must accept the exact name of a retained offline registration.
+{
+  const space = "-old";
+  const env = { COTAL_HOME: join(home, "legacy-selection-home") };
+  const root = join(home, "legacy-selection-root");
+  mkdirSync(root);
+  mkdirSync(join(env.COTAL_HOME, "meshes"), { recursive: true });
+  writeFileSync(join(env.COTAL_HOME, "meshes", `${space}.json`), JSON.stringify({ space, root, server: DEAD, mode: "open", origin: "manual", ts: new Date().toISOString() }));
+  const show = await run(["space", "show", "--", space], env);
+  const command = /select it with `(?:pnpm )?cotal ([^`]+)`/.exec(show.stdout)?.[1];
+  const selected = command && await run(command.split(" "), env);
+  const current = await run(["use", "--json"], env);
+  check("following the space show hint selects an offline historical space with a leading dash",
+    show.status === 0 && !!selected && selected.status === 0 && current.status === 0 && JSON.parse(current.stdout).result.current === space,
+    { show: shown(show), selected: selected && shown(selected), current: shown(current) });
+}
+
 // An open space registered by an earlier release must still start under its exact old name.
 if (process.platform !== "win32") {
   const project = join(home, "legacy-open");
