@@ -129,34 +129,40 @@ function goneRootStackStopped(held: StackJournal): boolean {
 
 /** Read-only lifetime check. An unreadable record is not proof that its process exited. */
 export function foregroundStackEnd(root: string, held: StackJournal | undefined): number | undefined {
-  const journal = () => { try { return readStackJournal(root)?.journal; } catch { return undefined; } };
-  let current: StackJournal | undefined;
   try {
-    current = readStackJournal(root)?.journal;
-    if (!current) return held && goneRootStackStopped(held)
-      ? foregroundReleased("Another command stopped this stack and removed its saved records after its folder went missing. This terminal no longer holds it.") : undefined;
-  } catch { return; }
-  const { operation, space } = current;
-  if (operation.id !== held?.operation.id && (operation.kind === "down" || operation.kind === "preserve")) {
-    if (operation.phase === "completed") {
-      return foregroundReleased(`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`);
+    const current = readStackJournal(root)?.journal;
+    if (!current && held && goneRootStackStopped(held)) {
+      return foregroundReleased("Another command stopped this stack and removed its saved records after its folder went missing. This terminal no longer holds it.");
     }
-    if (operation.phase === "planned" || operation.phase === "applying") return;
-  }
-  const broker = current.members.find((member) => member.role === "broker");
-  if (!broker?.instanceId) return;
-  let pid: number;
-  try {
-    const instance = serviceInstanceStore(space).read(broker.instanceId)?.record.value;
-    if (!instance?.process || instance.definition !== broker.definition) return;
+    const stack = current ?? held;
+    if (!stack) return;
+    const { operation, space } = stack;
+    if (!current && ((operation.kind !== "up" && operation.kind !== "resume") || operation.phase !== "completed" || !stackRootGone(space, root))) return;
+    if (current && operation.id !== held?.operation.id && (operation.kind === "down" || operation.kind === "preserve")) {
+      if (operation.phase === "completed") {
+        return foregroundReleased(`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`);
+      }
+      if (operation.phase === "planned" || operation.phase === "applying") return;
+    }
+    const broker = stack.members.find((member) => member.role === "broker");
+    if (!broker?.instanceId) return;
+    const store = serviceInstanceStore(space), snapshot = store.read(broker.instanceId);
+    if (!snapshot) return;
+    const instance = snapshot.record.value;
+    if (!instance.process || instance.definition !== broker.definition) return;
+    // A missing-folder stop marks the broker instance before signalling it, without a journal.
+    if (!current && (instance.state !== "running" || instance.process.pid !== broker.process?.pid || instance.process.token !== broker.process.token)) return;
     const state = observeServiceProcess(instance);
     if (state !== "gone" && state !== "foreign-pid") return;
-    pid = instance.process.pid;
+    // A whole-stack stop or replacement can begin between reading the records and observing the PID.
+    const latest = readStackJournal(root)?.journal.operation;
+    if (current) {
+      if (latest?.id !== operation.id || latest.phase !== operation.phase) return;
+    } else if (latest || store.read(broker.instanceId)?.hash !== snapshot.hash) return;
+    const brokerOnly = stack.members.some((member) => member.role === "manager" && member.state === "not-attempted" && member.code === undefined);
+    const repair = codeSpan(`${displayCmd()} up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(root)}`);
+    const remedy = current ? `Run ${repair} to repair the stack.` : `Move the project back to ${shellPath(root)}, then run ${repair} to repair the stack.`;
+    process.stderr.write(`nats-server exited unexpectedly (pid ${instance.process.pid}). The stack records were kept. ${remedy}\n`);
+    return exitCode("failed", "OPERATION_FAILED");
   } catch { return; }
-  // A whole-stack stop or replacement can begin between reading the journal and observing the PID.
-  const latest = journal()?.operation;
-  if (latest?.id !== operation.id || latest.phase !== operation.phase) return;
-  const brokerOnly = current.members.some((member) => member.role === "manager" && member.state === "not-attempted" && member.code === undefined);
-  process.stderr.write(`nats-server exited unexpectedly (pid ${pid}). The stack records were kept. Run \`${displayCmd()} up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(root)}\` to repair the stack.\n`);
-  return exitCode("failed", "OPERATION_FAILED");
 }

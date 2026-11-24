@@ -1,4 +1,4 @@
-import { bindGoal, canonicalJson, clearGoalIndex, commitGoalResult, createGoal, DEV_OWNER, EpEnvelopeError, goalAlreadyTerminal, goalRefOf, oneLine, parsePrincipalKey, readGoalIndex, readGoalResult, readGoalSpec, recordGoalIndex, rejectionText, settleGoalUncertain, submissionFingerprint } from "@cotal-ai/core";
+import { bindGoal, canonicalJson, clearGoalIndex, commitGoalResult, createGoal, DEV_OWNER, EpEnvelopeError, firstCommandId, goalAlreadyTerminal, goalRefOf, oneLine, parsePrincipalKey, readGoalIndex, readGoalResult, readGoalSpec, recordGoalIndex, rejectionText, settleGoalUncertain, submissionFingerprint } from "@cotal-ai/core";
 import type { ControlReply, EpErrorCode, EpServeContext, GoalIndexEntry, GoalRef } from "@cotal-ai/core";
 import type { Manager } from "./manager.js";
 import type { SpawnAcceptance, SpawnHooks } from "./seat-types.js";
@@ -99,6 +99,8 @@ export class SpawnGoal {
     if (!this.parts.goalWriter.goalReconcileDone)
       throw new EpEnvelopeError("unavailable", "the manager is still reconciling accepted goals at boot; retry shortly (SPEC 13.6)", undefined, "not-executed");
     const goalId = ctx.request.id;
+    // Derived from the goal id, as the spawn door named it, so a retried spawn answers the same id.
+    const first = (ctx.request.args as { firstCommand?: unknown } | undefined)?.firstCommand !== undefined ? { firstCommand: { id: firstCommandId(goalId) } } : {};
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
     const key = goalKey(ref);
@@ -120,7 +122,7 @@ export class SpawnGoal {
     if (accepted !== undefined) {
       if (accepted.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`, undefined, "not-executed");
-      return prior ?? this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
+      return { ...(prior ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor)), ...first };
     }
 
     let resolveAccept!: (a: SpawnAcceptance) => void;
@@ -319,7 +321,7 @@ export class SpawnGoal {
         return onOutcome({ kind: "failed", data: failedTerminal(rejectionText(e), caughtEnvelope(e)) });
       console.error(`! spawn-as-action async body for ${goalId}: ${rejectionText(e)}`);
     }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${rejectionText(e)}`));
-    return acceptP;
+    return acceptP.then((a) => ({ ...a, ...first }));
   }
 
   /** H2: an acceptance served from a WINNER'S durable acceptance floor (the goal-index entry it

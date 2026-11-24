@@ -33,7 +33,8 @@ cotal use [<space> | --clear] [--json|--plain]
 `space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
 (`started here`, `registered` or `discovered`) and root, with the selected one marked. Inside a
 project whose root has one running registered space other than the automatically adopted selection,
-that space is marked as this folder's, since a command without `--space` targets it there. It probes
+that space is marked as this folder's, since a command without `--space` targets it there. An offline
+registration at the same root stays listed but does not prevent that marker. The listing probes
 each broker that this machine started or that was registered by hand, and reports one that does not
 answer as `unreachable` when the connection fails, or `not answering` when it times out.
 A stopped local listener is reported as `broker process is stopped`. Its registration stays.
@@ -102,8 +103,9 @@ its folder must exist but can be empty. An auth space needs the folder whose `.c
 With `--file`, a user-auth connection bundle exported
 where the space runs supplies the login pins and the server, unless `--server` names another
 address for that broker. `--from` fetches the space's discovery document only after you agree in an
-interactive terminal. `--json` disables that prompt even in a terminal. To keep JSON output, replace
-`--from <url>` with `--file <bundle.json>`. Before anything is written,
+interactive terminal. It refuses before fetching if stdin or stdout is not a terminal, or if
+`--json`, `--no-input`, or `COTAL_NO_PROMPT=1` disables prompts. Use `--file <bundle.json>` instead
+of `--from <url>` in scripts or to keep JSON output. Before anything is written,
 `space add` checks that the address may carry credentials, that the trust composes, that the
 broker enforces the mode, and that the credentials open the space; a user-auth space's exchange
 must answer as the issuer it pins. An open broker answers for any name, so an open space must also

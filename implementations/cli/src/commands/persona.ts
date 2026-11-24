@@ -149,6 +149,11 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
         remedy: `check the path or pipe the original input into the same command with --${flag} -`,
       });
     }
+    if (path !== "-" && (error as NodeJS.ErrnoException).code === "EISDIR") {
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `persona input path is a directory: ${oneLine(path)}`, {
+        remedy: `pass the path to a ${flag === "file" ? "complete persona file" : "persona body file"} with --${flag}`,
+      });
+    }
     throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona input: ${path}`);
   }
 }
@@ -270,7 +275,7 @@ function receipt(presentation: Presentation, catalog: PersonaCatalog, name: stri
       ...(seededDefault ? [{ kind: "lines" as const, lines: ["This was the seeded default persona, which a bare `cotal spawn` launches. A local `cotal up` in this root, `cotal space create` or `cotal setup` writes a fresh copy."] }] : []),
     ] },
     { title: "Next", blocks: [{ kind: "commands", items: result.action === "removed" ? [
-      { command: "cotal p", description: "Browse the local catalog" },
+      { command: `cotal p${target}`, description: "Browse the local catalog" },
     ] : [
       { command: `cotal spawn${spawnWords}`, description: "Launch an agent from this persona" },
       { command: `cotal p show${word}`, description: "Read the saved definition" },

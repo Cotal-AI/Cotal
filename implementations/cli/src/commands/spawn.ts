@@ -102,7 +102,7 @@ import {
   registerEnrollmentMesh,
   noExchangeEndpoint,
 } from "./spawn-enrollment.js";
-import { refuseDirectSpawnName, spawnFlags, spawnRerun } from "./spawn-flags.js";
+import { refuseDirectSpawnName, spawnFlags, spawnRerun, unsupportedVariantRemedy } from "./spawn-flags.js";
 import { connectorListed, launchManagedPersona, reportAlreadyRunning } from "./spawn-managed-launch.js";
 import { uniqueMeshName, provisionFreshForeground, provisionRemoteUserForeground, provisionUserForeground } from "./spawn-foreground.js";
 export { runBearerPreflight } from "./spawn-foreground.js";
@@ -208,7 +208,7 @@ export function validateSpawnArguments(args: ParsedArgs) {
     const modes = values.on !== undefined ? "-d" : receipt ? "-d (with --on <instance> to select a manager)" : "-d or --on <instance>";
     const alreadyManaged = values.detach || (values.on !== undefined && !receipt);
     const managed = values.foreground ? (alreadyManaged ? "omit --foreground" : `replace --foreground with ${modes}`) : `add ${modes}`;
-    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: internal ? foreground : `${foreground}, or ${managed} to launch through a manager` });
+    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime chooses the runtime of one managed seat; a spawn in this terminal has no manager runtime to choose", { remedy: internal || values["live-only"] ? foreground : `${foreground}, or ${managed} to launch through a manager` });
   }
   // Every manager refuses `auto` for one seat, so it is refused here on any host.
   if (values.runtime?.trim() === "auto") throw new CommandFailure("refused", "USAGE_INVALID", "--runtime auto chooses a manager's own runtime, not the runtime of one seat", { remedy: "omit --runtime to use the serving manager's runtime" });
@@ -687,7 +687,9 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     });
   }
   if (variant && !connector.supportsModelVariant) {
-    throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, { target: { space, path } });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support model variants (variant)`, {
+      target: { space, path }, remedy: unsupportedVariantRemedy(values.variant, def.variant, path),
+    });
   }
   if (values.prompt !== undefined && !connector.supportsPrompt) {
     throw new CommandFailure("refused", "USAGE_INVALID", `${agentType} connector does not support an initial prompt (prompt)`, { target: { space, path } });

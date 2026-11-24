@@ -528,6 +528,31 @@ check("the opening Agent files example previews with Claude and validates its mo
   docsPreview.status === 0 && docsPreview.envelope?.outcome === "ok" && docsResult?.harness === "claude"
     && docsResult.model === "opus" && docsResult.variant === null && docsResult.connectorArgumentValidation === "checked", shown(docsPreview));
 
+const variantPersona = join(root, "variant-persona.md");
+const previewVariant = (...flags: string[]) => cotal("spawn", "--file", variantPersona, "--dry-run", ...flags);
+const claudePersona = "---\nname: variant_check\nagent: claude\n";
+const removeVariantField = `remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`;
+writeFileSync(variantPersona, `${claudePersona}variant: high\n---\n`);
+for (const [flags, remedy] of [[[], removeVariantField], [["--variant", "high"], `omit \`--variant\` and ${removeVariantField}`]] as const) {
+  const denied = previewVariant("--json", ...flags);
+  check(`direct preview names ${flags.length ? "both variant inputs" : "the persona variant field"} in its remedy`,
+    denied.status === 1 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "USAGE_INVALID"
+      && denied.envelope.error.remedy === remedy && denied.envelope.target?.path === variantPersona, shown(denied));
+}
+const variantPlain = previewVariant("--plain");
+check("plain preview prints the persona variant remedy as Next",
+  variantPlain.status === 1 && variantPlain.stderr.split("\nNext\n")[1]?.includes("remove the `variant:` field") === true
+    && variantPlain.stderr.split("\nNext\n")[1]?.includes(JSON.stringify(variantPersona)) === true, shown(variantPlain));
+writeFileSync(variantPersona, `${claudePersona}---\n`);
+const noVariant = previewVariant("--json");
+const noVariantResult = (noVariant.envelope as { result?: Preview } | undefined)?.result;
+check("direct preview passes connector validation after removing the persona variant",
+  noVariant.status === 0 && noVariantResult?.variant === null && noVariantResult.connectorArgumentValidation === "checked"
+    && noVariant.envelope?.result?.allocated === false && noVariant.envelope.result.launched === false, shown(noVariant));
+const variantFlag = previewVariant("--json", "--variant", "high");
+check("direct preview names only the variant flag when the file has no variant",
+  variantFlag.status === 1 && variantFlag.envelope?.error?.remedy === "omit `--variant`", shown(variantFlag));
+
 // The display name in a persona need not be a launch identity. Preview the effective value with
 // the same local rule as foreground launch, including the selected space's actor-token bound.
 writeFileSync(agentFilePath(root, "invalid-name"), "---\nname: bad name\n---\n");
@@ -612,6 +637,18 @@ const combinedRuntime = cotal("spawn", "--foreground", "--runtime", "pty", "--js
 check("foreground spawn with -d already supplied tells the operator to omit --foreground for a managed launch",
   combinedRuntime.status === 1 && combinedRuntime.envelope?.error?.code === "USAGE_INVALID"
     && combinedRuntime.envelope.error.remedy?.endsWith("or omit --foreground to launch through a manager") === true, shown(combinedRuntime));
+for (const mode of [["--foreground"], []]) {
+  const args = ["--dry-run", "--json", ...mode, "--live-only"];
+  const denied = cotal("spawn", ...args, "--runtime", "pty");
+  check(`spawn ${mode[0] ?? "with default placement"} and --live-only only recommends omitting --runtime`,
+    denied.status === 1 && denied.envelope?.error?.code === "USAGE_INVALID"
+      && denied.envelope.error.remedy === "omit --runtime to launch in this terminal", shown(denied));
+  const retry = cotal("spawn", ...args);
+  const result = retry.envelope?.result;
+  check(`the ${mode[0] ? "explicit" : "default"} foreground retry preserves --live-only without allocating or launching`,
+    retry.status === 0 && retry.envelope?.outcome === "ok" && result?.kind === "direct-launch-preview"
+      && result.allocated === false && result.launched === false, shown(retry));
+}
 const noRuntime = previewRuntime();
 check("without --runtime the preview names none and checks none",
   noRuntime.r.status === 0 && noRuntime.p?.result?.requested?.runtime === null && noRuntime.p.result.runtimeCheck === null, shown(noRuntime.r));

@@ -91,7 +91,7 @@ import {
   serviceHeldRecords,
   STACK_ADAPTER,
   STACK_DEFINITION,
-  stackStartedWithoutManager,
+  stackRecordedWithoutManager,
   stackOperationBlock,
   unfinishedStackOperation, stackUpInProgress,
   type StackJournal,
@@ -756,7 +756,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     : -1;
   if (managerIndex !== -1 && legacyManagerStopped(root, space, localManagerInstanceId(root, space)))
     processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
-  const noManager = journal !== undefined && controllerStack && stackStartedWithoutManager(journal);
+  const noManager = journal !== undefined && controllerStack && stackRecordedWithoutManager(journal);
   const stackStarting = journal !== undefined && controllerStack && stackUpInProgress(journal);
   // Name settlement blocks only when no active startup writer holds the stack.
   let stackBlock: StackOperationBlock | null = null;

@@ -1,5 +1,27 @@
 # @cotal-ai/runtime
 
+## 0.176.6
+
+### Patch Changes
+
+- ea08bc8: Report the results filename and how to fix it when a workflow simulation receives a JSON array or another non-object value as its results script.
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/lang@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- e6810ad: When a local workflow resume is missing its run ID, show how to list runs on the same target without a manager and add the ID to the original command.
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/lang@0.176.5
+
 ## 0.176.4
 
 ### Patch Changes

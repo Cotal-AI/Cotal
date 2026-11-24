@@ -76,7 +76,12 @@ function scriptOf(file: string | undefined): SimScript {
   if (duplicate.duplicate) throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} names ${JSON.stringify(duplicate.name)} twice in one object`, {
     target: { file }, remedy: "keep each key once. To give a step multiple sequential results, put them in an array under its key",
   });
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the simulation results script must be an object");
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    const actual = value === null ? "null" : Array.isArray(value) ? "an array" : `a ${typeof value}`;
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `the simulation results script ${file} must be a top-level JSON object, not ${actual}`, {
+      target: { file }, remedy: `save a JSON results object in ${file} and rerun the simulation. Use {} if no scripted results are needed`,
+    });
+  }
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {

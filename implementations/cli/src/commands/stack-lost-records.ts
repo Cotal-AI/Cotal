@@ -2,7 +2,7 @@
  * The root journal must retain its launch-time home, host and member creation pins. */
 import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, loadMeshes, presentationOf, probeLiveness, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, loadMeshes, localProcessOwnerStatus, presentationOf, probeLiveness, readMaintenanceLockHolder, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
 import { serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
 import { acquireStackOperationLock, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, writeStackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
@@ -33,8 +33,12 @@ function members(snapshot: StackJournalSnapshot): StackMember[] {
     refuse("the stack retains a maintenance operation; missing-record recovery cannot decide it and no member was stopped");
   if (journal.members.some((row) => row.replacement !== undefined))
     refuse("the stack retains an unresolved replacement launch; no member was stopped");
-  if (unconfirmedLaunches(snapshot).length)
+  if (unconfirmedLaunches(snapshot).length) {
+    const holder = readMaintenanceLockHolder(journal.root);
+    if (holder?.operation === "foreground up" && localProcessOwnerStatus(holder.owner) === "alive")
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "a foreground startup is still in progress; no member was stopped", { target, remedy: "wait for startup to finish, then retry `cotal down --yes`" });
     refuse("the stack retains an unconfirmed launch without an instance identity; restore the original instance records before stopping, and no member was stopped");
+  }
   const rows = journal.members.filter((row) => row.instanceId !== null);
   const store = serviceInstanceStore(journal.space);
   if (rows.some((row) => store.read(row.instanceId!) !== undefined))

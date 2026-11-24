@@ -232,7 +232,9 @@ migration is not reachable yet, and the report says so. A run ID with no record 
 `TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. Its next step is `run list --local` on the same
 space, broker, credential and endpoint. The list reads the records without a manager.
 `check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
-before mesh preparation or connection, since they decide what a commit does and the check files nothing. `--timeout` sets the default
+before mesh preparation or connection, since they decide what a commit does and the check files nothing.
+If you pass `--adopt` or `--release` without a handle, the refusal tells you to remove the flag.
+`--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
 or from this default. It takes a duration
@@ -375,7 +377,7 @@ The `--handler` file is one JSON object in UTF-8, with an optional leading byte-
 It must be a regular file or a symlink to one, as the program file must be.
 A missing file or dangling link is refused with `TARGET_NOT_FOUND`, and an unreadable file with
 `PERMISSION_DENIED`, exit 2. A directory, device, FIFO or socket is refused with `USAGE_INVALID`,
-exit 1. An empty file or invalid JSON is refused with `SCHEMA_INVALID`, exit 1.
+exit 1. An empty file, invalid JSON, or a top-level value other than an object is refused with `SCHEMA_INVALID`, exit 1.
 These refusals name the path, the cause and a next step. A file that is not valid UTF-8 is refused
 with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
 No invalid bytes are replaced. A repeated key is refused with `SCHEMA_INVALID`, exit 1. Use an array
@@ -438,7 +440,7 @@ When the simulation returns a report, `cotal run simulate <file> --json` puts th
 | `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
 | `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
 | `result.checkpoints` | One row per checkpoint request sent to the simulator, with `step`, `name`, `prompt` and any `timeout`, `onExpiry` and `to` from the request. An escalation adds a second row with the same step key and `onExpiry: "proceed"`. |
-| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. A fault that was never injected is listed as `faults.<at>` (for example, `faults./sleep:typo#0`); the simulation still completes, since the fault may target a branch this run did not take. |
 | `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
 
 In `result.failure`, `step` and `stepOutcome` describe the last failed entry in journal order with

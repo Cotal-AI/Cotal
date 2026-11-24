@@ -139,10 +139,10 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
   const tokens = found && parseArgs({ args: options, options: parserOptions(found), strict: false, allowPositionals: true, tokens: true }).tokens;
   const missing = tokens?.find((token) => token.kind === "option" && token.inlineValue === false && token.value === word);
   const flag = missing?.kind === "option" ? found?.flags?.find(({ name }) => name === missing.name) : undefined;
-  const refusal = flag && missing
+  const refusal = found && flag && missing
     ? !flag.multiple && tokens?.some((token) => token.kind === "option" && token.name === flag.name && token.index < missing.index)
       ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
-      : missingValue(flag)
+      : missingValue(found, rest, flag)
     : { message: `Option '${word}' cannot be repeated` };
   const json = found !== undefined && asksForJson(found, rest);
   if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
@@ -207,11 +207,12 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   if (!json) writeReport();
   else try {
     const recognize = cmd.name === "backup" ? typographicOptions(cmd) : undefined;
-    const subcommand = cmd.name === "backup" || cmd.name === "auth" || cmd.name === "doctor"
+    const subcommand = cmd.name === "backup" || cmd.name === "auth" || cmd.name === "doctor" || cmd.name === "endpoint"
       ? findSubcommand(cmd, metadataPositionals(cmd, words, recognize && { optionSpelling: (word) => recognize(word)?.spelling }).positionals[0]?.value)?.name
       : undefined;
     const command = subcommand && (cmd.name === "backup" ||
-      (cmd.name === "auth" && subcommand === "mint") || (cmd.name === "doctor" && subcommand === "auth"))
+      (cmd.name === "auth" && subcommand === "mint") || (cmd.name === "doctor" && subcommand === "auth") ||
+      (cmd.name === "endpoint" && (subcommand === "init" || subcommand === "check")))
       ? `${cmd.name} ${subcommand}` : cmd.name;
     const follow = validationArgs?.values.follow === true && validationArgs.values.plain !== true && !plain;
     const historyFollow = cmd.name === "history" && follow
@@ -531,8 +532,14 @@ function stripGlobalFlags(cmd: Command, words: string[]): string[] {
   return words.filter((_, index) => !globals.has(index));
 }
 
-function missingValue(flag: FlagSpec, beforeSeparator = false) {
+function missingValue(cmd: Command, words: readonly string[], flag: FlagSpec, beforeSeparator = false) {
+  if (cmd.name === "run" && (flag.name === "adopt" || flag.name === "release") && helpPath(cmd, words).path[0] === "check")
+    return { message: `\`run check\` does not take --${flag.name}`, remedy: `run the check without --${flag.name}` };
   return { message: `--${flag.name} needs a value`, remedy: `write --${flag.name} ${flag.value ?? "<value>"}${beforeSeparator ? " before --" : ""}` };
+}
+
+function globalFlagValueRefusal(flag: string) {
+  return { message: `${flag} takes no value`, remedy: `omit ${flag} or pass it without a value` };
 }
 
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
@@ -543,6 +550,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
+    if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return globalFlagValueRefusal(option);
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
@@ -561,7 +569,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   }
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(last);
+  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(cmd, rest, last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
   if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
@@ -575,11 +583,11 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       const numeric = rest[token.index] === token.rawName && /^-\d/.test(value ?? "");
       if (token.inlineValue === false && !numeric && value?.startsWith("-") && value !== "-") {
         if (seen && !flag.multiple) return { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` };
-        if (value === "--") return missingValue(flag, true);
-        if (GLOBAL_FLAG_WORDS.has(value)) return missingValue(flag);
+        if (value === "--") return missingValue(cmd, rest, flag, true);
+        if (GLOBAL_FLAG_WORDS.has(value)) return missingValue(cmd, rest, flag);
         const next = parseArgs({ args: [value], options, strict: false, allowPositionals: true, tokens: true });
         if (next.tokens.every((item) => item.kind === "option" && Object.hasOwn(options, item.name)))
-          return missingValue(flag);
+          return missingValue(cmd, rest, flag);
         return { message: `the value of --${flag.name} starts with "-", so it reads as an option`, remedy: `write it as --${flag.name}=${shellWord(value)}` };
       }
       seen = true;
@@ -700,7 +708,7 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
  *  checks, such as `up`'s, or any effect, unless the command never reads the folder. */
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
-  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+  failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
 }
 
 function prepareUpdateFolder(parsed: ParsedArgs): string | undefined {
@@ -777,6 +785,21 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
     return failureExit(found, failure, asksForJson(found, words), words.includes("--plain"), undefined, words);
   }
+}
+
+/** Recover the command and output mode for a malformed leading global without dispatching it. */
+function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): never {
+  const equals = word.indexOf("=");
+  const flag = equals === -1 ? undefined : word.slice(0, equals);
+  if (!beforeSeparator || !flag || !GLOBAL_FLAG_WORDS.has(flag)) usageExit(unknownCommandMessage(commands, word));
+  const retry = leadingInvocation(args);
+  const found = findCommand(commands, retry.word);
+  const cmd = takesWordsRaw(found) ? undefined : found;
+  const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
+  const end = words.indexOf("--");
+  const plain = (end === -1 ? words : words.slice(0, end)).includes("--plain");
+  const { message, remedy } = globalFlagValueRefusal(flag);
+  usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, words), plain, remedy, words);
 }
 
 /**
@@ -930,7 +953,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
-  if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
+  if (!cmd && !awaitingSeed) unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
