@@ -972,18 +972,19 @@ async function refresh(): Promise<void> {
   }
   buttons();
 }
-async function spaces(refreshCatalog: boolean): Promise<void> {
+async function spaces(refreshCatalog: boolean): Promise<string> {
   const activeProvider = signedInProvider ?? providers.get(selectedSpace()) ?? computerAccount?.idpUrl;
   const result = await request({ op: "spaces", refresh: refreshCatalog });
   signedInProvidersKnown = Array.isArray(result.signedInProviders);
   signedInProviders = Array.isArray(result.signedInProviders) ? result.signedInProviders.filter((item): item is string => typeof item === "string") : [];
   const select = el<HTMLSelectElement>("space"); const previous = select.value;
+  if (!Array.isArray(result.spaces)) throw new Error("The background service returned no space list.");
+  const { message, skipped } = catalogRefreshNotice(result, activeProvider);
   const connectedProviders = [...providers].filter(([space]) => connections.has(space));
   const retainedSpaces = [...accountSpaces].filter(([space]) => connections.has(space) || computerAccount?.spaces.some(row => row.space === space));
   select.replaceChildren(new Option("Choose a space", "")); providers.clear(); catalogIds.clear(); accountSpaces.clear();
-  if (!Array.isArray(result.spaces)) throw new Error("The background service returned no space list.");
   for (const item of result.spaces) {
-    if (!item || typeof item.space !== "string" || item.mode !== "user") continue;
+    if (!item || typeof item.space !== "string" || item.mode !== "user" || skipped.has(item.space)) continue;
     accountSpaces.set(item.space, { space: item.space, label: String(item.label ?? item.space), ...(typeof item.catalogId === "string" ? { catalogId: item.catalogId } : {}), ...(typeof item.kind === "string" ? { kind: item.kind } : {}), ...(typeof item.role === "string" ? { role: item.role } : {}) });
     select.add(new Option(shownSpaceLabel(typeof item.label === "string" ? item.label : undefined, item.space), item.space));
     if (typeof item.idp === "string") providers.set(item.space, item.idp);
@@ -992,14 +993,16 @@ async function spaces(refreshCatalog: boolean): Promise<void> {
   for (const [space, entry] of retainedSpaces) if (!accountSpaces.has(space)) accountSpaces.set(space, { space, label: entry.label });
   for (const [space, provider] of connectedProviders) {
     if (!providers.has(space)) providers.set(space, provider);
+    if (skipped.has(space)) continue;
     if (![...select.options].some(option => option.value === space)) select.add(new Option(shownSpaceLabel(accountSpaces.get(space)?.label, space), space));
   }
-  const preferred = connections.has(previous) ? previous : initialSpace([...accountSpaces.values()], requestedSpace) ?? (accountSpaces.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => accountSpaces.has(space));
+  const offered = new Map([...accountSpaces].filter(([space]) => !skipped.has(space)));
+  const preferred = connections.has(previous) && !skipped.has(previous) ? previous
+    : initialSpace([...offered.values()], requestedSpace) ?? (offered.has(previous) ? previous : undefined) ?? observedReadySpaces.find(space => offered.has(space));
   if (preferred) select.value = preferred;
   choosingSpace = !preferred;
-  const message = catalogRefreshNotice(result, activeProvider ?? providers.get(select.value));
-  if (message) notice(message);
   buttons();
+  return message;
 }
 async function action(fn: () => Promise<void>): Promise<void> {
   if (busy) return; busy = true; refreshGeneration++; buttons();
@@ -1009,15 +1012,12 @@ async function action(fn: () => Promise<void>): Promise<void> {
     if (retrySignIn) { retrySignIn = false; beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   }
 }
-function nextAfterSignIn(): void {
+function nextAfterSignIn(): string {
   editing = false;
   connection = undefined;
-  if (selectedSpace()) showStage("connect", true);
-  else {
-    showStage("connect", true);
-    if (requestedSpace && !selectedSpace()) notice("The requested space is not available to this account. Ask its owner for access, then refresh spaces.");
-    else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("connect", true); }
-  }
+  if (!selectedSpace() && !requestedSpace && !el<HTMLSelectElement>("space").options[1]) problem = "NO_SPACES";
+  showStage("connect", true);
+  return requestedSpace && !selectedSpace() ? "The requested space is not available to this account. Ask its owner for access, then refresh spaces." : "";
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
 el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
@@ -1033,13 +1033,14 @@ el("login-form").addEventListener("submit", (event) => {
       if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
       signedInProvider = provider;
       for (const item of signedOutProviders) if (sameProvider(item, provider)) signedOutProviders.delete(item);
-      notice(""); await spaces(true); await refresh();
+      notice(""); const catalog = await spaces(true); await refresh();
+      let unavailable = "";
       if (computerAccount?.hostSupport === "supported" && computerAccount.mode === "account") {
         editing = false; completedSetup = true; listOpened = true; showStage("finished");
-      } else nextAfterSignIn();
+      } else unavailable = nextAfterSignIn();
       // The account switch stands; credential files of the previous account it could not delete are named.
       const kept = keptCredentialsNotice(result);
-      if (kept) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", kept].filter(Boolean).join(" "), true);
+      notice([catalog, unavailable, kept].filter(Boolean).join(" "), Boolean(kept));
     } finally { loginActive = false; approval = undefined; if (countdown) clearInterval(countdown); el("approval").hidden = true; }
   });
 });
@@ -1051,7 +1052,7 @@ el("recover").addEventListener("click", () => {
   notice("");
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
-  else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
+  else if (recovery === "spaces") void action(async () => { const catalog = await spaces(true); notice([catalog, nextAfterSignIn()].filter(Boolean).join(" ")); });
   else if (recovery === "install") void action(async () => {
     clearDetails();
     notice("Preparing the background service…");
@@ -1117,7 +1118,7 @@ el("disconnect").addEventListener("click", () => void action(async () => {
   applicationRefusals.delete(space); progress = progressNames.map(() => "waiting"); clearDetails();
   state(String(result.state), space); notice("");
 }));
-el("sync").addEventListener("click", () => void action(async () => { notice(""); await spaces(true); }));
+el("sync").addEventListener("click", () => void action(async () => { notice(""); notice(await spaces(true)); }));
 el("refresh").addEventListener("click", () => void action(refresh));
 el("space").addEventListener("change", () => {
   signedInProvider = undefined; connection = undefined; selectionPending = true;

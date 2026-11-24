@@ -214,6 +214,7 @@ export interface DaemonSpaces {
   readonly refresh: "not-requested" | "not-signed-in" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
+  readonly collisionDetails: readonly { readonly space: string; readonly origin: "manual" | "up" | "catalog"; readonly idp: string }[];
   readonly failedProviders?: readonly string[];
   readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];

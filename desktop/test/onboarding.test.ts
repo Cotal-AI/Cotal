@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; collisionDetails?: { space: string; origin: string; idp: string }[]; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -110,7 +110,15 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
         return ok(statusPayload());
       }
-      if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: options.provider ?? COTAL_CLOUD_IDP })) });
+      if (r.op === "spaces") {
+        const collisionDetails = r.refresh ? options.collisionDetails ?? [] : [];
+        const failedProviders = options.ownProviderFailed ? [COTAL_CLOUD_IDP] : options.otherProviderFailed ? ["https://hack.cotal.ai/api/auth"] : [];
+        const partial = r.refresh && (options.oldDaemon || failedProviders.length > 0 || collisionDetails.length > 0);
+        return ok({
+          ...(partial ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders, collisions: collisionDetails.length, collisionDetails }) } : {}),
+          spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: options.provider ?? COTAL_CLOUD_IDP })),
+        });
+      }
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
       if (r.op === "service-status") return ok({ state: options.serviceState ?? "disconnected" });
       if (r.op === "service-disconnect") { connected = false; return ok({ state: "disconnected" }); }
@@ -457,6 +465,22 @@ test("another provider failure does not block successful sign-in", async () => {
     await a.click("login"); await a.login();
     assert.notEqual(a.node("connection-title").textContent, "This operation could not finish");
     assert.match(a.node("notice").textContent ?? "", /hack\.cotal\.ai/);
+  } finally { a.dom.window.close(); }
+});
+
+test("a retained space name conflict does not block connecting another space after sign-in", async () => {
+  const a = await app({ installed: true, personal: true, count: 2, collisionDetails: [{ space: "team", origin: "manual", idp: COTAL_CLOUD_IDP }] });
+  try {
+    await a.click("login"); await a.login();
+    assert.equal(a.node("sign-in-panel").hidden, true);
+    assert.equal(a.node("connect-panel").hidden, false);
+    assert.equal(a.node("recovery-panel").hidden, true);
+    const select = a.node<HTMLSelectElement>("space");
+    assert.deepEqual([...select.options].map(option => option.value), ["", "other"]);
+    assert.equal(select.value, "other");
+    assert.equal(a.node("notice").getAttribute("aria-hidden"), "false");
+    assert.match(a.node("notice").textContent ?? "", /"team" was registered by hand.*cotal space forget team.*cotal sync/);
+    assert.equal(a.calls.some(call => call.op === "setup"), false);
   } finally { a.dom.window.close(); }
 });
 

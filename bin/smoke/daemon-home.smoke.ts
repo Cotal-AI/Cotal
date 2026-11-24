@@ -688,6 +688,14 @@ try {
       slugs = ["catalog-next-space"];
       const next = await cli(["spaces", "--refresh", "--json"]);
       check("H6 refreshing the new account discovers only its own spaces", next.status === 0 && loadMeshes().filter((m) => m.origin === "catalog").map((m) => m.space).join() === "catalog-next-space", next.doc);
+      const local: MeshEntry = { space: "catalog-local", server: "nats://127.0.0.1:4222", root: meshRoot, mode: "open", ts: new Date().toISOString() };
+      recordMesh(local);
+      const retained = [local.space, manual.space].map(space => ({ file: meshFile(space), before: readFileSync(meshFile(space)) }));
+      slugs = [manual.space, local.space, "catalog-next-space"];
+      const conflict = await cli(["spaces", "--refresh", "--json"]);
+      const details = [{ space: local.space, origin: "up", idp }, { space: manual.space, origin: "manual", idp }];
+      check("H6 a partial refresh names the registrations it kept with their origins", conflict.status === 4 && conflict.doc.result?.refresh === "partial" && conflict.doc.result?.collisions === 2 && JSON.stringify(conflict.doc.result?.collisionDetails) === JSON.stringify(details), conflict.doc);
+      check("H6 a collision leaves both registrations unchanged", retained.every(({ file, before }) => readFileSync(file).equals(before)));
     } finally {
       await new Promise<void>((r) => catalog.close(() => r()));
     }

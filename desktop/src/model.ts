@@ -95,8 +95,29 @@ export function activeComputerAccount(account: ComputerAccount & { accounts?: Co
   return supported.length === 1 ? supported[0] : undefined;
 }
 
-/** Return a non-blocking notice only when the active provider refreshed successfully. */
-export function catalogRefreshNotice(result: Record<string, unknown>, provider?: string): string {
+interface CatalogCollision { space: string; origin: "manual" | "up" | "catalog"; idp: string }
+
+function isCatalogCollision(item: unknown): item is CatalogCollision {
+  return !!item && typeof item === "object" && "space" in item && typeof item.space === "string" && item.space.length > 0
+    && "origin" in item && (item.origin === "manual" || item.origin === "up" || item.origin === "catalog")
+    && "idp" in item && typeof item.idp === "string";
+}
+
+function catalogCollisionNotice({ space, origin }: CatalogCollision): string {
+  const name = JSON.stringify(space);
+  const arg = /^[A-Za-z0-9_-]{1,64}$/.test(space) ? `${space.startsWith("-") ? "-- " : ""}${space}` : undefined;
+  if (origin === "catalog") {
+    const lookup = arg ? ` See its login provider with “cotal space show ${arg}”.` : "";
+    return `${name} is from another account's catalog.${lookup} To replace it, sign out of that account on this computer or ask its owner to remove the space from that catalog.`;
+  }
+  const source = origin === "manual" ? "registered by hand" : "started on this computer";
+  if (!arg) return `${name} was ${source}. Inspect it with “cotal space” before changing its registration.`;
+  const stop = origin === "up" ? " If it is running, first run “cotal down” from its project folder." : "";
+  return `${name} was ${source}.${stop} To replace it, run “cotal space forget ${arg}”.`;
+}
+
+/** A conflict keeps the registration and does not make a successful sign-in fail. */
+export function catalogRefreshNotice(result: Record<string, unknown>, provider?: string): { message: string; skipped: Set<string> } {
   const failed = Array.isArray(result.failedProviders) && result.failedProviders.every(item => typeof item === "string") ? result.failedProviders as string[] : undefined;
   const partial = result.refresh === "failed" || result.refresh === "partial";
   if (partial && !failed) throw new Error("Some space catalogs could not be refreshed. Saved entries may be out of date.");
@@ -104,9 +125,19 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }
-  if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
   if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
-  return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
+  const notices: string[] = [];
+  const skipped = new Set<string>();
+  if (Number(result.collisions) > 0) {
+    const details = result.collisionDetails;
+    if (!Array.isArray(details) || details.length !== result.collisions || !details.every(isCatalogCollision))
+      throw new Error("The background service reported space name conflicts without their details. Run cotal sync to inspect them.");
+    for (const { space, idp } of details) if (!provider || canonicalProvider(idp) === canonicalProvider(provider)) skipped.add(space);
+    const conflicts = [...new Set(details.map(catalogCollisionNotice))];
+    notices.push("Some space names conflict with existing registrations. Leave them as they are to keep them.", ...conflicts, "After clearing a conflict, run “cotal sync” to refresh spaces.");
+  }
+  if (failed?.length) notices.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
+  return { message: notices.join(" "), skipped };
 }
 
 /** The notice for a sign-in that replaced an account but could not delete some of that account's
@@ -164,7 +195,7 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
     case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
     case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
-    case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
+    case "NO_SPACES": return { title: "No spaces available to connect", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };
     default: return { title: "This operation could not finish", description: "The connection has not been confirmed. Read the exact reason and next step in Details before trying again.", action: "refresh", label: "Try again" };
