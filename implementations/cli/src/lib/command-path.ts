@@ -13,8 +13,9 @@ export function metadataPositionals(cmd: Pick<Command, "flags">, argv: readonly 
     const spelling = optionsEnded ? undefined : options.optionSpelling?.(argv[index]!);
     const word = spelling ?? argv[index]!;
     const next = argv[index + 1];
-    const takesNextWord = !spelling || next === undefined || next === "-" || /^-\d/.test(next)
-      || (!next.startsWith("-") && !options.optionSpelling?.(next));
+    // A real string option may take a literal word with a typographic dash as its value.
+    const takesNextWord = !options.optionSpelling || next === undefined || next === "-" || /^-\d/.test(next)
+      || (!next.startsWith("-") && (!spelling || !options.optionSpelling(next)));
     // Completion includes the unfinished cursor word; only an earlier separator is committed.
     if (!optionsEnded && word === "--" && (!options.completing || index < argv.length - 1)) { optionsEnded = true; continue; }
     if (!optionsEnded && word.startsWith("--")) {

@@ -24,7 +24,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string }; warnings?: { code?: string }[] }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -148,6 +148,7 @@ const dashFlag = "\u2013\u2013no-color";
 for (const { words, command } of [
   { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },
   { words: [dashFlag, "verify", "./not-there"], command: "backup verify" },
+  { words: [dashFlag, "--store-dir", "--only", "inspect", "restore"], command: "backup restore" },
   { words: ["\u2014dry-run", "\u2212y", "recover"], command: "backup recover" },
   { words: ["\u2014store-dir=inspect", "restore"], command: "backup restore" },
   { words: ["\u2014store-dir", "inspect", "restore"], command: "backup restore" },
@@ -161,6 +162,22 @@ for (const { words, command } of [
     r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
     r.envelope.error.message?.startsWith(`${words[0]} starts with a typographic dash`) === true, shown(r));
 }
+
+for (const { words, command, remedy } of [
+  { words: ["--only", "inspect", "restore"], command: "backup restore", remedy: "write --store-dir <dir>" },
+  { words: ["--", "--only", "inspect", "verify"], command: "backup", remedy: "write --store-dir <dir> before --" },
+]) {
+  const r = run(["backup", "-j", "--store-dir", ...words]);
+  check(`backup -j --store-dir ${words.join(" ")} preserves the missing-value refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === command && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === "--store-dir needs a value" && r.envelope.error.remedy === remedy, shown(r));
+}
+
+const dashValue = run(["backup", "-j", "--store-dir", "\u2014only", "inspect", "./not-there"]);
+check("a typographic-looking value after an ASCII string option stays a value", dashValue.status === 1 && dashValue.stderr === "" &&
+  dashValue.envelope?.command === "backup inspect" && dashValue.envelope.outcome === "refused" &&
+  dashValue.envelope.error?.code === "USAGE_INVALID" &&
+  dashValue.envelope.error.message === "backup inspection and verification accept no creation, target or restore inputs", shown(dashValue));
 
 const dashAfterVerb = run(["backup", "verify", dashFlag, "./not-there", "-j"]);
 check("a typographic flag after the backup verb keeps the same refusal", dashAfterVerb.status === 1 && dashAfterVerb.stderr === "" &&
