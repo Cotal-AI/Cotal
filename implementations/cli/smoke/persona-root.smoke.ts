@@ -511,6 +511,15 @@ try {
   const native = (args: string[], cwd = MESH, env = childEnv, input?: Buffer) => spawnSync(process.execPath, [binary, ...args], {
     cwd, env, input, encoding: "utf8", timeout: 30_000,
   });
+  const offlineRoot = join(scratch, "offline-project");
+  const prepared = native(["space", "create", "offline-audit", "--root", offlineRoot, "--plain"], CWD);
+  check("a separate project is prepared without starting a broker", prepared.status === 0, prepared.stdout + prepared.stderr);
+  const args = ["persona", "--space", "offline-audit", "--plain"];
+  const offline = native(args, CWD);
+  const plannedServer = native([...args, "--server", "nats://127.0.0.1:1"], CWD);
+  check("a planned server still lists the named prepared project's local catalog",
+    offline.status === 0 && plannedServer.status === 0 && plannedServer.stdout === offline.stdout &&
+    /offline-audit .* local persona files/.test(plannedServer.stdout) && /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
   checkCreateInputGuidance((args, input) => native(args, MESH, childEnv, input), MESH);
   if (process.platform !== "win32") {
     const server = "nats://[::1]:43002";

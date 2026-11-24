@@ -153,6 +153,10 @@ export function validateCompletionArguments(args: ParsedArgs): void {
   if ((sub === "script" && shell === undefined) || (shell !== undefined && !Object.hasOwn(SCRIPTS, shell))) throw new CommandFailure("refused", "USAGE_INVALID", "choose a supported shell", { remedy: `pass one of: ${Object.keys(SCRIPTS).join(", ")}` });
 }
 
+const RELATIVE_ZDOTDIR = "relative ZDOTDIR makes the startup target depend on the shell's working directory";
+const ZDOTDIR_REMEDY = "use an absolute ZDOTDIR or manage the printed script manually";
+const relativeZdotdir = () => Boolean(process.env.ZDOTDIR && !isAbsolute(process.env.ZDOTDIR));
+
 export async function completion(args: ParsedArgs): Promise<void> {
   validateCompletionArguments(args);
   const [sub, shell] = args.positionals;
@@ -173,7 +177,7 @@ export async function completion(args: ParsedArgs): Promise<void> {
     : new CommandFailure("refused", "USAGE_INVALID", "SHELL is not set, so the current shell is unknown", { remedy: "pass one of: bash, zsh, fish, powershell" });
   const paths = stubPaths(sh);
   if (!paths) throw new CommandFailure("refused", "UNSUPPORTED", "owned PowerShell profile installation is unavailable on this host or the shell is not installed; no profile path was guessed", { remedy: `review your profile manually; the supported loading command is: ${codeSpan(LOAD_NOW.powershell)}` });
-  if (sh === "zsh" && process.env.ZDOTDIR && !isAbsolute(process.env.ZDOTDIR)) throw new CommandFailure("refused", "USAGE_INVALID", "relative ZDOTDIR makes the startup target depend on the shell's working directory", { remedy: "use an absolute ZDOTDIR or manage the printed script manually" });
+  if (sh === "zsh" && relativeZdotdir()) throw new CommandFailure("refused", "USAGE_INVALID", RELATIVE_ZDOTDIR, { remedy: ZDOTDIR_REMEDY });
   const operation = sub as "install" | "uninstall";
   const result = changeCompletion(operation, sh, paths, SCRIPTS[sh]!, Boolean(values.force));
   writeResult(presentation, { command: `completion ${operation}`, target: { shell: sh }, noOp: result.noOp, result }, (data): Report => ({ sections: [
@@ -328,14 +332,17 @@ function completionCell(shell: ShellCompletion): Styled {
 
 function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[], repairs: readonly FileRepair[], customStartup: ReadonlySet<string>): Report {
   const selected = status.shells.find((shell) => shell.shell === status.shell);
+  const zshBlocked = relativeZdotdir();
+  const selectedBlocked = zshBlocked && selected?.shell === "zsh";
+  const showZdotdirRemedy = zshBlocked && status.shells.some((shell) => shell.shell === "zsh" && (shell === selected || shell.ownership === "modified"));
   // An unsafe folder, a refused file or an unreadable record makes install and uninstall refuse, so its
   // chmod comes first. They are offered only when every block has one. Uninstall is offered only when
   // something is installed. A stub with no ownership record refuses both, so neither is offered for it.
-  const blocking = selected ? unsafe.filter((folder) => folder.shells.has(selected.shell)) : [];
-  const fileRepairs = selected ? repairs.filter((repair) => repair.shell === selected.shell) : [];
+  const blocking = selected && !selectedBlocked ? unsafe.filter((folder) => folder.shells.has(selected.shell)) : [];
+  const fileRepairs = selected && !selectedBlocked ? repairs.filter((repair) => repair.shell === selected.shell) : [];
   const fileChmods = [...new Set(fileRepairs.flatMap((repair) => repair.chmod ? [repair.chmod] : []))];
   const unowned = selected?.ownership === "unrecorded" && (selected.state === "current" || selected.state === "differs");
-  const changeable = !unowned && selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod) && fileRepairs.every((repair) => repair.chmod);
+  const changeable = !selectedBlocked && !unowned && selected?.ownership !== "unreadable" && blocking.every((folder) => folder.chmod) && fileRepairs.every((repair) => repair.chmod);
   const installed = !selected || selected.state !== "missing" || selected.wiredIn !== null || selected.ownership === "managed" || selected.ownership === "modified";
   const dangling = status.shells.filter((shell) => shell.state === "missing" && shell.wiredIn !== null);
   return {
@@ -355,19 +362,23 @@ function statusView(status: CompletionStatus, unsafe: readonly UnsafeFolder[], r
           { text: "Files only. The running shell was not inspected or changed.", tone: "hint" },
         ] },
       ] },
-      { title: "Next", blocks: [{ kind: "commands", items: [
-        // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
-        ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove the access another local account could use, so completion can read and change its files there" }] : []),
-        ...fileChmods.map((command) => ({ command, description: "Remove the access another local account could use, so completion can read and change this file" })),
-        ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected && !customStartup.has(shell.shell)).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
-        ...!changeable || selected && customStartup.has(selected.shell) ? [] : [selected?.ownership === "modified"
-          ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }
-          : { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" }],
-        { command: `cotal completion script ${selected?.shell ?? "<shell>"}`, description: "Print the script for manual setup" },
-        ...!changeable || !installed || selected?.wiredIn && customStartup.has(selected.shell) ? [] : [selected?.ownership === "modified"
-          ? { command: `cotal completion uninstall ${selected.shell} --force`, description: "Remove the modified owned integration; text outside the cotal markers is kept" }
-          : { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" }],
-      ] }] },
+      { title: "Next", blocks: [
+        ...(showZdotdirRemedy ? [{ kind: "lines" as const, lines: [RELATIVE_ZDOTDIR, ZDOTDIR_REMEDY] }] : []),
+        { kind: "commands", items: [
+          // A modified integration refuses a plain install or uninstall, so it is offered only with --force.
+          ...blocking.flatMap((folder) => folder.chmod ? [{ command: folder.chmod, description: "Remove the access another local account could use, so completion can read and change its files there" }] : []),
+          ...fileChmods.map((command) => ({ command, description: "Remove the access another local account could use, so completion can read and change this file" })),
+          ...status.shells.filter((shell) => shell.ownership === "modified" && shell !== selected && !(zshBlocked && shell.shell === "zsh") && !customStartup.has(shell.shell)).map((shell) => ({ command: `cotal completion install ${shell.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" })),
+          ...!changeable || selected && customStartup.has(selected.shell) ? [] : [selected?.ownership === "modified"
+            ? { command: `cotal completion install ${selected.shell} --force`, description: "Rewrite the modified owned integration; text outside the cotal markers is kept" }
+            : { command: `cotal completion install ${selected?.shell ?? "<shell>"}`, description: "Install or refresh the managed integration" }],
+          { command: `cotal completion script ${selected?.shell ?? "<shell>"}`, description: "Print the script for manual setup" },
+          ...showZdotdirRemedy && !selectedBlocked ? [{ command: "cotal completion script zsh", description: "Print the zsh script for manual setup" }] : [],
+          ...!changeable || !installed || selected?.wiredIn && customStartup.has(selected.shell) ? [] : [selected?.ownership === "modified"
+            ? { command: `cotal completion uninstall ${selected.shell} --force`, description: "Remove the modified owned integration; text outside the cotal markers is kept" }
+            : { command: `cotal completion uninstall ${selected?.shell ?? "<shell>"}`, description: "Remove only unchanged recorded material" }],
+        ] },
+      ] },
     ],
   };
 }

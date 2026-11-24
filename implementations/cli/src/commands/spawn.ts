@@ -81,8 +81,8 @@ import { onInstance } from "../lib/control.js";
 import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
-import { personaCatalog } from "../lib/persona-files.js";
-import { callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, missingPersonaFailure, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -548,13 +548,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       if (handoffText !== undefined) {
         stderrLine("✗ ", `cannot load the managed handoff persona: ${(e as Error).message}`, c.red);
       } else if (code === "ENOENT") {
-        const missing = missingPersona(target, ref, personaFrom, path);
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", missing.message, { target: { space, path }, remedy: missing.remedy });
+        throw missingPersonaFailure(target, ref, personaFrom, path);
       } else if (code === "ELOOP") {
         throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
           target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
         });
       } else {
+        const unreadable = unreadablePersona(path, code, { space, path });
+        if (unreadable) throw unreadable;
         stderrLine("✗ ", `${(e as Error).message}`, c.red);
       }
       process.exit(1);
@@ -567,7 +568,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `${missing.message}, and the shipped one could not be written there: ${(writeError as Error).message}`, { target: { space, path }, remedy: missing.remedy });
     }
     if (written !== undefined) provenance.wrote("default persona", written);
-    def = loadLaunchPersonaFile(path);
+    try { def = loadLaunchPersonaFile(path); }
+    catch (retryError) {
+      if (written !== undefined || (retryError as NodeJS.ErrnoException).code !== "ENOENT") throw retryError;
+      throw brokenPersonaLink(path, { space, path }, true) ?? retryError;
+    }
   }
 
   // Provenance: say which persona file WON resolution (--config > positional > preference > default)

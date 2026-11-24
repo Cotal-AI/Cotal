@@ -49,7 +49,7 @@ function unmatchedMember(space: string, name: string): CommandFailure {
   const stackName = stackMemberFor(space, name);
   return new CommandFailure("refused", "TARGET_NOT_FOUND", `${oneLine(name)} matches no saved definition or preset in space ${oneLine(space)}; no service was stopped`, {
     target: { space, name },
-    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare \`cotal down\` to stop the whole stack` : unsavedServiceStep(name, "stop"),
+    remedy: stackName ? `this space's controller stack names it ${stackName}; name ${stackName} instead, or run bare \`cotal down\` to stop the whole stack` : unsavedServiceStep(name, "stop", space),
   });
 }
 

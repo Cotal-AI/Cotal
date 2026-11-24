@@ -195,6 +195,16 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   const refused = malformed.map(([positionals, values]) => [positionals.join(" "), gate(positionals, values)] as const);
   c("a malformed run id is refused USAGE_INVALID, naming the id format, on every verb that takes one",
     refused.every(([, got]) => usageRefusal(got, idFormat)), refused.filter(([, got]) => !usageRefusal(got, idFormat)).map(([line, got]) => [line, (got as Error)?.message ?? got]));
+  const server = "nats://127.0.0.1:4422", on = "a".repeat(26);
+  for (const operands of [[], ["bad/id"], ["first", "second"]]) {
+    const got = gate(["show", ...operands], { space: "beta", server, on, json: true });
+    const target = ` --space beta --server '${server}' --on ${on} --json`;
+    c("the suggested list and show read the requested manager", isCommandFailure(got) && got.remedy === `\`cotal run${target}\` lists the runs; run \`cotal run show <run-id>${target}\``, got);
+  }
+  const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
+  c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
+  const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
+  c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
   c("and a well-formed id passes the gate, so an unknown run is still the manager's TARGET_NOT_FOUND", !(unknown instanceof Error) && unknown.a === "RUN-0123", unknown);
 }
@@ -371,10 +381,10 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   // when unused. A valid handoff still delivers the handle.
   const fertig = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: { status: "fertig" } } });
   c("a scripted turn status other than done, blocked or handoff is refused SCHEMA_INVALID, exit 1",
-    scriptRefusal(fertig, `invalid scripted turn 'build': status must be "done", "blocked" or "handoff"`), fertig);
+    scriptRefusal(fertig, `invalid scripted turn 'build' in ${handler}: turns.build.status must be "done", "blocked" or "handoff"`), fertig);
   const turnAt = await simulate({ checkpoints: { go: { status: "resolved", value: true } }, turns: { build: [{ status: "done" }, { status: "done", at: 5 }] } });
   c("a scripted turn at, in any entry of a list, is refused, since the simulator stamps it from virtual time",
-    scriptRefusal(turnAt, "invalid scripted turn 'build': at is stamped from virtual time"), turnAt);
+    scriptRefusal(turnAt, `invalid scripted turn 'build' in ${handler}: turns.build[1].at is stamped from virtual time`), turnAt);
   for (const [build, path] of [
     [{ status: "handoff" }, "turns.build.to"],
     [[{ status: "done" }, { status: "handoff" }], "turns.build[1].to"],
@@ -606,6 +616,21 @@ if (process.platform !== "win32") {
     Object.assign(env, { HOME: dir, COTAL_HOME: dir, XDG_CONFIG_HOME: join(dir, "config"), COTAL_TELEMETRY: "off", NO_COLOR: "1" });
     const options = { cwd: dir, env, encoding: "utf8", timeout: 30_000 } as const;
     const run = (...args: string[]) => spawnSync(cli[0]!, [...cli.slice(1), "run", ...args], options);
+    const turnProgram = "turn.cotal.js", turnHandler = "malformed.json";
+    writeFileSync(join(dir, turnProgram), 'const r = await spawn("reviewer");\nawait turn(r, { name: "review" });\nawait turn(r, { name: "review" });\n');
+    writeFileSync(join(dir, turnHandler), '{"turns":{"review":[{"status":"handoff","to":"reviewer"}]}}');
+    const plain = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
+    const json = run("simulate", turnProgram, "--handler", turnHandler, "--json");
+    const refusal = JSON.parse(json.stdout);
+    const remedy = `correct turns.review[0].to in ${turnHandler}, then rerun the simulation`;
+    c("a malformed scripted handoff names the file and exact destination in plain output and JSON",
+      plain.status === 1 && plain.stderr.includes(`in ${turnHandler}: turns.review[0].to must be an agent handle`) &&
+      plain.stderr.includes(`\nNext\n  ${remedy}`) && json.status === 1 && refusal.target?.file === turnHandler &&
+      refusal.error?.code === "SCHEMA_INVALID" && refusal.error?.remedy === remedy, { plain, json });
+    writeFileSync(join(dir, turnHandler), '{"turns":{"review":{"status":"done"}}}');
+    const corrected = run("simulate", turnProgram, "--handler", turnHandler, "--plain");
+    c("correcting the named file lets the same command complete both turns", corrected.status === 0 &&
+      /Program outcome:\s+completed/.test(corrected.stdout) && corrected.stdout.includes("/turn:review#1"), corrected);
     for (const handler of [undefined, "timer's $results file.json"]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
       const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
