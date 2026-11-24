@@ -4,7 +4,7 @@
  */
 import { spawn } from "node:child_process";
 import { NoLaunchManager, type ManagerChoice, type Mesh } from "./mesh.js";
-import { defaultManager } from "./options.js";
+import { defaultManager, noManagerKnownHere } from "./options.js";
 
 /** How long a manager the bridge starts waits with no agents before it stops itself. */
 const IDLE_EXIT_SECONDS = 600;
@@ -57,13 +57,20 @@ export async function startManager(space: string): Promise<string> {
 /** The managers a new agent may start on. When none of them is this machine's, as when none may or
  *  only another computer's is live, this machine's manager is started and the list read again, and
  *  `onStart` gets the line the thread shows. Another computer is used only when the thread's Machine
- *  option names it. Rejects when the start fails, or when the space still lists no manager here. */
-export async function launchManagers(m: Pick<Mesh, "space" | "managers" | "startManager">, onStart: (line: string) => void): Promise<ManagerChoice[]> {
+ *  option names it. When this machine's identity could not be read, none is known to be this
+ *  machine's and none is started: the listed ones are offered to choose from. Rejects when the start
+ *  fails, when the space still lists no manager here, or when none is listed and none may start. */
+export async function launchManagers(m: Pick<Mesh, "space" | "managers" | "startManager" | "machineUnreadable">, onStart: (line: string) => void): Promise<ManagerChoice[]> {
   const listed = await m.managers().catch((e: unknown) => {
     if (!(e instanceof NoLaunchManager)) throw e;
     return [];
   });
   if (defaultManager(listed)) return listed;
+  const unreadable = m.machineUnreadable();
+  if (unreadable !== undefined) {
+    if (listed.length === 0) throw new NoLaunchManager(noManagerKnownHere(m.space, unreadable));
+    return listed;
+  }
   onStart(await m.startManager());
   const after = await m.managers();
   if (!defaultManager(after)) throw new NoLaunchManager(`Started this machine's manager for ${m.space}, but the space does not list it as running here yet. Open the thread again in a moment.`);

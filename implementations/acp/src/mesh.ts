@@ -205,6 +205,9 @@ export interface Mesh {
    *  itself after a while with no agents. Resolves with the line the thread shows; rejects with
    *  {@link NoLaunchManager} naming the start's reason. */
   startManager(): Promise<string>;
+  /** Why this machine's identity could not be read, undefined when it could. Without it no manager
+   *  reads as this machine's, so a thread neither defaults to one nor starts one. */
+  machineUnreadable(): string | undefined;
   /** One manager as a choice, described from its presence, or from its own answer when its presence
    *  row is not found. */
   manager(instanceId: string): Promise<ManagerChoice>;

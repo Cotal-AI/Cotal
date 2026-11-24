@@ -64,36 +64,41 @@ export function namesDeregister(op: string, instanceId: string | undefined, own:
 }
 
 /** A manager as a choice, read from the roster's current row for it. It is local when the row names
- *  `here`, this machine's {@link managerMachineId}; its host is shown and decides nothing, since a
- *  machine's name can change while its manager runs. On a space where people sign in, `owner` is the
- *  person's, and only their own manager's row counts: another member may name an agent after it. An
- *  offline row says nothing about where the manager runs now, so it is not live and not local. */
-export function managerChoice(instanceId: string, roster: readonly Presence[], here: string, owner?: string): ManagerChoice {
+ *  `here`, this machine's {@link managerMachineId}; `here` is undefined when that could not be read,
+ *  and then none is. Its host is shown and decides nothing, since a machine's name can change while
+ *  its manager runs. On a space where people sign in, `owner` is the person's, and only their own
+ *  manager's row counts: another member may name an agent after it. An offline row says nothing about
+ *  where the manager runs now, so it is not live and not local. */
+export function managerChoice(instanceId: string, roster: readonly Presence[], here: string | undefined, owner?: string): ManagerChoice {
   const actor = remoteManagerActors(instanceId).supervisor;
   const row = roster.find((p) => (owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`) && p.status !== "offline");
   const seen = managerCandidate(instanceId, row).host;
   const machine = row ? presenceMachine(row) : undefined;
-  return { instanceId, ...(seen ? { host: seen } : {}), local: machine === here, live: row !== undefined };
+  return { instanceId, ...(seen ? { host: seen } : {}), local: here !== undefined && machine === here, live: row !== undefined };
 }
 
 /** What a manager's own `status` reported about where it runs. */
 type Reported = { host?: string; machine?: string };
 
 /** A manager whose rail is not gone as a choice, from what it reported. */
-const railChoice = (instanceId: string, seen: Reported, here: string): ManagerChoice =>
-  ({ instanceId, ...(seen.host ? { host: seen.host } : {}), local: seen.machine === here, live: seen.host !== undefined });
+const railChoice = (instanceId: string, seen: Reported, here: string | undefined): ManagerChoice =>
+  ({ instanceId, ...(seen.host ? { host: seen.host } : {}), local: here !== undefined && seen.machine === here, live: seen.host !== undefined });
 
-/** This machine as its managers name it. Without it no manager can be known to run here, so the read
- *  fails rather than guess from the host name. */
-function thisMachine(): string {
-  try { return managerMachineId(); }
-  catch (e) { throw new Error(`This machine's identity could not be read, so no manager can be known to run on it: ${(e as Error).message}`); }
+/** Why this machine's identity could not be read, undefined when it could. Without it no manager is
+ *  known to run here, and the host name is no stand-in. */
+function machineUnreadable(): string | undefined {
+  try { managerMachineId(); }
+  catch (e) { return (e as Error).message; }
+  return undefined;
 }
+
+/** This machine as its managers name it, undefined when {@link machineUnreadable} says why not. */
+const thisMachine = (): string | undefined => (machineUnreadable() === undefined ? managerMachineId() : undefined);
 
 /** A signed-in person's listed manager as a choice. `seen` is what its rail reported, undefined when
  *  the rail is gone. A manager with no current row under the person's principal, such as the space's
  *  own, is described by its rail's report. */
-export function listedChoice(instanceId: string, seen: Reported | undefined, roster: readonly Presence[], here: string, owner: string): ManagerChoice | undefined {
+export function listedChoice(instanceId: string, seen: Reported | undefined, roster: readonly Presence[], here: string | undefined, owner: string): ManagerChoice | undefined {
   if (!seen) return undefined;
   const row = managerChoice(instanceId, roster, here, owner);
   return row.live ? row : railChoice(instanceId, seen, here);
@@ -368,7 +373,7 @@ export function runningManagers<T>(space: string, listed: readonly string[], che
 }
 
 /** The reads a new thread's options come from, and the launch. */
-function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "startManager" | "manager" | "personas" | "spawn"> {
+function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "startManager" | "machineUnreadable" | "manager" | "personas" | "spawn"> {
   const { target, started, observer } = c;
   const { client, resolve, ask, choice, yourManagers } = p;
   return {
@@ -417,6 +422,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
     },
 
     startManager: () => startManager(target.space),
+
+    machineUnreadable,
 
     async manager(instanceId) {
       const seen = choice(instanceId);

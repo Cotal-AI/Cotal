@@ -158,6 +158,11 @@ class FakeMesh implements Mesh {
     this.starts++;
     return this.onStart();
   }
+  /** Why this machine's identity could not be read, when it could not. */
+  unreadable: string | undefined;
+  machineUnreadable() {
+    return this.unreadable;
+  }
   /** Each manager holds its own persona catalog. */
   personasAsked: (string | undefined)[] = [];
   async personas(instanceId?: string) {
@@ -316,6 +321,37 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   space.onStart = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: the manager did not start: boom"); };
   const failed = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
   check("remote live, no local: a failed start fails the new thread with the start's reason", failed?.code === -32603 && failed.message === "Could not start this machine's manager for fake: the manager did not start: boom", failed);
+  c.conn.close();
+}
+// This machine's identity could not be read, as in a container with no /etc/machine-id: no manager is
+// known to run here. A new thread offers the listed managers with none chosen and starts none, a
+// prompt with none chosen says why, and a thread whose Machine names one runs there.
+{
+  const space = new FakeMesh();
+  const why = "ENOENT: no such file or directory, open '/etc/machine-id'";
+  const linux = process.platform === "linux";
+  space.unreadable = why;
+  space.managerList = [{ instanceId: "m2", host: "there", local: false, live: true }];
+  const c = connect(async () => space);
+  await c.init;
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch((e: Error) => e);
+  const machine = opened instanceof Error ? undefined : opened.configOptions?.find((o) => o.id === "machine") as { currentValue?: string; options?: { value: string }[] } | undefined;
+  check("with this machine's identity unread, a new thread opens with no Machine chosen and starts no manager",
+    space.starts === 0 && machine?.currentValue === "none" && JSON.stringify(machine.options?.map((o) => o.value)) === JSON.stringify(["none", "m2"]), { starts: space.starts, opened: opened instanceof Error ? opened.message : machine });
+  const sid = opened instanceof Error ? "none" : opened.sessionId;
+  const unchosen = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "go" }] }));
+  check("and its prompt with none chosen fails with the reason and starts none", space.starts === 0 && space.spawned.length === 0 && unchosen?.code === -32602 && unchosen.message === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or choose a machine in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Choose a machine in the Machine option."), { starts: space.starts, unchosen });
+  await c.agent.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: "machine", value: "m2" }).catch(() => undefined);
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const there = await within(c.agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("a thread whose Machine names a manager runs there without this machine's identity", there?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m2" && space.starts === 0, { there, starts: space.starts });
+  space.managerList = [];
+  const none = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("with no manager listed, a new thread fails with the reason and starts none", space.starts === 0 && none?.code === -32603 && none.message === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or start a manager with `cotal manager start --space fake` and choose it in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Start a manager with `cotal manager start --space fake` and choose it in the Machine option."), { starts: space.starts, none });
   c.conn.close();
 }
 // a thread no manager may start starts this machine's manager

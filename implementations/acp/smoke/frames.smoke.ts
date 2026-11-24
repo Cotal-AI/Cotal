@@ -35,6 +35,7 @@ import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
 import { answeredReads, frameOf, listedChoice, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
 import { launchManagers } from "../src/manager-start.js";
+import { noMachine } from "../src/options.js";
 import { NoLaunchManager } from "../src/mesh.js";
 import type { AguiEventLike, ManagerChoice, SeatFrame } from "../src/mesh.js";
 
@@ -310,7 +311,7 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   const mine = listedChoice("a", {}, [mineRow], HERE, "u_p");
   check("the person's own manager is described by its row", mine?.live === true && mine.local === true && mine.host === "here", mine);
   let starts = 0;
-  const listed = await launchManagers({ space: "s", managers: async () => [own!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
+  const listed = await launchManagers({ space: "s", managers: async () => [own!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
   check("so a new thread there starts no second manager", starts === 0 && Array.isArray(listed) && listed.length === 1, { starts, listed });
 }
 
@@ -325,7 +326,7 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   const listed = listedChoice("mac", { host: "mac-cafe", machine: HERE }, roster, HERE, "u_p");
   check("and as a listed manager it reads local", listed?.live === true && listed.local === true, listed);
   let starts = 0;
-  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
+  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
   check("so a new thread starts no second manager", starts === 0 && Array.isArray(got), { starts, got: got instanceof Error ? got.message : got });
 }
 
@@ -338,8 +339,33 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   const listed = listedChoice("twin", { host: "mac-cafe", machine: THERE }, [], HERE, "u_p");
   check("nor does its rail's report", listed?.live === true && listed.local === false, listed);
   let starts = 0;
-  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started") }, () => {}).catch((e: Error) => e);
+  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
   check("so a new thread starts this machine's manager", starts === 1, { starts, got: got instanceof Error ? got.message : got });
+}
+
+// This machine's identity could not be read, as in a container with no /etc/machine-id. A manager a
+// thread names is still described, and none reads as this machine's, not even one that names no
+// machine either. So a new thread neither defaults to one nor starts one.
+{
+  const card = { id: "u_p.manager_box", name: "manager_box", meta: { host: "box" } };
+  const roster = [({ card, status: "idle" }) as unknown as Presence];
+  const held = managerChoice("box", roster, undefined, "u_p");
+  check("with this machine's identity unread, a manager row that names no machine is described, live and not local", held.live === true && held.local === false && held.host === "box", held);
+  const listed = listedChoice("box", { host: "box" }, [], undefined, "u_p");
+  check("nor does a rail's report that names no machine read local", listed?.live === true && listed.local === false, listed);
+  const why = "ENOENT: no such file or directory, open '/etc/machine-id'";
+  const linux = process.platform === "linux";
+  check("a thread with no Machine chosen says why it cannot tell which manager runs here", noMachine("s", why) === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or choose a machine in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Choose a machine in the Machine option."), noMachine("s", why));
+  let starts = 0;
+  const space = (managers: ManagerChoice[]) => ({ space: "s", managers: async () => managers, startManager: async () => (starts++, "started"), machineUnreadable: () => why });
+  const got = await launchManagers(space([listed!]), () => {}).catch((e: Error) => e);
+  check("so a new thread starts no manager and offers the listed one", starts === 0 && Array.isArray(got) && got.length === 1 && got[0]!.instanceId === "box", { starts, got: got instanceof Error ? got.message : got });
+  const none = await launchManagers(space([]), () => {}).catch((e: Error) => e);
+  check("with none listed, the new thread fails with the reason and starts none", starts === 0 && none instanceof NoLaunchManager && none.message === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or start a manager with `cotal manager start --space s` and choose it in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Start a manager with `cotal manager start --space s` and choose it in the Machine option."), { starts, none: none instanceof Error ? none.message : none });
 }
 
 // Remote live, no local: only another computer's manager is live, so this machine's is started.
@@ -350,7 +376,7 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   const space = (after: ManagerChoice[], start = async () => line) => {
     let listed = [far];
     const counts = { starts: 0, reads: 0 };
-    return { counts, space: "s", managers: async () => (counts.reads++, listed), startManager: async () => { counts.starts++; const said = await start(); listed = after; return said; } };
+    return { counts, space: "s", managers: async () => (counts.reads++, listed), startManager: async () => { counts.starts++; const said = await start(); listed = after; return said; }, machineUnreadable: () => undefined };
   };
   const lines: string[] = [];
   const s1 = space([near, far]);

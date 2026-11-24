@@ -840,7 +840,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         return { stopReason };
       }
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
-      if (!session.selection.machine) throw new RequestError(-32602, noMachine(m.space));
+      if (!session.selection.machine) throw new RequestError(-32602, noMachine(m.space, m.machineUnreadable()));
       const { agent: harness, model } = parseModel(session.selection.model);
       const why = refusal(session.offer.catalogs, harness);
       const catalog = session.offer.catalogs.find((c) => c.agent === harness);
