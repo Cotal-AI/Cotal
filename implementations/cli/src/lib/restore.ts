@@ -362,7 +362,11 @@ function assertNewStorePath(target: string, source: string): void {
 function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {
   const canonicalTarget = explicit ? checkStorePath(target, "restore", () => canonicalFuturePath(target)) : canonicalFuturePath(target);
   if (canonicalTarget !== source && (contains(source, canonicalTarget) || contains(canonicalTarget, source)))
-    throw new Error("restore target must not overlap the preserved source store");
+    throw new CommandFailure("refused", "USAGE_INVALID", "restore target must not overlap the preserved source store. No restore started.", {
+      target: { storeDir: target },
+      remedy: "choose an absent `--store-dir` path outside the preserved source store, under an existing writable directory",
+      selfContained: true,
+    });
   if (contains(attempts, canonicalTarget) || contains(canonicalTarget, attempts))
     throw new Error("restore target must not overlap the maintenance attempt directory");
   if (contains(artifact, canonicalTarget) || contains(canonicalTarget, artifact))
