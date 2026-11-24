@@ -1244,7 +1244,19 @@ try {
     const previewArgs = /`cotal (down --dry-run [^`]+)`/.exec(unknown.env?.error?.remedy ?? "")?.[1];
     const whole = previewArgs ? cli(root, ...execWords(previewArgs)) : undefined;
     check("the printed preview reaches the requested stack and leaves its members running", whole?.status === 0 && whole.env?.target?.space === space && setManager !== null && alive(setManager) && setDelivery !== null && alive(setDelivery), whole && shown(whole));
-    const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--dry-run", "--json");
+    const alias = cli(otherRoot, "down", "nats", "--space", space, "--dry-run", "--json");
+    const memberArgs = /`cotal (down stack-broker --dry-run [^`]+)`/.exec(alias.env?.error?.remedy ?? "")?.[1];
+    const memberPlan = memberArgs ? cli(otherRoot, ...execWords(memberArgs)) : undefined;
+    check("a refused member preview suggests only the selected broker preview",
+      alias.status === 2 && !alias.env?.error?.remedy?.includes("`cotal down`") && memberPlan?.status === 0
+        && memberPlan.env?.result?.kind === "service-operation-preview" && memberPlan.env.target?.space === space
+        && memberPlan.env.target.name === "stack-broker" && setManager !== null && alive(setManager), shown(alias));
+    for (const names of [["web"], ["nosuch"], ["manager", "nosuch"]]) {
+      const missing = cli(otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
+      check(`missing ${names.join(" ")} preview stays a scoped inventory read`, missing.status === 2
+        && missing.env?.error?.remedy === `list this space's saved definitions with \`cotal service --space ${space} --json\``, shown(missing));
+    }
+    const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--yes", "--json");
     const unknownSet = cli(otherRoot, "down", "delivery", "nosuch", "--space", space, "--yes", "--json");
     const remedy = unknownSet.env?.error?.remedy;
     check("a missing name refuses the whole set and names the same scoped inventory as single named down",
@@ -2089,6 +2101,14 @@ try {
     const broker = pidOf(space, "stack-broker");
     if (broker !== null) process.kill(broker, "SIGSTOP");
     track(space);
+    const starting = cli(root, "status", "--components", "--space", space);
+    check(`${space}: status tells the operator to wait while the startup writer is alive`,
+      pinned && child.exitCode === null && starting.status === 1 && starting.stdout.includes("Startup in progress") && starting.stdout.includes("Wait for startup to finish, then check again")
+      && !starting.stdout.includes(" down --yes") && !starting.stdout.includes("last up ended"), { ...shown(starting), stdout: starting.stdout });
+    const startingJson = cli(root, "status", "--space", space, "--json");
+    const startingFolder = startingJson.env?.result?.folder as Record<string, unknown> | undefined;
+    check(`${space}: status --json reports no interrupted operation and adds no startup field`,
+      startingJson.status === 0 && startingFolder?.stackBlock === null && startingFolder.stackUnfinished === null && !Object.hasOwn(startingFolder, "stackStarting"), { ...shown(startingJson), folder: startingFolder });
     child.kill("SIGKILL");
     await exited(child);
     if (broker !== null) process.kill(broker, "SIGCONT");

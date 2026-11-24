@@ -246,6 +246,11 @@ store it set aside. A reopened step accepts an answer again. `cotal status` and 
 `backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
 sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
 and needs disk space for that copy.
+
+If `--store-dir` names a symbolic link to an existing directory, restore refuses `USAGE_INVALID`
+(exit 1) before staging. Choose an unused path inside an existing writable directory instead of
+using the link's target.
+
 `up --restore --restore-only registry` prints the same two lines. Without `--store-dir`, a restore
 creates its store at `.cotal/nats`, also when the cut's store is elsewhere, as after
 `up --store-dir`; only a controller root restores into its recorded store. The preserved store stays

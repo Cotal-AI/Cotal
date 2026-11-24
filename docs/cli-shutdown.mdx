@@ -33,6 +33,7 @@ same way, so `cotal down manager delivery` stops `stack-manager` and `stack-deli
 member of the target carries its own `requested`. A name that is no preset, such as `nats`,
 refuses `TARGET_NOT_FOUND` there and names the `stack-` member to use, and a name with no member
 names `cotal service --space <space>` to list the saved definitions in the space the stop targeted.
+On a dry run, the suggested member command keeps the preview, instance and output options. If no member is available, the lookup lists the selected space's definitions in the requested format.
 This refusal stops no service, even when several names are given. A set never stops the broker, so
 `nats`, `broker` and `stack-broker` each refuse the whole set `TARGET_NOT_FOUND` before any member
 resolves. To inspect a stop of the whole stack, run the suggested preview in the project folder it
@@ -465,6 +466,9 @@ refuses `--json` or `--plain`, omit that format and keep `--dry-run` and the ori
 It does not reload launch-time persona files, so a missing persona does not prevent that preview. When this
 root records a stack without an additive ledger, file-form apply refuses `UNSUPPORTED` and
 names bare `cotal down` from that root. It does not require a run ID or stop the stack implicitly.
+
+If teardown of an additive ledger is incomplete, the retry command is `cotal down --run=<id>`.
+Run it from the checkout that holds the ledger. It does not need the manifest file.
 
 For an additive ledger from the retired `spawn -f`, `down -f` keeps an authenticated channel when
 membership cannot be read. Its output includes the read failure, rather than calling every failure

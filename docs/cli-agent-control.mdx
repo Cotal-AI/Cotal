@@ -38,6 +38,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 ### Control credentials
 
+When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
+in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
+
 Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
 and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach
 retry keeps `--no-reconnect`. Both commands keep a valid `--on` selector. On an open or static-auth

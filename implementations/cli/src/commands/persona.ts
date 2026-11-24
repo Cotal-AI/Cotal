@@ -71,7 +71,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (sub === undefined) return list(catalog, presentation, target);
   const path = personaPath(catalog.root, name!, sub === "show" ? "show" : "write");
   if (sub === "show") {
-    const source = requirePersonaSource(path, target);
+    const source = requirePersonaSource(path, target, presentation);
     const definition = validatePersona(source.bytes, path);
     const word = personaNameWords(name!, target);
     const jsonWords = personaNameWords(name!, `${target} --json`);
@@ -109,7 +109,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return receipt(presentation, catalog, name!, path, "created", target);
   }
   if (sub === "edit") {
-    const edit = await editPersona(path, name!, catalog, target, presentation === "json");
+    const edit = await editPersona(path, name!, catalog, target, presentation);
     if (edit.action === "saved") {
       const spawnWords = personaSpawnWords(name!, target, userMode, !!spawnNameError(edit.displayName, { userMode }));
       return receipt(presentation, catalog, name!, path, "saved", target, false, spawnWords);
@@ -117,7 +117,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
     return editNotSaved(presentation, catalog, name!, path, edit);
   }
   if (sub === "remove") {
-    const expected = requirePersonaSource(path);
+    const expected = requirePersonaSource(path, target, presentation);
     // The seeded default is what a bare `cotal spawn` launches, so removing it says so.
     const seeded = name === "default";
     const question = seeded ? `Remove the seeded default persona '${name}' at ${path}? A bare \`cotal spawn\` launches it.` : `Remove '${name}' at ${path}?`;

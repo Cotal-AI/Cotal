@@ -787,11 +787,11 @@ try {
       const receipt = JSON.parse(refused.stdout);
       const draft = receipt.error?.remedy.match(/kept in (.*?); correct it/)?.[1];
       const retry = receipt.error?.remedy.match(/`([^`]+)`/)?.[1];
-      check(`invalid draft keeps ${selector[0]} in the retry and leaves both catalogs intact`,
+      check(`invalid draft keeps ${selector[0]} and JSON in the retry and leaves both catalogs intact`,
         refused.status === 1 && receipt.target?.space === "alpha" && receipt.error?.code === "SCHEMA_INVALID" &&
-        retry === edit && draft && readFileSync(draft, "utf8") === invalid &&
+        retry === `${edit} --json` && draft && readFileSync(draft, "utf8") === invalid &&
         readFileSync(alphaFile, "utf8") === alphaCard && readFileSync(otherFile, "utf8") === otherCard, refused.stdout);
-      const retried = native([...retry.split(" ").slice(1), "--json"], scratch, { ...childEnv, VISUAL: "true" });
+      const retried = native(retry.split(" ").slice(1), scratch, { ...childEnv, VISUAL: "true" });
       const retriedReceipt = JSON.parse(retried.stdout);
       check(`the printed retry with ${selector[0]} opens alpha`,
         retried.status === 0 && retriedReceipt.target?.space === "alpha" && retriedReceipt.outcome === "no-op", retried.stdout + retried.stderr);

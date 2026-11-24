@@ -146,7 +146,7 @@ import {
 } from "../lib/restore.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
-import { freshStackServer, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
+import { freshStackServer, legacyUpRetry, retryStackAddress, serverWithFreePort } from "../lib/up-broker-address.js";
 import { pendingRestores, type PendingOrdinaryResume, pendingOrdinaryResumes } from "./up-pending.js";
 import {
   parseMaxFileStore,
@@ -1102,7 +1102,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     const presentation = presentationOf(values);
     const holder = values.foreground ? foregroundHolder(meshRoot) : undefined;
     if (holder !== undefined)
-      refuseForegroundStackHolder(meshRoot, stackSpace, holder);
+      refuseForegroundStackHolder(meshRoot, stackSpace, holder, noManager);
     // A signal ends a detached start where it is, after it records a launch it had not yet pinned to
     // its child, and the notice names what it left running. It is installed before the lock, so no
     // moment of the start exits without it.
@@ -1113,7 +1113,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
       return `${failure.message} ${failure.remedy}`;
     });
     try {
-      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : undefined);
+      const stackLock = acquireStackOperationLock(meshRoot, values.foreground ? "foreground up" : "up");
       const native = controllerStackNative();
       const prepare = async () => {
         try {
@@ -1791,7 +1791,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
     }
     refuseRegisteredAddress(server, space, `start this one at another address with \`cotal up --server nats://${host}:<port>\``);
   }
-  await assertBrokerAddressFree(server, `${displayCmd()} up${values.host === undefined ? "" : ` --host ${shellWord(host)}`}`, host);
+  await assertBrokerAddressFree(server, legacyUpRetry(args.raw), host);
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
     if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));

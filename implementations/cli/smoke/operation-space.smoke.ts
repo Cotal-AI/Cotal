@@ -152,17 +152,21 @@ check("its plain report begins with Mesh: <space> and ends with a Next", conflic
 // A persona that does not exist: show and remove name where to see the ones that do.
 for (const args of [["show", "nosuch"], ["remove", "nosuch", "--yes"]]) {
   const missing = cotal("persona", ...args, "--json");
-  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona`", shown(missing));
+  check(`persona ${args[0]} of a missing persona is TARGET_NOT_FOUND with a remedy`, missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.remedy === "see the personas here with `cotal persona --json`", shown(missing));
 }
 const alternate = mkdtempSync(join(home, "alternate-"));
 const alternatePrepared = cotalAt(alternate, "space", "create", "alternate-catalog", "--root", ".");
 check("fixture: a second catalog is prepared", alternatePrepared.status === 0, shown(alternatePrepared));
-const alternateMiss = cotal("persona", "show", "nosuch", "--space", "alternate-catalog", "--json");
-const alternateList = alternateMiss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
-check("persona show in a different catalog refuses and its recovery lists that catalog",
-  alternateMiss.status === 2 && alternateMiss.envelope?.error?.code === "TARGET_NOT_FOUND"
-    && alternateMiss.envelope.target?.space === "alternate-catalog" && alternateList === "cotal persona --space alternate-catalog"
-    && cotal(...alternateList.split(" ").slice(1), "--json").envelope?.target?.space === "alternate-catalog", shown(alternateMiss));
+for (const verb of ["show", "edit", "remove"]) {
+  const miss = cotal("persona", verb, "nosuch", "--space", "alternate-catalog", "--json");
+  const list = miss.envelope?.error?.remedy?.match(/`([^`]+)`/)?.[1];
+  check(`persona ${verb} suggests a JSON inventory of the requested catalog`, miss.status === 2
+    && miss.envelope?.error?.code === "TARGET_NOT_FOUND" && list === "cotal persona --space alternate-catalog --json"
+    && cotal(...list.split(" ").slice(1)).envelope?.target?.space === "alternate-catalog", shown(miss));
+}
+const legacyMiss = cotal("personas", "show", "nosuch", "--space", "alternate-catalog", "--creds", "unused.creds");
+check("legacy show names the selected catalog without an unused credential option", legacyMiss.status === 2
+  && legacyMiss.stderr.includes("see the personas here with `cotal persona --space alternate-catalog`"), shown(legacyMiss));
 // A complete file that names another persona: the refusal names the file's name and the create that keeps it.
 const otherFile = join(root, "bernie.md");
 writeFileSync(otherFile, "---\nname: bernie\nrole: reviewer\nsubscribe: []\n---\n");
@@ -214,8 +218,8 @@ for (const [argv, rerun] of [
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
-  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --space elsewhere --on <instance>"],
-  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --server nats://127.0.0.1:39200 --on <instance>"],
+  [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --json --space elsewhere --on <instance>"],
+  [["ps", "--slots", "--server", "nats://127.0.0.1:39200", "--on", "bogus"], "cotal ps --slots --json --server nats://127.0.0.1:39200 --on <instance>"],
   [["models", "--harness", "claude", "--on", "bad"], "cotal models --harness claude --on <instance>"],
   [["spawn", "default", "-d", "--on", "bad"], "cotal spawn default -d --json --on <instance>"],
 ] as const) {
@@ -224,6 +228,13 @@ for (const [argv, rerun] of [
   check(`${argv.slice(0, -2).join(" ")} --on bad names ${rerun} and never --on twice`,
     pinned.status === 1 && pinned.envelope?.error?.code === "USAGE_INVALID" && (pinned.envelope.error.remedy ?? "").endsWith(`rerun it as \`${rerun}\``) && !said.includes("--on --on"), shown(pinned));
 }
+const emptyPsPin = cotal("ps", "--slots", "--space", "elsewhere", "--json", "--on=");
+const lookupHint = emptyPsPin.envelope?.error?.message ?? "";
+check("an empty slot pin names the JSON manager lookup and a separate JSON slot retry", emptyPsPin.status === 1
+  && lookupHint.includes("`cotal ps --json --space elsewhere`") && lookupHint.includes("`cotal ps --slots --json --space elsewhere --on <instance>`"), shown(emptyPsPin));
+const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
+check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
+  && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
