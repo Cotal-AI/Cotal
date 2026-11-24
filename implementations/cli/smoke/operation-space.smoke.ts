@@ -132,7 +132,7 @@ check("fixture: the space is prepared and not started", prepared.status === 0, s
     [["-m=example"], "-m=example gives -m the value", "write -m example or --model=example"],
     [["--server=localhost"], "--server is not a valid URL", ""],
     [["--name", ""], "--name cannot be empty", ""],
-    [["--subscribe", "#bad"], 'invalid channel "#bad"', "pass the channel without its #"],
+    [["--subscribe", "#bad"], 'invalid channel "#bad"', "name the channel without its #, as bad"],
   ] as const) {
     const removed = cotal("start", "--config=default", "--live-only", "--dry-run", "--json", ...extra);
     check(`start with --live-only and invalid ${extra[0]} reports the argument problem rather than a manager conflict`,
