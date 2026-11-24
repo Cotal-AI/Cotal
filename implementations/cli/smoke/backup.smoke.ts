@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSyn
 import { hostname, tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, stageArtifact } from "../src/lib/backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
 import { clean } from "../src/commands/clean.js";
@@ -22,6 +22,29 @@ import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
+
+function checkUnreadableArtifactFile(directory: string, file: string): void {
+  const path = join(directory, file);
+  const before = readFileSync(path);
+  chmodSync(path, 0o200);
+  try {
+    assert.equal(inspectBackupArtifact(directory, false).integrity, "not-checked");
+    assert.throws(() => backupRead({ positionals: ["verify", directory], values: {}, raw: [] }), (error: unknown) => {
+      if (!isCommandFailure(error)) return false;
+      assert.equal(error.outcome, "refused");
+      assert.equal(error.code, "PERMISSION_DENIED");
+      assert.equal(error.message, `this account cannot read backup artifact file ${file}`);
+      assert.deepEqual(error.target, { directory, file, fault: "unreadable" });
+      assert.match(error.native?.code ?? "", /^(EACCES|EPERM)$/);
+      assert.match(error.remedy ?? "", /restore read access.*or use a readable copy/);
+      return true;
+    }, `verify refuses unreadable ${file} as a permission denial`);
+  } finally {
+    chmodSync(path, 0o600);
+  }
+  assert.equal(inspectBackupArtifact(directory, true).integrity, "matched-declared-sizes-and-sha256");
+  assert.deepEqual(readFileSync(path), before);
+}
 
 function checkLinkedInterruptedBackup(root: string): void {
   const parent = join(root, "backups"), alias = join(root, "backup-link");
@@ -111,6 +134,9 @@ try {
   }
   assert.throws(() => createArtifactWriter(destination), /already exists/);
   const originalManifest = readFileSync(join(destination, "manifest.json"), "utf8");
+  if (process.geteuid && process.geteuid() !== 0) {
+    for (const file of [snapshot.path, checkpoints.path]) checkUnreadableArtifactFile(realpathSync(destination), file);
+  }
 
   const stagingParent = join(root, "staging");
   mkdirSync(stagingParent, { mode: 0o700 });

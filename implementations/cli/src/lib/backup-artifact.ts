@@ -379,6 +379,19 @@ export function isTrustBound(selection: string, mode: string): boolean {
 /** The receipt line for a trust-bound artifact. */
 export const TRUST_BOUND_TEXT = "only a root that still holds the trust state it was taken under, not another machine or a fresh root";
 
+function verifyArtifactFile(directory: string, file: BackupFileRecord): void {
+  try {
+    copyPinnedFile(join(directory, file.path), undefined, file);
+  } catch (error) {
+    const { code, syscall } = error as NodeJS.ErrnoException;
+    if (syscall !== "open" || (code !== "EACCES" && code !== "EPERM")) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot read backup artifact file ${file.path}`, {
+      target: { directory, file: file.path, fault: "unreadable" }, native: { code },
+      remedy: "restore read access to that file and retry verification, or use a readable copy of the backup",
+    });
+  }
+}
+
 /** Read the artifact at its canonical path without staging, starting a broker or restoring. */
 export function inspectBackupArtifact(artifact: string, verify: boolean) {
   const volume = parse(artifact).root;
@@ -391,7 +404,7 @@ export function inspectBackupArtifact(artifact: string, verify: boolean) {
   if (!bytes) throw new Error("backup manifest is absent");
   const manifest = parseManifest(path, bytes);
   validateArtifactInventory(artifact, manifest);
-  if (verify) for (const file of manifest.files) copyPinnedFile(join(artifact, file.path), undefined, file);
+  if (verify) for (const file of manifest.files) verifyArtifactFile(artifact, file);
   const after = lstatSync(artifact, { bigint: true });
   const current = readLocalRecordSource(path, MAX_MANIFEST_BYTES, false);
   if (before.dev !== after.dev || before.ino !== after.ino || !current?.equals(bytes)) throw new Error("backup artifact changed during inspection");
