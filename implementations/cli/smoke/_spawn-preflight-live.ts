@@ -65,7 +65,7 @@ setInterval(() => {}, 60_000);
     const invalid: [string, string[], RegExp][] = [
       ["claude", ["--resume=-foo"], /cannot resume/], ["codex", ["--resume=abc"], /resum/], ["opencode", ["--resume=abc"], /resum/],
       ["pi", ["--resume=--help"], /cannot resume/], ["pi", ["--resume=-v"], /cannot resume/], ["pi", ["--prompt=-bad"], /initial prompt cannot start/],
-      ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "high"], /model variants/],
+      ["claude", ["--prompt", "   "], /prompt was given but it is empty/], ["pi", ["--opt", "offline=true"], /launch options.*not implemented/], ["claude", ["--variant", "extreme"], /effort level \W+extreme\W+ is not one claude accepts/],
       ["hermes", [], /managed Hermes profile needs a model.*--model.*model:.*COTAL_HERMES_ADOPT_HOME/],
     ];
     for (const [harness, flags, diagnostic] of invalid) {

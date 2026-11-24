@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts } from "@cotal-ai/core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
@@ -172,9 +172,35 @@ interface ControlLine {
 
 const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
 
-function isModelRow(row: unknown): row is { value: string; displayName: string } {
-  const { value, displayName } = (row ?? {}) as { value?: unknown; displayName?: unknown };
-  return typeof value === "string" && typeof displayName === "string";
+/** The levels `claude --effort` accepts (2.1.330). Given another level, claude warns on stderr and
+ *  runs at its default effort, so a variant outside this list is refused at launch. */
+const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+interface ModelRow {
+  value: string;
+  displayName: string;
+  resolvedModel?: string;
+  supportedEffortLevels?: string[];
+}
+
+function isModelRow(row: unknown): row is ModelRow {
+  const { value, displayName, resolvedModel, supportedEffortLevels: levels } = (row ?? {}) as Partial<Record<keyof ModelRow, unknown>>;
+  return (
+    typeof value === "string" &&
+    typeof displayName === "string" &&
+    (resolvedModel === undefined || typeof resolvedModel === "string") &&
+    (levels === undefined || (Array.isArray(levels) && levels.every((level) => typeof level === "string")))
+  );
+}
+
+/** An alias such as `opus` follows each new release, and some logins name it only "Opus", so its name
+ *  also carries the model it resolves to today. A value that extends that model, such as
+ *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. */
+function modelInfo(row: ModelRow): ModelInfo {
+  const { value, resolvedModel } = row;
+  const resolves = resolvedModel && resolvedModel !== value ? ` (${value.startsWith(resolvedModel) ? value : resolvedModel})` : "";
+  const levels = row.supportedEffortLevels ?? [];
+  return { id: value, name: row.displayName + resolves, ...(levels.length ? { variants: levels.map((name) => ({ name })) } : {}) };
 }
 
 function initializeAnswer(text: string): ModelCatalog | undefined {
@@ -193,7 +219,7 @@ function initializeAnswer(text: string): ModelCatalog | undefined {
   const rows = result?.models;
   if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
   // `default` points at claude's own default model, which a launch that names no model gets anyway.
-  return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map((m) => ({ id: m.value, name: m.displayName })) };
+  return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map(modelInfo) };
 }
 
 async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
@@ -267,6 +293,7 @@ export const claudeConnector: Connector = {
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,
+  supportsModelVariant: true, // variant = claude's `--effort` level
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
@@ -289,7 +316,8 @@ export const claudeConnector: Connector = {
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
-    if (opts.variant) throw new Error("claude connector: model variants are not supported");
+    if (opts.variant !== undefined && !CLAUDE_EFFORT_LEVELS.includes(opts.variant))
+      throw new Error(`claude connector: effort level ${JSON.stringify(opts.variant)} is not one claude accepts (${CLAUDE_EFFORT_LEVELS.join(", ")})`);
     // Operator MCP servers shared with this agent: the cotal config's list (see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
     const exclusive = opts.mcpServersExclusive === true || opts.carried !== undefined;
@@ -457,6 +485,12 @@ export const claudeConnector: Connector = {
       if (opts.model) {
         args.push("--model", opts.model);
         env.COTAL_MODEL = opts.model;
+      }
+      // An explicit `--opt effort=` wins, as a permission option does, and the seat is then not
+      // labelled with a variant it does not run.
+      if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
+        args.push("--effort", opts.variant);
+        env.COTAL_VARIANT = opts.variant;
       }
 
       // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
