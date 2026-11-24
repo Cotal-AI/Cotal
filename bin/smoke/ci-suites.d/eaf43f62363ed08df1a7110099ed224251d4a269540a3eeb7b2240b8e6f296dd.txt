@@ -1,0 +1,3 @@
+# An agent's naming from its first message, with no broker: the name taken from a model's reply,
+# the request's framing and cap, which message starts it, and that every end removes the pending mark.
+smoke:agent-naming
