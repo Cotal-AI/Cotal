@@ -4956,7 +4956,9 @@ machine id, and its own running `@cotal-ai/manager` package version, captured at
 The machine id is HMAC-SHA256 keyed by the host's OS machine identity (`/etc/machine-id` on Linux,
 the hardware UUID on macOS, and on Windows the system ID Windows derives for the publisher) over
 the ASCII string `cotal manager host`, written as 64 lowercase hex digits. A Manager MUST NOT
-publish the OS identity itself, and omits `machine` when it cannot read that identity. Its
+publish the OS identity itself. It omits `machine` when it cannot read that identity, as in a
+container without `/etc/machine-id`, and a caller then never reads it as running on the caller's
+own machine. Its
 presence card carries the same value as `meta.machine` (§6). These fields are advisory only and
 MUST NOT grant authority, select a route or determine placement. One use is allowed: a caller on
 the same machine MAY compare `machine` with the value it derives itself to recognise a Manager

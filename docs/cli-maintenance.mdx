@@ -451,6 +451,14 @@ lifetime notice that `start` prints there first, and the refusal says
 so a fresh machine or container has its connectors before the manager boots; `status`, `logs`,
 `stop` and the maintenance verbs install nothing.
 
+A manager publishes this machine's id as `machine` in its `status` and presence, so a client on the
+same machine, such as [`cotal acp`](acp-clients.mdx), knows it runs there even after the host name
+changes. The id is an HMAC of the OS machine identity: `/etc/machine-id` on Linux, the hardware UUID
+on macOS, and the system ID on Windows. Where the manager cannot read that identity, as in a
+container without `/etc/machine-id`, it leaves `machine` out and its log says so in one line. No
+client then reads it as running on the client's own machine, and `cotal acp` on such a host fails a
+new thread, saying it cannot read this machine's id.
+
 `reconcile` and `seats` are the [manager maintenance](#manager-maintenance) commands. Bare
 `cotal manager` lists every verb and starts nothing.
 
