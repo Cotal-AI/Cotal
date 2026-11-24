@@ -514,8 +514,10 @@ cotal persona show <name> [--json|--plain]
 cotal persona create <name> --file <persona.md>
 cotal persona create <name> --prompt <text> --subscribe <a,b> [--allow-subscribe <a,b>] [--allow-publish <a,b>]
 cotal persona edit <name> [--json|--plain]
-cotal persona remove <name> --yes
+cotal persona remove <name> --yes [--json|--plain]
 ```
+
+If removal cannot prompt, the suggested confirmation keeps your target and output format.
 
 `cotal personas` is the earlier parser for the same catalog and is a legacy command. It still
 runs, and `cotal help personas` still prints its help, but `cotal help` no longer lists it and
