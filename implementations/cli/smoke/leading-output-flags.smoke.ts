@@ -112,6 +112,21 @@ check("finite JSON refusal carries the retained extension collision once", colli
 const collisionText = run(missingKey, collisionConfig);
 check("text refusal keeps the retained extension collision on stderr", collisionText.status === 1 && collisionText.stdout === "" &&
   collisionText.stderr.includes("output-fixture@1.0.0"), shown(collisionText));
+const forcedColor = { FORCE_COLOR: "1", NO_COLOR: "" };
+const collisionPlain = run(["config", "get", "harness", "--plain"], collisionConfig, forcedColor);
+const collisionPlainRefusal = run(["--plain", ...missingKey], collisionConfig, forcedColor);
+const collisionRich = run(["config", "get", "harness"], collisionConfig, forcedColor);
+const collisionLine = collisionRich.stderr.split("\n")[0] ?? "";
+const uncoloredCollision = collisionLine.replace(/\u001b\[\d+m/g, "");
+check("rich output still colors the collision warning under FORCE_COLOR", collisionRich.status === 0 && collisionLine.startsWith("\u001b[31m") &&
+  uncoloredCollision.startsWith('! command "config"') && ["cotal", "pnpm cotal"].some((cli) => uncoloredCollision.includes(`\`${cli} ext remove output-fixture\``)), shown(collisionRich));
+check("plain success keeps the same warning without ANSI escapes under FORCE_COLOR", collisionPlain.status === 0 && collisionPlain.stdout.includes("Preference - harness") &&
+  !collisionPlain.stdout.includes("\u001b") && collisionPlain.stderr === `${uncoloredCollision}\n`, shown(collisionPlain));
+check("plain refusal keeps the same warning without ANSI escapes under FORCE_COLOR", collisionPlainRefusal.status === 1 && collisionPlainRefusal.stdout === "" &&
+  collisionPlainRefusal.stderr.startsWith(`${uncoloredCollision}\nRequest refused\n`) && !collisionPlainRefusal.stderr.includes("\u001b"), shown(collisionPlainRefusal));
+const collisionLiteral = run(["config", "get", "--", "--plain"], collisionConfig, forcedColor);
+check("--plain after -- does not turn off collision warning color", collisionLiteral.status === 1 &&
+  collisionLiteral.stderr.startsWith(`${collisionLine}\n`), shown(collisionLiteral));
 const collisionParse = run(["--json", "config", "get", "color", "--unknown-option"], collisionConfig);
 check("JSON parser refusal carries the retained extension collision", collisionParse.status === 1 && collisionParse.stderr === "" &&
   collisionParse.envelope?.error?.code === "USAGE_INVALID" && collisionParse.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionParse));
