@@ -527,6 +527,8 @@ If space selection is ambiguous and you did not pass `--space`, the import uses 
 space only if it matches one of the registered candidates. It does not change the current selection.
 If no local space resolves, pass the file's space with `--space`. For a new local space,
 prepare it with `cotal space create <space> --root <project-directory>` first. The import needs no running broker.
+If a stopped project still records its last broker and space but has no registration, the refusal
+names that space. If it matches the reference, prepare it again from its project folder and retry the import.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
