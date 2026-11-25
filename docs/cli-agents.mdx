@@ -264,8 +264,9 @@ names what to remove: the `--variant` option, the `variant:` field in the person
 A launch with a variant or a mode is refused with `USAGE_INVALID` before provisioning unless the
 connector's model catalog lists it for the model, or for the catalog's default model when no
 `--model` is given. The refusal names the values the catalog lists. A spawn in this terminal reads
-the catalog from the application for that check. A managed launch is checked by its manager, against
-the catalog it read last.
+the catalog from the application for that check, and only after the connector's own launch check
+accepts the variant, so a level the connector rejects gets the preview's refusal and starts nothing.
+A managed launch is checked by its manager, against the catalog it read last.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch. On an open or static space, a managed
 preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
