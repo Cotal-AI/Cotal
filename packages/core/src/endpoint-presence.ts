@@ -11,6 +11,7 @@ import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import { presenceBucket } from "./subjects.js";
 import { isPresenceRow, assertPresenceRow } from "./subjects.js";
 import { assertValidName } from "./resolve.js";
+import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
 
 type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
@@ -25,6 +26,9 @@ export interface EndpointPresenceDeps {
   recoverable: (error: Error) => void;
   isPublishPermissionDenied: (error: unknown) => boolean;
 }
+
+/** Changes to a card's advisory `meta`: each key set to its string value, or removed with `undefined`. */
+export type CardMetaChanges = Readonly<Record<string, string | undefined>>;
 
 /** Trust state of this endpoint's local presence roster. `fresh` remains for older consumers:
  * unpopulated is deliberately false so they fail toward unknown rather than treating a partial
@@ -371,14 +375,44 @@ export class EndpointPresence {
     await this.publishPresence();
   }
 
-  /** Change the card's display name and republish presence at once (SPEC §6). The principal, and so
-   *  `card.id`, stays as it is. Throws on a name {@link assertValidName} refuses, before anything
-   *  changes. The same name changes nothing. Every later message carries the new `from.name`. */
-  async setCardName(name: string): Promise<void> {
-    assertValidName(name);
-    if (this.identity.card.name === name) return;
-    this.identity.card.name = name;
+  /** Apply `changes` to the card's advisory `meta`, each key set to its value or removed with
+   *  `undefined`, then republish presence once, so no record shows part of them. Like
+   *  {@link setCardModel}, the card changes before the write, so a call made before the first connect
+   *  shows on the first presence record. Values the card already has change nothing. Throws on an
+   *  empty key, before anything changes. */
+  async setCardMeta(changes: CardMetaChanges): Promise<void> {
+    const meta = this.metaWith(changes);
+    if (meta === this.identity.card.meta) return;
+    this.identity.card.meta = meta;
     await this.publishPresence();
+  }
+
+  /** Change the card's display name, and its `meta` by `meta` as {@link setCardMeta} does, then
+   *  republish presence at once in one record (SPEC §6). The principal, and so `card.id`, stays as it
+   *  is. Throws on a name {@link assertValidName} refuses or an empty meta key, before anything
+   *  changes. A name and meta the card already has change nothing. Every later message carries the
+   *  new `from.name`. */
+  async setCardName(name: string, meta?: CardMetaChanges): Promise<void> {
+    assertValidName(name);
+    const next = meta ? this.metaWith(meta) : this.identity.card.meta;
+    if (this.identity.card.name === name && next === this.identity.card.meta) return;
+    this.identity.card.name = name;
+    this.identity.card.meta = next;
+    await this.publishPresence();
+  }
+
+  /** The card's `meta` with `changes` applied, or the card's own object when they change nothing. */
+  private metaWith(changes: CardMetaChanges): Record<string, unknown> | undefined {
+    if (Object.keys(changes).some((key) => !key)) throw new TypeError("card meta keys must be non-empty strings");
+    const meta = this.identity.card.meta ?? {};
+    const changed = Object.entries(changes).filter(([key, value]) => (value === undefined ? Object.hasOwn(meta, key) : meta[key] !== value));
+    if (!changed.length) return this.identity.card.meta;
+    const next: Record<string, unknown> = { ...meta };
+    for (const [key, value] of changed) {
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+    }
+    return Object.keys(next).length ? next : undefined;
   }
 
   async publishPresence(): Promise<void> {
@@ -765,12 +799,15 @@ export class EndpointPresence {
     // left a same-principal successor invisible to presence-event consumers (e.g. the manager's
     // readiness race), which then timed out "uncertain" on a healthy agent (#29). A changed display
     // name is never a heartbeat either: `set-name` changes nothing else, and a watcher keyed on these
-    // events, such as the manager keeping a seat's name, would never see the rename.
+    // events, such as the manager keeping a seat's name, would never see the rename. Nor is a changed
+    // label or naming mark (SPEC 13.22): readers show the label in place of the name.
     if (
       prev &&
       prev.status !== "offline" &&
       p.status !== "offline" &&
       prev.card.name === p.card.name &&
+      prev.card.meta?.[AGENT_LABEL_META_KEY] === p.card.meta?.[AGENT_LABEL_META_KEY] &&
+      prev.card.meta?.[AGENT_NAMING_META_KEY] === p.card.meta?.[AGENT_NAMING_META_KEY] &&
       prev.lifecycleUid === p.lifecycleUid &&
       sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&

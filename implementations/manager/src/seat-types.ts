@@ -64,6 +64,9 @@ export interface StartAgentOpts {
    *  names (SPEC 13.22). Imperative launches only, and never recorded on the launch, so no restart
    *  runs it again. */
   firstCommand?: FirstCommand;
+  /** The seat labels itself from its first message (`LaunchOpts.autoName`). Imperative launches only,
+   *  and only on this host: a delegated runtime refuses it. A relaunch never passes it again. */
+  autoName?: boolean;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
    *  creds AND forwarded to the connector from ONE source. Imperative-only — a manifest launch
