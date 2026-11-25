@@ -673,7 +673,9 @@ with another reachable record, the CLI checks the broker's space inventory. It l
 registration intact and excludes it from automatic selection if the broker does not serve that
 space. If the CLI cannot read the inventory and still has to refuse, it marks the unchecked
 record as unverified and gives the exact `--space` choice for each candidate. An explicit
-`--server` can still require `--space` when several records name that address.
+`--server` can still require `--space` when several records name that address. In that case,
+`cotal history` reads and `cotal ps` give a retry for each space, keeping the broker address and
+the other arguments without changing the saved selection.
 Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.

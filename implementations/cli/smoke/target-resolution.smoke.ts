@@ -41,6 +41,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
 const { findMesh, getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { execWords } = await import("../src/lib/exec-words.js");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
@@ -277,6 +278,35 @@ const QUESTION = "Which one?";
       const picked = run([...args, "--space", space]);
       check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
         (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
+  for (const [args, beforeSpace, afterSpace] of [
+    [["history", "fleet-test", "--server", A, "--plain"], `history fleet-test --server ${A} --plain`, ""],
+    [["history", "--server", A, "--json", "--grep", "two words", "--", "fleet-test"], `history --server ${A} --json --grep 'two words'`, " -- fleet-test"],
+    [["history", "fleet-test", "--server", A, "--follow", "--json"], `history fleet-test --server ${A} --follow --json`, ""],
+    [["ps", "--server", A, "--plain", "--wide"], `ps --server ${A} --plain --wide`, ""],
+  ] as const) {
+    const refused = run([...args]);
+    const follow = args.some((arg) => arg === "--follow");
+    const json = args.some((arg) => arg === "--json");
+    const records = follow ? refused.stdout.trim().split("\n").map((line) => JSON.parse(line)) : [];
+    const error = follow ? records[0]?.data : envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${beforeSpace} refuses and offers both exact reads`, refused.status === 2 &&
+      (json ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      (!follow || records.length === 2 && records[0]?.type === "error" && records[1]?.type === "end") &&
+      retries.length === 2 && ["alpha", "shared"].every((space, index) =>
+        retries[index]?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)), shown(refused));
+    if (follow) continue;
+    for (const [index, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[index];
+      if (!retry?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)) continue;
+      const picked = run(execWords(retry).slice(-args.length - 2));
+      check(`the printed ${args[0]} retry reaches ${space} without selecting a default`, getCurrent() === undefined &&
+        (args[0] === "ps" ? picked.stderr.startsWith(`Mesh: ${space}\n`) && !picked.stderr.includes("TARGET_AMBIGUOUS")
+          : picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.target?.channel === "fleet-test"
+            : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes(`#fleet-test of ${space}`))), shown(picked));
     }
   }
   const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
