@@ -238,6 +238,22 @@ try {
     assert.equal(reply.pending, true);
     assert.equal(approvals.get(reply.requestId)?.state, "pending");
   });
+  await check("a request beside no proposal asks for the baseline, and one that names a permission needs the proposal made from it", async () => {
+    for (const [name, request] of [["req_none", "{}"], ["req_empty", '{"capabilities":[]}']]) {
+      const r = await cli({ name, space: SPACE, session: `session-${name}`, events: true, request });
+      assert.equal(r.reply.pending, true, r.out);
+      assert.equal(r.reply.proposed, null);
+    }
+    const sent = posts.length;
+    const named = await cli({ name: "req_named", space: SPACE, session: "session-req_named", events: true, request: '{"capabilities":["spawn"]}' });
+    assert.equal(named.code, 1);
+    assert.match(named.reply.error, /different permissions/);
+    assert.equal(posts.length, sent);
+    const both = conversationSelection({ capabilities: ["run", "spawn"] });
+    const defaulted = await cli({ name: "req_default", space: SPACE, session: "session-req_default", events: true, request: "{}", selection: JSON.stringify(both) });
+    assert.equal(defaulted.reply.pending, true, defaulted.out);
+    assert.deepEqual(defaulted.reply.proposed, both);
+  });
   decide(saved.requestId, { approve: edited });
   const approved = await connected(provisionUserApp(target, "sel", "session-sel", true, proposal));
   await check("the person's edited selection, not the proposal, becomes the exact grant", () => {

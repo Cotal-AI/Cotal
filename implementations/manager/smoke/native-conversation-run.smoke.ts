@@ -237,9 +237,9 @@ async function main(): Promise<void> {
       authority!.decide(request!.requestId, { approve: request!.proposed ?? EMPTY });
       return tool("cotal_connect", args);
     };
-    const norun = idOf(await personApproves({ name: "norun_conv", context: "native-norun" }));
+    const norun = idOf(await personApproves({ name: "norun_conv", context: "native-norun", capabilities: [] }));
     const refused = await tool("cotal_run", { connection_id: norun, verb: "start", source: 'await sleep("1s", { name: "must-not-run" });' });
-    check("a conversation that did not select run cannot start one", norun !== "" && refused.isError && /not available on this connection/.test(refused.text), refused);
+    check("a conversation that asked for no capabilities cannot start a run", norun !== "" && refused.isError && /not available on this connection/.test(refused.text), refused);
     const refusedParticipation = await tool("cotal_turn_participate", { connection_id: norun });
     check("a conversation without run scope cannot opt into workflow turns", refusedParticipation.isError && /not available on this connection/.test(refusedParticipation.text), refusedParticipation);
     await tool("cotal_disconnect", { connection_id: norun });

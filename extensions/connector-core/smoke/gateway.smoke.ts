@@ -95,6 +95,7 @@ const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" }
 const live = new Map<string, { account: string; conn: GatewayConnection }>();
 const opened: string[] = [];
 const selections = new Map<string, unknown>();
+const requests = new Map<string, unknown>();
 const reserved = new Set<string>();
 const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
   approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
@@ -107,9 +108,10 @@ const host: GatewayHost = {
     if (typeof account !== "string") throw new Error("no valid bearer");
     return account;
   },
-  async open(account, name, _context, selection, approvalId) {
+  async open(account, name, _context, selection, approvalId, _space, request) {
     opened.push(`${account}/${name}`);
     selections.set(`${account}/${name}`, selection);
+    requests.set(`${account}/${name}`, request);
     if (name === "approval_probe") {
       if (approvalId) resumedApprovals.push(`${account}/${approvalId}`);
       if (approvalId && approvalRecorded) throw new Error("the authority has not recorded the person's approval");
@@ -277,8 +279,36 @@ try {
   check("the requested permissions reach the host as one proposal and nothing is issued", !requested.isError && requested.text.includes('"status":"pending"') &&
     JSON.stringify(selections.get("acct_a/approval_probe")) === JSON.stringify({ v: 1, channels: [{ channel: "lobby", access: "read" }, { channel: "team.>", access: "read-post" }], role: "reviewer", capabilities: ["role:reviewer", "spawn"], endpoints: [] }),
     { requested, selection: selections.get("acct_a/approval_probe") });
+  check("  and the host sees the request as the call named it", JSON.stringify(requests.get("acct_a/approval_probe")) ===
+    JSON.stringify({ channels: [{ channel: "team.>", access: "read-post" }, { channel: "lobby", access: "read" }], role: "reviewer", capabilities: ["spawn"] }), requests.get("acct_a/approval_probe"));
+  const asked = async (args: Record<string, unknown>, client = selecting) => {
+    selections.delete("acct_a/approval_early");
+    requests.delete("acct_a/approval_early");
+    const reply = await call(client, "cotal_connect", { name: "approval_early", ...args });
+    return { reply, selection: selections.get("acct_a/approval_early"), request: requests.get("acct_a/approval_early"), opened: selections.has("acct_a/approval_early") };
+  };
+  const proposal = (capabilities: string[], channels: unknown[] = []) => JSON.stringify({ v: 1, channels, role: null, capabilities, endpoints: [] });
+  const bare = await asked({});
+  check("a connect that leaves capabilities out asks for run and spawn, and its request names nothing",
+    !bare.reply.isError && JSON.stringify(bare.selection) === proposal(["run", "spawn"]) && JSON.stringify(bare.request) === "{}", bare);
+  const channelsOnly = await asked({ channels: [{ channel: "lobby", access: "read" }] });
+  check("channels without capabilities also ask for run and spawn",
+    JSON.stringify(channelsOnly.selection) === proposal(["run", "spawn"], [{ channel: "lobby", access: "read" }]) &&
+      JSON.stringify(channelsOnly.request) === JSON.stringify({ channels: [{ channel: "lobby", access: "read" }] }), channelsOnly);
+  const noChannels = await asked({ channels: [] });
+  check("an empty channel list still asks for run and spawn, and the request keeps the list as named",
+    JSON.stringify(noChannels.selection) === proposal(["run", "spawn"]) && JSON.stringify(noChannels.request) === JSON.stringify({ channels: [] }), noChannels);
+  const neither = await asked({ capabilities: [] });
+  check("capabilities: [] alone asks for nothing beyond the baseline and is not refused",
+    !neither.reply.isError && neither.opened && neither.selection === undefined && JSON.stringify(neither.request) === JSON.stringify({ capabilities: [] }), neither);
+  const onlyRun = await asked({ capabilities: ["run"] });
+  check("named capabilities are asked for as named", JSON.stringify(onlyRun.selection) === proposal(["run"]), onlyRun);
+  const off = await asked({}, a);
+  check("an embedder with selection off hands the host neither a proposal nor a request",
+    off.opened && off.selection === undefined && off.request === undefined, off);
   opened.length = 0;
   selections.clear();
+  requests.clear();
   const hostedSpace = await call(a, "cotal_connect", { name: "space_probe", space: "another_mesh" }).catch(() => ({ isError: true, text: "schema refusal" }));
   check("a hosted caller cannot retarget its signed-in space", hostedSpace.isError && opened.length === 0, hostedSpace);
   check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));

@@ -266,5 +266,20 @@ await cell("an approved but unclaimed request is retired before asking for a dif
   } finally { await s.close(); }
 });
 
-assert.deepEqual(failures, [], `AGENT-305 approval resume cells red=${failures.length}/15:\n${failures.join("\n")}`);
+await cell("a call that leaves capabilities out and one that names run and spawn are the same pending request", async () => {
+  const s = scenario([pending(), pending()]);
+  try {
+    await s.bind();
+    const both = { v: 1 as const, channels: [], role: null, capabilities: ["run", "spawn"], endpoints: [] as [] };
+    await assert.rejects(s.host.open("local", "approval_probe", SESSION, both, undefined, undefined, {}), (error: unknown) => error instanceof ApprovalRequired);
+    assert.deepEqual(s.provisions()[0], [...PROVISION, "--selection", JSON.stringify(both), "--request", "{}"],
+      "the CLI gets the proposal and, beside it, the request the call named");
+    await assert.rejects(s.host.open("local", "approval_probe", SESSION, both, ID, undefined, { capabilities: ["run", "spawn"] }),
+      (error: unknown) => error instanceof ApprovalRequired);
+    const only = { ...both, capabilities: ["run"] };
+    await assert.rejects(s.host.open("local", "approval_probe", SESSION, only, ID, undefined, { capabilities: ["run"] }), /resumes only the unchanged request/);
+  } finally { await s.close(); }
+});
+
+assert.deepEqual(failures, [], `AGENT-305 approval resume cells red=${failures.length}/16:\n${failures.join("\n")}`);
 console.log("APP APPROVAL RESUME TESTS PASSED (15/15)");

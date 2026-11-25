@@ -109,8 +109,8 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
       const waiting = /connection_id ([0-9a-f-]{36})\. Read them/.exec(prompt);
       const leave = /DISCONNECT_PLEASE ([0-9a-f-]{36})/.exec(prompt);
       if (leave) call = ["cotal_disconnect", { connection_id: leave[1] }];
-      else if (prompt.includes("CONNECT_PLEASE")) call = ["cotal_connect", { name: "codex_personal", space }];
-      else if (approved) call = ["cotal_connect", { name: "codex_personal", space, approval_id: approved[1] }];
+      else if (prompt.includes("CONNECT_PLEASE")) call = ["cotal_connect", { name: "codex_personal", space, capabilities: [] }];
+      else if (approved) call = ["cotal_connect", { name: "codex_personal", space, capabilities: [], approval_id: approved[1] }];
       else if (waiting) call = ["cotal_inbox", { connection_id: waiting[1] }];
       item = call
         ? { type: "function_call", id: `fc-${n}`, call_id: `call-${n}`, ...tool(call[0]), arguments: JSON.stringify(call[1]) }

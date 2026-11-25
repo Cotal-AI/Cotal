@@ -149,7 +149,7 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
       env: childEnv,
       participate: (connection) => connection.agent.participateInTurns(),
     });
-    for (const session of ["native-plain", "native-wide", "native-sel", "native-run"]) {
+    for (const session of ["native-plain", "native-default", "native-default-off", "native-wide", "native-sel", "native-run"]) {
       const path = join(home, `${session}.jsonl`);
       writeFileSync(path, "");
       await host.nativeEvent({ hook_event_name: "SessionStart", session_id: session, transcript_path: path, source: "startup", cwd: root });
@@ -200,10 +200,27 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(subcommand)) {
       authority!.decide(request!.requestId, { approve: approved ?? request!.proposed ?? EMPTY });
       return tool("cotal_connect", args);
     };
-    const plain = idOf(await personApproves({ name: "plain_conv", context: "native-plain" }));
+    const plain = idOf(await personApproves({ name: "plain_conv", context: "native-plain", capabilities: [] }));
     const plainSpawn = await tool("cotal_spawn", { connection_id: plain, name: "helper_seat" });
-    check("a connection without a selection is not offered spawn", plain !== "" && plainSpawn.isError && /not available on this connection/.test(plainSpawn.text), plainSpawn);
+    check("a connection that asks for no capabilities is not offered spawn", plain !== "" && plainSpawn.isError && /not available on this connection/.test(plainSpawn.text), plainSpawn);
     await tool("cotal_disconnect", { connection_id: plain });
+
+    const defaultArgs = { name: "default_conv", context: "native-default" };
+    const defaultPending = await tool("cotal_connect", defaultArgs);
+    const defaultRequest = authority.pending("default_conv")[0];
+    check("a connect that leaves capabilities out asks the person for run and spawn, and nothing else",
+      !idOf(defaultPending) && JSON.stringify(defaultRequest?.proposed) === JSON.stringify({ v: 1, channels: [], role: null, capabilities: ["run", "spawn"], endpoints: [] }), defaultRequest?.proposed);
+    authority.decide(defaultRequest!.requestId, { approve: defaultRequest!.proposed! });
+    const defaulted = idOf(await tool("cotal_connect", defaultArgs));
+    const defaultedConnection = await host.find("local", defaulted);
+    check("  and once the person approves it unchanged, the connection holds run and spawn",
+      JSON.stringify([...(defaultedConnection?.config.capabilities ?? [])].sort()) === JSON.stringify(["run", "spawn"]), defaultedConnection?.config.capabilities);
+    await tool("cotal_disconnect", { connection_id: defaulted });
+    const declined = idOf(await personApproves({ name: "declined_conv", context: "native-default-off" }, EMPTY));
+    const declinedConnection = await host.find("local", declined);
+    check("a person who switches both off grants neither, though the request asked for them",
+      declined !== "" && !declinedConnection?.config.capabilities?.length, declinedConnection?.config.capabilities);
+    await tool("cotal_disconnect", { connection_id: declined });
 
     const issuedIdentities = () => existsSync(join(home, "app-identities")) ? readdirSync(join(home, "app-identities")).filter((n) => existsSync(join(home, "app-identities", n, "actor.token")) || existsSync(join(home, "app-identities", n, "sentinel.creds"))).length : 0;
     const before = identities();

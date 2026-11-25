@@ -285,6 +285,46 @@ try {
     isDeepStrictEqual(seat.reply.grant.scope, ["spawn"]) && seat.reply.env.COTAL_CAPABILITIES === "spawn", seat.reply.grant);
   check("  the selected capability is present in the broker credential", await spawnPermission(seat.reply.env));
   await run(["retire"], { dir: seat.reply.retire.dir });
+
+  // ── a gateway's request: what the call named, beside the proposal made from it ──────────────
+  const ask = async (request: object, selection?: ReturnType<typeof conversationSelection>) => {
+    const r = await run(["provision"], { space: SPACE, name: "claude_b", session: "session-b", request: JSON.stringify(request),
+      ...(selection ? { selection: JSON.stringify(selection) } : {}) });
+    if (r.code === 0) await run(["retire"], { dir: r.reply.retire.dir });
+    return r;
+  };
+  const both = conversationSelection({ capabilities: ["run", "spawn"] });
+  const persona = await run(["provision"], { space: SPACE, name: "claude_b", session: "session-b" });
+  await run(["retire"], { dir: persona.reply.retire.dir });
+  const nothing = await ask({}, both);
+  check("a call that named nothing keeps the persona's whole grant, though its proposal asks for run and spawn",
+    persona.code === 0 && nothing.code === 0 && isDeepStrictEqual(nothing.reply.grant, persona.reply.grant), { persona: persona.reply?.grant, nothing: nothing.reply?.grant ?? nothing.out });
+  writeFileSync(join(root, ".cotal/agents/default.md"), PERSONA.replace("capabilities: [spawn, run]", "capabilities: []"));
+  try {
+    const without = await ask({}, both);
+    check("  and a persona without run or spawn still connects: a default never refuses a local connect",
+      without.code === 0 && isDeepStrictEqual(without.reply.grant.scope, []) && without.reply.grant.role === "default", without.reply?.error ?? without.reply?.grant);
+  } finally { writeFileSync(join(root, ".cotal/agents/default.md"), PERSONA); }
+  const empty = await ask({ capabilities: [] });
+  check("capabilities: [] alone opens the baseline: no channels, role or capabilities", empty.code === 0 && isDeepStrictEqual(empty.reply.grant,
+    { scope: [], role: null, subscribe: [], endpoints: [], allowSubscribe: [], allowPublish: [] }), empty.reply?.error ?? empty.reply?.grant);
+  const general = [{ channel: "general", access: "read-post" as const }];
+  const named = await ask({ channels: general }, conversationSelection({ channels: general, capabilities: ["run", "spawn"] }));
+  check("named channels with capabilities left out narrow to the channels; the default adds nothing locally", named.code === 0 &&
+    isDeepStrictEqual(named.reply.grant, { scope: [], role: null, subscribe: [], endpoints: [], allowSubscribe: ["general"], allowPublish: ["general"] }),
+    named.reply?.error ?? named.reply?.grant);
+  const mismatch = await ask({ capabilities: [] }, both);
+  check("a proposal that is not the request plus its left-out capabilities is refused", mismatch.code === 1 && /different permissions/.test(mismatch.reply?.error), mismatch.out);
+  const widened = await ask({}, conversationSelection({ channels: general, capabilities: ["run", "spawn"] }));
+  check("  including a proposal with channels the request did not name", widened.code === 1 && /different permissions/.test(widened.reply?.error), widened.out);
+  const alone = await ask({});
+  check("a request that names nothing, with no proposal beside it, keeps the persona's whole grant", alone.code === 0 &&
+    isDeepStrictEqual(alone.reply.grant, persona.reply.grant), alone.reply?.error ?? alone.reply?.grant);
+  const unproposed = await ask({ channels: general });
+  check("  but one that names channels with no proposal beside it is refused", unproposed.code === 1 && /different permissions/.test(unproposed.reply?.error), unproposed.out);
+  const stray = await ask({ endpoints: [] });
+  check("a request with a field a call cannot name is refused", stray.code === 1 && /names only channels, role and capabilities/.test(stray.reply?.error), stray.out);
+  check("  and no request left an identity behind", records(SPACE).length === 1);
   const b = await select(conversationSelection({ role: "default", channels: [{ channel: "general", access: "read-post" }, { channel: "team.x", access: "read" }] }));
   check("a selection within the persona opens exactly that grant", b.code === 0 && isDeepStrictEqual(b.reply.grant,
     { scope: ["role:default"], role: "default", subscribe: [], endpoints: [], allowSubscribe: ["general", "team.x"], allowPublish: ["general"] }), b.reply.grant);

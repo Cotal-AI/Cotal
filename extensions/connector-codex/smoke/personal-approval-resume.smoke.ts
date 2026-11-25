@@ -108,5 +108,18 @@ try {
   checks++;
   console.log("  ✓ a direct permanent error stops an existing watcher");
 } finally { await direct.close(); }
-assert.equal(checks, 6);
+const same = scenario([pending, pending]);
+try {
+  const both = { v: 1 as const, channels: [], role: null, capabilities: ["run", "spawn"], endpoints: [] as [] };
+  await assert.rejects(same.host.open(THREAD, "probe", undefined, both, undefined, undefined, {}), ApprovalRequired);
+  const first = same.provisions()[0]!;
+  assert.deepEqual(first.slice(first.indexOf("--selection")), ["--selection", JSON.stringify(both), "--request", "{}"],
+    "the CLI gets the proposal and, beside it, the request the call named");
+  await assert.rejects(same.host.open(THREAD, "probe", undefined, both, ID, undefined, { capabilities: ["run", "spawn"] }), ApprovalRequired);
+  await assert.rejects(same.host.open(THREAD, "probe", undefined, { ...both, capabilities: ["run"] }, ID, undefined, { capabilities: ["run"] }),
+    /resumes only the unchanged request/);
+  checks++;
+  console.log("  ✓ a call that leaves capabilities out and one that names run and spawn are the same pending request");
+} finally { await same.close(); }
+assert.equal(checks, 7);
 console.log(`personal-approval-resume: ${checks} checks passed`);

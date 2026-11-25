@@ -123,12 +123,12 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     // A new identity first waits for the person. They approve it in the authority's page, with no
     // optional permission, and the conversation connects again.
     const connect = async (name: string, session: string) => {
-      let result = await call("cotal_connect", { name, context: session });
+      let result = await call("cotal_connect", { name, context: session, capabilities: [] });
       const asked = pendingOf(result.text);
       if (asked) {
         assert(!result.error && !/connection_id:/.test(result.text) && !authority.requests.get(asked.requestId)!.actor, result.text);
         authority.decide(asked.requestId, { approve: EMPTY });
-        result = await call("cotal_connect", { name, context: session });
+        result = await call("cotal_connect", { name, context: session, capabilities: [] });
       }
       return { ...result, id: /connection_id: (\S+)/.exec(result.text)?.[1] };
     };
@@ -199,13 +199,16 @@ if (["agent-bearer", "auth-service", "app-identity"].includes(process.argv[2] ??
     check("real broker, auth-service exchange and isolated HTTPS authority are live", broker.exitCode === null && authService.exitCode === null);
 
     const g1 = await gateway(["recovery-session-1", "recovery-session-2"]);
-    const asked = await g1.call("cotal_connect", { name: "recover_a", context: "recovery-session-1" });
+    const bare = await g1.call("cotal_connect", { name: "recover_a", context: "recovery-session-1" });
+    check("an authority without selection v1 refuses a connect that leaves capabilities out, before any request",
+      bare.error && /does not offer selection/.test(bare.text) && counts.posts === 0 && record("recovery-session-1") === undefined, bare.text);
+    const asked = await g1.call("cotal_connect", { name: "recover_a", context: "recovery-session-1", capabilities: [] });
     const pending = pendingOf(asked.text);
     check("a new conversation waits for the person, with no connection_id, issued identity or saved secret",
       !asked.error && pending?.name === "recover_a" && pending.approval.url === `${authority.base}/approve/${pending.approval.id}` &&
       !/connection_id:/.test(asked.text) && counts.issues === 0 && record("recovery-session-1")?.remote.material === undefined &&
       !existsSync(join(recordDir("recovery-session-1"), "actor.token")), asked.text);
-    const waiting = await g1.call("cotal_connect", { name: "recover_a", context: "recovery-session-1" });
+    const waiting = await g1.call("cotal_connect", { name: "recover_a", context: "recovery-session-1", capabilities: [] });
     check("connecting again before the decision replays the same request and still issues nothing",
       pendingOf(waiting.text)?.requestId === pending!.requestId && counts.issues === 0 && counts.posts === 2, waiting.text);
     authority.decide(pending!.requestId, { approve: EMPTY });
