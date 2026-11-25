@@ -58,9 +58,14 @@ export const AGENT_COMMAND_STATE_DETAIL = "ai.cotal.agent.command-state";
 /** `details[].kind` on a refused `set-name`: `{ reason }`, one of {@link AgentNameRefusal}. */
 export const AGENT_NAME_REFUSED_DETAIL = "ai.cotal.agent.name-refused";
 
-/** The `AgentCard.meta` key an agent shows while it names itself from its first message: `pending`
- *  from launch until naming settles, then absent, whether it took a name or not (SPEC 13.22). */
+/** The `AgentCard.meta` key an agent shows while it labels itself from its first message: `pending`
+ *  from launch until naming settles, then absent, whether it took a label or not (SPEC 13.22). */
 export const AGENT_NAMING_META_KEY = "ai.cotal.naming";
+
+/** The `AgentCard.meta` key that carries the label an agent took from its first message: one line
+ *  of at most 40 code points, written only by the agent's own connector (SPEC 13.22). A reader shows
+ *  it in place of `name`, which stays the address that mentions, DMs and name lookups resolve. */
+export const AGENT_LABEL_META_KEY = "ai.cotal.label";
 
 /** Why `set-name` refused a name: `name-invalid` (`bad-request`) fails the shared name rule, and
  *  `name-taken` (`already-exists`) is the name of another live agent in the space. */

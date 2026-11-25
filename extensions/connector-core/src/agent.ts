@@ -230,7 +230,7 @@ export class MeshAgent extends EventEmitter {
         owner: this.ep.principal.owner,
         lane: this.names,
         request: options.naming.request,
-        clearPending: () => this.inOrder(() => this.ep.setCardMeta(AGENT_NAMING_META_KEY, undefined)),
+        clearPending: () => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined })),
         connected: (ms) => this.waitUntilConnected(ms),
         log: (msg) => this.log(msg),
       });

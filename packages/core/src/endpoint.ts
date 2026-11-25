@@ -17,8 +17,8 @@ import {
   type LivenessPlane,
   type ResponderState,
 } from "./liveness.js";
-import { EndpointPresence, type PresenceView } from "./endpoint-presence.js";
-export { PresenceWriteStuckError, type PresenceView } from "./endpoint-presence.js";
+import { EndpointPresence, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
+export { PresenceWriteStuckError, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 import { idFromCreds } from "./identity.js";
 import {
   type SecretStoreIdentity,
@@ -1278,18 +1278,20 @@ export class CotalEndpoint extends EventEmitter {
     return this.presence.setCardCwd(cwd);
   }
 
-  /** Set one key of the card's advisory `meta`, or remove it with `undefined`, then republish
-   *  presence. A call before the first connect shows on the first presence record; the same value
-   *  changes nothing. Throws on an empty key. */
-  async setCardMeta(key: string, value: string | undefined): Promise<void> {
-    return this.presence.setCardMeta(key, value);
+  /** Apply `changes` to the card's advisory `meta`, each key set or removed with `undefined`, then
+   *  republish presence once, so no record shows part of them. A call before the first connect
+   *  shows on the first presence record; values the card already has change nothing. Throws on an
+   *  empty key. */
+  async setCardMeta(changes: CardMetaChanges): Promise<void> {
+    return this.presence.setCardMeta(changes);
   }
 
-  /** Change the card's display name and republish presence at once (SPEC §6). The principal stays
-   *  as it is, and every later message carries the new `from.name`. Throws on a name
-   *  {@link assertValidName} refuses; the same name changes nothing. */
-  async setCardName(name: string): Promise<void> {
-    return this.presence.setCardName(name);
+  /** Change the card's display name, and its `meta` by `meta` as {@link setCardMeta} does, then
+   *  republish presence at once in one record (SPEC §6). The principal stays as it is, and every
+   *  later message carries the new `from.name`. Throws on a name {@link assertValidName} refuses; a
+   *  name and meta the card already has change nothing. */
+  async setCardName(name: string, meta?: CardMetaChanges): Promise<void> {
+    return this.presence.setCardName(name, meta);
   }
 
   // ---- channel discovery ---------------------------------------------------
