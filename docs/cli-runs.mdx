@@ -54,6 +54,8 @@ A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_IN
 on every verb that takes one, before anything is contacted. When `run show` needs a valid ID,
 its list and journal commands keep the space, broker, manager or local endpoint you requested.
 If the manager has no record for that ID, the suggested lookup also keeps those selectors and your output format.
+For a malformed ID in `run check` or `run revoke --local`, use the suggested `cotal run list --local`
+with the same target selectors, then replace only the ID in the original command.
 A journal row limit applies only to the text journal. If you give both `--limit` and `--json`,
 choose a limited text view or the full JSON journal before looking up a missing run ID.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
