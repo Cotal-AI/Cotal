@@ -22,7 +22,7 @@ mkdirSync(join(other, ".cotal"), { mode: 0o700 });
 const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const env = { ...hostEnv, PATH: `${launcherDir}${delimiter}${process.env.PATH ?? ""}`, HOME: home, USERPROFILE: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: config, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const { check, finish } = createSuite();
-type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[]; preparedRoot?: string; preparedState?: string; lastOperation?: string }; error?: { code?: string; message?: string } };
+type Envelope = { result?: { selected?: { rootGone?: boolean; connection?: string; code?: string; message?: string }; rootGone?: boolean; changed?: { observedProcess?: string }[]; preparedRoot?: string; preparedState?: string; lastOperation?: string; inspectedStorePath?: string; applyVerdict?: { offered: boolean } }; error?: { code?: string; message?: string; remedy?: string } };
 const cli = (cwd: string, ...args: string[]) => {
   const run = spawnSync(process.execPath, [bin, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   console.log(JSON.stringify({ cwd, args, status: run.status, stdout: run.stdout, stderr: run.stderr }));
@@ -274,6 +274,17 @@ for (const open of [false, true]) {
   check("following the printed retry prepares the space in the renamed folder",
     printedRetry === adopt && shell(printedRetry).status === 0 &&
       cli(renamed, "space", "show", space, "--plain").stdout.includes(`root:     ${renamed}`));
+  for (const kind of ["store", "space"]) {
+    const preview = json(renamed, "reset", kind, space, "--dry-run");
+    check(`reset ${kind} preview requires a completed stop after adoption without claiming the store is absent`,
+      preview.status === 2 && preview.envelope.error?.code === "LIFECYCLE_BLOCKED" &&
+      preview.envelope.error.message?.includes("needs a completed stop in this root. The stack has a recorded broker store") === true &&
+      preview.envelope.error.remedy === `from ${renamed}, run \`cotal up --no-manager\`, then \`cotal down --yes\`, then \`cotal reset ${kind} ${space} --dry-run\``);
+  }
+  const plainPreview = cli(renamed, "reset", "store", space, "--dry-run", "--plain");
+  check("the plain preview names the broker-only restart, stop and retry from the adopted root",
+    plainPreview.status === 2 && ["cotal", "pnpm cotal"].some((cli) => plainPreview.stderr.includes(
+      `from ${renamed}, run \`${cli} up --no-manager\`, then \`${cli} down --yes\`, then \`${cli} reset store ${space} --dry-run\``)));
   const restarted = cli(renamed, "up", "--no-manager");
   check("the adopted stack starts at the renamed root and recorded broker address", restarted.status === 0 && restarted.stdout.includes(server));
   try {
@@ -284,5 +295,8 @@ for (const open of [false, true]) {
   } finally {
     if (restarted.status === 0) stop(renamed);
   }
+  const preview = json(renamed, "reset", "store", space, "--dry-run");
+  check("reset store previews the adopted store after a completed stop in the renamed root",
+    preview.status === 0 && preview.envelope.result?.inspectedStorePath === join(renamed, ".cotal", "nats") && preview.envelope.result.applyVerdict?.offered === true);
 }
 finish();
