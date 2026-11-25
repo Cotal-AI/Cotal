@@ -357,6 +357,34 @@ if (process.platform !== "win32") {
 
   const original = files.map((path) => readFileSync(path));
   const checkArgs = ["endpoint", "check", join(dir, "contract.json")];
+  const refusalCwd = join(cwd, dir);
+  const checkLocal = ["endpoint", "check", "contract.json"];
+  for (const [flag, args] of [
+    ["--file", ["--file"]], ["--file", ["--file", "contract.json"]], ["-f", ["-f", "--private-placeholder"]],
+    ["--dir", ["--dir=private-placeholder"]], ["--file", ["--no-color", "--file", "--no-color"]],
+  ] as const) {
+    const refused = run([...checkLocal, ...args, "--json"], {}, refusalCwd);
+    const receipt = parsed(refused);
+    check(`endpoint check refuses ${args.join(" ")} without requesting or echoing its value`, refused.status === 1 && refused.stderr === ""
+      && receipt?.command === "endpoint check" && receipt.outcome === "refused" && receipt.error?.code === "USAGE_INVALID"
+      && receipt.error.message === `endpoint check does not take ${flag}`
+      && receipt.error.remedy === `remove ${flag} and any value supplied for it. Pass the contract path as a positional argument`
+      && !refused.stdout.includes("private-placeholder"), shown(refused));
+  }
+  for (const mode of [[], ["--plain"]]) {
+    const refused = run([...checkLocal, "--file", ...mode], {}, refusalCwd);
+    check(`endpoint check explains how to remove --file in ${mode[0] ?? "rich"} output`, refused.status === 1 && refused.stdout === ""
+      && /endpoint check does not take --file/.test(refused.stderr) && /Pass the contract path as a positional argument/.test(refused.stderr)
+      && /Usage\n +cotal endpoint check/.test(refused.stderr), shown(refused));
+  }
+  const addMissing = run(["endpoint", "add", "reviews", "--file", "--json"], {}, cwd);
+  check("endpoint add still asks for a reference file when its value is missing", addMissing.status === 1
+    && parsed(addMissing)?.error?.remedy === "write --file <reference.json>", shown(addMissing));
+  const initRefused = run(["endpoint", "init", "not-created", "--space", "--json"], {}, cwd);
+  const initError = parsed(initRefused)?.error;
+  check("endpoint init advises removing an unsupported option before creating files", initRefused.status === 1
+    && initError?.message === "endpoint init does not take --space"
+    && initError.remedy?.startsWith("remove --space") === true && !existsSync(join(cwd, "not-created")), shown(initRefused));
   const pastedFile = "\u2013\u2013file=example.json";
   const pastedCheck = run([...checkArgs, pastedFile], {}, cwd);
   const checkRetry = run(checkArgs, {}, cwd);
@@ -524,6 +552,10 @@ if (process.platform !== "win32") {
   check("endpoint check still suggests the separator when the contract operand is missing",
     unfilled.status === 1 && parsed(unfilled)?.error?.remedy?.includes("put -- before it") === true && afterSeparator.status === 0,
     { refusal: shown(unfilled), retry: shown(afterSeparator) });
+  writeFileSync(join(cwd, "--file"), readFileSync(join(cwd, "reviews/contract.json")));
+  const literalFile = run(["endpoint", "check", "--json", "--", "--file"], {}, cwd);
+  check("endpoint check accepts --file as a contract path after the separator", literalFile.status === 0
+    && literalFile.stderr === "" && parsed(literalFile)?.outcome === "ok", shown(literalFile));
 } else {
   const dir = join(realpathSync(neutral), "reviewer's copy");
   mkdirSync(dir);

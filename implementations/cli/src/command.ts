@@ -139,11 +139,12 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
   const tokens = found && parseArgs({ args: options, options: parserOptions(found), strict: false, allowPositionals: true, tokens: true }).tokens;
   const missing = tokens?.find((token) => token.kind === "option" && token.inlineValue === false && token.value === word);
   const flag = missing?.kind === "option" ? found?.flags?.find(({ name }) => name === missing.name) : undefined;
-  const refusal = found && flag && missing
+  const unsupported = found && flag ? endpointAuthoringOptionRefusal(found, rest) : undefined;
+  const refusal: { message: string; remedy?: string } = unsupported ?? (found && flag && missing
     ? !flag.multiple && tokens?.some((token) => token.kind === "option" && token.name === flag.name && token.index < missing.index)
       ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
       : missingValue(found, rest, flag)
-    : { message: `Option '${word}' cannot be repeated` };
+    : { message: `Option '${word}' cannot be repeated` });
   const json = found !== undefined && asksForJson(found, rest);
   if (!json) for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
   return runOperation({ warnings }, () => usageExit(refusal.message, found, json, options.includes("--plain"), refusal.remedy, rest));
@@ -555,6 +556,24 @@ function parserOptions(cmd: Command) {
   return Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
 }
 
+/** An offline authoring verb cannot use a sibling's option, even when its value is missing. */
+function endpointAuthoringOptionRefusal(cmd: Command, words: readonly string[]) {
+  if (cmd.name !== "endpoint") return undefined;
+  const sub = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
+  if ((sub?.name !== "init" && sub?.name !== "check") || !sub.flagNames) return undefined;
+  const options = parserOptions(cmd);
+  const { tokens } = parseArgs({ args: [...words], options, strict: false, allowPositionals: true, tokens: true });
+  for (const token of tokens) {
+    if (token.kind !== "option" || sub.flagNames.includes(token.name) || !Object.hasOwn(options, token.name)) continue;
+    const operand = sub.name === "check" ? "contract path" : "endpoint name";
+    return {
+      message: `endpoint ${sub.name} does not take ${token.rawName}`,
+      remedy: `remove ${token.rawName} and any value supplied for it. Pass the ${operand} as a positional argument`,
+    };
+  }
+  return undefined;
+}
+
 /** Strip standalone globals, but keep any global where a string option needs its value. */
 function stripGlobalFlags(cmd: Command, words: string[]): string[] {
   if (takesWordsRaw(cmd)) return words;
@@ -641,6 +660,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
   const plain = !seed && rest.includes("--plain");
+  const unsupported = endpointAuthoringOptionRefusal(cmd, rest);
+  if (unsupported) usageExit(unsupported.message, cmd, json, plain, unsupported.remedy, rest);
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);

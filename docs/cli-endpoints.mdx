@@ -287,10 +287,11 @@ names the path and asks you to retry with an existing contract file. If you pass
 the refusal shows how to check that file and keeps `--json` or `--plain` if you requested it.
 On Windows, for paths containing a backslash, or when a terminal report must escape characters
 in the path, use shell completion to enter the directory and run the suggested command there.
-`check` never selects a file for you.
+`check` never selects a file for you. Pass the contract path as a positional argument, without
+`--file`.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
-endpoint. Authoring takes no space, broker, caller or invocation flags.
+endpoint. Authoring takes no space, broker, caller, reference or invocation flags.
 
 With `--json`, the receipt's `command` is `endpoint init` or `endpoint check`, including when
 the operation is refused.
