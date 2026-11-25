@@ -28,10 +28,10 @@ and `USAGE_INVALID` (exit 1, without the command's help) for a directory, invali
 that is empty or contains only whitespace.
 The refusal names the mesh the send was aimed at when this machine's records name one. The retry
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
-It also keeps `--json` or `--plain` when requested.
+It also keeps `--json` or `--plain` and any `--verbose` flag.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. The suggested
-stdin command also keeps `--json` or `--plain` when requested. An empty
+stdin command keeps the same receipt options. An empty
 `--to`, `--channel` or `--role` value is refused before reading the body. Set that destination in the original command to keep the body source, space and output format.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
