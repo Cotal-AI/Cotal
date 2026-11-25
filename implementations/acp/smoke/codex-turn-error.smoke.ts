@@ -121,7 +121,7 @@ try {
     ),
     tick(30_000).then(() => ({ timedOut: true })),
   ]) as { code?: number; message?: string; data?: unknown; answered?: unknown; timedOut?: true };
-  console.log(`  the ACP prompt's answer: ${JSON.stringify(error)}`);
+  console.log(`  the ACP prompt's answer: ${JSON.stringify({ code: error.code, message: error.message, data: error.data, answered: error.answered, timedOut: error.timedOut })}`);
   const condition = (error.data as { condition?: { code?: string; source?: string; message?: string } } | undefined)?.condition;
   check("the prompt fails with Codex's own usage-limit text and its kind, not \"run failed\"",
     error.code === -32603 && error.message === `${name}'s turn failed: ${usage} (usageLimitExceeded)`, { error, host: hostLog.join("").slice(-3000) });

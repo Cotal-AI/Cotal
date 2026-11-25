@@ -27,6 +27,8 @@ import {
   type CotalMessage,
   type ManagerInstanceListing,
   type Presence,
+  type PresenceCondition,
+  type PresenceEvent,
   type Profile,
   type SetNameIO,
 } from "@cotal-ai/core";
@@ -35,7 +37,7 @@ import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGon
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
 import { startManager } from "./manager-start.js";
-import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatCondition, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -595,9 +597,21 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
   };
 }
 
+const sameCondition = (a: PresenceCondition, b: PresenceCondition): boolean =>
+  a.code === b.code && a.source === b.source && a.message === b.message && a.since === b.since;
+
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
-function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "roster" | "channels" | "close"> {
+function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "condition" | "roster" | "channels" | "close"> {
   const { observer, caller, events, payloads, started } = c;
+  // Each seat's current condition with when it arrived here, so a failed turn takes only one that
+  // arrived during it. A condition shown before the space opened counts as older than any turn.
+  const conditions = new Map<string, { condition: PresenceCondition; lifecycleUid?: string; at: number }>();
+  observer.on("presence", ({ presence: p }: PresenceEvent) => {
+    const held = conditions.get(p.card.id);
+    if (!p.condition || p.status === "offline") conditions.delete(p.card.id);
+    else if (!held || held.lifecycleUid !== p.lifecycleUid || !sameCondition(held.condition, p.condition))
+      conditions.set(p.card.id, { condition: p.condition, ...(p.lifecycleUid ? { lifecycleUid: p.lifecycleUid } : {}), at: Date.now() });
+  });
   return {
     followFrames(onFrame) {
       let live = true;
@@ -637,6 +651,13 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
       const id = principalKey(seat.owner, seat.actor).key;
       const status = observer.getRoster().find((p) => p.card.id === id)?.status;
       return status === "offline" ? undefined : status;
+    },
+
+    condition(seat: SeatRef, since: number): SeatCondition | undefined {
+      const held = conditions.get(principalKey(seat.owner, seat.actor).key);
+      if (!held || held.at < since || (held.lifecycleUid !== undefined && held.lifecycleUid !== seat.lifecycleUid)) return undefined;
+      const { code, source, message } = held.condition;
+      return { code, ...(source ? { source } : {}), ...(message ? { message } : {}) };
     },
 
     async roster() {
