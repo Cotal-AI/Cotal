@@ -28,6 +28,7 @@ import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
 import { execWords } from "../src/lib/exec-words.js";
+import { installNoVariantConnector, NO_VARIANT_HARNESS } from "./_no-variant-connector.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -393,13 +394,13 @@ if (process.getuid && process.getuid() !== 0) {
 }
 const prefix = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
 mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
-const previewExtensions = ["connector-claude-code", "connector-opencode", "connector-hermes"].map((pkg) => {
+const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
   const source = join(import.meta.dirname, "..", "..", "..", "extensions", pkg);
   symlinkSync(source, join(prefix, "node_modules", "@cotal-ai", pkg), "dir");
   const name = pkg === "connector-claude-code" ? "claude" : pkg.slice("connector-".length);
-  return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name === "hermes" ? "uv" : name], eventPlane: name !== "hermes", setup: null }] };
+  return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
 });
-writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
+writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [...previewExtensions, installNoVariantConnector(prefix)] }));
 if (process.platform !== "win32") {
   const path = agentFilePath(alternate, "edit-receipt");
   const edited = '---\nname: "Review Bot"\nagent: claude\n---\n';
@@ -562,10 +563,10 @@ check("the opening Agent files example previews with Claude and validates its mo
 
 const variantPersona = join(root, "variant-persona.md");
 const previewVariant = (...flags: string[]) => cotal("spawn", "--file", variantPersona, "--dry-run", ...flags);
-// Hermes takes no model variant, so a persona's variant is refused there.
-const hermesPersona = "---\nname: variant_check\nagent: hermes\nmodel: test-model\n";
+// The fixture connector takes no model variant, so a persona's variant is refused there.
+const noVariantPersona = `---\nname: variant_check\nagent: ${NO_VARIANT_HARNESS}\nmodel: test-model\n`;
 const removeVariantField = `remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`;
-writeFileSync(variantPersona, `${hermesPersona}variant: high\n---\n`);
+writeFileSync(variantPersona, `${noVariantPersona}variant: high\n---\n`);
 for (const [flags, remedy] of [[[], removeVariantField], [["--variant", "high"], `omit \`--variant\` and ${removeVariantField}`]] as const) {
   const denied = previewVariant("--json", ...flags);
   check(`direct preview names ${flags.length ? "both variant inputs" : "the persona variant field"} in its remedy`,
@@ -576,7 +577,7 @@ const variantPlain = previewVariant("--plain");
 check("plain preview prints the persona variant remedy as Next",
   variantPlain.status === 1 && variantPlain.stderr.split("\nNext\n")[1]?.includes("remove the `variant:` field") === true
     && variantPlain.stderr.split("\nNext\n")[1]?.includes(JSON.stringify(variantPersona)) === true, shown(variantPlain));
-writeFileSync(variantPersona, `${hermesPersona}---\n`);
+writeFileSync(variantPersona, `${noVariantPersona}---\n`);
 const noVariant = previewVariant("--json");
 const noVariantResult = (noVariant.envelope as { result?: Preview } | undefined)?.result;
 check("direct preview passes connector validation after removing the persona variant",
