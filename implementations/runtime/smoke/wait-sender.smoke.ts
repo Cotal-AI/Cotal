@@ -448,7 +448,7 @@ log("answered", m.from.id);`);
   await seat.multicast("APPROVED in a fresh post", { channel: CHANNEL });
   const out = await withDeadline(run, 30_000, "the provenance run");
   const got = await answered("ws-7");
-  c("wait ignores a matching marked post and answers with the fresh post", out.status === "completed"
+  c("wait ignores a matching marked post and answers with the fresh post", out?.status === "completed"
     && textOf(got) === "APPROVED in a fresh post", textOf(got));
 }
 
