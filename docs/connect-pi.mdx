@@ -15,8 +15,8 @@ Cotal does not bundle the pi runtime.
 <Callout type="info" title="Alpha connector">
 
 This release targets pi `0.79.10`.
-Persona files, model selection, initial prompts, and session forks are supported.
-Model variants, MCP tool sharing, and arbitrary launch options are refused.
+Persona files, model selection, thinking levels, initial prompts, and session forks are supported.
+MCP tool sharing and arbitrary launch options are refused.
 
 </Callout>
 
@@ -61,6 +61,17 @@ It lists each model as `provider/id` for the providers pi holds credentials for.
 With no credentials, it reports `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
 Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
 See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
+
+`--variant <level>` sets pi's thinking level, which the connector passes as `--thinking`:
+
+```bash
+cotal spawn --harness pi --model anthropic/claude-opus-4-6 --variant high
+```
+
+`cotal models --harness pi` lists the levels pi offers for each model as its variants.
+It needs pi 0.81.0 or later, the first pi that lists them; with an older pi the list is unavailable and names the command pi refused.
+A level that is not one of pi's own (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is refused before launch.
+A restarted or resumed seat passes the level again, so it runs the level it was launched with.
 
 To give pi an initial task, add `--prompt`:
 
@@ -145,7 +156,7 @@ Pi's chat output is not automatically sent to peers; replies use `cotal_dm`, `co
 `cotal_inbox` returns and clears quiet ambient traffic.
 The driver keeps ownership of automatic messages, while focus recall remains read-only.
 A partially configured managed control endpoint is refused.
-Model variants, MCP sharing, and raw launch options are also refused.
+MCP sharing and raw launch options are also refused.
 
 ## Continue [#see-also]
 

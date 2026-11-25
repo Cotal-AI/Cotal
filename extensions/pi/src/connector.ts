@@ -50,6 +50,10 @@ export const PI_PROVIDER_KEYS = [
   "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 ] as const;
 
+/** The levels pi's `--thinking` takes (pi's docs/rpc-commands.md). pi runs any other level at its
+ *  default without failing, so the launch refuses one. */
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
 const refused = (command: string, reply: PiRpcResponse): string =>
   `pi refused ${command}: ${typeof reply.error === "string" ? reply.error : "no reason given"}`;
@@ -112,6 +116,7 @@ export const piConnector: Connector = {
   interruptKey: "\x1b", // Escape aborts the live turn ("Operation aborted")
   // The driver wakes the session for a run turn and hands a once task over at most once.
   supportsTurnRelay: true,
+  supportsModelVariant: true, // variant = pi's `--thinking` level
   listModels: listPiModels,
   // pi's extension commands and prompt templates are commands, and its skills are skills (commands.ts).
   commands: { targets: ["command", "skill"], list: (o) => piCommandCatalog(o, launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: o.envAllow })) },
@@ -122,7 +127,8 @@ export const piConnector: Connector = {
       throw new Error(`pi connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (pi reads it as an option)`);
     if ([opts.resume, opts.continueSession, opts.reopenSession].filter(Boolean).length > 1)
       throw new Error("pi connector: resume (fork source), continueSession and reopenSession (same session) are mutually exclusive");
-    if (opts.variant) throw new Error("pi connector: model variants (variant) are not implemented");
+    if (opts.variant !== undefined && !PI_THINKING_LEVELS.includes(opts.variant))
+      throw new Error(`pi connector: thinking level ${JSON.stringify(opts.variant)} is not one pi takes (${PI_THINKING_LEVELS.join(", ")})`);
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("pi connector: MCP tool-sharing is not implemented");
     if (connectorLaunchOptions("pi", opts.launchOptions).length > 0)
@@ -208,6 +214,13 @@ export const piConnector: Connector = {
     if (opts.model) {
       env.COTAL_MODEL = opts.model;
       args.push("--model", opts.model);
+    }
+    // Its own flag, never a `:<level>` model suffix: pi reads `qwen3:high` as the model of that id
+    // when one exists. Every launch passes it, a reopened session too, as `--model` is passed:
+    // pi then runs the recorded launch's level rather than one changed inside the session.
+    if (opts.variant !== undefined) {
+      env.COTAL_VARIANT = opts.variant;
+      args.push("--thinking", opts.variant);
     }
     if (prompt !== undefined) args.push(prompt);
 
