@@ -48,6 +48,8 @@ function parseModels2(stdout: string): ModelInfo[] {
   });
 }
 
+/** Every 2.x install serves this list, so a read that does not produce one fails: the manager then
+ *  reports the catalog unreadable, never as an install without a catalog. */
 export function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
   const password = randomBytes(32).toString("base64url");
   // The password rides the environment only, never argv, where any local user could read it.
@@ -56,12 +58,10 @@ export function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promis
   const deadline = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
   return readCatalog(child, password, deadline, stage).then(
     (models): ModelCatalog => ({ source: CATALOG_SOURCE, models }),
-    (e: Error): ModelCatalog => ({
-      models: [],
-      unavailable: `OpenCode 2.x did not list its models (${CATALOG_SOURCE}: ${
-        deadline.aborted ? `no answer within ${CATALOG_TIMEOUT_MS / 1000} seconds, waiting for ${stage.waitingFor}` : e.message
-      }); pass --model provider/model`,
-    }),
+    (e: Error) => {
+      const why = deadline.aborted ? `no answer within ${CATALOG_TIMEOUT_MS / 1000} seconds, waiting for ${stage.waitingFor}` : e.message;
+      throw new Error(`OpenCode 2.x did not list its models (${CATALOG_SOURCE}: ${why}); pass --model provider/model`);
+    },
   ).finally(() => stop(child));
 }
 

@@ -19,6 +19,10 @@ export interface AgentCatalog {
    *  publishes an event plane. */
   readonly reasoningEvents?: boolean;
   readonly reason?: string;
+  /** Why the manager could not read the application's models. A thread does not start it, since its
+   *  model list would be a default the application may not take. Absent when the read worked, and
+   *  for a connector with no model list to read, which keeps its default alone. */
+  readonly modelsUnread?: string;
   readonly models: readonly CatalogModel[];
 }
 

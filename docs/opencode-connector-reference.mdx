@@ -245,7 +245,7 @@ and stops it with its process group when the read ends. OpenCode answers the mod
 partial until its plugins load, so the connector waits until `GET /api/plugin` lists them, as
 OpenCode's own `opencode models` does, and then reads the list. `--refresh` does not apply to 2.x. A
 2.x read that fails, lists no models or something other than a model list, or takes longer than 10
-seconds in all reports the catalog unavailable with the reason.
+seconds fails with the reason, and `cotal models` reports the catalog as unreadable.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
 the absolute path the manager resolved when OpenCode became available. A binary placed earlier on

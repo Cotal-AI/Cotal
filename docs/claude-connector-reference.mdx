@@ -1074,6 +1074,11 @@ ends with a run-finished event carrying no outcome, which says the turn ended an
 succeeded. A turn you interrupt ends with a run-finished event whose outcome is `interrupt`, read
 from the interrupt record Claude Code writes to the transcript.
 
+**A tool call shows while it runs.** Claude Code writes its transcript on a 100 ms timer, so its
+`PreToolUse` hook runs before the call it announces is on disk, and no hook follows until the tool
+ends. While a turn is open the connector watches the transcript, and each time it grows the connector
+reads the new records. A call reaches the event plane within about a second of its start.
+
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
 open when the session stopped is closed rather than left dangling.

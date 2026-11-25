@@ -166,7 +166,7 @@ export const opencodeConnector: Connector = {
   // Both plugins wake the session for a run turn and hand a once task over at most once.
   supportsTurnRelay: true,
   listModels: listOpenCodeModels,
-  // OpenCode 2.x seats run both (command-routes.ts); a 1.x install lists `supported: false`.
+  // Seats of both lines run both, and both lines list them before launch (command-catalog.ts).
   commands: { targets: ["command", "skill"], list: (o) => openCodeCommandCatalog(o, launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: o.envAllow })) },
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a
