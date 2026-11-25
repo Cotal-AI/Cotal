@@ -1,5 +1,25 @@
 # @cotal-ai/runtime
 
+## 0.177.0
+
+### Patch Changes
+
+- 4f253b5: Keep the broker selection and output format when a hosted journal read finds no record and suggests listing runs. A journal row limit stays on the subsequent read.
+- f35ff3d: The local workflow list on an open mesh keeps the journal shortcut and suggests offline simulation instead of starting a hosted run.
+- 64438d7: When a local workflow resume has a malformed run ID, show how to list runs on the same target without a Manager.
+- 27d8f41: When a workflow simulation refuses an invalid clock start or duration, it names the results file and shows how to correct the value.
+- ff66e76: Keep `--json` in the retry command when a workflow simulation needs a missing scripted result.
+- Updated dependencies [d03e96f]
+- Updated dependencies [d649b5f]
+- Updated dependencies [0bb3186]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8aa785c]
+- Updated dependencies [a450399]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/lang@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes

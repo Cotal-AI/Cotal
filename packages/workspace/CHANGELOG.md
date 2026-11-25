@@ -1,5 +1,18 @@
 # @cotal-ai/workspace
 
+## 0.177.0
+
+### Patch Changes
+
+- d649b5f: A damaged extension manifest no longer blocks update preferences or `cotal ext root`, and `cotal ext list --json` reports the damage with repair guidance.
+- d8723ea: Cotal identifies files blocking local space roots and explains how to restore the project or clear its stale registration without touching the file.
+- 8aa785c: Keep extensions such as ACP available when you run your first `cotal ext seed` after installing them.
+- a450399: Keep `cotal who --server` on the running project's open space when its local registration is missing and the address matches its recorded broker.
+- 24c84fe: Report a permission refusal when a connection using an explicit credential cannot check the project's authentication mode. The connection still stops before using the credential.
+- Updated dependencies [d03e96f]
+- Updated dependencies [0bb3186]
+  - @cotal-ai/core@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes
