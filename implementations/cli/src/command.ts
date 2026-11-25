@@ -641,7 +641,8 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   rest = stripGlobalFlags(cmd, rest);
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
-  const plain = !seed && rest.includes("--plain");
+  const end = rest.indexOf("--");
+  const plain = !seed && (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
   if (misspelled) usageExit(misspelled.message, cmd, json, plain, misspelled.remedy, seed ? [seed.name] : rest);
