@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   CommandFailure,
@@ -32,7 +32,7 @@ import { recordedStackRemedy, type RecordedStackRemedy } from "../lib/recorded-s
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
-import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+import { localUpdateManagers, recordedUpdateManagers, skipUpdateStack, type UpdateManager } from "../lib/update-managers.js";
 import { assertRecordIdentity, brokerAddressKey, brokerUrlKey } from "@cotal-ai/workspace";
 import { message } from "./update-process.js";
 
@@ -225,8 +225,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   const local = registry.entries.filter(entry => entry.mode !== "user" &&
     (typeof flags.space !== "string" || flags.space === entry.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(entry.server)));
-  const { stackRootRecovery } = await import("../lib/stack-journal.js");
-  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => !existsSync(entry.root) || stackRootRecovery(entry.space) !== undefined);
+  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => skipUpdateStack(entry.root, entry.space));
   for (const entry of gone) console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
   if (gone.length && gone.length === local.length) return "none";
   if (gone.length) {
