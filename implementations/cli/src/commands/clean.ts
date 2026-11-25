@@ -98,6 +98,10 @@ export function validateCleanArguments(args: ParsedArgs): void {
     });
 }
 
+function cleanOption(name: "store-dir" | "attempt", value: string): string {
+  return ` --${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+}
+
 /** `cotal clean <history|store|all>` - one configurable cleanup verb.
  *   - `history`: purge the retained message backlog on the RUNNING broker (CHAT, plus DMs with
  *     `--dms`) via the least-privilege purger cred. `cotal history clear` is a thin alias.
@@ -134,19 +138,19 @@ export async function clean(args: ParsedArgs): Promise<void> {
     });
   }
   const explicitStore = values["store-dir"];
-  const storeFlag = explicitStore === undefined ? "" : ` --store-dir${explicitStore.startsWith("-") ? "=" : " "}${shellWord(explicitStore)}`;
+  const storeFlag = explicitStore === undefined ? "" : cleanOption("store-dir", explicitStore);
+  const attempt = values.attempt ? cleanOption("attempt", values.attempt) : "";
+  const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
   if (!values.force && !dryRun) {
     // The command to run keeps every flag that picks what is deleted; without one it deletes another
     // target than the one asked for. The restore verbs act on one attempt, named as given or as a placeholder.
-    const attempt = target === "restore-attempt" || target === "restore-fallback" ? ` --attempt ${values.attempt || "<id>"}` : "";
-    const discard = target === "restore-fallback" && values["discard-history"] ? " --discard-history" : "";
     const flag = (name: "space" | "server" | "creds"): string => {
       const value = values[name];
       return value === undefined ? "" : ` --${name} ${shellWord(value)}`;
     };
     const picks = target === "store" || target === "all" ? storeFlag
-      : target === "history" ? `${flag("space")}${flag("server")}${flag("creds")}${values.dms ? " --dms" : ""}` : "";
-    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${attempt}${picks} --force${discard}`, remedyIsCommand: true });
+      : target === "history" ? `${flag("space")}${flag("server")}${flag("creds")}${values.dms ? " --dms" : ""}` : attempt || " --attempt <id>";
+    throw new CommandFailure("refused", "USAGE_INVALID", `clean ${target} deletes without prompting, so it requires --force`, { remedy: `cotal clean ${target}${picks} --force${discard}`, remedyIsCommand: true });
   }
   if (target === "history") return purgeHistory(values);
 
@@ -158,7 +162,11 @@ export async function clean(args: ParsedArgs): Promise<void> {
   // left `restore-attempt`/`restore-fallback` a broker-wide bypass.
   // Nothing is read or removed through a `.cotal` link, and one that leads nowhere is not passed
   // over to the records of a folder above it.
-  const linked = linkedCotalRefusal("clean");
+  const linked = linkedCotalRefusal({ cleanRetry: () => {
+    // A retry from another folder must not reinterpret a relative store path.
+    const picks = explicitStore === undefined ? attempt : cleanOption("store-dir", resolve(explicitStore));
+    return `${displayCmd({ fromAnyFolder: true })} clean ${target}${picks}${values.force ? " --force" : ""}${dryRun ? " --dry-run" : ""}${discard}`;
+  } });
   if (linked) throw linked;
   const root = cotalRoot();
   assertSingleSpaceBroker(authDir(root), `cotal clean ${target}`);

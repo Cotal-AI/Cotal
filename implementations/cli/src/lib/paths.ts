@@ -101,8 +101,9 @@ export function linkedCotalRemedy(root: string, target: string): string {
  *  its own directory, and `clean` and `reset` read and remove nothing through a link, so none of
  *  them reads or writes through it. A link that leads nowhere is not passed over either: `clean`
  *  would otherwise remove the records of a folder above it. */
-export function linkedCotalRefusal(command: "up" | "down" | "clean" | "reset store" | "reset space", link: CotalLink | undefined = cotalLinkHere()): CommandFailure | undefined {
+export function linkedCotalRefusal(action: "up" | "down" | "reset store" | "reset space" | { cleanRetry: () => string }, link: CotalLink | undefined = cotalLinkHere()): CommandFailure | undefined {
   if (link === undefined) return undefined;
+  const command = typeof action === "string" ? action : "clean";
   const { root, path, target } = link;
   const removes = command !== "up" && command !== "down";
   const effect = command === "up" ? "started" : command === "down" ? "stopped" : "removed";
@@ -112,10 +113,17 @@ export function linkedCotalRefusal(command: "up" | "down" | "clean" | "reset sto
     : "remove the link, then run it again where the records it should remove are";
   const why = removes ? `${command} reads and removes nothing through a link` : "a stack runs only from a folder whose .cotal is its own directory";
   if (link.dangling) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${path} links to ${target}, which does not exist${removes ? `, and ${why}` : ""}; nothing was ${effect}`, { target: failureTarget, remedy: here });
+  const original = dirname(target);
+  let remedy = here;
   // A reset selects its root by the space's name, so running it from another folder changes nothing.
-  const elsewhere = basename(target) === ".cotal" && !command.startsWith("reset") ? `run \`cotal ${command}\` from ${dirname(target)}, whose .cotal this links to, or ${here}` : here;
+  if (recordsMovedTo(root, original)) {
+    remedy = `${moveRecordsBack(root, original)}; then run ${removes ? "it" : `\`cotal ${command}\``} again`;
+  } else if (basename(target) === ".cotal" && !command.startsWith("reset")) {
+    const retry = typeof action === "string" ? `cotal ${action}` : action.cleanRetry();
+    remedy = `run ${codeSpan(retry)} from ${original}, whose .cotal this links to, or ${here}`;
+  }
   return new CommandFailure("refused", "CONFLICT", `${path} is a link to ${target}, and ${why}; nothing was ${effect}`, {
     target: failureTarget,
-    remedy: recordsMovedTo(root, dirname(target)) ? `${moveRecordsBack(root, dirname(target))}; then run ${removes ? "it" : `\`cotal ${command}\``} again` : elsewhere,
+    remedy,
   });
 }

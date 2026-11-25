@@ -16,7 +16,7 @@
  * store names the folder that holds what is left.
  */
 import { strict as assert } from "node:assert";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -81,6 +81,30 @@ function meshRoot(): string {
   return root;
 }
 
+function checkLinkedClean(sandbox: string, run: (cwd: string, args: string[]) => SpawnSyncReturns<string>): void {
+  const root = join(sandbox, "original project");
+  const dot = join(root, ".cotal");
+  const linked = join(sandbox, "linked project");
+  const dir = "-store `old`";
+  const store = join(linked, dir);
+  mkdirSync(dot, { recursive: true });
+  mkdirSync(join(store, "jetstream"), { recursive: true });
+  symlinkSync(dot, join(linked, ".cotal"));
+  const preview = run(linked, ["all", `--store-dir=${dir}`, "--force", "--dry-run"]);
+  check("linked clean all preserves preview even with --force and quotes the original store path",
+    preview.status === 2 && preview.stdout === "" && preview.stderr.includes("Code:    CONFLICT")
+      && preview.stderr.includes(` clean all --store-dir '${store}' --force --dry-run\`\` from ${root}, whose .cotal this links to`), preview.stderr);
+  const retry = run(root, ["all", "--store-dir", store, "--force", "--dry-run"]);
+  check("the retry in the real project previews the same store without removing it",
+    retry.status === 0 && retry.stdout.includes(`would remove ${store} (JetStream store: jetstream)`), retry);
+  const restore = run(linked, ["restore-fallback", "--attempt=-restore 'old'", "--force", "--discard-history"]);
+  check("linked restore cleanup preserves the quoted attempt and discard choice",
+    restore.status === 2 && restore.stdout === "" && restore.stderr.includes("Code:    CONFLICT")
+      && restore.stderr.includes(` clean restore-fallback --attempt='-restore '\\''old'\\''' --force --discard-history\` from ${root}, whose .cotal this links to`), restore.stderr);
+  check("the refusals and retry leave the link and store intact",
+    readlinkSync(join(linked, ".cotal")) === dot && existsSync(join(store, "jetstream")));
+}
+
 function checkCleanStoreCli(): void {
   if (process.platform === "win32") return;
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-clean-cli-")));
@@ -91,7 +115,8 @@ function checkCleanStoreCli(): void {
     cwd: root, encoding: "utf8" as const, timeout: 30_000,
     env: { ...ambient, COTAL_HOME: home, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config") },
   };
-  const run = (...args: string[]) => spawnSync(process.execPath, [cli, "clean", "store", ...args], options);
+  const runClean = (cwd: string, args: string[]) => spawnSync(process.execPath, [cli, "clean", ...args], { ...options, cwd });
+  const run = (...args: string[]) => runClean(root, ["store", ...args]);
   try {
     const fixture = "-fixture with spaces";
     const store = join(root, fixture);
@@ -104,13 +129,13 @@ function checkCleanStoreCli(): void {
     for (const target of ["store", "all"]) {
       for (const mode of ["--dry-run", "--force"]) {
         const badPath = mode === "--dry-run" ? "./not-folder/child" : "./not-folder/nested/child";
-        const invalid = spawnSync(process.execPath, [cli, "clean", target, mode, "--store-dir", badPath], options);
+        const invalid = runClean(root, [target, mode, "--store-dir", badPath]);
         check(`clean ${target} ${mode} names the non-directory ancestor and how to correct the store path`,
           invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes("USAGE_INVALID")
             && invalid.stderr.includes(`${notFolder} is not a directory`)
             && invalid.stderr.includes("correct --store-dir, or omit it if you intend to use the recorded store")
             && readFileSync(notFolder, "utf8") === "not a directory\n" && existsSync(data), invalid.stderr);
-        const result = spawnSync(process.execPath, [cli, "clean", target, flag, mode, "--attempt", `restore-${randomUUID()}`], options);
+        const result = runClean(root, [target, flag, mode, "--attempt", `restore-${randomUUID()}`]);
         check(`clean ${target} ${mode} rejects --attempt and leaves the store intact`,
           result.status === 1 && result.stdout === "" && result.stderr.includes(`clean ${target} cannot be scoped by --attempt.`) &&
             result.stderr.includes("That option selects a restore for clean restore-attempt or clean restore-fallback.") && existsSync(data), result.stderr);
@@ -129,6 +154,7 @@ function checkCleanStoreCli(): void {
       check(`the ${preview ? "dry run" : "missing-force refusal"} prints a runnable command for a hyphen-led store`, retry.status === 0 && !existsSync(store), retry.stderr);
     }
 
+    checkLinkedClean(root, runClean);
     const link = join(root, ".cotal", "nats");
     const parked = "parked store";
     mkdirSync(join(root, parked, "jetstream"), { recursive: true });
