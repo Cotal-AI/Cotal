@@ -53,7 +53,7 @@ interface Frame {
   ok?: boolean;
   line?: string;
   progress?: { step: string; outcome: string; detail: string };
-  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown } };
+  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown }; detail?: { installed?: boolean } };
   result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[] };
 }
 async function requestFrames(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame[]> {
@@ -248,6 +248,7 @@ const control = isolated("control");
 const absent = await request(control, "status");
 assert.equal(absent.error?.code, "NOT_RUNNING");
 assert.equal(absent.error?.message, "The daemon is not running. Install its background service first.");
+assert.equal(absent.error?.detail, undefined, "a service not set up yet carries no installed mark");
 assert.ok(!existsSync(control.receipt));
 const installing = request(control, "install");
 // Observe rejection immediately even if a later setup assertion throws before we await it.
@@ -294,6 +295,8 @@ const beforeStatus = operations(control.calls);
 const stopped = await request(control, "status");
 assert.equal(stopped.error?.code, "NOT_RUNNING");
 assert.equal(stopped.error?.message, "The background service is installed but stopped. Choose Start service to start it.");
+// The app shows Start service for this one, and stays quiet before the first sign-in for the one above.
+assert.deepEqual(stopped.error?.detail, { installed: true });
 // Status validates the recorded source without planning or starting a service.
 assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
 console.log("installed and stopped: status names the stopped service, not a missing installation");
