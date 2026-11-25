@@ -22,6 +22,15 @@ export function cotalPath(...segments: string[]): string {
   return join(cotalRoot(), ".cotal", ...segments);
 }
 
+export function controlFileProblem(root: string): { message: string; remedy: string } | undefined {
+  const path = join(root, ".cotal");
+  try {
+    if (lstatSync(path, { throwIfNoEntry: false })?.isFile())
+      return { message: `${codeSpan(path)} is a regular file, not a directory`, remedy: "move the file aside and restore the original .cotal directory" };
+  } catch { /* no confirmed obstruction */ }
+  return undefined;
+}
+
 /** Startup writes under .cotal, or creates it under the project root. */
 export function upRootWriteProblem(root: string): { path: string; message: string; remedy: string } | undefined {
   const control = join(root, ".cotal");

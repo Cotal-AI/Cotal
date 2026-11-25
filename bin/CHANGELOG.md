@@ -1,5 +1,70 @@
 # cotal-ai
 
+## 0.181.0
+
+### Patch Changes
+
+- df1666c: When a broker start preview needs more options, the retry tells you to remove `--new-instance` and keep the preview and output flags.
+- 0765424: The CLI flag inventory test now checks that `--idle-exit` is a string option for service starts and the manager service process.
+- 83c33fd: Remove the unsupported `--creds` flag from the `cotal input` reference table.
+- 49130cf: The attach and stop commands suggested by `cotal ps` now target the mesh it listed instead of your default mesh.
+- 8060402: The scripted self-hosted setup example now creates the required project folder before running setup.
+- Updated dependencies [b05f907]
+- Updated dependencies [49d14ac]
+- Updated dependencies [1db7233]
+- Updated dependencies [df1666c]
+- Updated dependencies [e768fb9]
+- Updated dependencies [7289937]
+- Updated dependencies [fde800c]
+- Updated dependencies [9935b2a]
+- Updated dependencies [d0b9136]
+- Updated dependencies [222e6fb]
+- Updated dependencies [83c33fd]
+- Updated dependencies [36175cd]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b5d204f]
+- Updated dependencies [09617e8]
+- Updated dependencies [56eb577]
+- Updated dependencies [22f586b]
+- Updated dependencies [b91919d]
+- Updated dependencies [df886cf]
+- Updated dependencies [8ff0e85]
+- Updated dependencies [b1590ac]
+- Updated dependencies [958a65d]
+- Updated dependencies [e88785e]
+- Updated dependencies [49130cf]
+- Updated dependencies [8060402]
+- Updated dependencies [825f3a4]
+- Updated dependencies [d76ec5e]
+- Updated dependencies [b869681]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/connector-core@0.181.0
+  - @cotal-ai/manager@0.181.0
+  - @cotal-ai/cli@0.181.0
+  - @cotal-ai/runtime@0.181.0
+  - @cotal-ai/workspace@0.181.0
+  - @cotal-ai/auth@0.181.0
+  - @cotal-ai/delivery@0.181.0
+  - @cotal-ai/registry@0.181.0
+  - @cotal-ai/seat@0.181.0
+
+## 0.180.0
+
+### Patch Changes
+
+- Updated dependencies [bffdc47]
+- Updated dependencies [fcd33e4]
+  - @cotal-ai/cli@0.180.0
+  - @cotal-ai/manager@0.180.0
+  - @cotal-ai/workspace@0.180.0
+  - @cotal-ai/auth@0.180.0
+  - @cotal-ai/delivery@0.180.0
+  - @cotal-ai/runtime@0.180.0
+  - @cotal-ai/connector-core@0.180.0
+  - @cotal-ai/registry@0.180.0
+  - @cotal-ai/core@0.180.0
+  - @cotal-ai/seat@0.180.0
+
 ## 0.179.0
 
 ### Patch Changes
