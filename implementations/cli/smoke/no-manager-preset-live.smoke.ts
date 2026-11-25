@@ -88,9 +88,9 @@ try {
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
   writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["TRUST_SERVICE_TEST"] } }));
   const blockedStart = cotal("service", "start", "mgr", "--space", space, "--json");
-  const remedy = `cotal trust ${root}`;
+  const trustRemedy = `cotal trust ${root}`;
   check("manager service startup refuses to forward an untrusted project environment and creates no running instance",
-    blockedStart.status === 2 && blockedStart.env?.error?.code === "PERMISSION_DENIED" && blockedStart.env.error.message.includes(`\`${remedy}\``) && !running("mgr"), shown(blockedStart));
+    blockedStart.status === 2 && blockedStart.env?.error?.code === "PERMISSION_DENIED" && blockedStart.env.error.message.includes(`\`${trustRemedy}\``) && !running("mgr"), shown(blockedStart));
   const trust = cotal("trust", root);
   check("the printed trust action accepts the project before the manager start is retried", trust.status === 0, shown(trust));
   const started = cotal("service", "start", "mgr", "--space", space);
@@ -104,7 +104,7 @@ try {
       rmSync(trustFile);
       const blockedRestart = cotal("service", "restart", "mgr", "--space", space, "--yes", "--json");
       check("manager service restart refuses before stopping the existing process",
-        blockedRestart.status === 2 && blockedRestart.env?.error?.message.includes(`\`${remedy}\``) && running("mgr")?.pid === mgr.pid, shown(blockedRestart));
+        blockedRestart.status === 2 && blockedRestart.env?.error?.message.includes(`\`${trustRemedy}\``) && running("mgr")?.pid === mgr.pid, shown(blockedRestart));
     } finally { writeFileSync(trustFile, trusted, { mode: 0o600 }); }
   }
 
