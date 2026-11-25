@@ -69,6 +69,12 @@ export class AgentManagerUnsettled extends CommandFailure {
 const targetFlags = (values: { space?: unknown; server?: unknown }) =>
   ({ ...(typeof values.space === "string" ? { space: values.space } : {}), ...(typeof values.server === "string" ? { server: values.server } : {}) });
 
+export function managerRosterHint(values: { space?: unknown; server?: unknown }, rosterCommand?: string): string {
+  const flags = targetFlags(values);
+  return flags.server !== undefined && brokerAddressForDisplay(flags.server) !== flags.server
+    ? "the roster for the same broker" : codeSpan(rosterCommand ?? `cotal ps${targetWords(flags)}`);
+}
+
 /** Your live managers on the user-auth mesh `flags` resolve to, as presence shows them. */
 async function yourLiveManagers(flags: { space?: string; server?: string }): Promise<ManagerCandidate[]> {
   const { roster, connection } = await presenceOf(flags);
@@ -91,8 +97,7 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
 export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: ManagerRetry, rosterCommand?: string): Promise<string | undefined> {
   if (values.on === undefined) return undefined;
   const flags = targetFlags(values);
-  const roster = flags.server !== undefined && brokerAddressForDisplay(flags.server) !== flags.server
-    ? "the roster for the same broker" : codeSpan(rosterCommand ?? `cotal ps${targetWords(flags)}`);
+  const roster = managerRosterHint(flags, rosterCommand);
   const on = onInstance(String(values.on), verb, roster);
   if (on === undefined || instanceIdShaped(on)) return on;
   let mode: string | undefined;

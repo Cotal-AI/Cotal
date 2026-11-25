@@ -79,6 +79,7 @@ import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { onInstance, onRerun } from "../lib/control.js";
+import { managerRosterHint } from "../lib/manager-choice.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -171,7 +172,7 @@ export function validateStatusArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all, --components, --wide or --verbose");
-  if (typeof values.on === "string") onInstance(values.on, onRerun("cotal status", values, [...args.positionals, ...(presentation === "rich" ? [] : [`--${presentation}`])]));
+  if (typeof values.on === "string") onInstance(values.on, onRerun("cotal status", values, [...args.positionals, ...(presentation === "rich" ? [] : [`--${presentation}`])]), managerRosterHint(values));
   if (!args.positionals.length && args.values.on !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--on selects a named agent read, not infrastructure status");
   if (!args.positionals.length && args.values.creds !== undefined) {
