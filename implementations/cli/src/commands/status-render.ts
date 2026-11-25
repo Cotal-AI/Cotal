@@ -416,7 +416,7 @@ function selectedOverview(r: StatusResult, stackStarting: boolean, selectedStart
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
   if (!s.resolved) return { title, blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
-    ...(s.code !== "missing-stack-records" && (selectedStarting || servedStack(r.folder, s)) ? stackLines(r.folder, selectedStarting) : []),
+    ...(s.message !== r.folder.missingStackRecords?.message && (selectedStarting || servedStack(r.folder, s)) ? stackLines(r.folder, selectedStarting) : []),
   ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;

@@ -43,14 +43,22 @@ export function recordedReplacementSupersedesLostRecords(journal: StackJournal):
   return !stackRecordsLost(adopted);
 }
 
-/** Observe what the journal still proves when the exact broker instance record is missing. */
-export function lostBrokerRecord(journal: StackJournal): { space: string; pid: number | null; message: string; hint: string } | undefined {
-  if (process.platform !== "linux" || journal.recovery?.home !== resolve(homeCotalDir()) || journal.recovery.host !== knownStackRecoveryHost()) return undefined;
+/** Observe a broker from its journal when this home cannot supply its instance record. */
+export function lostBrokerRecord(journal: StackJournal): { space: string; pid: number | null; message: string; hint: string; otherHome?: string } | undefined {
+  const launch = journal.recovery;
+  if (process.platform !== "linux" || !launch || launch.host !== knownStackRecoveryHost()) return undefined;
   const broker = journal.members.find((row) => row.role === "broker");
   if (broker === undefined) return undefined;
   const pin = broker.process;
   const pid = broker.replacement === undefined && pin !== undefined && assertRecordIdentity(pin).kind === "match" ? pin.pid : null;
-  if ((pid === null && broker.replacement === undefined) || !missingRecord(broker, serviceInstanceStore(journal.space))) return undefined;
+  if (pid === null && broker.replacement === undefined) return undefined;
+  if (launch.home !== resolve(homeCotalDir())) {
+    const message = pid === null
+      ? `the stack for "${journal.space}" retains an unresolved broker replacement and was launched under a different Cotal home`
+      : `the broker for "${journal.space}" is still running, but the stack was launched under a different Cotal home`;
+    return { space: journal.space, pid, message, otherHome: launch.home, hint: stackHomeRemedy(launch.home) };
+  }
+  if (!missingRecord(broker, serviceInstanceStore(journal.space))) return undefined;
   const replacement = journal.members.some((row) => row.replacement !== undefined);
   if (replacement && recordedReplacementSupersedesLostRecords(journal)) return undefined;
   const missing = "the stack's member records are missing from this Cotal home";

@@ -261,6 +261,8 @@ A registration from an older start with no creation pins requires restoring the 
 
 A controller stack reached from another Cotal home names its recorded launching `COTAL_HOME`.
 Run the command with that home rather than repeating a recovery stop under the wrong home.
+On Linux, `status` can report a running broker from its journal in this case. It does not read
+the other home's instance records or recommend a recovery stop from the current home.
 
 
 On Linux, a default stack started without `space create` also accepts `down --space <space> --yes`

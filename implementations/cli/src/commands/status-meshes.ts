@@ -228,7 +228,7 @@ function missingRecordsSelection(error: MeshTargetError, folder: StatusResult["f
   const missing = folder.missingStackRecords;
   if (!missing || error.code !== "not-started" || error.details.root !== folder.root || (error.details.space ?? error.details.stackSpace) !== missing.space) return undefined;
   hints.push(missing.hint);
-  return { resolved: false, code: "missing-stack-records", space: missing.space, root: folder.root, message: missing.message };
+  return { resolved: false, code: missing.otherHome === undefined ? "missing-stack-records" : "stack-other-home", space: missing.space, root: folder.root, message: missing.message };
 }
 
 export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {

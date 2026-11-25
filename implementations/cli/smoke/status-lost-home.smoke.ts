@@ -24,16 +24,16 @@ let anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: env.XDG_
 const binary = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
 const journalPath = join(root, ".cotal", "stack-controller.json");
 
-function invoke(args: string[]) {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 60_000 };
-  assertSmokeSandboxDown(anchor, args, options);
+function invoke(args: string[], scope: { cwd?: string; cotalHome?: string; sandbox?: typeof anchor } = {}) {
+  const options = { cwd: scope.cwd ?? root, env: { ...env, COTAL_HOME: scope.cotalHome ?? home }, encoding: "utf8" as const, timeout: 60_000 };
+  assertSmokeSandboxDown(scope.sandbox ?? anchor, args, options);
   const run = spawnSync(process.execPath, [binary, ...args], options);
   assert.ifError(run.error);
   return run;
 }
 
-function cli(args: string[], exit: number) {
-  const run = invoke(args);
+function cli(args: string[], exit: number, scope?: Parameters<typeof invoke>[1]) {
+  const run = invoke(args, scope);
   assert.equal(run.status, exit, `${args.join(" ")}\n${run.stdout}${run.stderr}`);
   return run.stdout;
 }
@@ -81,18 +81,46 @@ function checkMissingInstance(pin: ProcessIdentityRecord): void {
   const instanceId = journal.members.find((row) => row.role === "broker")?.instanceId;
   assert(instanceId);
   const instance = join(home, "services", spaceKey(space), "instances", `${spaceKey(instanceId)}.json`);
+  const caller = join(base, "other-project");
+  mkdirSync(join(caller, ".cotal"), { recursive: true, mode: 0o700 });
   renameSync(instance, `${instance}.retained`);
   try {
     const { result } = JSON.parse(cli(["status", "--json"], 4)) as { result: StatusResult };
     assert(result.selected.resolved && result.selected.connection === "ok");
     assert.equal(result.folder.processes?.find(({ name }) => name === "nats")?.pid, pin.pid);
-    const components = cli(["status", "--components"], 3).split("Component Health")[1] ?? "";
-    assert.match(components, /broker\s+refused[\s\S]*owned broker health unavailable/);
-    assert.doesNotMatch(components, /broker\s+(absent|serving)/);
+    for (const cwd of [root, caller]) {
+      const components = cli(["status", "--components", "--space", space], 3, { cwd }).split("Component Health")[1] ?? "";
+      assert.match(components, /broker\s+refused[\s\S]*owned broker health unavailable/);
+      assert.doesNotMatch(components, /broker\s+(absent|serving)/);
+    }
     preview("missing-records-stack-stop-preview", pin);
     assert.equal(readFileSync(journalPath, "utf8"), before);
-    console.log("PASS: a reachable registered broker with a missing instance refuses the owned health check");
+    console.log("PASS: a missing broker instance refuses the owned health check from either project");
   } finally { renameSync(`${instance}.retained`, instance); }
+}
+
+function checkForeignHome(pin: ProcessIdentityRecord): void {
+  const before = readFileSync(journalPath, "utf8");
+  const cotalHome = join(base, "other-home");
+  const sandbox = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: env.XDG_CONFIG_HOME });
+  const scope = { cotalHome, sandbox };
+  const { result } = JSON.parse(cli(["status", "--json"], 0, scope)) as { result: StatusResult };
+  assert(!result.selected.resolved && result.selected.code === "stack-other-home");
+  assert.match(result.selected.message, /different Cotal home/);
+  assert.equal(result.folder.storedState, false);
+  const broker = result.folder.processes?.find(({ name }) => name === "nats");
+  assert.deepEqual([broker?.source, broker?.state, broker?.pid], ["stack-journal", "running", pin.pid]);
+  const hints = result.hints.join("\n");
+  assert(hints.includes(`COTAL_HOME=${home}`));
+  assert.doesNotMatch(hints, /cotal down --(?:dry-run|yes)|clean store --force|cotal space create/);
+  const components = cli(["status", "--components"], 3, scope).split("Component Health")[1] ?? "";
+  assert.match(components, /target\s+refused[\s\S]*different Cotal home/);
+  const { error } = JSON.parse(cli(["down", "--dry-run", "--json"], 2, scope)) as { error: { code: string; remedy: string } };
+  assert.equal(error.code, "TARGET_UNAVAILABLE");
+  assert(error.remedy.includes(`COTAL_HOME=${home}`));
+  assert.equal(readFileSync(journalPath, "utf8"), before);
+  assert.equal(assertRecordIdentity(pin).kind, "match");
+  console.log("PASS: status names the launching home and a running broker without granting recovery under another home");
 }
 
 function checkLostHome(pin: ProcessIdentityRecord): void {
@@ -190,6 +218,7 @@ try {
   pin = await runningBroker(up);
   checkIntactHome(pin);
   checkMissingInstance(pin);
+  checkForeignHome(pin);
   renameSync(home, `${home}-retained`);
   anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: env.XDG_CONFIG_HOME });
   lostHome = true;

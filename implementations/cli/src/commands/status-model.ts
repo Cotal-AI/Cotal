@@ -147,7 +147,7 @@ export interface StatusResult {
     /** That stack's last `up` or `down` when it ended with no recorded outcome part way, with the
      *  members left running and stopped. Null when there is none; older inputs may omit it. */
     stackUnfinished?: { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | null;
-    /** Journal evidence when the broker's exact instance record is missing. A null PID means the replacement is unresolved. */
+    /** Journal evidence when the broker record is missing or belongs to another home. A null PID means the replacement is unresolved. */
     missingStackRecords?: NonNullable<ReturnType<typeof lostBrokerRecord>>;
   };
   meshes: {

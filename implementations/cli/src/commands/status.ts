@@ -862,9 +862,9 @@ function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, ga
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
   if (missing) {
-    gaps.add("FOLDER_BROKER_UNAVAILABLE", "owned broker observation unavailable · the stack's recorded broker instance is missing", { root: journal.root, space: journal.space });
+    if (missing.otherHome === undefined) gaps.add("FOLDER_BROKER_UNAVAILABLE", "owned broker observation unavailable · the stack's recorded broker instance is missing", { root: journal.root, space: journal.space });
     return { ...row, source: "stack-journal", state: missing.pid === null ? "unknown" : "running", pid: missing.pid,
-      detail: missing.pid === null ? missing.message : "process verified from the stack journal; instance record missing" };
+      detail: missing.pid === null || missing.otherHome !== undefined ? missing.message : "process verified from the stack journal; instance record missing" };
   }
   const recordedHome = journal.recovery?.home;
   if (recordedHome !== homeCotalDir() && stackRunsUnderOtherHome(journal.root, journal)) {
