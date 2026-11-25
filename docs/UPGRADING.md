@@ -18,6 +18,15 @@ as the first argument to `spawn`.
 Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
 `cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
 
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
+recognise it as running here.
+
 ## The agent endpoint on every space
 
 Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
