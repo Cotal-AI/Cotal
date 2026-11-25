@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { brokerUrlKey, canonicalRoot, NATS_PIDFILE, recordedRuntimeSpaces, resolveRuntimeSpace, spaceKey, type MeshTarget } from "@cotal-ai/workspace";
 import { managerLogPath } from "../lib/manager-proc.js";
 
-/** The local registration supplies the space of an open broker with no space-scoped pidfiles.
- * Named runtime records take precedence, and a different address supplies no local evidence. */
-export function statusRuntimeSpace(root: string, target?: MeshTarget): string {
+/** With no space-scoped pidfiles, a verified open startup or the local registration can name the
+ * open space. A target at a different address supplies no local evidence. */
+export function statusRuntimeSpace(root: string, target?: MeshTarget, startingOpenSpace?: string): string {
+  if (startingOpenSpace !== undefined && recordedRuntimeSpaces(root).length === 0) return startingOpenSpace;
   if (target?.mode === "open" && target.origin === "up" && canonicalRoot(target.root) === canonicalRoot(root)
     && (target.source !== "flag-server" && target.source !== "flag-space-override"
       || target.recordedServer !== undefined && brokerUrlKey(target.recordedServer) === brokerUrlKey(target.server))
