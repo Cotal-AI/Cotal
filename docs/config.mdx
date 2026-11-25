@@ -600,6 +600,7 @@ On Linux and macOS, an installed CLI keeps `extensions/` and `seed/` under
 `installs/<sha256>/sets/<version>/cotal/` in the configuration directory above. The hash identifies
 the logical CLI entry path. Spaces and projects using that installation share its stores.
 `cotal ext root` prints the extension prefix, including before its first seed, without creating it.
+The first `cotal ext seed` keeps extensions already installed in that prefix.
 A new version reads its retained predecessor until reconciliation copies and selects a new set.
 An existing legacy `extensions/` or `seed/` directly under the configuration directory remains
 readable until that migration. Windows, desktop runtimes and source checkouts use the direct paths.

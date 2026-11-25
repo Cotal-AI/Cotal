@@ -9,6 +9,7 @@ import { localProcessPath, NATS_PIDFILE } from "./local-process.js";
 import { findCotalRoot, stackJournalPath } from "./auth-paths.js";
 import { readLocalRecordSource, decodeLocalJson } from "./protected-records.js";
 import { isCommandFailure } from "./output.js";
+import { projectRootProblem } from "./prepared-spaces.js";
 
 /**
  * Liveness verification for a resolved mesh target — the companion to {@link resolveMeshTarget}
@@ -143,7 +144,7 @@ export async function preflightTarget(
         // Unusable local evidence does not prove the broker is gone. Keep the live probe below;
         // status reports the journal's read failure separately as a warning.
       }
-    } else {
+    } else if (projectRootProblem(target.root) !== "not-directory") {
       const rawPid = readPidfile(localProcessPath(NATS_PIDFILE, { root: target.root, space: target.space }));
       const pid = rawPid === undefined ? undefined : parsePid(rawPid);
       brokerGone = rawPid === undefined || pid !== undefined && probeLiveness(pid) === "dead";

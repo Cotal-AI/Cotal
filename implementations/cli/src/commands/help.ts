@@ -21,9 +21,17 @@ export async function help(args: ParsedArgs): Promise<void> {
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
   if (!cmd || cmd.name.startsWith("__")) throw new CommandFailure("refused", "USAGE_INVALID", unknownCommandMessage(commands, word), { selfContained: true });
-  if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
-    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), path));
-    return;
+  if (cmd.name === "service" && path[0] === "add") {
+    let scoped = cmd;
+    try { scoped = servicePresetCommand(cmd, path); }
+    catch { /* A preset that cannot supply options still shows generic help, as suffix help does. */ }
+    return paintFor(process.stdout, () => printHelpPath(scoped, path));
+  }
+  if (cmd.name === "service" && path[0] === "start" && path[1] !== undefined && findServicePreset(path[1])) {
+    let scoped = cmd;
+    try { scoped = servicePresetCommand(cmd, path.slice(0, 2)); }
+    catch (error) { if (path.length === 2) throw error; }
+    return paintFor(process.stdout, () => printHelpPath(scoped, path));
   }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
 }

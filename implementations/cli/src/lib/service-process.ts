@@ -18,6 +18,7 @@ import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./sta
 import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, privateLog } from "./private-log.js";
+import { targetWords } from "./confirmation-required.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -213,10 +214,13 @@ export function settleExitedInstances(definition: ServiceDefinitionSnapshot): vo
   finally { hold.release(); }
 }
 
-export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
+export function selectServiceInstance(rows: ServiceInstanceSnapshot[], target: { space: string; name: string; requested?: string }, id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
   if (id !== undefined) {
     const found = rows.find((row) => row.name === id);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space");
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", {
+      target: { ...target, instanceId: id },
+      remedy: `cotal service${targetWords({ space: target.space })} --json`, remedyIsCommand: true,
+    });
     return found;
   }
   if (!rows.length) { if (allowMissing) return undefined; throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition"); }
@@ -595,7 +599,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (rows.some((row) => row.record.value.state !== "stopped" || !row.record.value.kernelStop || !gone(observeServiceProcess(row.record.value)))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another record of this broker definition is not a stopped one with its own kernel-exit receipt; no new broker instance was allocated");
     }
     if (options.replacement && rows.length) throw new CommandFailure("refused", "CONFLICT", "the definition already has an instance record; the journaled replacement was not launched beside it", { target: { space: value.space, definition: definition.name, candidates: rows.map((row) => row.name) } });
-    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, options.instance, true);
+    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, { space: value.space, name: definition.name }, options.instance, true);
     // A retained native stop is decided only by its own receipt, so no start probes, reuses or
     // replaces it, and its record is not written.
     const retained = chosen && retainedStopRequest(chosen.record.value);

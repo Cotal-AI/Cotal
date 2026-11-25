@@ -17,7 +17,7 @@
  * Run: pnpm smoke:space-prepared-delete
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -277,6 +277,28 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       (statSync(control).mode & 0o777) === 0o500 && JSON.stringify(readdirSync(control).sort()) === JSON.stringify(before));
   } finally {
     chmodSync(control, mode);
+  }
+}
+
+{
+  const control = join(realpathSync(special), ".cotal");
+  const saved = `${control}.saved`;
+  const before = readdirSync(control).sort();
+  renameSync(control, saved);
+  writeFileSync(control, "sentinel\n");
+  try {
+    const blocked = run(["doctor", "auth", "--plain", "--space", "b4d"]);
+    const next = blocked.stderr.split("Next\n")[1] ?? "";
+    const repair = `\`${control}\` is a regular file, not a directory. First move the file aside and restore the original .cotal directory, then start it with`;
+    check("doctor auth from another folder names the regular file and puts restoration before startup",
+      blocked.status === 2 && /Code:\s+AUTH_REQUIRED/.test(blocked.stderr) &&
+      ["cotal", "pnpm cotal"].some((launcher) => next.includes(`${repair} \`${launcher} up --root `)), shown(blocked));
+    check("doctor leaves both the obstructing file and the saved directory intact",
+      lstatSync(control, { throwIfNoEntry: false })?.isFile() === true && readFileSync(control, "utf8") === "sentinel\n" &&
+      lstatSync(saved, { throwIfNoEntry: false })?.isDirectory() === true && JSON.stringify(readdirSync(saved).sort()) === JSON.stringify(before));
+  } finally {
+    rmSync(control);
+    renameSync(saved, control);
   }
 }
 

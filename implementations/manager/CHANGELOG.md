@@ -1,5 +1,39 @@
 # @cotal-ai/manager
 
+## 0.178.0
+
+### Patch Changes
+
+- 9370503: Starting a manager with a malformed roster leaves its saved definition unchanged, and the dry run shows why the start would fail.
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [ee23092]
+- Updated dependencies [9370503]
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/seat@0.178.0
+
+## 0.177.0
+
+### Minor Changes
+
+- 0bb3186: A launcher can now list the commands and skills a harness offers in a directory before any agent starts, and start an agent with one of them as its first turn. The Manager's new `harness-commands` read (`{ agent, cwd }`) asks Claude Code, Codex, pi or OpenCode 2.x in that directory and answers the entries a seat's `command` takes, or `supported: false` with a reason for a harness whose seats run no commands; it starts no seat and is granted where `list-dir` is. `spawn` takes `firstCommand: { target, name, args? }` and its acceptance names `firstCommand.id`. The agent queues the command under that id before any other and runs it as its first turn through its own command lane once the harness runs commands, and `command-state` reports a refusal. The Manager cluster advances to revision 54.
+
+### Patch Changes
+
+- dc37dd9: Managed spawn reports when the manager cannot read a persona and tells you which file and directory permissions to check.
+- 086bf0e: `cotal supervise` tells you to remove or repair an invalid saved seat-cap record before restarting the manager.
+- Updated dependencies [d03e96f]
+- Updated dependencies [d649b5f]
+- Updated dependencies [0bb3186]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8aa785c]
+- Updated dependencies [a450399]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/seat@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes

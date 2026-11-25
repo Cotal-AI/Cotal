@@ -13,7 +13,6 @@ import {
   type ModelCatalog,
   type ModelCatalogOpts,
   type ModelInfo,
-  type ModelVariantInfo,
 } from "@cotal-ai/core";
 import {
   aclEnv,
@@ -27,7 +26,7 @@ import {
   materialEnv,
 } from "@cotal-ai/connector-core";
 import { piCommandCatalog } from "./command-catalog.js";
-import { askPi, type PiRpcResponse } from "./rpc-once.js";
+import { askPi, type PiAsk, type PiRpcResponse } from "./rpc-once.js";
 
 const DIST = new URL(import.meta.url.includes("/dist/") ? "./" : "../dist/", import.meta.url);
 const SPAWN_ENTRY = fileURLToPath(new URL("spawn-entry.js", DIST));
@@ -51,39 +50,46 @@ export const PI_PROVIDER_KEYS = [
   "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 ] as const;
 
+/** The levels pi's `--thinking` takes (pi's docs/rpc-commands.md). pi runs any other level at its
+ *  default without failing, so the launch refuses one. */
+const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
+const refused = (command: string, reply: PiRpcResponse): string =>
+  `pi refused ${command}: ${typeof reply.error === "string" ? reply.error : "no reason given"}`;
 
-/** pi's thinking levels, lowest first, as `--thinking` takes them. */
-const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-
-/** The thinking levels pi offers for a model, as pi's own `getSupportedThinkingLevels` picks them:
- *  none for a model without reasoning, else each level its `thinkingLevelMap` does not mark `null`,
- *  with `xhigh` and `max` only where the map names them. */
-function thinkingLevels(model: { reasoning?: unknown; thinkingLevelMap?: unknown }): ModelVariantInfo[] {
-  if (model.reasoning !== true) return [];
-  const map = (model.thinkingLevelMap && typeof model.thinkingLevelMap === "object" ? model.thinkingLevelMap : {}) as Record<string, unknown>;
-  return PI_THINKING_LEVELS
-    .filter((level) => map[level] !== null && (level !== "xhigh" && level !== "max" || map[level] !== undefined))
-    .map((name) => ({ name }));
+/** The thinking levels pi lists for one model once it is selected, or why it listed none. */
+async function thinkingLevels(ask: PiAsk, provider: string, modelId: string): Promise<{ levels: string[] } | { failed: string }> {
+  const id = `${provider}/${modelId}`;
+  const selected = await ask({ type: "set_model", provider, modelId });
+  if (selected.success !== true) return { failed: refused(`set_model for ${id}`, selected) };
+  const reply = await ask({ type: "get_available_thinking_levels" });
+  if (reply.success !== true) return { failed: `${refused(`get_available_thinking_levels for ${id}`, reply)} (pi 0.81.0 added it)` };
+  const levels = reply.data?.levels;
+  if (!Array.isArray(levels) || !levels.every((level) => typeof level === "string"))
+    return { failed: `pi answered get_available_thinking_levels for ${id} without a level list` };
+  return { levels };
 }
 
-/** Map pi's `get_available_models` response to the catalog. The ids are `provider/id`, the form
- *  pi's `--model` takes, so a model offered by two providers stays two choices. A model's variants
- *  are its thinking levels. */
-function piCatalog(reply: PiRpcResponse): ModelCatalog {
-  if (reply.success !== true)
-    return unavailable(`pi refused get_available_models: ${typeof reply.error === "string" ? reply.error : "no reason given"}`);
+/** Map pi's answers to the catalog. The ids are `provider/id`, the form pi's `--model` takes, so a
+ *  model offered by two providers stays two choices. A model's variants are the thinking levels pi
+ *  lists for it, so the catalog offers what pi itself would run. */
+async function piCatalog(ask: PiAsk): Promise<ModelCatalog> {
+  const reply = await ask({ type: "get_available_models" });
+  if (reply.success !== true) return unavailable(refused("get_available_models", reply));
   const entries = reply.data?.models;
   if (!Array.isArray(entries)) return unavailable("pi answered get_available_models without a models list");
   const models: ModelInfo[] = [];
-  for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown; reasoning?: unknown; thinkingLevelMap?: unknown }[]) {
+  for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown }[]) {
     if (typeof m?.provider !== "string" || !m.provider || typeof m.id !== "string" || !m.id)
       return unavailable("pi answered get_available_models with a model that has no provider or id");
-    const variants = thinkingLevels(m);
+    const listed = await thinkingLevels(ask, m.provider, m.id);
+    if ("failed" in listed) return unavailable(listed.failed);
     models.push({
-      id: `${m.provider}/${m.id}`, provider: m.provider,
+      id: `${m.provider}/${m.id}`,
+      provider: m.provider,
       ...(typeof m.name === "string" && m.name ? { name: m.name } : {}),
-      ...(variants.length ? { variants } : {}),
+      ...(listed.levels.length ? { variants: listed.levels.map((name) => ({ name })) } : {}),
     });
   }
   // pi lists only the models of providers it holds credentials for.
@@ -96,8 +102,8 @@ export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCa
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
   // The spawn.env names a launch gets, such as PI_CODING_AGENT_DIR, so pi lists what a seat reaches.
   const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow });
-  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, type: "get_available_models", boundMs: 6_000 });
-  return "failed" in answer ? unavailable(answer.failed) : piCatalog(answer.reply);
+  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, boundMs: 6_000 }, piCatalog);
+  return "failed" in answer ? unavailable(answer.failed) : answer.reply;
 }
 
 export const piConnector: Connector = {
@@ -111,9 +117,8 @@ export const piConnector: Connector = {
   interruptKey: "\x1b", // Escape aborts the live turn ("Operation aborted")
   // The driver wakes the session for a run turn and hands a once task over at most once.
   supportsTurnRelay: true,
+  supportsModelVariant: true, // variant = pi's `--thinking` level
   listModels: listPiModels,
-  // A variant is a pi thinking level, which pi clamps to what the model supports.
-  supportsModelVariant: true,
   supportsAskPermissions: true,
   supportsReasoningEvents: true,
   prompts: true,
@@ -126,8 +131,8 @@ export const piConnector: Connector = {
       throw new Error(`pi connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (pi reads it as an option)`);
     if ([opts.resume, opts.continueSession, opts.reopenSession].filter(Boolean).length > 1)
       throw new Error("pi connector: resume (fork source), continueSession and reopenSession (same session) are mutually exclusive");
-    if (opts.variant !== undefined && !(PI_THINKING_LEVELS as readonly string[]).includes(opts.variant))
-      throw new Error(`pi connector: variant ${JSON.stringify(opts.variant)} is not a pi thinking level (${PI_THINKING_LEVELS.join(", ")})`);
+    if (opts.variant !== undefined && !PI_THINKING_LEVELS.includes(opts.variant))
+      throw new Error(`pi connector: thinking level ${JSON.stringify(opts.variant)} is not one pi takes (${PI_THINKING_LEVELS.join(", ")})`);
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("pi connector: MCP tool-sharing is not implemented");
     if (connectorLaunchOptions("pi", opts.launchOptions).length > 0)
@@ -214,7 +219,10 @@ export const piConnector: Connector = {
       env.COTAL_MODEL = opts.model;
       args.push("--model", opts.model);
     }
-    if (opts.variant) {
+    // Its own flag, never a `:<level>` model suffix: pi reads `qwen3:high` as the model of that id
+    // when one exists. Every launch passes it, a reopened session too, as `--model` is passed:
+    // pi then runs the recorded launch's level rather than one changed inside the session.
+    if (opts.variant !== undefined) {
       env.COTAL_VARIANT = opts.variant;
       args.push("--thinking", opts.variant);
     }

@@ -78,6 +78,8 @@ OpenCode uses `provider/model`.
 To inspect a connector's model IDs and variants, run `cotal models --harness <connector>`.
 Every connector except Hermes lists a catalog.
 For OpenCode, select one with `--model provider/model --variant high`.
+For Claude, the variant is the effort level, as in `--model opus --variant high`.
+For pi, the variant is the thinking level, as in `--model anthropic/claude-opus-4-6 --variant high`.
 
 A spawned Claude Code agent loads Cotal's tools, Claude's native MCP sources, and declared sharing overrides.
 Use `--share-tools none` for Cotal alone or `--share-tools a,b` for named declared servers.

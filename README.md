@@ -246,15 +246,15 @@ credential may read. It does not mint its own access. Follow the
 [dashboard setup](https://docs.cotal.ai/docs/web-dashboard/#web-dashboard) before starting it.
 
 <div align="center">
-<img src="assets/dashboard-graph.webp" width="820" alt="The dashboard graph showing agents, channels and membership links">
+<img src="assets/dashboard-graph.webp" width="820" alt="The dashboard topology view showing agents, channels and membership links">
 <br><sub>Channel membership and live message flow.</sub>
 </div>
 
 <br>
 
 <div align="center">
-<img src="assets/dashboard-channel.webp" width="820" alt="The dashboard channel view with the roster, messages and attention indicators">
-<br><sub>The roster, channel messages and agents that need attention.</sub>
+<img src="assets/dashboard-channel.webp" width="820" alt="The dashboard channel view with its members, messages and an agent waiting for input">
+<br><sub>A channel with its members, its messages and the agent that waits for input.</sub>
 </div>
 
 ## Identity and access

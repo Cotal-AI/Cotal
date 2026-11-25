@@ -1,27 +1,46 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelCatalog, ModelCatalogOpts, ModelVariantInfo } from "@cotal-ai/core";
+import type { ModelCatalog, ModelCatalogOpts, ModelInfo, ModelVariantInfo } from "@cotal-ai/core";
 import { launchEnv } from "@cotal-ai/connector-core";
 import { claudeInitialize } from "./claude-initialize.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
-/** The effort levels `claude --effort` takes, lowest first. */
+/** The levels `claude --effort` accepts (2.1.330), lowest first. Given another level, claude warns on
+ *  stderr and runs at its default effort, so a variant outside this list is refused at launch. */
 export const CLAUDE_EFFORT_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 
 const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
 
-interface ModelRow { value: string; displayName: string; supportsEffort?: unknown; supportedEffortLevels?: unknown }
-
-function isModelRow(row: unknown): row is ModelRow {
-  const { value, displayName } = (row ?? {}) as { value?: unknown; displayName?: unknown };
-  return typeof value === "string" && typeof displayName === "string";
+interface ModelRow {
+  value: string;
+  displayName: string;
+  resolvedModel?: string;
+  supportsEffort?: unknown;
+  supportedEffortLevels?: string[];
 }
 
-/** A model's variants are the effort levels claude lists for it that `--effort` takes. */
-function effortVariants(row: ModelRow): ModelVariantInfo[] {
-  if (row.supportsEffort !== true || !Array.isArray(row.supportedEffortLevels)) return [];
-  return row.supportedEffortLevels.filter((level) => CLAUDE_EFFORT_LEVELS.includes(level)).map((name: string) => ({ name }));
+function isModelRow(row: unknown): row is ModelRow {
+  const { value, displayName, resolvedModel, supportedEffortLevels: levels } = (row ?? {}) as Partial<Record<keyof ModelRow, unknown>>;
+  return (
+    typeof value === "string" &&
+    typeof displayName === "string" &&
+    (resolvedModel === undefined || typeof resolvedModel === "string") &&
+    (levels === undefined || (Array.isArray(levels) && levels.every((level) => typeof level === "string")))
+  );
+}
+
+/** An alias such as `opus` follows each new release, and some logins name it only "Opus", so its name
+ *  also carries the model it resolves to today. A value that extends that model, such as
+ *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. A model's variants
+ *  are the effort levels claude lists for it that `--effort` takes, and none when claude marks it
+ *  `supportsEffort: false`. */
+function modelInfo(row: ModelRow): ModelInfo {
+  const { value, resolvedModel } = row;
+  const resolves = resolvedModel && resolvedModel !== value ? ` (${value.startsWith(resolvedModel) ? value : resolvedModel})` : "";
+  const levels = row.supportsEffort === false ? [] : (row.supportedEffortLevels ?? []);
+  const variants: ModelVariantInfo[] = levels.filter((level) => CLAUDE_EFFORT_LEVELS.includes(level)).map((name) => ({ name }));
+  return { id: value, name: row.displayName + resolves, ...(variants.length ? { variants } : {}) };
 }
 
 export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
@@ -36,11 +55,7 @@ export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<Mod
     if (account?.tokenSource === "none" && !account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
     if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
     // `default` points at claude's own default model, which a launch that names no model gets anyway.
-    const models = rows.filter((m) => m.value !== "default").map((m) => {
-      const variants = effortVariants(m);
-      return { id: m.value, name: m.displayName, ...(variants.length ? { variants } : {}) };
-    });
-    return { source: "claude stream-json initialize", models };
+    return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map(modelInfo) };
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

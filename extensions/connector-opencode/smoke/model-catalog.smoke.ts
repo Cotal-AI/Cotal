@@ -45,7 +45,7 @@ async function list(bin: string, opts: ModelCatalogOpts = {}) {
 const unavailableOnly = (r: Awaited<ReturnType<typeof list>>, reason: RegExp) =>
   r.error === "" && r.catalog?.models.length === 0 && reason.test(r.catalog.unavailable ?? "");
 
-const SOURCE2 = "opencode serve --stdio: GET /api/model";
+const SOURCE2 = "opencode serve --stdio GET /api/model";
 const FAKE_SERVE = fileURLToPath(new URL("./fixtures/fake-opencode2-serve.mjs", import.meta.url));
 
 /** A fake 2.x binary whose servers settle `settleMs` after their first request (never when null). */
@@ -86,8 +86,6 @@ try {
   recorded.data[0].settings.apiKey = SECRET;
   recorded.data[1].headers = { authorization: `Bearer ${SECRET}` };
   recorded.data[1].variants[0].headers = { authorization: `Bearer ${SECRET}` };
-  const replyFile = join(dir, "reply.json");
-  writeFileSync(replyFile, JSON.stringify(recorded, null, 2));
 
   const late = fakeServer("oc2", { settleMs: 300, modelBody: JSON.stringify(recorded) });
   const listed = await list(late.bin);

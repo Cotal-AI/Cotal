@@ -110,7 +110,7 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   if (named && !named.ok) throw new CommandFailure("refused", "USAGE_INVALID", `${named.message.replace(/^✗ /, "")}; nothing was started or written`, { remedy: named.remedy });
   // A manifest boot checks its own `--server` override against `broker.servers`.
   const serverProblem = args.values.server !== undefined && !args.values.file ? upServerProblem(String(args.values.server)) : undefined;
-  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server))}`);
+  if (serverProblem) throw new FlagValueRefusal(`${serverProblem}; nothing was started or written`, `pass the IP address the local broker listens on, for example ${serverExample(String(args.values.server), args.values.host as string | undefined)}`);
   // A --host that is no bind host, or a bind that does not serve --server's address, refuses here,
   // before the controller stack writes its journal or trust.
   const hostProblem = !args.values.file ? upHostProblem(args.values.host as string | undefined, args.values.server as string | undefined) : undefined;
@@ -125,12 +125,8 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   // checks the certificate against the address it names.
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
-  if (typeof args.values.file === "string" && args.values.foreground === true) {
-    const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${shellWord((args.values.file.startsWith("-") ? "./" : "") + args.values.file)} --foreground`;
-    const remedy = args.values["dry-run"] === true ? `preview with ${codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`)}`
-      : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
-    throw new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
-  }
+  if (typeof args.values.file === "string" && args.values.foreground === true)
+    throw foregroundManifestRefusal(args.values.file, presentation, args.values["dry-run"] === true, args.values.server !== undefined);
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
@@ -215,6 +211,18 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   }
 }
 
+function foregroundManifestRefusal(file: string, presentation: ReturnType<typeof presentationOf>, dryRun: boolean, serverOverride: boolean): CommandFailure {
+  const needsCopy = dryRun && serverOverride;
+  const manifest = needsCopy ? "<manifest-copy>" : shellWord(file.startsWith("-") ? `./${file}` : file);
+  const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${manifest} --foreground`;
+  const preview = codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`);
+  const remedy = needsCopy
+    ? `copy the manifest beside the original, set ${codeSpan("broker.servers")} in the copy to the URL from ${codeSpan("--server")} without credentials, then preview with ${preview}`
+    : dryRun ? `preview with ${preview}`
+    : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
+  return new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
+}
+
 function assertUpRootWritable(root: string): void {
   const problem = upRootWriteProblem(root);
   if (problem) throw new CommandFailure("refused", "PERMISSION_DENIED", `${problem.message}; nothing was started or written`, { target: { root, path: problem.path }, remedy: problem.remedy });
@@ -248,14 +256,14 @@ function upServerProblem(server: string): string | undefined {
   return undefined;
 }
 
-/** The `--server` a refusal gives as its example: 127.0.0.1 on the port the user passed, or a
- *  placeholder when the value names none. */
-function serverExample(server: string): string {
+/** Keep a concrete IPv4 bind in the example. A wildcard listener is reachable on loopback. */
+function serverExample(server: string, host: string | undefined): string {
+  const address = host && isIP(host) === 4 && !WILDCARD_HOSTS.has(host) ? host : "127.0.0.1";
   let port: string | undefined;
   try { port = new URL(server).port || undefined; } catch { port = undefined; }
   port ??= /:(\d{1,5})\/?$/.exec(server)?.[1];
   const valid = port !== undefined && Number(port) >= 1 && Number(port) <= 65535;
-  return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://127.0.0.1:${valid ? Number(port) : "<port>"}`;
+  return `--server ${/^tls:/i.test(server) ? "tls" : "nats"}://${address}:${valid ? Number(port) : "<port>"}`;
 }
 
 /** The refusal of a manifest start whose effective `--server` or `broker.servers` lists more than

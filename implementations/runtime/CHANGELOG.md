@@ -1,5 +1,41 @@
 # @cotal-ai/runtime
 
+## 0.178.0
+
+### Patch Changes
+
+- 7f8494d: Starting a hosted workflow on an open mesh points to offline simulation or a static-auth mesh instead of suggesting that you start a manager.
+- d15dae4: If a local workflow answer or amendment has a malformed run ID, the CLI points you to the local run list for the same target and tells you to replace only the ID.
+- b056af3: Keep `--plain` in the retry command printed when a workflow simulation needs a scripted result.
+- ca6b557: When a simulation results file has an unknown top-level key, name the file and explain how to correct the key.
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [ee23092]
+- Updated dependencies [9370503]
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/lang@0.178.0
+
+## 0.177.0
+
+### Patch Changes
+
+- 4f253b5: Keep the broker selection and output format when a hosted journal read finds no record and suggests listing runs. A journal row limit stays on the subsequent read.
+- f35ff3d: The local workflow list on an open mesh keeps the journal shortcut and suggests offline simulation instead of starting a hosted run.
+- 64438d7: When a local workflow resume has a malformed run ID, show how to list runs on the same target without a Manager.
+- 27d8f41: When a workflow simulation refuses an invalid clock start or duration, it names the results file and shows how to correct the value.
+- ff66e76: Keep `--json` in the retry command when a workflow simulation needs a missing scripted result.
+- Updated dependencies [d03e96f]
+- Updated dependencies [d649b5f]
+- Updated dependencies [0bb3186]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8aa785c]
+- Updated dependencies [a450399]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/lang@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes

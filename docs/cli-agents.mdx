@@ -228,7 +228,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--harness <connector>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). `--agent` is the legacy spelling; giving both is refused |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
-| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
+| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers, Claude effort levels or pi thinking levels) |
 | `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. On a spawn in this terminal, a path that does not exist or is not a directory is refused with `TARGET_UNAVAILABLE` before provisioning. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
@@ -496,10 +496,9 @@ An empty or whitespace-only `--harness` or `-H` refuses with
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Hermes asks the connector's pinned Hermes which provider a launch's environment selects, and lists
 that provider's models.
-Claude Code lists the models its login can use, and pi lists the models of providers it holds
-credentials for. Jcode reads providers that enable `model_catalog = true` in the operator Jcode
-`config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
-and launch can still refuse one.
+Claude Code lists the models its login can use, with their effort levels as variants, and pi lists
+the models of providers it holds credentials for, with their thinking levels as variants. Jcode lists
+the models `jcode model list` reports with an available route, without variants.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
 the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be
@@ -585,8 +584,8 @@ must match the catalog name. Creation keeps the original bytes.
 A file with invalid encoding is refused with `SCHEMA_INVALID`, naming the source and asking you to
 save it as UTF-8. A name mismatch is refused with `SCHEMA_INVALID` and names the value in the file.
 If the file's name can be used to create a persona, the refusal gives the
-`persona create` command that keeps it and quotes the file path for the shell. With `--file -`,
-pipe the definition into the retry again.
+`persona create` command that keeps it and quotes the file path for the shell. The retry keeps an
+explicit `--json` or `--plain` format. With `--file -`, pipe the definition into the retry again.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
 such as a missing frontmatter block, the renamed `channels` key or a `subscribe` channel outside
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.
@@ -648,9 +647,10 @@ successful editor exit and valid definition are required before saving. A draft 
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
 so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags
 and the requested `--json` or `--plain` output.
-An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
-exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
-editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
+An editor that exits non-zero, as vim's `:cq` does, cancels the edit. This includes statuses 126 and
+127 from an editor run directly by path. The CLI exits 0 with a `USER_CANCELLED` warning, saves
+nothing, and keeps and names a draft the editor changed.
+An editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
 SIGHUP that reaches the CLI while the editor is open is passed to the editor, and the CLI waits for
 it to exit. SIGTERM and SIGHUP then stop the edit, as does a Ctrl-C that ends the editor: nothing is
 saved, an unchanged draft is removed, a changed one is kept and named, and the CLI exits 130, 143 or

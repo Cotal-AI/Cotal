@@ -6,13 +6,13 @@
  *  definitions, their instance records and the registration naming the folder are removed, so the
  *  space can start in another folder. */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, findMesh, getCurrent, identityRecord, isCommandFailure, loadMeshes, localMeshesForRoot, loopbackListeners, oneLine, presentationOf, processesNaming,
-  readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
+  preparedRootRemedy, projectRootProblem, projectRootProblemText, readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -31,6 +31,15 @@ const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 interface Member { role: StackRole; definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; pid: number | null; live: boolean }
 interface Stopped { role: StackRole; definition: string; instanceId: string; pid: number | null; result: "stopped" | "already-stopped"; signal?: "SIGTERM"; observedAt?: string }
+
+/** A project that denies traversal cannot be treated as gone or used as a retry location. */
+export function refuseInaccessibleDownRoot(root: string, space: string): void {
+  const problem = projectRootProblem(root);
+  if (problem !== "inaccessible") return;
+  throw new CommandFailure("refused", "PERMISSION_DENIED", `the project folder at ${oneLine(root)} ${projectRootProblemText(problem)}; nothing was stopped or changed`, {
+    target: { root, space }, remedy: preparedRootRemedy(space, problem),
+  });
+}
 
 /** The space and gone folder a whole-stack `down` names: `--space`, or else the space registered for
  *  this folder, or else, when this folder holds no `.cotal` of its own, the selected space. Undefined
@@ -236,6 +245,7 @@ function releaseDefinitions(space: string, root: string): string[] {
 export async function goneRootStackDown(space: string, root: string, values: ParsedArgs["values"]): Promise<void> {
   validateGoneRootDownArguments(values);
   recordOperationSpace(space);
+  refuseInaccessibleDownRoot(root, space);
   const presentation = presentationOf(values), target = { space, root };
   if (!stackDefinitionsAt(space, root).length) {
     const native = findMesh(space);
@@ -306,17 +316,26 @@ export async function goneRootStackDown(space: string, root: string, values: Par
   catch (error) {
     throw new CommandFailure("partial", "OPERATION_PARTIAL", `every member stopped, but removing the saved definitions or the registration did not confirm (${error instanceof Error ? error.message : String(error)})`, { target, changed: stopped, remedy: `run \`cotal down --space ${space} --yes\` again` });
   }
-  writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: released } }, (): Report => ({ space, sections: [
-    { title: "Stack stopped; its folder was gone", blocks: [
-      { kind: "fields", rows: [["Space", space], ["Folder", `${root} · gone`]] },
-      { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "pid", label: "Pid" }, { key: "state", label: "Result" }], rows: stopped.map((row) => ({ role: row.role, instance: row.instanceId, pid: row.pid === null ? "none" : String(row.pid), state: { text: row.result === "stopped" ? "stopped by SIGTERM" : "already stopped", tone: "ok" } })) },
-      { kind: "lines", lines: [`Removed the saved definitions ${released.join(", ") || "(none were saved)"} and the registration naming the folder.${existsSync(root) ? ` The broker wrote ${root} back while it ran; that folder was left as it is.` : ""}`] },
-    ] },
-    // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
-    // where it is now keeps its history, as `up` run there names.
-    { title: "Next", blocks: [{ kind: "commands", items: [
-      { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
-      { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
-    ] }] },
-  ] }));
+  writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: released } }, (): Report => {
+    let entry: Stats | undefined;
+    try { entry = lstatSync(root, { throwIfNoEntry: false }); }
+    catch { /* An unreadable path does not change the stop result. */ }
+    const folder = !entry ? "gone" : entry.isFile() ? "occupied by a file" : entry.isDirectory() ? "directory present" : "not a directory";
+    const left = entry?.isFile()
+      ? " A file occupies the recorded project path. It was left untouched. To restart at that path, move the file aside and restore the original project folder."
+      : entry ? " The entry at the recorded project path was left untouched." : "";
+    return { space, sections: [
+      { title: "Stack stopped; its folder was gone", blocks: [
+        { kind: "fields", rows: [["Space", space], ["Folder", `${root} · ${folder}`]] },
+        { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "pid", label: "Pid" }, { key: "state", label: "Result" }], rows: stopped.map((row) => ({ role: row.role, instance: row.instanceId, pid: row.pid === null ? "none" : String(row.pid), state: { text: row.result === "stopped" ? "stopped by SIGTERM" : "already stopped", tone: "ok" } })) },
+        { kind: "lines", lines: [`Removed the saved definitions ${released.join(", ") || "(none were saved)"} and the registration naming the folder.${left}`] },
+      ] },
+      // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
+      // where it is now keeps its history, as `up` run there names.
+      { title: "Next", blocks: [{ kind: "commands", items: [
+        { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
+        { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
+      ] }] },
+    ] };
+  });
 }

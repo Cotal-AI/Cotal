@@ -57,15 +57,26 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
     catalog.unavailable === undefined && JSON.stringify(catalog.models.map((m) => m.id)) === JSON.stringify(LOGGED_IN_IDS),
     catalog,
   );
-  const names = new Map(recorded.loggedIn.response.response.models.map((m: { value: string; displayName: string }) => [m.value, m.displayName]));
-  check("each model carries claude's display name", catalog.models.length > 0 && catalog.models.every((m) => m.name === names.get(m.id)), catalog.models);
-  const levels = new Map<string, string[] | undefined>(recorded.loggedIn.response.response.models.map((m: { value: string; supportsEffort?: boolean; supportedEffortLevels?: string[] }) => [m.value, m.supportsEffort ? m.supportedEffortLevels : undefined]));
+  const rows = new Map<string, { displayName: string; resolvedModel: string; supportedEffortLevels?: string[] }>(recorded.loggedIn.response.response.models.map((m: { value: string }) => [m.value, m]));
+  const pinned = catalog.models.filter((m) => rows.get(m.id)?.resolvedModel === m.id);
+  const aliases = catalog.models.filter((m) => rows.get(m.id)?.resolvedModel !== m.id);
+  check("a pinned model carries claude's display name as written", pinned.length === 9 && pinned.every((m) => m.name === rows.get(m.id)?.displayName), pinned);
   check(
-    "each model's variants are the effort levels claude lists for it, and a model without effort has none",
-    catalog.models.length > 0 && catalog.models.every((m) => JSON.stringify(m.variants?.map((v) => v.name)) === JSON.stringify(levels.get(m.id))),
+    "an alias carries claude's display name and the model it resolves to",
+    JSON.stringify(aliases.map((m) => m.name)) === JSON.stringify(["Opus 5.5 (claude-opus-5-5)", "Fable 5.2 (claude-fable-5-2)", "Sonnet 5.5 (claude-sonnet-5-5)", "Haiku 5.5 (claude-haiku-5-5)"]),
+    aliases,
+  );
+  check(
+    "each model offers claude's effort levels for it as variants, in claude's order",
+    catalog.models.length > 0 && catalog.models.every((m) => JSON.stringify(m.variants?.map((v) => v.name)) === JSON.stringify(rows.get(m.id)?.supportedEffortLevels)),
     catalog.models,
   );
-  check("the recording has a model without effort and one without xhigh", levels.get("claude-haiku-4-5-20251001") === undefined && !levels.get("claude-opus-4-6")?.includes("xhigh"));
+  check(
+    "a model claude lists without effort levels offers no variant, and a model with fewer offers only those",
+    catalog.models.find((m) => m.id === "claude-haiku-4-5-20251001")?.variants === undefined &&
+      JSON.stringify(catalog.models.find((m) => m.id === "claude-opus-4-6")?.variants) === JSON.stringify(["low", "medium", "high", "max"].map((name) => ({ name }))),
+    catalog.models,
+  );
   const requests = rest.filter((entry) => entry.request);
   check(
     "asking writes one initialize control request and no user message",
@@ -107,6 +118,25 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
     catalog.unavailable === undefined && JSON.stringify(catalog.models.map((m) => m.id)) === JSON.stringify(["opus", "fable", "sonnet", "haiku"]),
     catalog,
   );
+  // This login's display names carry no version, so the resolved model is what tells them apart.
+  check(
+    "an alias whose display name has no version still names the model it resolves to",
+    JSON.stringify(catalog.models.map((m) => m.name)) === JSON.stringify(["Opus (claude-opus-5-5)", "Fable (claude-fable-5-2)", "Sonnet (claude-sonnet-5-5)", "Haiku (claude-haiku-5-5)"]),
+    catalog.models,
+  );
+}
+
+{
+  // claude 2.1.331 lists Fable this way for a gateway-token login: the 1M-context id with a bare display name.
+  const fable = { value: "claude-fable-5-2[1m]", resolvedModel: "claude-fable-5-2", displayName: "Fable", supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] };
+  const catalog = await ask(standIn("extended-id", withModels([fable])).bin);
+  check("a model id that extends the resolved model is named with that id, not the shorter one", catalog.models[0]?.name === "Fable (claude-fable-5-2[1m])", catalog);
+}
+
+{
+  const models = recorded.loggedIn.response.response.models.map((m: Record<string, unknown>) => (m.value === "opus" ? { ...m, supportedEffortLevels: "high" } : m));
+  const catalog = await ask(standIn("levels-not-a-list", withModels(models)).bin);
+  check("a model whose effort levels are not a list of names makes the catalog unavailable", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
 }
 
 {
