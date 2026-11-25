@@ -1,3 +1,5 @@
+import { updateScrollThumb } from "./scrollbars";
+
 /** Pure view model for the daemon's local, public agent observations. */
 export interface LocalAgent { name: string; lifecycleUid?: string; application: string; model?: string; space: string; cwd: string; startedAt: string; state: "running" | "exited" }
 export interface AgentInventory { agents: LocalAgent[]; unreadable: string[]; available: boolean }
@@ -76,8 +78,12 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement,
   }
   for (const row of Array.from(list.children)) if (!keys.has((row as HTMLElement).dataset.key!)) {
     if (controls?.pending.has((row as HTMLElement).dataset.key!)) continue;
-    if (matchMedia("(prefers-reduced-motion: reduce)").matches || typeof row.animate !== "function") row.remove();
-    else { const animation = row.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120 }); animation.onfinish = () => row.remove(); }
+    const remove = () => {
+      row.remove();
+      if (controls) updateScrollThumb(list, "agent-list");
+    };
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches || typeof row.animate !== "function") remove();
+    else { const animation = row.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120 }); animation.onfinish = remove; }
   }
 }
 
