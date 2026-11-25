@@ -1,9 +1,9 @@
 /**
  * The Codex connector's naming request (SPEC 13.22, labels from the first message): one ephemeral
  * `codex exec` on the seat's own CODEX_HOME and launch config, so on the seat's login, provider and
- * model, at low reasoning. It runs in an empty private directory under a read-only sandbox, without
- * the seat's MCP servers or any config file in its CODEX_HOME, with web search and every tool feature
- * in {@link TOOL_FEATURES} off, and saves no session. The request goes in on stdin, never in argv.
+ * model, at low reasoning and never on Codex's priority (Fast) tier. It runs in an empty private
+ * directory under a read-only sandbox, without the seat's MCP servers or any config file in its
+ * CODEX_HOME, with web search and every tool feature in {@link TOOL_FEATURES} off, and saves no session. The request goes in on stdin, never in argv.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -52,13 +52,15 @@ function codexNameFromMessage(seat: CodexNamingSeat): NameFromMessage {
 
 function execArgs(seat: CodexNamingSeat, answer: string): string[] {
   const model = seat.model();
-  // A later `-c` wins, so these take the seat's reasoning, sandbox and web search down for this one request.
+  const tier = seat.overrides.find(([k]) => k === "service_tier")?.[1].trim().replace(/^(["'])(.*)\1$/, "$2");
+  // A later `-c` wins, so these take the seat's reasoning, sandbox, web search and a priority tier down for this one request.
   const overrides: (readonly [string, string])[] = [
     ...seat.overrides,
     ...(model && !seat.overrides.some(([k]) => k === "model") ? [["model", JSON.stringify(model)] as const] : []),
     ["model_reasoning_effort", '"low"'],
     ["sandbox_mode", '"read-only"'],
     ["web_search", '"disabled"'],
+    ...(tier === "priority" ? [["service_tier", '"default"'] as const] : []),
   ];
   return [
     "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-rules", "--ignore-user-config", "--json", "--output-last-message", answer,
