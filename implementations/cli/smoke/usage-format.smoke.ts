@@ -85,7 +85,7 @@ const run = (args: string[], extra: Record<string, string> = {}, cwd = neutral) 
 const runShell = (args: string, extra: Record<string, string> = {}, cwd = neutral) =>
   spawnSync("sh", ["-c", `exec "$0" "$1" ${args}`, process.execPath, BIN], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 900) });
-const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { command?: string; outcome?: string; target?: unknown; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
+const parsed = (r: ReturnType<typeof run>) => { try { return JSON.parse(r.stdout) as { schemaVersion?: number; command?: string; outcome?: string; target?: unknown; result?: { endpoint?: string }; error?: { code?: string; message?: string; remedy?: string } }; } catch { return undefined; } };
 const usageShape = (r: ReturnType<typeof run>, message: RegExp) =>
   r.status === 1 && r.stdout === "" && /^✗ /m.test(r.stderr) && message.test(r.stderr) && /Usage/.test(r.stderr) && !/Request refused|Code:/.test(r.stderr);
 
@@ -180,6 +180,25 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
+for (const [args, stream] of [[["history", "general"], "history"], [["channel", "members", "general"], "membership"]] as const) {
+  for (const [fixed, valid, malformed] of [["--follow", "--json", "--json=false"], ["--json", "--follow", "--follow=false"]]) {
+    for (const pair of [[valid, malformed], [malformed, valid]]) {
+      const result = run([...args, fixed, ...pair]);
+      const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      check(`${args.join(" ")} ${fixed} ${pair.join(" ")} emits a stream usage refusal`,
+        result.status === 1 && result.stderr === "" && result.stdout.endsWith("\n")
+        && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream && record.target?.channel === "general")
+        && records[0]?.data?.code === "USAGE_INVALID" && records[1]?.data?.reason === "setup-failed", shown(result));
+    }
+  }
+  for (const suffix of [[], ["--", "--follow"]]) {
+    const result = run([...args, "--json", "--follow=false", ...suffix]);
+    check(`${args.join(" ")} without a bare follow option emits a finite usage refusal`,
+      result.status === 1 && result.stderr === "" && parsed(result)?.outcome === "refused"
+      && parsed(result)?.error?.code === "USAGE_INVALID", shown(result));
+  }
+}
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
 for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
   const result = run(["watch", ...args, "--view", "--json"]);
@@ -337,6 +356,20 @@ if (process.platform !== "win32") {
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
   const original = files.map((path) => readFileSync(path));
+  const checkArgs = ["endpoint", "check", join(dir, "contract.json")];
+  const pastedFile = "\u2013\u2013file=example.json";
+  const pastedCheck = run([...checkArgs, pastedFile], {}, cwd);
+  const checkRetry = run(checkArgs, {}, cwd);
+  check("endpoint check tells the caller to omit a pasted reference option and the retry works",
+    usageShape(pastedCheck, /starts with a typographic dash/) && ["cotal", "pnpm cotal"].some((cli) =>
+      pastedCheck.stderr.includes(`omit this option; \`${cli} endpoint check\` does not take --file`))
+    && !pastedCheck.stderr.includes("type the option with hyphens")
+    && checkRetry.status === 0 && checkRetry.stderr === "" && checkRetry.stdout.includes("Endpoint contract valid locally")
+    && files.every((path, index) => readFileSync(path).equals(original[index]!)), [pastedCheck, checkRetry].map(shown));
+  const pastedAdd = run(["endpoint", "add", pastedFile], {}, cwd);
+  check("endpoint add still suggests the hyphenated spelling for its reference option",
+    usageShape(pastedAdd, /starts with a typographic dash/) && pastedAdd.stderr.includes("type the option with hyphens: --file=example.json"), shown(pastedAdd));
+
   const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
   const conflict = run([...conflictArgs, "--json"], {}, cwd);
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
@@ -382,14 +415,20 @@ if (process.platform !== "win32") {
   const quotedDir = join(cwd, dir).replace(/'/g, `'\\''`);
   const message = `\`'${quotedDir}'\` is a directory. Pass an endpoint contract file.`;
   const remedy = `cotal endpoint check '${quotedDir}/contract.json'`;
-  const retried = refusal?.error?.remedy === remedy ? runShell(remedy.slice("cotal ".length), {}, cwd) : undefined;
+  const jsonRemedy = `${remedy} --json`;
+  const retried = refusal?.error?.remedy === jsonRemedy ? runShell(refusal.error.remedy.slice("cotal ".length), {}, cwd) : undefined;
+  const retryReceipt = retried && parsed(retried);
   check("endpoint check names its scaffold directory and prints a working contract-file command in each format",
-    directoryJson.status === 1 && directoryJson.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID"
+    directoryJson.status === 1 && directoryJson.stderr === "" && refusal?.command === "endpoint check" && refusal.outcome === "refused" && refusal.error?.code === "SCHEMA_INVALID"
     && (refusal.target as { path?: string } | undefined)?.path === join(cwd, dir)
-    && refusal.error.message === message && refusal.error.remedy === remedy
-    && directoryText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes(message)
-      && [remedy, `pnpm ${remedy}`].some((command) => r.stderr.includes(`Next\n  ${command}\n`)))
-    && retried?.status === 0 && retried.stderr === "" && retried.stdout.includes("Endpoint contract valid locally")
+    && refusal.error.message === message
+    && directoryText.every((r, index) => {
+      const next = index === 0 ? remedy : `${remedy} --plain`;
+      return r.status === 1 && r.stdout === "" && r.stderr.includes(message)
+        && [next, `pnpm ${next}`].some((command) => r.stderr.includes(`Next\n  ${command}\n`));
+    })
+    && retried?.status === 0 && retried.stderr === "" && retryReceipt?.schemaVersion === 1
+    && retryReceipt.command === "endpoint check" && retryReceipt.outcome === "ok" && retryReceipt.result?.endpoint === "com.example.reviews"
     && files.every((path, index) => readFileSync(path).equals(original[index]!)),
     { text: directoryText.map(shown), json: shown(directoryJson), retried: retried && shown(retried) });
 
@@ -400,21 +439,22 @@ if (process.platform !== "win32") {
   const escapedText = [run(escapedArgs, {}, cwd), run([...escapedArgs, "--plain"], {}, cwd)];
   const escapedJson = run([...escapedArgs, "--json"], {}, cwd);
   const escapedRefusal = parsed(escapedJson);
-  const manual = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
-  const recovery = /^  Use shell completion to enter the scaffold directory, then run `(?:pnpm )?cotal (endpoint check contract\.json)`\.$/m;
-  const exact = `cotal endpoint check '${escapedPath.replace(/'/g, `'\\''`)}/contract.json'`;
-  const exactRetry = escapedRefusal?.error?.remedy === exact ? runShell(exact.slice("cotal ".length), {}, cwd) : undefined;
+  const recovery = /^  Use shell completion to enter the scaffold directory, then run `(?:pnpm )?cotal (endpoint check contract\.json(?: --plain)?)`\.$/m;
+  const exact = `cotal endpoint check '${escapedPath.replace(/'/g, `'\\''`)}/contract.json' --json`;
+  const exactRetry = escapedRefusal?.error?.remedy === exact ? runShell(escapedRefusal.error.remedy.slice("cotal ".length), {}, cwd) : undefined;
+  const exactReceipt = exactRetry && parsed(exactRetry);
   const localRetry = run(["endpoint", "check", "contract.json"], {}, escapedPath);
   check("endpoint authoring does not print a broken terminal command for a path that is escaped in display",
-    escapedInit.status === 0 && recovery.test(escapedInit.stdout) && !escapedInit.stdout.includes("\ufe0f")
-    && escapedText.every((r) => r.status === 1 && r.stdout === "" && r.stderr.includes("\\ufe0f") && !r.stderr.includes("\ufe0f")
-      && recovery.test(r.stderr) && !r.stderr.includes("/contract.json'"))
+    escapedInit.status === 0 && recovery.exec(escapedInit.stdout)?.[1] === "endpoint check contract.json" && !escapedInit.stdout.includes("\ufe0f")
+    && escapedText.every((r, index) => r.status === 1 && r.stdout === "" && r.stderr.includes("\\ufe0f") && !r.stderr.includes("\ufe0f")
+      && recovery.exec(r.stderr)?.[1] === (index === 0 ? "endpoint check contract.json" : "endpoint check contract.json --plain") && !r.stderr.includes("/contract.json'"))
     && localRetry.status === 0 && localRetry.stdout.includes("Endpoint contract valid locally"),
     { init: shown(escapedInit), text: escapedText.map(shown), localRetry: shown(localRetry) });
   check("endpoint check JSON retains a working command with the exact Unicode path",
     escapedJson.status === 1 && escapedJson.stderr === "" && escapedRefusal?.error?.code === "SCHEMA_INVALID"
     && (escapedRefusal.target as { path?: string } | undefined)?.path === escapedPath
-    && exactRetry?.status === 0 && exactRetry.stderr === "" && exactRetry.stdout.includes("Endpoint contract valid locally"),
+    && exactRetry?.status === 0 && exactRetry.stderr === "" && exactReceipt?.command === "endpoint check"
+    && exactReceipt.outcome === "ok" && exactReceipt.result?.endpoint === "com.example.notes",
     { json: shown(escapedJson), exactRetry: exactRetry && shown(exactRetry) });
 
   const backslashes = String.raw`review\\draft`;
@@ -424,13 +464,19 @@ if (process.platform !== "win32") {
   const backslashJson = run(["endpoint", "check", backslashes, "--json"], {}, cwd);
   const copied = recovery.exec(backslashCheck.stderr)?.[1];
   const backslashRetry = copied && runShell(copied, {}, join(cwd, backslashes));
+  const jsonRecovery = /`cotal (endpoint check contract\.json --json)`\.$/.exec(parsed(backslashJson)?.error?.remedy ?? "")?.[1];
+  const backslashJsonRetry = jsonRecovery && runShell(jsonRecovery, {}, join(cwd, backslashes));
+  const backslashReceipt = backslashJsonRetry && parsed(backslashJsonRetry);
   check("endpoint authoring offers a relative recovery that selects the intended backslash path",
     intended.status === 0 && neighbor.status === 0 && recovery.test(intended.stdout)
     && backslashCheck.status === 1 && backslashCheck.stderr.includes("SCHEMA_INVALID")
-    && backslashJson.status === 1 && parsed(backslashJson)?.error?.remedy === manual
+    && backslashJson.status === 1 && backslashJson.stderr === "" && parsed(backslashJson)?.error?.code === "SCHEMA_INVALID"
+    && copied === "endpoint check contract.json --plain"
     && !!backslashRetry && backslashRetry.status === 0 && backslashRetry.stderr === ""
-    && backslashRetry.stdout.includes("com.example.intended") && !backslashRetry.stdout.includes("com.example.neighbor"),
-    { init: shown(intended), check: shown(backslashCheck), json: shown(backslashJson), retry: backslashRetry && shown(backslashRetry) });
+    && backslashRetry.stdout.includes("com.example.intended") && !backslashRetry.stdout.includes("com.example.neighbor")
+    && !!backslashJsonRetry && backslashJsonRetry.status === 0 && backslashJsonRetry.stderr === ""
+    && !!backslashReceipt && backslashReceipt.outcome === "ok" && backslashReceipt.result?.endpoint === "com.example.intended",
+    { init: shown(intended), check: shown(backslashCheck), json: shown(backslashJson), retry: backslashRetry && shown(backslashRetry), jsonRetry: backslashJsonRetry && shown(backslashJsonRetry) });
 
   const other = join(cwd, "other-contracts");
   mkdirSync(other);
@@ -486,15 +532,18 @@ if (process.platform !== "win32") {
   const text = [run(args), run([...args, "--plain"])];
   const json = run([...args, "--json"]);
   const refusal = parsed(json);
-  const remedy = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
-  const remedies = [remedy, remedy.replace("`cotal ", "`pnpm cotal ")];
-  const retry = run(["endpoint", "check", "contract.json", "--json"], {}, dir);
-  check("Windows endpoint check suggests the same relative recovery in every format",
-    json.status === 1 && json.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.remedy === remedy
+  const remedy = (flag = "") => `Use shell completion to enter the scaffold directory, then run \`cotal endpoint check contract.json${flag}\`.`;
+  const retryArgs = /`cotal (endpoint check contract\.json --json)`\.$/.exec(refusal?.error?.remedy ?? "")?.[1];
+  const retry = retryArgs ? run(retryArgs.split(" "), {}, dir) : undefined;
+  check("Windows endpoint check keeps the output mode in its relative recovery",
+    json.status === 1 && json.stderr === "" && refusal?.error?.code === "SCHEMA_INVALID" && refusal.error.remedy === remedy(" --json")
     && (refusal.target as { path?: string } | undefined)?.path === dir
-    && text.every((r) => r.status === 1 && r.stdout === "" && remedies.some((msg) => r.stderr.includes(`Next\n  ${msg}\n`)))
-    && retry.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result?.file === join(dir, "contract.json"),
-    { text: text.map(shown), json: shown(json), retry: shown(retry) });
+    && text.every((r, index) => {
+      const next = remedy(index === 0 ? "" : " --plain");
+      return r.status === 1 && r.stdout === "" && [next, next.replace("`cotal ", "`pnpm cotal ")].some((msg) => r.stderr.includes(`Next\n  ${msg}\n`));
+    })
+    && retry?.status === 0 && retry.stderr === "" && JSON.parse(retry.stdout).result?.file === join(dir, "contract.json"),
+    { text: text.map(shown), json: shown(json), retry: retry && shown(retry) });
 }
 
 const referenceProject = join(home, "endpoint-reference");
@@ -886,6 +935,27 @@ for (const [args, usage, foreign] of [
     /^  --config <file>/m.test(brokerRefusal.stderr) && !/^  --no-open\b/m.test(brokerRefusal.stderr),
     { start: shown(brokerStart), help: shown(brokerHelp), refused: shown(brokerRefusal) });
 
+  const addBroker = ["service", "add", "broker", "--preset", "broker"];
+  const addSuffix = run([...addBroker, "--help"]);
+  check("broker add suffix help lists both required flags", addSuffix.status === 0 && addSuffix.stderr === "" &&
+    /^  --config <file>.*\(required\)$/m.test(addSuffix.stdout) && /^  --binary <file>.*\(required\)$/m.test(addSuffix.stdout), shown(addSuffix));
+  for (const words of [addBroker, ["svc", "add", "broker", "--preset=broker"]]) {
+    const explicit = run(["help", "--", ...words]);
+    check(`explicit help shows the same preset options for ${words.join(" ")}`,
+      explicit.status === 0 && explicit.stderr === "" && explicit.stdout === addSuffix.stdout, shown(explicit));
+  }
+  const addGeneric = run(["service", "add", "--help"]);
+  for (const selector of [["--preset", "not-a-preset"], ["--preset"], ["--preset=broker", "--preset=broker"]]) {
+    const explicit = run(["help", "--", "service", "add", "broker", ...selector]);
+    check(`explicit help keeps generic add help for ${selector.join(" ")}`, addGeneric.status === 0 &&
+      explicit.status === 0 && explicit.stderr === "" && explicit.stdout === addGeneric.stdout && !/^  --config\b/m.test(explicit.stdout), shown(explicit));
+  }
+  const addUnescaped = run(["help", ...addBroker]);
+  check("explicit help with an unescaped preset flag points to suffix help",
+    usageShape(addUnescaped, /Unknown option '--preset'/) &&
+    ["cotal", "pnpm cotal"].some((cli) => addUnescaped.stderr.includes(`\`${cli} service add <name> --preset <preset> --help\``)) && !addUnescaped.stderr.includes("put -- before it"),
+    shown(addUnescaped));
+
   for (const path of [["endpoint", "watch"], ["endpoint", "session"], ["endpoint", "work"], ["endpoint", "work", "lease"], ["endpoint", "work", "commit"]]) {
     const help = run([...path, "--help"]);
     check(`cotal ${path.join(" ")} help states the limit without offering working examples`,
@@ -956,12 +1026,15 @@ for (const [flag, value] of [["--server", "nats://127.0.0.1:37126"], ["--creds",
       && error.remedy === `add --live to read native registrations, or omit ${flag} to list saved references`, shown(inventory));
 }
 const ascii = { LANG: "C" };
-const plainOwn = run(["config", "get", "bogus", "--plain"]);
-check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
+const forcedColor = { FORCE_COLOR: "1", NO_COLOR: "" };
+const plainOwn = run(["config", "get", "bogus", "--plain"], forcedColor);
+check("under --plain a command's own usage refusal and help stay uncolored with forced color",
+  reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr) && !plainOwn.stderr.includes("\x1b"), shown(plainOwn));
 const asciiOwn = run(["config", "get", "bogus"], ascii);
 check("under a locale without UTF-8 a command's own usage refusal is the report, then the help", reportShape(asciiOwn, /unknown preference "bogus"/), shown(asciiOwn));
-const plainParser = run(["status", "--bogus", "--plain"]);
-check("under --plain a parser usage error is the plain report, then the help", reportShape(plainParser, /Unknown option '--bogus'/), shown(plainParser));
+const plainParser = run(["status", "--bogus", "--plain"], forcedColor);
+check("under --plain a parser usage refusal and help stay uncolored with forced color",
+  reportShape(plainParser, /Unknown option '--bogus'/) && !plainParser.stderr.includes("\x1b"), shown(plainParser));
 const asciiParser = run(["status", "--bogus"], ascii);
 check("under a locale without UTF-8 a parser usage error is the report, then the help", reportShape(asciiParser, /Unknown option '--bogus'/), shown(asciiParser));
 const asciiUnknown = run(["frobnicate"], ascii);
@@ -1191,24 +1264,34 @@ if (process.platform !== "win32") {
 }
 
 {
-  const relativeHome = { COTAL_HOME: "relative" };
-  for (const [stream, args, target] of [
+  const homeFile = join(home, "home-file");
+  writeFileSync(homeFile, "notes\n");
+  const streams = [
     ["watch", ["watch"], { requestedSpace: null }],
     ["history", ["history", "review", "--follow"], { space: null, channel: "review", dms: false }],
     ["membership", ["channel", "members", "review", "--follow"], { space: null, channel: "review" }],
+  ] as const;
+  for (const [label, path, code, message, remedy] of [
+    ["relative path", "relative", "USAGE_INVALID", '"relative" is a relative path', "set COTAL_HOME to an absolute path"],
+    ["file", homeFile, "SCHEMA_INVALID", `${homeFile} is not a directory`, "point COTAL_HOME at a directory"],
   ] as const) {
-    const r = run([...args, "--json"], relativeHome);
-    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
-    check(`${stream} frames a relative COTAL_HOME refusal without a snapshot`, r.status === 1 && r.stderr === ""
-      && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
-      && records[0]?.type === "error" && records[0].data?.code === "USAGE_INVALID"
-      && records[0].data?.message?.startsWith('COTAL_HOME "relative" is a relative path')
-      && records[0].data?.remedy?.startsWith("set COTAL_HOME to an absolute path, or unset it to use ")
-      && records[1]?.type === "end" && records[1].data?.reason === "setup-failed", shown(r));
+    const extra = { COTAL_HOME: path };
+    for (const [stream, args, target] of streams) {
+      const r = run([...args, "--json"], extra);
+      const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+      check(`${stream} frames a COTAL_HOME refusal for a ${label} without a snapshot`, r.status === 1 && r.stderr === ""
+        && records.length === 2 && records.every((record) => record.schemaVersion === 1 && record.stream === stream && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+        && records[0]?.type === "error" && records[0].data?.code === code
+        && records[0].data?.message?.startsWith(`COTAL_HOME ${message}`)
+        && records[0].data?.remedy?.startsWith(`${remedy}, or unset it to use `)
+        && records[1]?.type === "end" && records[1].data?.reason === "setup-failed"
+        && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+    }
+    const finite = run(["history", "review", "--json"], extra);
+    const receipt = JSON.parse(finite.stdout || "{}");
+    check(`finite history with COTAL_HOME set to a ${label} still emits one refusal envelope`, finite.status === 1 && finite.stderr === ""
+      && receipt.command === "history" && receipt.outcome === "refused" && receipt.error?.code === code, shown(finite));
   }
-  const finite = run(["history", "review", "--json"], relativeHome);
-  check("finite history with a relative COTAL_HOME still emits one usage refusal", finite.status === 1 && finite.stderr === ""
-    && parsed(finite)?.error?.code === "USAGE_INVALID", shown(finite));
 }
 
 // A folder whose `.cotal` is a file, such as a notes file: every command names it and runs nothing.

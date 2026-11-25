@@ -1163,6 +1163,12 @@ try {
   scratch.push(wsB);
   mkdirSync(join(wsB, ".cotal", "agents"), { recursive: true });
   recordMesh({ space: spaceB, server, root: wsB, mode: "open", ts: new Date().toISOString() });
+  const { stdout: localList } = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "list", "--local", "--plain"], {
+    cwd: wsB, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000,
+  });
+  c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
+    localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
+      localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
   mgr = new Manager({ space: spaceB, servers: server, runtime: "pty", workspaceRoot: wsB });
   await mgr.start();
 
@@ -1249,7 +1255,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 110;
+const EXPECTED_CELLS = 111;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

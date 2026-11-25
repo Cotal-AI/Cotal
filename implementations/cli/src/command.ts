@@ -51,6 +51,7 @@ import {
 import { c, stderrLine } from "./ui.js";
 import { debugFlag } from "./lib/debug-flag.js";
 import {
+  commandSurface,
   isExtensionStub,
   materializeExtension,
   materializeExtensionCommand,
@@ -73,7 +74,7 @@ import { chooseMeshTarget, spaceChoiceRemedy } from "./lib/choose-target.js";
 import { registryFailure } from "./lib/registry-errors.js";
 import { FlagValueRefusal } from "./lib/flag-value-refusal.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { preserveUpdatePath } from "./lib/npm-invocation.js";
+import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
@@ -418,7 +419,7 @@ function usageRefusal(failure: CommandFailure, plain: boolean, cmd?: Command, wo
   }
   if (!cmd) return;
   if (report) console.error("");
-  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr)));
+  paintFor(process.stderr, () => printHelpPath(cmd, helpPath(cmd, words).path, (line) => console.error(line), terminalWidth(process.stderr), plain ? "plain" : "rich"));
 }
 
 /** Recover the requested stream output and target for a refusal, without running the command. */
@@ -433,9 +434,14 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
     const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
       && token.value?.startsWith("-") && token.value !== "-"
       && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
-    // The caller already detected a valid JSON switch. Watch needs no separate stream selector.
-    if (!missing) return cmd.name === "watch" || (values.json === true && values.follow === true)
-      ? { values: values as ParsedArgs["values"], positionals, raw: words } : undefined;
+    if (!missing) {
+      // The caller detected JSON. A malformed repeat cannot mask a bare follow switch.
+      if (cmd.name !== "watch") {
+        if (!tokens.some((token) => token.kind === "option" && token.name === "follow" && token.value === undefined)) return undefined;
+        values.follow = true;
+      }
+      return { values: values as ParsedArgs["values"], positionals, raw: words };
+    }
     args.splice(missing.index + 1, 0, "");
   }
 }
@@ -505,12 +511,12 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
-    if (typed && cmd.name === "ext" && typed.flagName && typed.flagName !== "help") {
+    if (typed && (cmd.name === "ext" || cmd.name === "endpoint") && typed.flagName && typed.flagName !== "help") {
       const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
       const sub = findSubcommand(cmd, first);
       const accepted = sub ? sub.flagNames : cmd.flagNames;
-      if (accepted && !accepted.includes(typed.flagName))
-        return { message: typed.message, remedy: `omit this option; \`cotal ext${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
+      if ((cmd.name === "ext" || sub?.name === "check") && accepted && !accepted.includes(typed.flagName))
+        return { message: typed.message, remedy: `omit this option; \`cotal ${cmd.name}${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
     }
     if (typed) return typed;
   }
@@ -551,6 +557,11 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
     if (option && GLOBAL_FLAG_WORDS.has(option) && !takesWordsRaw(cmd)) return globalFlagValueRefusal(option);
+    if (cmd.name === "help" && option === "--preset") {
+      const [service, verb] = metadataPositionals(cmd, rest).positionals;
+      if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
+        return { message: reason, remedy: displayRemedy("to see the preset options, use `cotal service add <name> --preset <preset> --help`") };
+    }
     const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
@@ -620,7 +631,9 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = (cmd.name === "config" && selected.name === "get" && positionals.length >= 2)
+      const operandsFull = (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
+        || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
+        || (cmd.name === "ext" && selected.name === "root")
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
         || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
@@ -641,7 +654,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
     failureExit(cmd, storeDirRefusal(storeDir), json, parsed.values.plain === true, undefined, rest);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
   if (structured(cmd, first) && parsed.values.json === true) disableInput();
-  refuseRemovedFolder(cmd, canonical, rest);
+  if (cmd.name !== "update") refuseRemovedFolder(cmd, canonical, rest);
   try {
     cmd.validate?.(canonical);
   } catch (error) {
@@ -707,19 +720,21 @@ const FOLDERLESS = new Set(["help", "version", "completion", "docs", "telemetry"
  *  Node caches the first read that succeeds. One read refuses that case before the command's own
  *  checks, such as `up`'s, or any effect, unless the command never reads the folder. */
 function refuseRemovedFolder(cmd: Command, parsed: ParsedArgs, rest: readonly string[]): void {
-  if (cmd.name === "update") {
-    // Global maintenance must not inherit an unrelated disposable working folder. Keep the
-    // project's root when one exists and preserve relative credentials and tool paths.
-    const removed = workingFolderRemoved();
-    const root = removed ? undefined : findCotalRoot();
-    if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds) && !removed)
-      parsed.values.creds = resolve(parsed.values.creds);
-    if (!removed) preserveUpdatePath();
-    process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
-    return;
-  }
   if (cmd.name.startsWith("__") || FOLDERLESS.has(cmd.name) || !workingFolderRemoved()) return;
   failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", "this folder no longer exists", { remedy: "cd to an existing folder and run the command again", selfContained: true }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
+}
+
+function prepareUpdateFolder(parsed: ParsedArgs): string | undefined {
+  // Track the caller's tool selection without keeping a disposable working directory for maintenance.
+  const caller = workingFolderRemoved() ? undefined : process.cwd();
+  const root = caller === undefined ? undefined : findCotalRoot(caller);
+  if (caller !== undefined) {
+    if (typeof parsed.values.creds === "string" && !isAbsolute(parsed.values.creds))
+      parsed.values.creds = resolve(caller, parsed.values.creds);
+    preserveUpdatePath();
+  }
+  process.chdir(root && existsSync(join(root, ".cotal")) ? root : parse(homedir()).root);
+  return caller;
 }
 
 /** Resolve subcommand aliases and refuse a word that names no subcommand before checking operands. */
@@ -858,8 +873,13 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // The built-in updater repairs its connector paths before opening any promotion journal.
   const selfUpdate = builtin?.name === "update" && words.includes("--self") && !wantsHelp
     && parseOrExit(builtin, ownWords(builtin)).values.self === true;
-  // The removed start command only gives migration advice and needs no extension inventory.
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && builtin?.name !== "start";
+  const preference = builtin?.name === "update" && !wantsHelp && (words.includes("--auto") || words.includes("--notify"))
+    ? parseOrExit(builtin, ownWords(builtin)).values : undefined;
+  const extMode = builtin?.name === "ext" ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
+  // Root only resolves a path. The JSON list classifies inventory errors in its handler.
+  const extDiagnostics = builtin?.name === "ext" && !wantsHelp
+    && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -899,7 +919,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const surface = (warnings?: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
       else {
@@ -1019,6 +1039,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
+  const updateDirectory = cmd.name === "update" ? prepareUpdateFolder(parsed) : undefined;
   // A preferences file that does not validate stops every command that could act on a default, as a
   // broken config file does, so nothing runs on a default the person did not mean. Help, shell
   // completion, version, docs and machine-daemon operations need no preference defaults, and status
@@ -1030,7 +1051,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     const home = process.env.COTAL_HOME;
     if (home && !isAbsolute(home)) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", `COTAL_HOME ${JSON.stringify(home)} is a relative path, so each folder a command runs in would have its own Cotal home; the command did not run`, { remedy: `set COTAL_HOME to an absolute path, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
     const homeProblem = cotalHomeProblem();
-    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest);
+    if (homeProblem) failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", `${homeProblem}; the command did not run`, { remedy: `point COTAL_HOME at a directory, or unset it to use ${userCotalDir()}` }), structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
     // A `.cotal` that is a file in the folder the command uses, such as someone's notes, holds no
     // records, and every reader would otherwise report a different wrong cause. The machine daemon
     // uses its selected home, not the invoking project's records.
@@ -1045,10 +1066,9 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       }
     }
   }
-  // A failure raised after the command recorded the space it resolved is reported in that space. A
-  // completion writes its warnings, as its errors, only under COTAL_COMPLETE_DEBUG.
+  // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
-  const execute = async () => {
+  const execute = async () => npmProjectDirectory.run(updateDirectory, async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
@@ -1068,7 +1088,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       if (cmd.prepare) await cmd.prepare(parsed);
       await cmd.run(parsed);
     });
-  };
+  });
   if (opts.startupNotice && cmd.keepsStartupNotice) keepStartupNotice(opts.startupNotice);
   else await opts.startupNotice?.release();
   try {

@@ -169,7 +169,7 @@ subcommand is also a usage error. So is input a command checks before it acts, s
 argument, an invalid flag value or two flags that conflict, and `cotal help` with a subcommand that
 does not exist. So is a word that starts with an en dash, an em
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
-`--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
+`--`: the refusal names the dash and can suggest the flag to type. After `--` such a word is an argument as
 typed. The command prints the error, then any remedy,
 then its help on stderr, writes nothing on stdout, exits 1, and does not run. The help is the one
 `--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
@@ -189,6 +189,7 @@ A word that starts with `-` reads as an option. A message or name that starts wi
 suggestion. Once `space add` has its name, `endpoint check` has its contract file, or
 `endpoint work lease` has its target and pool, the refusal tells you to drop an unknown option instead.
 The same applies to `team check`, `team boot` and `team deploy` once you have supplied the manifest file.
+`ext root` takes no operands, so the refusal tells you to drop an unknown option instead of suggesting `--`.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
 the refusal tells you to drop the unknown option instead.
@@ -205,6 +206,7 @@ any attached value the option accepts, as in `--limit=10`. Before the command wo
 for the leading flags, so `cotal ––json status` names `--json`.
 For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
 `ext root` prints a path, so the refusal asks you to omit that option.
+For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
 `cotal ext seed` takes no operands. An invalid seed option or extra word shows seed help instead
 of suggesting `--` to pass an operand.
 
@@ -468,6 +470,11 @@ remedy without the command's help, because the command itself was not mistyped. 
 `completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
 exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
 contains relative entries.
+
+If `COTAL_HOME` points to a file, the command refuses with `SCHEMA_INVALID` and exits 1. With
+`--json`, `watch`, `history --follow` and `channel members --follow` report this as an `error`
+record followed by an `end` record with reason `setup-failed`, without a snapshot.
+Without `--follow`, `history --json` still writes one refusal envelope.
 
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
