@@ -69,7 +69,7 @@ async function checkWindowsLaunch(): Promise<void> {
   const endpoint = { path: `\\\\.\\pipe\\cotal-hermes-smoke-${randomUUID()}`, token: randomUUID(), version: CONTROL_PROTOCOL_VERSION };
   let reached = 0;
   const agent = { on() {}, inboxPreview: () => [] } as unknown as MeshAgent;
-  const config: AgentConfig = { space: "smoke", name: "hermes", servers: [], subscribe: [], allowSubscribe: [], allowPublish: [], kind: "agent", tls: false };
+  const config: AgentConfig = { space: "smoke", name: "hermes", servers: "", subscribe: [], allowSubscribe: [], allowPublish: [], kind: "agent", tls: false };
   const bridge = startBridgeServer(agent, config, endpoint.path, endpoint, { onSubscribe: () => { reached++; } }, startOwnerPipe);
   const signed = { ...endpoint, token: bridgeToken(endpoint) };
   const limit = { timeoutMs: 2_000, maxReplyBytes: 16 };
