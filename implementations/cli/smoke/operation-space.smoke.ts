@@ -375,10 +375,10 @@ if (process.getuid && process.getuid() !== 0) {
 }
 const prefix = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
 mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
-const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
+const previewExtensions = ["connector-claude-code", "connector-opencode", "pi"].map((pkg) => {
   const source = join(import.meta.dirname, "..", "..", "..", "extensions", pkg);
   symlinkSync(source, join(prefix, "node_modules", "@cotal-ai", pkg), "dir");
-  const name = pkg === "connector-claude-code" ? "claude" : "opencode";
+  const name = pkg === "connector-claude-code" ? "claude" : pkg === "connector-opencode" ? "opencode" : "pi";
   return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
 });
 writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
@@ -544,9 +544,10 @@ check("the opening Agent files example previews with Claude and validates its mo
 
 const variantPersona = join(root, "variant-persona.md");
 const previewVariant = (...flags: string[]) => cotal("spawn", "--file", variantPersona, "--dry-run", ...flags);
-const claudePersona = "---\nname: variant_check\nagent: claude\n";
+// pi takes no model variant, so a persona's variant is refused there.
+const piPersona = "---\nname: variant_check\nagent: pi\n";
 const removeVariantField = `remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`;
-writeFileSync(variantPersona, `${claudePersona}variant: high\n---\n`);
+writeFileSync(variantPersona, `${piPersona}variant: high\n---\n`);
 for (const [flags, remedy] of [[[], removeVariantField], [["--variant", "high"], `omit \`--variant\` and ${removeVariantField}`]] as const) {
   const denied = previewVariant("--json", ...flags);
   check(`direct preview names ${flags.length ? "both variant inputs" : "the persona variant field"} in its remedy`,
@@ -557,7 +558,7 @@ const variantPlain = previewVariant("--plain");
 check("plain preview prints the persona variant remedy as Next",
   variantPlain.status === 1 && variantPlain.stderr.split("\nNext\n")[1]?.includes("remove the `variant:` field") === true
     && variantPlain.stderr.split("\nNext\n")[1]?.includes(JSON.stringify(variantPersona)) === true, shown(variantPlain));
-writeFileSync(variantPersona, `${claudePersona}---\n`);
+writeFileSync(variantPersona, `${piPersona}---\n`);
 const noVariant = previewVariant("--json");
 const noVariantResult = (noVariant.envelope as { result?: Preview } | undefined)?.result;
 check("direct preview passes connector validation after removing the persona variant",

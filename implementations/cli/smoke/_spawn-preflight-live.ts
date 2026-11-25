@@ -76,8 +76,9 @@ setInterval(() => {}, 60_000);
           && !/wrote creds|retired creds|spawning .* on the mesh|OPERATION_UNKNOWN/.test(result.out) && creds() === initialCreds, result.out);
       }
     }
+    // pi takes no model variant, so a persona's variant is refused there.
     const variantPersona = join(root, "variant-persona.md");
-    writeFileSync(variantPersona, "---\nname: variant_probe\nagent: claude\nvariant: high\n---\n");
+    writeFileSync(variantPersona, "---\nname: variant_probe\nagent: pi\nvariant: high\n---\n");
     const variantRefusal = cli("spawn", "--file", variantPersona);
     check("foreground spawn names the persona variant field before provisioning",
       variantRefusal.status === 1 && variantRefusal.stderr.includes(`remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`)
