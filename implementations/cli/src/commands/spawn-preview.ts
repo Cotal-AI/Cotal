@@ -97,7 +97,9 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     ] }));
     return;
   }
-  const path = values.file !== undefined || (values["enrollment-file"] && values.config) ? resolve(ref) : directPersonaPath(root, ref, values.config === undefined);
+  const file = values.file !== undefined || Boolean(values["enrollment-file"] && values.config);
+  const { path, source, selectionError } = directPersonaPath(root, ref, { file, catalogFirst: values.config === undefined });
+  if (selectionError) throw personaNotDirectoryFailure(path, { ...target, path }, source);
   let definition: AgentDef;
   // A missing product default is what the launch writes from the shipped template, so the preview
   // reads that template and writes nothing.
@@ -121,7 +123,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
         target: { ...target, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
       });
     } else if (code === "ENOTDIR") {
-      throw personaNotDirectoryFailure(path, { ...target, path });
+      throw personaNotDirectoryFailure(path, { ...target, path }, source);
     } else {
       throw unreadablePersona(path, code, { ...target, path }) ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`, { target: { ...target, path } });
     }

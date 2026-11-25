@@ -284,17 +284,27 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
   return [];
 }
 
-function reportDirectPersonaReadFailure(path: string, code: string | undefined, space: string, error: unknown): void {
-  const target = { space, path };
-  if (code === "ENOTDIR") {
-    const { message, remedy } = personaNotDirectoryFailure(path, target);
-    stderrLine("✗ ", message, c.red);
-    stderrLine("  ", remedy!, c.dim);
-    return;
+function refuseForegroundPersona(failure: CommandFailure): never {
+  stderrLine("✗ ", failure.message, c.red);
+  if (failure.remedy) stderrLine("  ", failure.remedy, c.dim);
+  process.exit(1);
+}
+
+function checkEnrollmentBootstrapPersona(values: { config?: string; file?: string; space?: string }): void {
+  if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
+    stderrLine("✗ ", "enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet", c.red);
+    process.exit(1);
   }
-  const unreadable = unreadablePersona(path, code, target);
-  if (unreadable) throw unreadable;
-  stderrLine("✗ ", (error as Error).message, c.red);
+  const path = resolvePath(values.config);
+  try {
+    loadLaunchPersonaFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOTDIR") {
+      refuseForegroundPersona(personaNotDirectoryFailure(path, { space: values.space, path }, values.file !== undefined ? "file" : "path"));
+    }
+    stderrLine("✗ ", `cannot load the enrollment bootstrap persona: ${(error as Error).message}`, c.red);
+    process.exit(1);
+  }
 }
 
 /**
@@ -403,18 +413,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   const direct = values.foreground === true || handoffText !== undefined || enrollmentUrl !== undefined || !spawnUsesManager(values);
   const enrollmentBootstrap = Boolean(enrollmentUrl && values.space && !findMesh(values.space));
-  if (enrollmentBootstrap) {
-    if (!values.config || (!values.config.includes("/") && !values.config.includes("\\") && !values.config.endsWith(".md"))) {
-      stderrLine("✗ ", "enrollment bootstrap needs --config <persona-file>; no remote persona catalog exists on this machine yet", c.red);
-      process.exit(1);
-    }
-    try {
-      loadLaunchPersonaFile(resolvePath(values.config));
-    } catch (e) {
-      stderrLine("✗ ", `cannot load the enrollment bootstrap persona: ${(e as Error).message}`, c.red);
-      process.exit(1);
-    }
-  }
+  if (enrollmentBootstrap) checkEnrollmentBootstrapPersona(values);
 
   // Explicit files retain the execution host's path semantics. A manager pin is meaningful for
   // either managed persona spelling; direct execution has no manager placement to select.
@@ -538,7 +537,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
   const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const personaProject = resolvePath(target.personaRoot, "..", "..");
-  const path = values.file !== undefined || (redeemedEnrollment && values.config) ? resolvePath(ref) : directPersonaPath(personaProject, ref, values.config === undefined);
+  const { path, source, selectionError } = directPersonaPath(personaProject, ref, { file: values.file !== undefined || Boolean(redeemedEnrollment && values.config), catalogFirst: values.config === undefined });
+  if (selectionError) refuseForegroundPersona(personaNotDirectoryFailure(path, { space, path }, source));
   // The product default of a catalog nothing prepared, as a Cloud space's is until a spawn, is
   // written from the shipped template here and launched. This also applies to positional `default`.
   // A missing file, preference or other catalog name is still refused.
@@ -559,8 +559,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         throw new CommandFailure("refused", "SCHEMA_INVALID", `the persona path contains a symbolic-link loop: ${path}`, {
           target: { space, path }, remedy: "correct the link's target, or move the link aside and put a regular persona file in its place",
         });
+      } else if (code === "ENOTDIR") {
+        refuseForegroundPersona(personaNotDirectoryFailure(path, { space, path }, source));
       } else {
-        reportDirectPersonaReadFailure(path, code, space, e);
+        const unreadable = unreadablePersona(path, code, { space, path });
+        if (unreadable) throw unreadable;
+        stderrLine("✗ ", (e as Error).message, c.red);
       }
       process.exit(1);
     }

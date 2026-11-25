@@ -1,8 +1,9 @@
 import { lstatSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
+import { catalogFolderProblem } from "./personas.js";
 
 /** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
  *  the `persona` preference (`COTAL_DEFAULT_PERSONA`, the space's saved value, the user's, then
@@ -15,13 +16,23 @@ export function spawnPersona(configFlag: string | undefined, positionals: readon
   return winner.source === "default" ? { ref: winner.value } : { ref: winner.value, from: describeLayer(winner) };
 }
 
+type PersonaPathSource = "catalog" | "file" | "path";
+type DirectPersonaPath = { path: string; source: PersonaPathSource; selectionError?: NodeJS.ErrnoException };
+
 /** A positional or preferred catalog entry takes precedence over a same-named legacy path. */
-export function directPersonaPath(root: string, ref: string, catalogFirst = true): string {
-  if (catalogFirst && ref.endsWith(".md") && !isAbsolute(ref) && !/[\\/]/.test(ref)) {
+export function directPersonaPath(root: string, ref: string, opts: { file?: boolean; catalogFirst?: boolean } = {}): DirectPersonaPath {
+  if (opts.file) return { path: resolve(ref), source: "file" };
+  const bare = !isAbsolute(ref) && !/[\\/]/.test(ref);
+  if (opts.catalogFirst !== false && bare && ref.endsWith(".md")) {
     const catalogPath = join(personaDir(root), `${ref}.md`);
-    if (lstatSync(catalogPath, { throwIfNoEntry: false })) return catalogPath;
+    try { if (lstatSync(catalogPath, { throwIfNoEntry: false })) return { path: catalogPath, source: "catalog" }; }
+    catch (error) {
+      const selectionError = error as NodeJS.ErrnoException;
+      if (selectionError.code !== "ENOTDIR") throw error;
+      return { path: catalogPath, source: "catalog", selectionError };
+    }
   }
-  return agentFilePath(root, ref);
+  return { path: agentFilePath(root, ref), source: bare && !ref.endsWith(".md") ? "catalog" : "path" };
 }
 
 /** The harness a launch falls back to when neither `--agent` nor the persona names one, as this
@@ -60,26 +71,37 @@ export function brokenPersonaLink(path: string, target: object, shippedDefault =
   });
 }
 
-function nonDirectoryParent(path: string): string | undefined {
+function nonDirectoryParent(path: string): { path: string; link?: string } | undefined {
   for (let parent = dirname(path); parent !== path; path = parent, parent = dirname(path)) {
-    try { return statSync(parent).isDirectory() ? undefined : parent; }
+    try { return statSync(parent).isDirectory() ? undefined : { path: parent }; }
     catch (error) {
       // If the path changed, report only what the original ENOTDIR established.
       if ((error as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
+      const link = personaLinkTarget(parent);
+      if (link !== undefined) return { path: parent, link };
     }
   }
   return undefined;
 }
 
 /** ENOTDIR can come from the persona link's target or from a component of the given path. */
-export function personaNotDirectoryFailure(path: string, target: object): CommandFailure {
+export function personaNotDirectoryFailure(path: string, target: object, source: PersonaPathSource): CommandFailure {
   const broken = brokenPersonaLink(path, target);
   if (broken) return broken;
+  if (source === "catalog") {
+    const folder = catalogFolderProblem(dirname(path), { target, launch: true });
+    if (folder) return folder;
+  }
   const parent = nonDirectoryParent(path);
+  if (parent?.link !== undefined) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${parent.path} links to ${parent.link}, which crosses a component that is not a directory`, {
+    target, remedy: "correct the link's target so it points to a directory, then retry",
+  });
   const message = parent === undefined
     ? `the persona path ${path} has a parent that is not a directory`
-    : `${parent} is not a directory, so the persona file ${path} cannot be reached`;
-  return new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy: "pass the correct persona file path to --file" });
+    : `${parent.path} is not a directory, so the persona file ${path} cannot be reached`;
+  const remedy = source === "catalog" ? "restore the persona catalog folder, then retry"
+    : source === "file" ? "pass the correct persona file path to --file" : "check the persona file path, then retry";
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy });
 }
 
 /** The space a launch from `cwd` targets when no `--space` or `--server` names one: the space the mesh

@@ -44,9 +44,12 @@ the current directory. The preview does not create a directory. Like the foregro
 symbolic-link loop in the persona path with `SCHEMA_INVALID` (exit 1), names the path, and explains
 how to correct or replace the link. If the link's target crosses a regular file where a folder
 is needed, the preview names the link and the missing target and explains how to restore it or
-replace the link. If the persona path itself crosses a non-directory component, both forms name
-that component and suggest passing the correct persona file path to `--file`. The preview reports
-`TARGET_NOT_FOUND` (exit 2). The foreground launch exits 1.
+replace the link. When a `--file` path crosses a non-directory component, both forms name the
+component and suggest correcting the file path. If an intermediate link's target crosses such a
+component, they name the link and suggest correcting its target. The preview reports
+`TARGET_NOT_FOUND` (exit 2). The foreground launch exits 1. If a named or default persona's catalog
+path is itself a file, both forms identify the catalog and explain how to restore its folder.
+The preview reports `CONFLICT` (exit 2). The foreground launch exits 1.
 The preview checks the effective name from `--name` or persona frontmatter with the launch's local
 name rule, including the actor-token rule for a selected user-auth space. An invalid effective name
 is refused with `USAGE_INVALID` (exit 1).

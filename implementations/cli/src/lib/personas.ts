@@ -29,7 +29,7 @@ import { shellWord } from "./endpoint-errors.js";
 export type PersonaEntry = PersonaCatalogEntry;
 
 /** The refusal when the catalog path is a file or a link that does not resolve to a folder. */
-export function catalogFolderProblem(dir: string): CommandFailure | undefined {
+export function catalogFolderProblem(dir: string, opts: { target?: object; launch?: boolean } = {}): CommandFailure | undefined {
   let what: string;
   try {
     if (statSync(dir).isDirectory()) return undefined;
@@ -40,14 +40,16 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
     if (code === "ENOENT") {
       const target = linkTarget(dir);
       return target === undefined ? undefined : new CommandFailure("refused", "CONFLICT", `${dir} is a link to the missing target ${target}`, {
-        remedy: "restore the link's target or move the broken link aside",
+        target: opts.target, remedy: "restore the link's target or move the broken link aside",
       });
     }
     if (code !== "ELOOP") return undefined;
     what = "a link that loops back on itself";
   }
+  const restore = `move ${dir} out of the way. To use existing definitions, restore their catalog folder there.`;
   return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
-    remedy: `move ${dir} out of the way. To use existing definitions, restore their catalog folder there. To create a persona, retry the original create command with its source and target options`,
+    target: opts.target,
+    remedy: opts.launch ? restore : `${restore} To create a persona, retry the original create command with its source and target options`,
   });
 }
 

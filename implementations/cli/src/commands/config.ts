@@ -276,7 +276,8 @@ function missingPersona(value: string, scope: Scope): OutputWarning | undefined 
   let catalog;
   try { catalog = personaCatalog({ space: scope.space }); }
   catch (error) { if (isCommandFailure(error)) return undefined; throw error; }
-  const path = directPersonaPath(catalog.root, value);
+  const { path, selectionError } = directPersonaPath(catalog.root, value);
+  if (selectionError) throw selectionError;
   if (existsSync(path)) return undefined;
   const missing = isPersonaPath(value) ? `no persona file ${path}` : `no persona "${value}" in space ${catalog.space}'s catalog ${dirname(path)}`;
   return { code: "PERSONA_NOT_FOUND", target: { space: catalog.space, path }, message: `${missing}; the preference was saved, and a launch there needs that file` };

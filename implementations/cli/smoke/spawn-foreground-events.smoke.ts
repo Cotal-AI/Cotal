@@ -36,8 +36,8 @@
  *
  * Run: pnpm smoke:spawn-foreground-events
  */
-import { spawn as spawnProcess, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { spawn as spawnProcess, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -248,7 +248,13 @@ async function checkPersonaRefusals() {
   writeFileSync(join(blocked, "child.md"), "---\nname: notdir-link\nagent: opencode\n---\n");
   const repaired = invoke(["notdir-link", "--dry-run", "--plain", ...selectors]);
   check("foreground preview follows the symlink once its target is restored", repaired.status === 0 && repaired.stdout.includes(link), repaired.stderr);
+  checkNonDirectoryComponents(invoke, selectors);
+  checkBlockedCatalog(invoke, selectors);
+}
 
+type SpawnInvoke = (args: string[]) => SpawnSyncReturns<string>;
+
+function checkNonDirectoryComponents(invoke: SpawnInvoke, selectors: string[]) {
   const callerPath = realpathSync(caller);
   const component = join(callerPath, "plain-parent");
   const remedy = "pass the correct persona file path to --file";
@@ -266,6 +272,51 @@ async function checkPersonaRefusals() {
     check(`foreground launch identifies the non-directory component of ${relative}`,
       launch.status === 1 && launch.stderr.includes(message) && launch.stderr.includes(remedy) &&
       !launch.stderr.includes("ENOTDIR") && readFileSync(component, "utf8") === "not a directory", launch);
+  }
+  const parentLink = join(callerPath, "link-to-unreachable-dir");
+  symlinkSync("plain-parent/unused", parentLink);
+  const linkedArgs = ["--foreground", "--file", "link-to-unreachable-dir/nested/persona.md", ...selectors];
+  const linkedMessage = `${parentLink} links to plain-parent/unused, which crosses a component that is not a directory`;
+  for (const mode of [[], ["--dry-run", "--plain"]]) {
+    const refused = invoke([...linkedArgs, ...mode]);
+    check(`an obstructed parent link is named in ${mode.length ? "a preview" : "a foreground launch"}`,
+      refused.status === (mode.length ? 2 : 1) && refused.stderr.includes(linkedMessage) &&
+      refused.stderr.includes("correct the link's target so it points to a directory") && readlinkSync(parentLink) === "plain-parent/unused", refused.stderr);
+  }
+
+  const enrollment = join(callerPath, "enrollment-fixture");
+  const fixture = "intentionally-invalid-enrollment";
+  writeFileSync(enrollment, fixture, { mode: 0o600 });
+  const args = ["--foreground", "--file", "plain-parent/persona.md", "--space", "unregistered", "--enrollment-file", enrollment];
+  const enrollmentPreview = invoke([...args, "--dry-run", "--plain"]);
+  const enrollmentLaunch = invoke(args);
+  check("unregistered enrollment preview and launch diagnose the persona before redemption",
+    enrollmentPreview.status === 2 && enrollmentLaunch.status === 1 && [enrollmentPreview, enrollmentLaunch].every(({ stderr }) =>
+      stderr.includes(`${component} is not a directory`) && stderr.includes(remedy) && !stderr.includes(fixture)),
+    [enrollmentPreview.stderr, enrollmentLaunch.stderr]);
+}
+
+function checkBlockedCatalog(invoke: SpawnInvoke, selectors: string[]) {
+  const catalog = realpathSync(join(root, ".cotal", "agents"));
+  const saved = `${catalog}-saved`;
+  writeFileSync(join(root, "example.md"), "---\nname: example\nagent: opencode\n---\n");
+  renameSync(catalog, saved);
+  writeFileSync(catalog, "not a directory");
+  try {
+    for (const selector of [[], ["probe"], ["example.md"]]) {
+      const args = ["--foreground", ...selector, ...selectors];
+      const preview = invoke([...args, "--dry-run", "--json"]);
+      const launch = invoke(args);
+      const refusal = preview.stdout.trim() ? JSON.parse(preview.stdout) : undefined;
+      const message = `${catalog} is a file, not a folder, so it holds no personas`;
+      const hasRemedy = (text: string) => text.includes("restore their catalog folder there") && !text.includes("--file") && !text.includes("original create command");
+      check(`spawn diagnoses a blocked catalog for ${selector[0] ?? "the implicit default"} without trying another file`,
+        preview.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "CONFLICT" && refusal.error.message === message && hasRemedy(refusal.error.remedy) &&
+        launch.status === 1 && launch.stderr.includes(message) && hasRemedy(launch.stderr) && readFileSync(catalog, "utf8") === "not a directory", [preview, launch]);
+    }
+  } finally {
+    rmSync(catalog);
+    renameSync(saved, catalog);
   }
 }
 
@@ -536,7 +587,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 52;
+const EXPECTED = process.platform === "win32" ? 41 : 58;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
