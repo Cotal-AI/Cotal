@@ -1,13 +1,15 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchModes, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
-import { listClaudeModels } from "./model-catalog.js";
+import { launchFieldArgs } from "./launch-fields.js";
+import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
+import { imageFolder } from "./turn-images.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 import { claudeNamingLaunchEnv } from "./naming.js";
 import { claudeCommandCatalog } from "./command-catalog.js";
@@ -69,34 +71,9 @@ function assertServableModel(model: string): void {
   );
 }
 
-/** The levels `claude --effort` accepts (2.1.330). Given another level, claude warns on stderr and
- *  runs at its default effort, so a variant outside this list is refused at launch. */
-const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-
-/** The setting each of the catalog's modes turns on or off. Ultracode is a setting, never an effort:
- *  claude reads `--effort ultracode` as xhigh plus ultracode, and a later `--effort` cancels it. */
-const CLAUDE_MODE_SETTINGS: Readonly<Record<string, string>> = { fast: "fastMode", ultracode: "ultracode" };
-
-/** The `--settings` flag that sets the launch's modes, none when it chose none. A mode turned off is
- *  written as false, so a setting the operator saved, such as fast mode, does not turn it back on. */
-function modesFlag(modes: LaunchModes | undefined, passthrough: readonly (readonly [string, string])[]): string[] {
-  const settings: Record<string, boolean> = {};
-  for (const [id, on] of Object.entries(modes ?? {})) {
-    const key = Object.hasOwn(CLAUDE_MODE_SETTINGS, id) ? CLAUDE_MODE_SETTINGS[id]! : undefined;
-    if (key === undefined) throw new Error(`claude connector: claude has no mode ${JSON.stringify(id)}; its modes are ${Object.keys(CLAUDE_MODE_SETTINGS).join(" and ")}`);
-    if (typeof on !== "boolean") throw new Error(`claude connector: mode ${JSON.stringify(id)} is a toggle, so it takes true or false, not ${JSON.stringify(on)}`);
-    settings[key] = on;
-  }
-  if (Object.keys(settings).length === 0) return [];
-  // claude keeps only the last `--settings` it is given, so one of the two would be dropped unseen.
-  if (passthrough.some(([k]) => k === "settings"))
-    throw new Error("claude connector: modes are claude's --settings, which --opt settings= also sets, and claude keeps only the last one; choose the modes or --opt settings=, not both");
-  return ["--settings", JSON.stringify(settings)];
-}
-
-/** The `--model`, `--effort` and mode flags of the launch, and the env that labels the seat with its
- *  model and variant. An explicit `--opt effort=` wins, as a permission option does, and the seat is
- *  then not labelled with a variant it does not run. */
+/** The `--model` and `--effort` flags of the launch, and the env that labels the seat with its model
+ *  and variant. An explicit `--opt effort=` wins, as a permission option does, and the seat is then
+ *  not labelled with a variant it does not run. */
 function modelFlags(opts: LaunchOpts, passthrough: readonly (readonly [string, string])[]): { args: string[]; env: Record<string, string> } {
   const args: string[] = [];
   const env: Record<string, string> = {};
@@ -108,7 +85,7 @@ function modelFlags(opts: LaunchOpts, passthrough: readonly (readonly [string, s
     args.push("--effort", opts.variant);
     env.COTAL_VARIANT = opts.variant;
   }
-  return { args: [...args, ...modesFlag(opts.modes, passthrough)], env };
+  return { args, env };
 }
 
 /**
@@ -128,7 +105,9 @@ export const claudeConnector: Connector = {
   eventChannel,
   // A launched session serves Claude's tool permissions on the agent endpoint (prompts.ts), except on
   // Windows, where the hook answers each one itself until serving there is built (hook.ts).
-  ...(process.platform === "win32" ? {} : { prompts: true as const }),
+  // askPermissions launches in the mode that asks, so it is declared only where the prompts are served.
+  ...(process.platform === "win32" ? {} : { prompts: true as const, supportsAskPermissions: true }),
+  supportsReasoningEvents: true, // thinking summaries on, and the mapper's reasoning option
   // The seat's command mod runs every listed entry as a `command` (commands.ts). Windows seats run
   // none yet (command-feed.ts).
   ...(process.platform === "win32" ? {} : {
@@ -136,7 +115,7 @@ export const claudeConnector: Connector = {
   }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
-  listModels: (o) => listClaudeModels(o ?? {}, launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS })),
+  listModels: listClaudeModels,
   supportsModelVariant: true, // variant = claude's `--effort` level
   supportsModes: true, // fast and ultracode, rendered as claude's `--settings`
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
@@ -285,6 +264,7 @@ export const claudeConnector: Connector = {
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
     const chosen = modelFlags(opts, passthrough);
+    const fieldArgs = launchFieldArgs(opts, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
@@ -298,7 +278,10 @@ export const claudeConnector: Connector = {
     // recorded so far instead of leaving it with no owner.
     try {
       env.COTAL_CONTROL_SOCKET = control.path;
-      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      const images = imageFolder(artifacts);
+      Object.assign(env, images.env);
+      args.push(...images.args);
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
       // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
       // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
@@ -346,14 +329,7 @@ export const claudeConnector: Connector = {
       // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
       // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
       // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
-      // A managed seat has no human at its terminal, so a permission prompt under the default mode
-      // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-      // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
-      // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
-      // answers its prompts there. An operator who wants another mode passes
-      // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-      if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
-        args.push("--permission-mode", "bypassPermissions");
+      args.push(...fieldArgs);
       for (const [k, val] of passthrough) {
         if (val === "") args.push(`--${k}`);
         else args.push(`--${k}`, val);

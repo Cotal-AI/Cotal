@@ -8,7 +8,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModeInfo, ModelCatalog, ModelCatalogOpts, ModelInfo } from "@cotal-ai/core";
+import { launchEnv } from "@cotal-ai/connector-core";
 import { claudeControl, type AskClaude } from "./claude-initialize.js";
+import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
+
+/** The levels `claude --effort` accepts (2.1.330), lowest first. Given another level, claude warns on
+ *  stderr and runs at its default effort, so a variant outside this list is refused at launch. */
+export const CLAUDE_EFFORT_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 
 /** The probe asks for fast mode, so claude reports whether this account can run it. Without the ask,
  *  claude's only reason fast is off is `sdk_opt_in_required`. */
@@ -27,13 +33,12 @@ const FAST_POLL_MS = 200;
  *  for `preference` when an organization turns fast mode off. Another code is shown as claude gave it. */
 const FAST_OFF_MESSAGES = new Map([["preference", "Fast mode has been disabled by your organization"]]);
 
-const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
-
 interface ModelRow {
   value: string;
   displayName: string;
   resolvedModel?: string;
   description?: string;
+  supportsEffort?: unknown;
   supportedEffortLevels?: string[];
   supportsFastMode?: boolean;
 }
@@ -88,11 +93,13 @@ async function fastOffReason(ask: AskClaude, model: string, answeredAt: number):
 
 /** An alias such as `opus` follows each new release, and some logins name it only "Opus", so its name
  *  also carries the model it resolves to today. A value that extends that model, such as
- *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. */
+ *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. A model's variants
+ *  are the effort levels claude lists for it that `--effort` takes, and none when claude marks it
+ *  `supportsEffort: false`. */
 function modelInfo(row: ModelRow, applied: Applied, fastOff: string | undefined): ModelInfo {
   const { value, resolvedModel, description } = row;
   const resolves = resolvedModel && resolvedModel !== value ? ` (${value.startsWith(resolvedModel) ? value : resolvedModel})` : "";
-  const levels = row.supportedEffortLevels ?? [];
+  const levels = (row.supportsEffort === false ? [] : (row.supportedEffortLevels ?? [])).filter((level) => CLAUDE_EFFORT_LEVELS.includes(level));
   const modes: ModeInfo[] = [
     ...(row.supportsFastMode ? [{ id: "fast", label: "Fast", kind: "toggle" as const, default: false, ...(fastOff ? { unavailable: fastOff } : {}) }] : []),
     ...(applied.ultracodeAvailable ? [{ id: "ultracode", label: "Ultracode", kind: "toggle" as const, default: applied.ultracode }] : []),
@@ -111,8 +118,9 @@ async function readModels(ask: AskClaude): Promise<ModelCatalog> {
   const { account, models: rows } = await ask({ subtype: "initialize" }) as { account?: { tokenSource?: unknown; apiKeySource?: unknown }; models?: unknown };
   const answeredAt = Date.now();
   // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
-  if (account?.tokenSource === "none" && !account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
-  if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
+  if (account?.tokenSource === "none" && !account.apiKeySource) throw new Error("claude is not logged in; run claude to log in");
+  if (rows === undefined) return { models: [], unavailable: "claude answered without a model list" };
+  if (!Array.isArray(rows) || !rows.every(isModelRow)) throw new Error("claude answered with a malformed model list");
   // The model a launch that names none runs. `default` points at claude's recommended model, which a
   // launch can also reach by its own name.
   const launchDefault = appliedOf(await ask({ subtype: "get_settings" })).model;
@@ -127,14 +135,18 @@ async function readModels(ask: AskClaude): Promise<ModelCatalog> {
   return { source: "claude stream-json initialize and get_settings", models };
 }
 
-/** `env` is the environment a seat's `claude` gets, so the list comes from the same login. */
-export async function listClaudeModels(opts: ModelCatalogOpts, env: Record<string, string>): Promise<ModelCatalog> {
+/** A failed read, a logged-out claude and a malformed list throw, so the manager reports a failed
+ *  read. Only an answer that carries no model list at all is an install with no catalog to list. */
+export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // claude applies the settings of the project it runs in, so it runs in an empty private directory.
   const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
   try {
     const bin = opts.resolvedBinaries?.claude ?? "claude";
+    // The spawn.env names a launch gets, so claude lists the models of the provider a seat reaches.
+    const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, envAllow: opts.envAllow });
     const answer = await claudeControl({ bin, cwd, env, boundMs: 8_000, what: "its models", settings: PROBE_SETTINGS }, readModels);
-    return "failed" in answer ? unavailable(answer.failed) : answer.value;
+    if ("failed" in answer) throw new Error(answer.failed);
+    return answer.value;
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

@@ -17,12 +17,17 @@ import { writeFileSync } from "node:fs";
 import {
   configFromEnv,
   controlFromEnv,
+  eventPlaneArmed,
   MeshAgent,
   startControlServer,
   type AgentConfig,
 } from "@cotal-ai/connector-core";
-import { hermesHookHandle } from "./hermes-hooks.js";
-import { startBridgeServer } from "./bridge.js";
+import { createHermesApprovals } from "./approvals.js";
+import { createHermesClarify } from "./clarify.js";
+import { gatewayIdle, hermesHookHandle } from "./hermes-hooks.js";
+import { startBridgeServer, type BridgeServer } from "./bridge.js";
+import { drainWhileIdle, hermesCommands } from "./commands.js";
+import { startHermesEvents, type HermesEvents } from "./events.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
 
 interface Sidecar {
@@ -46,12 +51,21 @@ export function startSidecar(): Sidecar {
   // The gateway posts every turn's output, and its own busy notices, back to the channel as a reply
   // to the message that started the turn. A peer's reply is therefore never a new task for us.
   config.channelRepliesPullOnly = true;
-  const agent = new MeshAgent(config);
+  let bridge: BridgeServer | undefined;
+  const agent = new MeshAgent(config, undefined, { commands: hermesCommands(() => bridge) });
+  // The launcher names the turn journal only for an armed event plane; an armed plane without one
+  // (a standalone sidecar) has nothing to publish from, so it is refused.
+  const armed = eventPlaneArmed(config);
+  const journal = armed ? process.env.COTAL_HERMES_EVENTS : undefined;
+  if (armed && !journal)
+    throw new Error("the event plane is armed but the sidecar was given no turn journal (COTAL_HERMES_EVENTS); a standalone Hermes sidecar publishes no event plane");
+  let events: HermesEvents | undefined;
   let started = false;
   const startAgent = (): void => {
     if (started) return;
     started = true;
     agent.start();
+    if (journal) events = startHermesEvents(agent, config, journal);
   };
 
   // Socket path from the env, key and version from the launch material the launcher merged them
@@ -63,8 +77,42 @@ export function startSidecar(): Sidecar {
   const toolsFile = need("COTAL_TOOLS_FILE");
 
   // Managed listener: own the endpoint (fatal bind) and prove every connection through the exchange.
-  const controlServer = startControlServer(agent, control, hermesHookHandle, { fatalBind: true });
-  const bridge = startBridgeServer(agent, config, bridgeSock, control, startAgent);
+  // Every hook event is also a wake for the event plane's reader: the journal is the data.
+  const controlServer = startControlServer(agent, control, (a, ev) => {
+    if (journal) events?.holder.flush(journal);
+    return hermesHookHandle(a, ev);
+  }, { fatalBind: true });
+  const drain = drainWhileIdle(agent, () => bridge);
+  agent.on("command", drain);
+  const onIdle = (): void => {
+    void gatewayIdle(agent, bridge);
+    drain();
+  };
+  const approvals = config.askPermissions
+    ? createHermesApprovals({
+        desk: () => agent.prompts,
+        send: (answer) => bridge?.answerPrompt({ t: "approval_answer", ...answer }) ?? false,
+        warn: (msg) => process.stderr.write(`[cotal-hermes] ${msg}\n`),
+      })
+    : undefined;
+  const onApproval = (frame: Record<string, unknown>): void => {
+    if (frame.t === "approval") approvals?.request(frame);
+    else approvals?.ended(frame);
+  };
+  const clarify = createHermesClarify({
+    desk: () => agent.prompts,
+    send: (answer) => bridge?.answerPrompt({ t: "clarify_answer", ...answer }) ?? false,
+    warn: (msg) => process.stderr.write(`[cotal-hermes] ${msg}\n`),
+  });
+  const onClarify = (frame: Record<string, unknown>): void => (frame.t === "clarify" ? clarify.request(frame) : clarify.ended(frame));
+  const onDelta = (key: string, text?: string): void => events?.delta(key, text);
+  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval, onClarify, onDelta });
+  // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
+  // dropped from the environment the gateway inherits.
+  const prompt = process.env.COTAL_HERMES_PROMPT;
+  delete process.env.COTAL_HERMES_PROMPT;
+  if (prompt)
+    bridge.submitTurn(prompt).catch((e: Error) => process.stderr.write(`[cotal-hermes] the initial prompt was not run: ${e.message}\n`));
 
   // The plugin reads this at register(ctx) time to declare the cotal_* tools (full shared parity).
   writeFileSync(toolsFile, JSON.stringify(hermesToolDescriptors(config)));
@@ -76,7 +124,8 @@ export function startSidecar(): Sidecar {
       // Both servers have closed, with every accepted connection ended, before stop resolves, so a
       // launcher that removes their directory next leaves nothing listening or connected in it. A
       // control connection ends on its own within the exchange's deadlines.
-      await Promise.all([bridge.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
+      await Promise.all([bridge!.close(), new Promise<void>((resolve) => controlServer.close(() => resolve()))]);
+      await events?.close();
       await agent.stop();
     },
   };

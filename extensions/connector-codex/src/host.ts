@@ -62,30 +62,23 @@ import {
   fmtChannel,
   startControlServer,
   briefing,
-  AguiEmitter,
-  AguiEmitterHolder,
-  eventPlaneStopped,
-  EventWal,
-  FileSubjectFrontier,
   JsonlFileSource,
-  ensureEventWalDir,
-  resolveEventsStateRoot,
-  type DurableSource,
   type InboxItem,
   controlFromEnv,
   scrubLaunchMaterial,
-  type SourceRead,
 } from "@cotal-ai/connector-core";
-import { principalKey } from "@cotal-ai/core";
-import { randomUUID } from "node:crypto";
 import type { PresenceCondition } from "@cotal-ai/core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { codexCommands } from "./commands.js";
-import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
+import { createCodexPrompts, followDriver, type CodexPrompts } from "./prompts.js";
+import type { CodexRecord } from "./agui-map.js";
+import { codexEventBindings, type CodexEventBinding } from "./codex-events.js";
 import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
+import { ASKING_THREAD, configOverrides, mcpOverrides, reasoningTurn } from "./codex-config.js";
 import { launchTui } from "./tui.js";
 import { codexNaming } from "./naming.js";
+import { hostPresence } from "./host-presence.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
@@ -94,8 +87,6 @@ const MAX_BATCH_TURNS = 3;
  *  loop, not a blip, and the host dies loudly rather than respawning forever. */
 const RESTART_WINDOW_MS = 120_000;
 const MAX_RESTARTS = 3;
-/** How often a presence update latched while the endpoint was still connecting is retried. */
-const STATUS_FLUSH_MS = 500;
 /** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
 const SHUTDOWN_GRACE_MS = 5_000;
 /** A Codex peer is not ready until its mesh endpoint has completed every bind and published its
@@ -199,134 +190,6 @@ function prepareCodexHome(space: string, name: string): string {
   return agentHome;
 }
 
-/** The `-c key=value` override list for the codex child: the operator's launch options first
- *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
- *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. */
-function configOverrides(model: string | undefined, variant: string | undefined): [string, string][] {
-  const overrides: [string, string][] = [];
-  const raw = process.env.COTAL_CODEX_CONFIG?.trim();
-  if (raw) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("COTAL_CODEX_CONFIG must be a JSON object of config-key → value");
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-      throw new Error("COTAL_CODEX_CONFIG must be a JSON object of config-key → value");
-    for (const [k, v] of Object.entries(parsed)) overrides.push([k, String(v)]);
-  }
-  const has = (key: string): boolean => overrides.some(([k]) => k === key);
-  if (model && !has("model")) overrides.push(["model", `"${model}"`]);
-  if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
-  // Autonomy: a headless host has no one to answer an approval prompt, so an interactive
-  // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
-  // nullifying the operator's stated policy. Refuse anything but `never` rather than pretend.
-  const approval = overrides.find(([k]) => k === "approval_policy");
-  if (approval && approval[1].replace(/"/g, "") !== "never")
-    throw new Error(
-      `codex connector: approval_policy=${approval[1]} is not supported — the headless host cannot ` +
-        `answer interactive approvals; only "never" (the default) is honest here. Tighten the sandbox ` +
-        `(sandbox_mode) instead to restrict what the agent may do.`,
-    );
-  if (!approval) overrides.push(["approval_policy", '"never"']);
-  // `never` means never ASK, not never allow: the agent runs its commands, and what bounds it is
-  // the sandbox below, not a prompt nobody would be there to answer.
-  const sandbox = overrides.find(([k]) => k === "sandbox_mode");
-  const sandboxMode = sandbox ? sandbox[1].replace(/"/g, "") : "workspace-write";
-  if (!sandbox) overrides.push(["sandbox_mode", '"workspace-write"']);
-  // ...and inside that sandbox, network ON. Codex defaults workspace-write to no network, which
-  // silently breaks most real work an agent is asked to do (installing a dependency, pushing a
-  // branch, calling an API) with a failure that reads as the task being impossible rather than
-  // the sandbox saying no. Filesystem containment is the part worth keeping — a peer's message is
-  // a REMOTE input that can make this agent run commands, so it should not be able to write
-  // outside its workspace.
-  //
-  // Scoped to the mode it actually describes rather than emitted always and assumed inert: under
-  // `read-only` or `danger-full-access` this key has nothing to say, and shipping it anyway would
-  // put a network permission in the argv of a launch the operator deliberately tightened — a claim
-  // about codex's precedence we would be making without proving it.
-  if (sandboxMode === "workspace-write" && !has("sandbox_workspace_write"))
-    overrides.push(["sandbox_workspace_write", "{network_access=true}"]);
-  // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
-  // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
-  // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.
-  // The whole `mcp_servers` namespace, not just our dotted keys. A launch option cannot even
-  // express a dotted key (the key grammar refuses `.`), so the reachable shape is a TOP-LEVEL
-  // `mcp_servers` inline table — which would merge against ours and leave last-`-c`-wins to sort
-  // out a half-applied result. Refuse the whole namespace instead, matching the loud refusal
-  // tool-sharing already gets.
-  const stolen = overrides.find(([k]) => k === "mcp_servers" || k.startsWith("mcp_servers."));
-  if (stolen)
-    throw new Error(
-      `codex connector: ${stolen[0]} is reserved — mcp_servers is how this agent reaches the mesh and ` +
-        `cannot be set through launch options. Tool-sharing (connectors.codex.mcpServers) is the ` +
-        `supported way to add servers, and is not implemented yet.`,
-    );
-  return overrides;
-}
-
-/** Point the child at the cotal_* tools this host is serving (mcp.ts). Appended LAST, and codex
- *  resolves a repeated key to the last `-c`, so this is authoritative over anything else. */
-function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
-  const p = `mcp_servers.${MCP_SERVER_NAME}`;
-  return [
-    [`${p}.url`, `"${mcp.url}"`],
-    // By NAME, never by value: a token on argv is world-readable in the process table.
-    [`${p}.bearer_token_env_var`, `"${MCP_TOKEN_ENV}"`],
-    // Pre-approve this server's tools. Codex otherwise raises an elicitation ("Allow the cotal
-    // MCP server to run tool X?") per call, which for a mesh-driven turn nobody is watching would
-    // hang the turn forever. These are the agent's own mesh voice — the same surface every other
-    // connector exposes ungated — so standing approval is the honest setting, not a loosening.
-    [`${p}.default_tools_approval_mode`, '"approve"'],
-  ];
-}
-
-/**
- * The rollout source, positioned where the BIND was taken rather than where the emitter's own
- * setup finished.
- *
- * A log with no cursor means "start at the current end", and for this connector the current end is
- * the wrong end. The emitter is built lazily inside `adopt`, and between the bind and its first
- * read sit the write-ahead log's directory, the subject frontier, the log itself, a channel
- * resolve and a single-replica preflight: filesystem and broker work, measured at 17ms and 36ms on
- * an idle machine. Every record the session appends while that runs would land behind the later
- * end and be treated as already published, so a turn completing inside the window is dropped,
- * permanently and silently, under a line that has already announced the stream as started.
- *
- * So the boundary is captured at the bind, before the announcement, and substituted HERE, on the
- * one read that would otherwise ask the file where it currently ends.
- *
- * THE LIMIT, stated once and in one place: this positions the first read of a log that has no
- * cursor. A log that already carries one is a resume and passes through untouched, because a
- * cursor written by a live emitter is the honest one. Each bind builds its own source with its own
- * boundary, so a later bind never reuses an older one.
- */
-class BoundStartSource<T> implements DurableSource<T> {
-  readonly kind: string;
-
-  /** The boundary this wrapper captured, exposed so its OWNER can persist the boundary the SOURCE
-   *  itself substitutes rather than a copy captured beside it (#705). Two sources of truth would
-   *  drift exactly when one of them is removed. */
-  readonly start: string;
-
-  constructor(
-    private readonly inner: DurableSource<T>,
-    start: string,
-  ) {
-    this.kind = inner.kind;
-    this.start = start;
-  }
-
-  read(cursor: string | undefined): Promise<SourceRead<T>> {
-    return this.inner.read(cursor ?? this.start);
-  }
-
-  end(): Promise<string> {
-    return this.inner.end();
-  }
-}
-
 /** What a command's turn sets in the drive loop of {@link runCodexHost}. */
 interface CommandTurnFlags {
   /** Before the dispatch is awaited, a start is in flight and its turn is armed with nothing
@@ -375,6 +238,36 @@ function commandTurns(agent: MeshAgent, drive: () => Promise<void>, flags: Comma
   };
 }
 
+/** The seat's app-server driver, with the prompt module that holds Codex's approval requests and
+ *  questions on the agent's prompt desk. */
+function createDriver(
+  agent: MeshAgent,
+  o: {
+    config: ReturnType<typeof configFromEnv>;
+    persona: string | undefined;
+    codexHome: string;
+    codexBin: string | undefined;
+    baseOverrides: [string, string][];
+    mcp: CotalMcpEndpoint;
+  },
+): { driver: AppServerDriver; prompts: CodexPrompts } {
+  const { config, persona, codexHome, codexBin, baseOverrides, mcp } = o;
+  const prompts = createCodexPrompts({ desk: () => agent.prompts, respond: (request, result) => driver.respond(request, result), warn: log });
+  const driver = new AppServerDriver({
+    hold: (request) => prompts.hold(request),
+    cwd: process.cwd(),
+    codexHome,
+    configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
+    developerInstructions: developerInstructions(config, persona),
+    threadSettings: config.askPermissions ? ASKING_THREAD : undefined,
+    turnSettings: config.reasoningEvents ? reasoningTurn(baseOverrides) : undefined,
+    extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
+    bin: codexBin,
+    log,
+  });
+  return { driver, prompts };
+}
+
 export async function runCodexHost(): Promise<void> {
   const config = configFromEnv(); // throws without an identity — a host launch is always managed
   config.connector = "codex";
@@ -391,7 +284,7 @@ export async function runCodexHost(): Promise<void> {
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
-  const baseOverrides = configOverrides(model, variant);
+  const baseOverrides = configOverrides(model, variant, config.askPermissions === true);
   const agent = new MeshAgent(config, undefined, {
     commands: codexCommands(() => driver),
     naming: codexNaming({ bin: codexBin ?? "codex", codexHome, overrides: baseOverrides, model: () => driver.model, launchPrompt: process.env.COTAL_CODEX_PROMPT }),
@@ -399,15 +292,7 @@ export async function runCodexHost(): Promise<void> {
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
-  const driver = new AppServerDriver({
-    cwd: process.cwd(),
-    codexHome,
-    configOverrides: [...baseOverrides, ...mcpOverrides(mcp)],
-    developerInstructions: developerInstructions(config, persona),
-    extraEnv: { [MCP_TOKEN_ENV]: mcp.token },
-    bin: codexBin,
-    log,
-  });
+  const { driver, prompts } = createDriver(agent, { config, persona, codexHome, codexBin, baseOverrides, mcp });
 
   /** Publishes this thread's activity as AG-UI events on `events.<owner>.<actor>`.
    *
@@ -417,197 +302,14 @@ export async function runCodexHost(): Promise<void> {
    *  exists, and because `start()` reaches the broker, work that must not run for a thread that
    *  never publishes. */
   const eventsArmed = eventPlaneArmed(config);
-  /** TEST ONLY, and the reason it exists rather than a fixture doing this from outside.
-   *
-   *  The window this whole boundary rule is about is the emitter's own asynchronous setup: the
-   *  bind captures where the stream starts, announces it, and only then does the setup below run
-   *  and the first read happen. That window is a few tens of milliseconds wide, which is not a
-   *  window a test can put a completed turn inside on purpose, so the only cell that could grade
-   *  the rule was one that raced it and therefore graded nothing reliably. This widens the same
-   *  window instead of simulating a different one, so what a fixture writes into it is what the
-   *  running seat would have written into it.
-   *
-   *  Nothing outside a test sets this, and unset is not a shorter wait, it is no wait and no call:
-   *  absent, empty, zero, negative, and unparseable all resolve to 0 and the branch below is not
-   *  taken. */
-  let startDelayMs = ((): number => {
-    const ms = Number(process.env.COTAL_EVENTS_TEST_START_DELAY_MS ?? "");
-    return Number.isFinite(ms) && ms > 0 ? ms : 0;
-  })();
-  // Test-only: holds the window between the persist and the first pump open so a fixture can
-  // read the log there. Unset is no wait and no call.
-  let postStartHoldMs = ((): number => {
-    const ms = Number(process.env.COTAL_EVENTS_TEST_POST_START_HOLD_MS ?? "");
-    return Number.isFinite(ms) && ms > 0 ? ms : 0;
-  })();
-  let events: AguiEmitterHolder<CodexRecord> | undefined;
-  let mapper: CodexMapper | undefined;
+  const newEventBinding = codexEventBindings(agent, config, { log, meshReadyTimeoutMs: MESH_READY_TIMEOUT_MS });
+  let events: CodexEventBinding | undefined;
   /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
    *  names the file the emitter is already reading rather than re-deriving it, and a NEW thread
    *  gets a new holder rather than a second adopt (see `bindEvents`). */
   let rollout: string | undefined;
-  const newEventHolder = (startCursor: string): AguiEmitterHolder<CodexRecord> => {
-    // The widening belongs to the first bind only: a restart's holder must exercise the ordinary
-    // startup path, and repeating the test delay there adds no coverage.
-    const holderStartDelayMs = startDelayMs;
-    startDelayMs = 0;
-    const holderPostStartHoldMs = postStartHoldMs;
-    postStartHoldMs = 0;
-    return new AguiEmitterHolder<CodexRecord>(
-      async (rolloutPath: string) => {
-        // The test-only widening of this setup, at the top of it so a fixture's write lands in the
-        // real window rather than beside it. Zero unless a test set it, and zero does not await.
-        if (holderStartDelayMs > 0) await new Promise<void>((r) => setTimeout(r, holderStartDelayMs));
-        // The launch binds while `agent.start()` is still connecting in the background, and a start
-        // against an unconnected endpoint is terminal for the holder, so it waits for the mesh as
-        // the OpenCode and Claude Code holders do.
-        await agent.whenConnected(MESH_READY_TIMEOUT_MS);
-        // Throws rather than defaulting to the working directory: a write-ahead log written
-        // somewhere no later start looks is a silent loss.
-        const workspaceRoot = resolveEventsStateRoot(process.env);
-        // The thread id is the rollout filename key, MEASURED equal to `session_meta.payload.id`
-        // and to the `thread/start` id on a real app-server thread. Taken from the path this
-        // emitter actually reads, so the log cannot be keyed to one thread while consuming
-        // another's bytes.
-        const threadId = (rolloutPath.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1]) ?? "";
-        if (threadId === "") throw new Error(`cannot derive a thread id from rollout path ${rolloutPath}`);
-        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
-        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
-        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-        // `AguiEmitter.start` settles `pending` before the first pump. Seed the mapper from the
-        // bracket state that will exist AFTER that recovery, not from the folded state before it:
-        // a pending terminal closes the WAL's run without passing through this new mapper.
-        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-        // `startCursor` is the boundary this bind captured before it announced itself. Nothing
-        // above writes it into the log: see `BoundStartSource` for what that buys and what it
-        // costs. The wrapper is held in a variable rather than inlined because the persist below
-        // keys on IT (#705), so removing the boundary substitution removes the persist with it
-        // instead of leaving an outer copy that keeps writing the same value.
-        const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
-        const em = await AguiEmitter.start<CodexRecord>({
-          withholdPayloads: config.eventPayloadsWithheld,
-          endpoint: agent.ep,
-          wal,
-          subjectFrontier,
-          source,
-          map: mapper.map,
-          onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable rollout record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
-        });
-        // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
-        // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
-        // the outer `startCursor`, because the invariant that matters is "what the emitter will
-        // read is what the log now says", and only the source object knows the first half.
-        // After start is safe because `AguiEmitter.start` awaits `recover()`, which settles any
-        // pending frame before returning, so `advanceCursorOnly` never races a pending write.
-        // Without this, a host killed between this line and the emitter's first pump leaves a
-        // virgin log, and the next bind takes its boundary at the file's later end, dropping
-        // whatever the thread appended in between.
-        if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
-          await wal.advanceCursorOnly(source.start);
-        // Test-only: holds the window between the persist above and the first pump open so a
-        // fixture can read the log there. Unset is no wait and no call.
-        if (holderPostStartHoldMs > 0)
-          await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
-        return em;
-      },
-      {
-        onError: eventPlaneStopped({ log }),
-        sourceEnd: (rolloutPath: string) => new JsonlFileSource<CodexRecord>(rolloutPath).end(),
-        // A turn terminal closes a run the record stream never described. Without this the mapper
-        // would attribute the next records to a run the published stream has already finished.
-        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
-      },
-    );
-  };
 
-  // Presence is best-effort and must never throw into the turn loop — but it must also never
-  // LIE. The mesh connect runs in the background, so an auto-prompt (`--prompt`) can open a real
-  // turn while the endpoint is still connecting; dropping that "working" would leave the roster
-  // showing the default `idle` for the whole first turn. So the latest desired status is latched
-  // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
-  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string; presenceOnly?: boolean };
-  let desired: Presence | undefined;
-  let desiredCondition: PresenceCondition | null | undefined;
-  let flushTimer: ReturnType<typeof setInterval> | undefined;
-  // Presence writes go out IN CALL ORDER. `agent.setStatus("working")` clears the condition before
-  // it publishes, and it awaits the connection first, so two fire-and-forget writes from one tick
-  // can land in either order. Measured: a turn that failed in the tick it started published its
-  // failure condition and then its own start's clear one millisecond later, and the presence
-  // bucket (history 1) dropped the condition revision before any watcher read it. The chain keeps
-  // the start's clear ahead of the failure's condition, so the condition is what the roster shows
-  // until the NEXT turn starts.
-  let presenceChain: Promise<void> = Promise.resolve();
-  const inOrder = (write: () => Promise<void>): Promise<void> => {
-    const next = presenceChain.then(write, write);
-    presenceChain = next.catch(() => {});
-    return next;
-  };
-  function armStatusFlush(): void {
-    if (flushTimer) return;
-    flushTimer = setInterval(() => {
-      if ((!desired && desiredCondition === undefined) || !agent.connected) {
-        if (!desired && desiredCondition === undefined) {
-          clearInterval(flushTimer);
-          flushTimer = undefined;
-        }
-        return;
-      }
-      const want = desired;
-      const wantCondition = desiredCondition;
-      desired = undefined;
-      desiredCondition = undefined;
-      clearInterval(flushTimer);
-      flushTimer = undefined;
-      inOrder(async () => {
-        if (wantCondition !== undefined) await agent.setCondition(wantCondition);
-        if (want) {
-          if (want.presenceOnly) await agent.resetStatus(want.status, want.activity);
-          else await agent.setStatus(want.status, want.activity);
-        }
-      })
-        .catch(() => {
-          if (!desired) desired = want;
-          if (desiredCondition === undefined) desiredCondition = wantCondition;
-          armStatusFlush();
-        });
-    }, STATUS_FLUSH_MS);
-    flushTimer.unref?.();
-  }
-  const safeStatus = async (status: Presence["status"], activity?: string, presenceOnly = false): Promise<void> => {
-    desired = { status, activity, presenceOnly };
-    if (!agent.connected) return armStatusFlush();
-    const want = desired;
-    desired = undefined;
-    await inOrder(async () => {
-      try {
-        // Requests are answered by the driver, not host-turn boundaries. Keep their waiting
-        // presence from disarming the working-to-idle completion of the same native turn.
-        // A later command or MCP item is not required for a completed turn to yield done.
-        if (presenceOnly) await agent.resetStatus(status, activity);
-        else await agent.setStatus(status, activity);
-      } catch {
-        if (!desired) desired = want;
-        armStatusFlush();
-      }
-    });
-  };
-
-  const safeCondition = async (condition: PresenceCondition | null): Promise<void> => {
-    desiredCondition = condition;
-    if (!agent.connected) return armStatusFlush();
-    const want = desiredCondition;
-    desiredCondition = undefined;
-    await inOrder(async () => {
-      try {
-        await agent.setCondition(condition);
-      } catch {
-        if (desiredCondition === undefined) desiredCondition = want;
-        armStatusFlush();
-      }
-    });
-  };
+  const { safeStatus, safeCondition } = hostPresence(agent);
 
   let ready = false; // thread up — never drive before then
   /** Shared across app-server incarnations: a crash during launch must make the replacement await
@@ -860,15 +562,18 @@ export async function runCodexHost(): Promise<void> {
    *  have appeared during exactly that window. Without this the retry has to win a race with the
    *  flag, and a turn whose start and end land in one burst would lose it. */
   let missedBind = false;
-  /** Flush what the current binding settled, close the run it left open, and wait for both to land.
+  /** End the replies the current binding was streaming, flush what it settled, close the run it
+   *  left open, and wait for all of it to land.
    *
    *  ORDER MATTERS: closing first would terminate a run the flushed records still belong to. This is
    *  the same drain the OpenCode connector runs when a new session replaces the one it publishes. */
   async function drainBinding(): Promise<void> {
     if (events === undefined) return;
-    if (rollout !== undefined) events.flush(rollout);
-    events.closeRun(Date.now());
-    await events.settled();
+    events.abandon();
+    if (rollout !== undefined) events.holder.flush(rollout);
+    events.holder.closeRun(Date.now());
+    await events.holder.settled();
+    events.close();
   }
 
   /** Bind the plane to a thread's rollout, DRAINING and REPLACING any previous binding.
@@ -931,12 +636,12 @@ export async function runCodexHost(): Promise<void> {
       // Again after the last await: a shutdown that began during the drain or this read has already
       // run its own drain, so the holder below would be one nothing closes.
       if (shuttingDown) return;
-      events = newEventHolder(startCursor);
+      events = newEventBinding(path, startCursor);
       rollout = path;
-      events.adopt(path);
+      events.holder.adopt(path);
       // `adopt` starts the emitter, it does not read. Without this the first records wait for a
       // turn boundary that a seat sitting idle never reaches.
-      events.flush(path);
+      events.holder.flush(path);
       // SAID OUT LOUD, because it is a limit and not an implementation detail: the stream starts at
       // the boundary captured just above, the file's last COMPLETE record as of the bind, so
       // whatever the thread had already written before this moment is not republished. A file with
@@ -965,7 +670,7 @@ export async function runCodexHost(): Promise<void> {
     // A dead holder stays bound and no boundary rebuilds it: its failure was answered once, by
     // `eventPlaneStopped` under the space's policy, as on every other connector.
     if (rollout !== undefined) {
-      events?.flush(rollout);
+      events?.holder.flush(rollout);
       return;
     }
     if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);
@@ -987,6 +692,7 @@ export async function runCodexHost(): Promise<void> {
   });
   // The request was declined in the same call; resume `working`, which also clears its condition.
   driver.on("answered", () => void safeStatus("working"));
+  followDriver(driver, prompts, () => void safeStatus("working"));
   driver.on("turnCompleted", ({ status, condition, owned }: { status: string; condition?: PresenceCondition; owned: boolean }) => {
     flushEvents();
     feed(`— turn ${status}`);
@@ -995,6 +701,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemStarted", (item: ThreadItem) => {
     agent.noteActivity();
+    events?.started(item);
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
@@ -1005,10 +712,13 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
     agent.noteActivity();
+    if ((item.type === "agentMessage" || item.type === "reasoning") && item.id) events?.settle(item.id);
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
   driver.on("work", () => agent.noteActivity());
+  driver.on("textDelta", (itemId: string, text: string, kind: "text" | "reasoning") => events?.delta(itemId, text, kind));
+  driver.on("planUpdated", (update: { explanation: unknown; plan: unknown }) => events?.plan(update));
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
    *  replacement. From that moment the tail owns NOTHING: continuing would set the context id,
@@ -1325,9 +1035,11 @@ export async function runCodexHost(): Promise<void> {
     // while a Codex `task_complete` IS the terminal and the mapper closes from it. Shutdown is the
     // one boundary the records cannot describe.
     try {
+      events?.abandon();
       flushEvents();
-      events?.closeRun(Date.now());
-      await events?.settled();
+      events?.holder.closeRun(Date.now());
+      await events?.holder.settled();
+      events?.close();
     } catch {
       /* leaving anyway: the forced-exit timer above still owns the deadline */
     }

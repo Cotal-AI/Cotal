@@ -4,7 +4,7 @@
  * them once, after everything they read is bound, and they share its state through `hostState`.
  */
 import { type ChildProcess } from "node:child_process";
-import { HarnessError, type JcodeClient, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
+import { HarnessError, type JcodeClient, type ApiEvent, type ImageAttachment, type LaunchedInstance, type TurnResult } from "@1jehuang/jcode-sdk";
 import { type PresenceCondition } from "@cotal-ai/core";
 import { softInterruptWithLateReply } from "./steer-replies.js";
 import { writeJcodeDiagnostic } from "./startup-diagnostics.js";
@@ -18,8 +18,9 @@ import {
   nextFallbackDelay,
   type FallbackState,
 } from "./queue-fallback.js";
-import { type MeshAgent, type AguiEmitterHolder, formatInjection, type InboxItem } from "@cotal-ai/connector-core";
+import { type MeshAgent, type AguiEmitterHolder, type AgentTurn, CommandRefused, formatInjection, type InboxItem, type Merged } from "@cotal-ai/connector-core";
 import { type PositionedJcodeJournalRecord } from "./agui-map.js";
+import type { JcodeDeltaStream } from "./stream-deltas.js";
 import {
   RUN_ACCEPT_WINDOW_MS,
   jcodeTurnCondition,
@@ -27,6 +28,8 @@ import {
   isJcodeBusyRefusal,
 } from "./host-support.js";
 import { createBridgeRecovery } from "./host-recovery.js";
+import { watchTurnEvents } from "./turn-events.js";
+import { readTokenUsage, type JcodeTokenUsage } from "./usage.js";
 
 /** Turn state of one jcode host session, shared by the closures that drive its turns. */
 export interface HostTurnState {
@@ -40,6 +43,8 @@ export interface HostTurnState {
   bridgeRecoveryUsed: boolean;
   sessionId: string | undefined;
   driving: boolean;
+  /** The host's own run() waits on the session's turn: from its send until runPrompt closes the run. */
+  hostRun: boolean;
   turnActive: boolean;
   briefed: boolean;
   initialized: boolean;
@@ -65,12 +70,29 @@ export interface HostTurnState {
   fallbackDelayMs: number;
   fallbackRunning: boolean;
   fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The session's last provider call, as Jcode's `token_usage` reported it, and its provider. */
+  tokenUsage?: JcodeTokenUsage;
+  provider?: string;
+}
+
+/** One prompt a host-owned turn hands to Jcode. */
+interface HostPrompt {
+  text: string;
+  images: ImageAttachment[];
+  /** The inbox deliveries and run turns the prompt carries. */
+  ids: string[];
+  turnIds: string[];
+  mentionWake?: { hint: string };
+  /** Told once whether Jcode took the prompt: with nothing at its acknowledgement or a clean end,
+   *  with the error when the turn failed first or its acknowledgement lapsed. */
+  accepted?: (error?: unknown) => void;
 }
 
 /** What the turn closures read from the host that owns them, bound before they are created. */
 export interface HostTurnDeps {
   agent: MeshAgent;
-  events: AguiEmitterHolder<PositionedJcodeJournalRecord> | undefined;
+  events: AguiEmitterHolder<Merged<PositionedJcodeJournalRecord>> | undefined;
+  deltaStream: JcodeDeltaStream;
   closeEventRun: (error?: Error) => void;
   ensureEventsBound: () => Promise<void>;
   unansweredSteers: Set<() => void>;
@@ -102,6 +124,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
   const {
     agent,
     events,
+    deltaStream,
     closeEventRun,
     ensureEventsBound,
     unansweredSteers,
@@ -119,8 +142,29 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
     scheduleErrorRetry,
     sessionBusy,
     publishInboundHealth,
-    finishHostIdleTurn,
   } = deps;
+  /** Counts the owner's turns started, so a drive that dispatched one knows the turn now owns `driving`. */
+  let ownerTurnsStarted = 0;
+
+  /** A new turn's boundary: the steers no reply answered are released, and what the live session
+   *  accepted outside a host-owned turn is committed. */
+  const closeTurnBoundary = (): void => {
+    releaseUnansweredSteers();
+    if (hostState.surfacedIds.length) {
+      const committed = hostState.surfacedIds;
+      hostState.surfacedIds = [];
+      agent.drainInboxDeliveries(committed);
+      agent.releaseInFlight(committed);
+    }
+  };
+
+  /** The seat's first turn opens with its channel briefing. */
+  const brief = (parts: string[]): void => {
+    if (hostState.briefed) return;
+    hostState.briefed = true;
+    const briefing = agent.channelBriefing();
+    if (briefing) parts.unshift(briefing);
+  };
 
   const drive = async (): Promise<void> => {
     if (hostState.stopping || hostState.reconnecting || !hostState.initialized || hostState.driving || hostState.turnActive || !hostState.client || !hostState.sessionId) return;
@@ -133,6 +177,14 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
     if (hostState.pendingKickoff !== undefined && hostState.steering)
       writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
     await hostState.steerSettled;
+    // Queued agent-endpoint commands are session operations that start no turn. Each runs to its
+    // answer here, while `driving` keeps a turn out, before the inbox turn. A queued owner's turn
+    // starts a turn of its own instead, whose end releases `driving` and drives again.
+    while (hostState.pendingKickoff === undefined && agent.queuedCommands > 0 && !hostState.stopping && !hostState.reconnecting && !hostState.turnActive) {
+      const started = ownerTurnsStarted;
+      await agent.dispatchNextCommand();
+      if (ownerTurnsStarted !== started) return;
+    }
     // A role request is shown only once its take is recorded (SPEC §8.1). This turn carries every
     // unreserved automatic message, so it takes every held one here, before the session checks
     // below, which then cover this await too.
@@ -143,13 +195,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");
       return;
     }
-    releaseUnansweredSteers();
-    if (hostState.surfacedIds.length) {
-      const committed = hostState.surfacedIds;
-      hostState.surfacedIds = [];
-      agent.drainInboxDeliveries(committed);
-      agent.releaseInFlight(committed);
-    }
+    closeTurnBoundary();
     // Kickoff excludes the automatic inbox. Preserve that deferred work even when ordinary
     // dnd traffic contributes nothing to pendingWake(). Pull-only traffic stays excluded.
     hostState.wakeQueued = hostState.pendingKickoff !== undefined && agent.peekInbox("automatic").length > 0;
@@ -170,6 +216,8 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       const injection = formatInjection(inbox);
       if (!injection && !turnPeek && !mentionWake) {
         hostState.driving = false;
+        // A command queued while this drive held the session found it busy and waits for this.
+        if (agent.queuedCommands > 0) void drive();
         return;
       }
       if (injection) {
@@ -182,17 +230,104 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    if (!hostState.briefed) {
-      hostState.briefed = true;
-      const briefing = agent.channelBriefing();
-      if (briefing) parts.unshift(briefing);
-    }
+    brief(parts);
     // The prompt is not dispatched unless every selected delivery can remain owned until its
     // containing turn settles. MeshAgent renews these holds with JetStream in-progress acks.
     if (!agent.holdInFlight(ids)) {
       hostState.driving = false;
       return;
     }
+    await runPrompt({ text: parts.join("\n\n"), images: [], ids, turnIds, mentionWake });
+  };
+
+  // The RUN's own acceptance window is gated, but not the run itself, and the distinction is
+  // load-bearing in both directions.
+  //
+  // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
+  // same session-scoped `message_accepted` (jcode-sdk client.js:317). A run dispatched while a
+  // handover awaits its acknowledgement adds a second listener, making one event ambiguous.
+  //
+  // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
+  // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
+  // #910 delivery this connector exists to provide. So the gate is released as soon as the send
+  // has been acknowledged, while the turn keeps streaming outside it.
+  //
+  // THE HANDLE IS WRAPPED IN AN OBJECT AND THAT IS LOAD-BEARING, NOT STYLE. Returning the run
+  // promise bare from an async callback assimilates it: `return await operation()` would adopt
+  // it and wait for the TURN, silently extending this gate from one acceptance round trip to the
+  // entire run. A reviewer measured exactly that on the bare form, observing no fallback send for
+  // 95 seconds while a swallowed run stayed open, which recreates the starvation #1233 is about.
+  // An object is not a thenable, so it crosses both async boundaries as a value and runPrompt
+  // awaits the turn outside the gate.
+  const dispatchRun = async (turnClient: JcodeClient, prompt: HostPrompt): Promise<{ dispatched: Promise<TurnResult>; ownSend: number }> => {
+    const { turnIds } = prompt;
+    // Read before this send exists: while a lapsed send is still open, an acknowledgement may
+    // be that send's, and it cannot prove the Harness took these run turns.
+    const attributable = hostState.unsettledLapsedDispatches === 0 && !hostState.acceptanceSuspectUntilBridgeReplaced;
+    // The turns' permit, after the gate's wait and right before the send: a once task its
+    // manager settled meanwhile, or a seat that began stopping, sends nothing.
+    if (hostState.stopping || !agent.claimTurns(turnIds))
+      throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
+    const ownSend = ++hostState.plainSends;
+    const dispatched = turnClient!.run(hostState.sessionId!, prompt.text, { autoApprove: true, ...(prompt.images.length ? { images: prompt.images } : {}) });
+    // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
+    // raced below; the handle returned from this gate is what actually reports it.
+    dispatched.catch(() => {});
+    // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
+    // turn, and yieldTurn refuses a turn that is not surfaced yet. Heard until the turn settles,
+    // not only inside the window below: while this run is open with its acceptance lapsed, the
+    // queue fallback defers and nothing else sends this session a message it could acknowledge,
+    // so a late acceptance is still this send's.
+    if (attributable && turnIds.length) {
+      const surface = (event: ApiEvent): void => {
+        if (!("session_id" in event && event.session_id === hostState.sessionId)) return;
+        stopSurfacing();
+        agent.commitSurfacedTurns(turnIds);
+      };
+      const stopSurfacing = (): void => { turnClient!.off("message_accepted", surface); };
+      turnClient!.on("message_accepted", surface);
+      void dispatched.then(stopSurfacing, stopSurfacing);
+    }
+    // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
+    // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
+    // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
+    let acknowledgedHere = false;
+    let settled = false;
+    const noteAccepted = (event: ApiEvent): void => {
+      if ("session_id" in event && event.session_id === hostState.sessionId) acknowledgedHere = true;
+    };
+    turnClient!.on("message_accepted", noteAccepted);
+    try {
+      await Promise.race([
+        dispatched.then(() => { settled = true; }, () => { settled = true; }),
+        onceAccepted(turnClient!, hostState.sessionId!, RUN_ACCEPT_WINDOW_MS),
+      ]);
+    } finally {
+      turnClient!.off("message_accepted", noteAccepted);
+    }
+    // An owner's turn is told here, unless its turn already ended and tells it from there.
+    if (acknowledgedHere) prompt.accepted?.();
+    else if (!settled) prompt.accepted?.(new Error(`Jcode did not acknowledge the turn within ${RUN_ACCEPT_WINDOW_MS / 1000} s, so it may still run`));
+    // A once task this send cannot show the Harness took is never offered again: it is sealed
+    // and reported, and a late acceptance confirms nothing.
+    if (!attributable || !acknowledgedHere) agent.releaseTurns(turnIds);
+    // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
+    // can still emit its acceptance after the next dispatch has begun, which is precisely how a
+    // reviewer produced an acknowledgement for a send that never received one. Releasing the
+    // gate is still right, because a silent Harness must not be able to starve the queue, but
+    // the NEXT send must know that an unattributable event is possible until this one settles.
+    //
+    // `dispatched` is the TURN, and its settling does prove the Harness is finished with this
+    // request, so the debt clears itself on the ordinary path. It is not a timeout standing in
+    // for a proof.
+    if (!acknowledgedHere) oweAcceptanceDebt(dispatched);
+    return { dispatched, ownSend };
+  };
+
+  /** Run one prompt as a host-owned turn, from its dispatch to its end. The caller holds `driving`,
+   *  and the turn's end releases it. */
+  const runPrompt = async (prompt: HostPrompt): Promise<void> => {
+    const { ids, turnIds, mentionWake } = prompt;
     hostState.turnActive = true;
     hostState.surfacedIds = [...ids];
     // A new turn re-derives ownership from its own prompt, so no STALE reservation may survive into
@@ -207,87 +342,13 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
     let ownSend = 0;
     try {
       turnClient = hostState.client;
-      // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
-      // run() is invoked, a close or timeout cannot prove the model rejected it, so never retry it.
+      // This is the dispatch boundary. A drive that returns before it leaves the kickoff owned and
+      // unsent. Once run() is invoked, a close or timeout cannot prove the model rejected it, so never
+      // retry it.
       hostState.pendingKickoff = undefined;
-      // The RUN's own acceptance window is gated, but not the run itself, and the distinction is
-      // load-bearing in both directions.
-      //
-      // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
-      // same session-scoped `message_accepted` (jcode-sdk client.js:317). A run dispatched while a
-      // handover awaits its acknowledgement adds a second listener, making one event ambiguous.
-      //
-      // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
-      // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
-      // #910 delivery this connector exists to provide. So the gate is released as soon as the send
-      // has been acknowledged, while the turn keeps streaming outside it.
-      //
-      // THE HANDLE IS WRAPPED IN AN OBJECT AND THAT IS LOAD-BEARING, NOT STYLE. Returning the run
-      // promise bare from an async callback assimilates it: `return await operation()` would adopt
-      // it and wait for the TURN, silently extending this gate from one acceptance round trip to the
-      // entire run. A reviewer measured exactly that on the bare form, observing no fallback send for
-      // 95 seconds while a swallowed run stayed open, which recreates the starvation #1233 is about.
-      // An object is not a thenable, so it crosses both async boundaries as a value and the turn is
-      // awaited below, outside the gate.
-      const { dispatched: runTurn } = await withExclusiveDispatch(async () => {
-        // Read before this send exists: while a lapsed send is still open, an acknowledgement may
-        // be that send's, and it cannot prove the Harness took these run turns.
-        const attributable = hostState.unsettledLapsedDispatches === 0 && !hostState.acceptanceSuspectUntilBridgeReplaced;
-        // The turns' permit, after the gate's wait and right before the send: a once task its
-        // manager settled meanwhile, or a seat that began stopping, sends nothing.
-        if (hostState.stopping || !agent.claimTurns(turnIds))
-          throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
-        ownSend = ++hostState.plainSends;
-        const dispatched = turnClient!.run(hostState.sessionId!, parts.join("\n\n"), { autoApprove: true });
-        // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
-        // raced below; the handle returned from this gate is what actually reports it.
-        dispatched.catch(() => {});
-        // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
-        // turn, and yieldTurn refuses a turn that is not surfaced yet. Heard until the turn settles,
-        // not only inside the window below: while this run is open with its acceptance lapsed, the
-        // queue fallback defers and nothing else sends this session a message it could acknowledge,
-        // so a late acceptance is still this send's.
-        if (attributable && turnIds.length) {
-          const surface = (event: ApiEvent): void => {
-            if (!("session_id" in event && event.session_id === hostState.sessionId)) return;
-            stopSurfacing();
-            agent.commitSurfacedTurns(turnIds);
-          };
-          const stopSurfacing = (): void => { turnClient!.off("message_accepted", surface); };
-          turnClient!.on("message_accepted", surface);
-          void dispatched.then(stopSurfacing, stopSurfacing);
-        }
-        // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
-        // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
-        // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
-        let acknowledgedHere = false;
-        const noteAccepted = (event: ApiEvent): void => {
-          if ("session_id" in event && event.session_id === hostState.sessionId) acknowledgedHere = true;
-        };
-        turnClient!.on("message_accepted", noteAccepted);
-        try {
-          await Promise.race([
-            dispatched.then(() => undefined, () => undefined),
-            onceAccepted(turnClient!, hostState.sessionId!, RUN_ACCEPT_WINDOW_MS),
-          ]);
-        } finally {
-          turnClient!.off("message_accepted", noteAccepted);
-        }
-        // A once task this send cannot show the Harness took is never offered again: it is sealed
-        // and reported, and a late acceptance confirms nothing.
-        if (!attributable || !acknowledgedHere) agent.releaseTurns(turnIds);
-        // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
-        // can still emit its acceptance after the next dispatch has begun, which is precisely how a
-        // reviewer produced an acknowledgement for a send that never received one. Releasing the
-        // gate is still right, because a silent Harness must not be able to starve the queue, but
-        // the NEXT send must know that an unattributable event is possible until this one settles.
-        //
-        // `dispatched` is the TURN, and its settling does prove the Harness is finished with this
-        // request, so the debt clears itself on the ordinary path. It is not a timeout standing in
-        // for a proof.
-        if (!acknowledgedHere) oweAcceptanceDebt(dispatched);
-        return { dispatched };
-      });
+      hostState.hostRun = true;
+      const { dispatched: runTurn, ownSend: sent } = await withExclusiveDispatch(() => dispatchRun(turnClient!, prompt));
+      ownSend = sent;
       await runTurn;
       closeEventRun();
       await events?.settled();
@@ -296,6 +357,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (hostState.reconnecting || hostState.client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
+      prompt.accepted?.();
       // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
       // active. Wait for that request to settle before reading the exact containing-turn ledger.
       await hostState.steerSettled;
@@ -311,6 +373,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       hostState.lastTurnError = undefined;
       if (mentionWake && hostState.pendingMentionWake === mentionWake) hostState.pendingMentionWake = undefined;
     } catch (error) {
+      prompt.accepted?.(error);
       closeEventRun(error as Error);
       await events?.settled();
       // Jcode acknowledged this send before refusing it, so the acceptance marked its run turns
@@ -328,39 +391,71 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
         `[cotal-jcode] turn failed (${hostState.consecutiveFailures} in a row): ${(error as Error).message}\n`,
       );
     } finally {
-      hostState.turnActive = false;
-      // Keep dispatch owned until the terminal presence write has selected this turn's yields.
-      // Otherwise the next message can be accepted before that queued idle settles its goals.
-      // The recovering client owns the one post-close redrive. An old turn that finishes after
-      // replacement must not race it and make the recovery look successful while its own work is
-      // merely retried — or re-paced — by a stale finally block.
-      if (!hostState.reconnecting && hostState.client === turnClient) {
-        // The ack lives inside the try, so a failed turn leaves its batch UN-acked and pendingWake()
-        // stays positive. Re-driving immediately therefore re-sends the same batch to the same
-        // provider with no delay and no limit - one deterministic failure became a hot loop that
-        // re-paid the full injection in tokens on every pass (#790, measured at 62 resends).
-        //
-        // The codex host already solved this with scheduleErrorRetry; this is the same shape.
-        if (hostState.consecutiveFailures > 0) {
-          // "waiting", not "idle": PresenceStatus has no degraded state, and idle is a lie here - the
-          // seat is not ready for work, it is holding an un-acked batch and pacing a retry. An idle
-          // label is exactly what made a hot-looping seat look healthy in the roster.
-          await agent.setStatus("waiting").catch(() => {});
-          hostState.driving = false;
-          scheduleErrorRetry();
-        } else {
-          await agent.setStatus("idle").catch(() => {});
-          hostState.driving = false;
-          if (hasDriveWork()) void drive();
-        }
-        // Both branches, and after both, because a turn that ended with work still owed is the
-        // other way this queue is left unserved: `scheduleErrorRetry` gives up after eight failures
-        // (#790) and `hasDriveWork()` reads false for automatic items the previous turn already
-        // accepted but never committed. The server re-checks the ledger itself.
-        armQueueFallback();
-      } else {
+      hostState.hostRun = false;
+      await endHostTurn(turnClient);
+    }
+  };
+
+  /**
+   * The owner's turn from the agent endpoint: their words as typed and their images, as the user's
+   * own message, in a turn of its own that carries no inbox traffic. Only drive() starts one, from a
+   * queued `turn`, so `driving` is held. It settles at Jcode's acknowledgement. Jcode refusing the
+   * send before that is a refusal; a turn that failed or lapsed first leaves the outcome unknown.
+   */
+  const runOwnerTurn = (turn: AgentTurn): Promise<void> => {
+    if (hostState.stopping || hostState.reconnecting || hostState.turnActive || !hostState.client || !hostState.sessionId)
+      return Promise.reject(new CommandRefused("failed-precondition", "Jcode's session is not ready"));
+    closeTurnBoundary();
+    const parts = turn.text ? [turn.text] : [];
+    brief(parts);
+    ownerTurnsStarted++;
+    return new Promise<void>((resolve, reject) => {
+      let told = false;
+      const accepted = (error?: unknown): void => {
+        if (told) return;
+        told = true;
+        if (error === undefined) resolve();
+        else reject(error instanceof HarnessError ? new CommandRefused("failed-precondition", error.message) : error);
+      };
+      const images = turn.images.map(({ mimeType, data }): ImageAttachment => [mimeType, data]);
+      void runPrompt({ text: parts.join("\n\n"), images, ids: [], turnIds: [], accepted });
+    });
+  };
+
+  /** The end of a host-owned turn: its presence, then the next drive or the paced retry. */
+  const endHostTurn = async (turnClient: JcodeClient | undefined): Promise<void> => {
+    hostState.turnActive = false;
+    // Keep dispatch owned until the terminal presence write has selected this turn's yields.
+    // Otherwise the next message can be accepted before that queued idle settles its goals.
+    // The recovering client owns the one post-close redrive. An old turn that finishes after
+    // replacement must not race it and make the recovery look successful while its own work is
+    // merely retried — or re-paced — by a stale finally block.
+    if (!hostState.reconnecting && hostState.client === turnClient) {
+      // The ack lives inside the try, so a failed turn leaves its batch UN-acked and pendingWake()
+      // stays positive. Re-driving immediately therefore re-sends the same batch to the same
+      // provider with no delay and no limit - one deterministic failure became a hot loop that
+      // re-paid the full injection in tokens on every pass (#790, measured at 62 resends).
+      //
+      // The codex host already solved this with scheduleErrorRetry; this is the same shape.
+      if (hostState.consecutiveFailures > 0) {
+        // "waiting", not "idle": PresenceStatus has no degraded state, and idle is a lie here - the
+        // seat is not ready for work, it is holding an un-acked batch and pacing a retry. An idle
+        // label is exactly what made a hot-looping seat look healthy in the roster.
+        await agent.setStatus("waiting").catch(() => {});
         hostState.driving = false;
+        scheduleErrorRetry();
+      } else {
+        await agent.setStatus("idle").catch(() => {});
+        hostState.driving = false;
+        if (hasDriveWork()) void drive();
       }
+      // Both branches, and after both, because a turn that ended with work still owed is the
+      // other way this queue is left unserved: `scheduleErrorRetry` gives up after eight failures
+      // (#790) and `hasDriveWork()` reads false for automatic items the previous turn already
+      // accepted but never committed. The server re-checks the ledger itself.
+      armQueueFallback();
+    } else {
+      hostState.driving = false;
     }
   };
 
@@ -801,6 +896,7 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
 
   const watchClient = (connected: JcodeClient): void => {
     connected.on("close", () => void recoverBridge(connected));
+    deltaStream.watch(connected, () => hostState.sessionId);
     const flushNativeEvent = (event: ApiEvent): void => {
       if (!("session_id" in event) || event.session_id !== hostState.sessionId) return;
       // Every work event of this seat's session, host- or TUI-owned, is progress the Harness reported:
@@ -823,39 +919,18 @@ export function createHostTurns(hostState: HostTurnState, deps: HostTurnDeps) {
       "token_usage",
     ] as const)
       connected.on(kind, flushNativeEvent);
-    connected.on("session_status", (event: ApiEvent) => {
-      if (!("session_id" in event) || event.session_id !== hostState.sessionId || event.ev !== "session_status") return;
-      // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
-      // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
-      const started = !hostState.turnActive && event.status !== "idle";
-      hostState.turnActive = event.status !== "idle";
-      if (started && !hostState.driving) relayTurnCondition(null);
-      if (!hostState.turnActive) void finishHostIdleTurn();
-      else publishInboundHealth();
+    connected.on("token_usage", (event: ApiEvent) => {
+      if (!("session_id" in event) || event.session_id !== hostState.sessionId) return;
+      hostState.tokenUsage = readTokenUsage(event as unknown as Record<string, unknown>) ?? hostState.tokenUsage;
     });
-    // A turn the TUI owns fails only as an unsolicited error frame: no run() of this host is there to
-    // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
-    // SDK's own run(): a frame naming another session is not this seat's.
-    connected.on("harness_error", (event: ApiEvent) => {
-      if (hostState.driving || event.ev !== "error" || ("session_id" in event && event.session_id !== hostState.sessionId)) return;
-      agent.releaseInFlight(hostState.surfacedIds);
-      hostState.surfacedIds = [];
-      const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
-      if (condition) relayTurnCondition(condition);
-    });
-    connected.on("turn_done", (event: ApiEvent) => {
-      if ("session_id" in event && event.session_id === hostState.sessionId) {
-        // The SDK's run() takes turn_done as a turn's success. drive() clears the kept error for a
-        // host-owned turn; a TUI-owned turn clears it here unless it relayed an error of its own.
-        if (!hostState.driving && !hostState.turnConditionPublished) hostState.lastTurnError = undefined;
-        closeEventRun();
-        hostState.turnActive = false;
-        void finishHostIdleTurn();
-      }
-    });
+    for (const kind of ["runtime_info", "model_info"] as const)
+      connected.on(kind, (event: ApiEvent) => {
+        if ("session_id" in event && event.session_id === hostState.sessionId && "provider" in event && typeof event.provider === "string") hostState.provider = event.provider;
+      });
+    watchTurnEvents(connected, hostState, deps);
   };
 
   const { recoverBridge } = createBridgeRecovery(hostState, { ...deps, drive, unservedAutomatic, watchClient });
 
-  return { drive, steerPending, armQueueFallback, watchClient };
+  return { drive, runOwnerTurn, steerPending, armQueueFallback, watchClient };
 }

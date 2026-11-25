@@ -382,6 +382,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `runtime` | `PresenceRuntime` | MAY | the OS process holding this record's mesh connection, as that process observed itself: `{ id, startedAt, source }`. `id` is an opaque CSPRNG token minted once per (OS process, `lifecycleUid`) scope and MUST NOT be reused or span two lifecycle UIDs. A new process or lifecycle scope MUST get a new id. `startedAt` is the epoch ms that OS process started, read in-process (`performance.timeOrigin`), shared by all endpoints in the process. A lifecycle registered later carries the process's age, not its lifecycle age. It MUST NOT date a launch request, registration, heartbeat, activity, separate parent or model harness process. `source` is the closed set `endpoint-process`; an observer treats any other value as unsupported. Status, activity, heartbeats and in-process reconnects within the scope leave it unchanged. An offline record keeps it, so `now - startedAt` dates a running process only while the record is live. It carries no pid, host, path, command line or environment. Missing means not reported, never zero |
 | `channelModes` | `Record<string, ChannelMode>` | MAY | per-channel attention overrides (`ChannelMode` = `quiet` \| `muted`), keyed by concrete channel name. Advisory, **not** access control (the broker still authorises and delivers); a receive-side preference, reset on restart |
 | `prompts` | `PresencePrompts` | MAY | `{ open, seq }`, the prompts this process serves on its `agent` endpoint (§13.22). `open` counts the prompts that are `open` or `sent`. `seq` is an integer that goes up by one each time a prompt opens or changes state; it restarts with the process, so it means something only together with `runtime.id`, and under one `runtime.id` it never goes back, also when the process stops serving the endpoint and serves it again. Present exactly while the process serves that endpoint and the broker accepted its subscription on the current connection (§13.21). Each serve takes a fresh `seq` when it starts, one above every `seq` the process used under its `runtime.id`, and shows `open` 0 with it until the server sets the field, so one `(runtime.id, seq)` never names two states. It carries no prompt content and no authority. An offline record omits it. A reader learns from it that it should read the prompts (§13.22, reader rules) |
+| `agentEndpoint` | `PresenceAgentEndpoint` | MAY | `{ interrupt, turn, images, usage }`, four booleans: which `agent` endpoint commands this process serves now (§13.22). `interrupt` and `turn` are true only while the connector would accept that call, `images` only with `turn` and when the harness takes images, and `usage` only while the connector reports the harness's usage. A false flag means that call answers `unimplemented`, or `{ supported: false }` for `usage`. It follows what the connector runs at the moment, so it can change within a lifecycle, and the process writes presence when it does. Present under the same gate as `prompts`, with all four flags false when the process serves the endpoint and runs none of them. An offline record omits it. Absent means the process serves none of them. It carries no authority: a caller still gets the endpoint's own answer |
 | `ts` | number | MUST | epoch ms of last heartbeat |
 
 `AgentCard`:
@@ -410,9 +411,10 @@ Readers MUST drop a record whose `card.id` differs from its KV key, whose `card.
 blank or does not have the type given above, whose `status` does not have the type given
 above, whose `ts` is not a finite number, whose
 `card.role`, `activity` or `attention` is present and not a string, whose `condition` is present
-and is not an object with a string `code`, or whose `prompts` is present and is not an object with
-non-negative integer `open` and `seq`, and SHOULD report the rejection on their recoverable
-diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
+and is not an object with a string `code`, whose `prompts` is present and is not an object with
+non-negative integer `open` and `seq`, or whose `agentEndpoint` is present and is not an object with
+boolean `interrupt`, `turn`, `images` and `usage`, and SHOULD report the rejection on their
+recoverable diagnostic path. A `condition` of `null`, a bare string or an object with no `code` is dropped.
 A reader that kept a record whose `ts` is missing or text such as `"nope"` could not age it past the liveness window, so it would
 show its peer live after the key expired. Readers print the string fields as text, and an object
 such as `{"toString":null,"valueOf":null}` throws when converted, so one kept row would fail every
@@ -1037,6 +1039,7 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
 | `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
 | `dm-reader` | `CONSUMER.INFO` and `CONSUMER.MSG.NEXT` on its own lifecycle-scoped `dm_…`, and its `$JS.ACK` subtree | own `_INBOX_<connId>.>` | no message publish, presence, channel, CHAT, `dlv_`, `$JS.API.INFO` or stream INFO row; bound to the bearer's expiry |
+| `agent-caller` | the principal-route `owner` row for each command the `agent` cluster admits with `owner`, over the agents under its own owner (§13.21) | own `_INBOX_<connId>.>` and its own principal-route reply read | static mint only, with a lifecycle UID; no presence, channel, delivery or serve row |
 | `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
@@ -1098,7 +1101,10 @@ it. `true` launches the seat to label itself from its first message (§13.22, la
 message). A Manager MUST refuse it on a `once` spawn, and on a runtime that delegates seats outside
 its host, before any enrollment. A Manager MUST NOT pass it again when it starts the same lifecycle
 again.
-Revision 56 adds the `spawn` input field `modes`, a map of 1 to 32 mode ids to a boolean or a
+Revision 56 adds the optional booleans `askPermissions` and `reasoningEvents` to the closed `spawn`
+input and requires both on every `status.connectors` row (§13.7). The closed schemas of revision 55
+reject either.
+Revision 57 adds the `spawn` input field `modes`, a map of 1 to 32 mode ids to a boolean or a
 non-empty option id. A model row in a `models` catalog MAY carry `isDefault`, `defaultVariant` and
 `modes`, where a mode is `{ id, label, kind: "toggle", default: boolean }` or
 `{ id, label, kind: "choice", options: [{ id, label }], default }`. At most one row is the default,
@@ -1106,9 +1112,11 @@ and each default MUST name one of its own variants or options. A mode MAY carry 
 non-empty reason the logged-in account cannot run it; a catalog with an empty reason is unreadable.
 Before anything is minted, the Manager MUST refuse a `spawn` whose `variant` or `modes` the
 connector's catalog does not list for the launched model, or for the default row when the spawn
-names no model. It MUST refuse a `spawn` that names an unavailable mode, with any value, and the
-refusal MUST carry the reason. It MUST also refuse `modes` for a connector that does not render
-them, and for a runtime that starts seats outside its host. It checks against the last catalog it
+names no model. It MUST refuse a `spawn` that turns an unavailable mode on, a toggle set to
+`true` or a choice set to any option but its `default`, and the refusal MUST carry the reason. A
+spawn that sets such a mode off, `false` or the choice's `default`, launches. It MUST also refuse
+`modes` for a connector that does not render them, and for a runtime that starts seats outside its
+host. It checks against the last catalog it
 read and reads one only when it holds none for the harness files it would launch. A resumed seat
 replays its recorded modes, and a connector that no longer renders them refuses the resume.
 
@@ -4108,11 +4116,25 @@ as true. A client that knows the space requires events can therefore refuse a co
 
 **Manager connector prompt facts.** Every row in the reference manager's `status.connectors` array
 also carries required `prompts: boolean`. True means the connector declares that a session it
-launches serves its harness's prompts on the `agent` endpoint (§13.22) and the mesh is user-auth,
-the only mode whose credentials name a caller (§13.21). On an open or static mesh every row reads
-false. The fact MUST be present on rows built from declared extension inventory, and a missing
+launches serves its harness's prompts on the `agent` endpoint (§13.22). A session serves that
+endpoint on every mesh mode (§13.21), so the row is the same on each. The fact MUST be present on rows built from declared extension inventory, and a missing
 declaration MUST be read as false. It is a launch capability: it does not say that a given session's
 endpoint will open. A reader learns that from the session's presence (§6) and from a call.
+
+**Manager opt-in launch fields.** The reference manager's `spawn` input takes two optional booleans.
+`askPermissions` launches the harness in its mode that asks before it uses a tool, so its permission
+prompts reach the session's `agent` endpoint (§13.22) where the session serves one. `reasoningEvents`
+publishes the model's reasoning as `REASONING_*` events on the session's event plane. Both default
+off: nothing turns them on but the caller, and a launch without them MUST be built and recorded as if
+the fields did not exist. A connector declares each one it honours. The manager MUST refuse a launch
+that sets a field to true on a connector that does not declare it, before any provisioning, naming the
+connector and the field, and MUST refuse `reasoningEvents` on a launch without the event plane. A
+runtime that starts seats outside the manager's host MUST refuse either field. The manager keeps a
+field it accepted with the seat, so a restart or resume of the seat launches it the same way. Every
+row of `status.connectors` carries required `askPermissions: boolean` and `reasoningEvents: boolean`,
+the connector's declarations on any mesh, so a caller passes a field only where the row reports true.
+A row built from declared extension inventory carries them too, and a missing declaration MUST be
+read as false.
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
 record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
@@ -5125,9 +5147,9 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Serve subscribe | the endpoint's serve credential | per registered command: `"ep.one.<endpoint>.<command>.> <endpoint>"` (queue-qualified ONLY), `ep.all.<endpoint>.<command>.>` plain, `ep.inst.<endpoint>.<instanceId>.<command>.>` exact (never a cross-command `>` | direct) name/instance/command-pinned; epoch deliberately absent (§13.1 barrier is the fence) |
 | Reply publish | the endpoint's serve credential | `ep.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*` | direct; attribution-pinned; addressing by nonce |
 | Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
-| Principal-route serve subscribe (§13.21) | an agent credential minted from a ledger row of either kind | `ep.prin.agent.<owner>.<actor>.<uid>.*.*.*.*.*.*.*`: its own principal and lifecycle UID, the runtime id spanned, no queue group | direct; principal- and lifecycle-pinned |
+| Principal-route serve subscribe (§13.21) | an agent credential minted from a ledger row of either kind, or a static `agent` mint | `ep.prin.agent.<owner>.<actor>.<uid>.*.*.*.*.*.*.*`: its own principal and lifecycle UID, the runtime id spanned, no queue group | direct; principal- and lifecycle-pinned |
 | Principal-route reply publish (§13.21) | the same credential | `ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*` | direct; attributed to the principal and lifecycle, not the process; addressing by nonce |
-| Principal-route `owner` request publish (§13.21) | an agent credential minted from an interactive ledger row | per command the `agent` cluster admits with `owner`, and `describe`: `ep.prin.agent.<cO>.*.*.*.<command>.owner.<cO>.<cA>.<cUid>.*`, the head's owner pinned to the caller's own owner, never wildcarded | direct, untrusted input |
+| Principal-route `owner` request publish (§13.21) | an agent credential minted from an interactive ledger row, or a static `agent-caller` mint | per command the `agent` cluster admits with `owner`, and `describe`: `ep.prin.agent.<cO>.*.*.*.<command>.owner.<cO>.<cA>.<cUid>.*`, the head's owner pinned to the caller's own owner, never wildcarded | direct, untrusted input |
 | Principal-route `grant` request publish (§13.21) | a grantee lifecycle a target's owner names in a grant (issuance is not defined in this revision) | per granted command: `ep.prin.agent.<tO>.<tA>.<tUid>.*.<command>.grant.<cO>.<cA>.<cUid>.*`, the target's principal and lifecycle literal | direct, untrusted input |
 | Principal-route reply subscribe (§13.21) | every holder of a request row above | `ep.prin-reply.*.*.*.*.*.<cO>.<cA>.<cUid>.*` (exact arity) | direct read; own reply read only |
 | Person seat control (§13.21) | a `manager-caller` view minted from an interactive ledger row | the instance-pinned request rows of `inspect` and `ps`, and per command of `despawn`, `attach`, `input` and `interrupt` the instance-pinned request row in mode `owner`, `tOwner` the caller's own owner, never wildcarded | direct, untrusted input; the Manager decides against its records |
@@ -5711,7 +5733,9 @@ minted is byte-identical (RFC 8785) to the recorded evidence; a changed ceiling 
 renewal and is a fresh issuance on a fresh generation, which the client adopts only through a
 new connection. Refreshing a credential file never switches the generation of an already
 connected transport. A renewal at or after the generation's horizon is refused before the store is
-read.
+read. A static `agent` credential's principal-route serve rows (§13.21) are fixed at its first
+issuance: a renewal carries them only when the recorded evidence does, so a credential issued before
+the rows existed renews byte-identical and its agent does not serve until it is respawned.
 
 **Resolution.** A host that admits an effect under an issued authority resolves it: the
 generation is before its horizon, the evidence exists, the attempt row is `active`, the evidence
@@ -6545,15 +6569,30 @@ validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sen
 | Mint | Serve rows | Caller rows |
 | --- | --- | --- |
 | User-auth, ledger row of kind `managed-agent` | yes | none |
-| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and `set-name`, and the reply read |
-| Static credential | no | no |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage`, and the reply read |
+| Static `agent` mint | yes, unless the issuance it renews was made without them (§13.15) | none |
+| Static `agent-caller` mint | no | the same `owner` rows and the reply read |
 | Open mesh | no rows exist | |
-| Every view, service credential and infrastructure profile | no | no |
+| Every other view, service credential and infrastructure profile | no | no |
 
 The kind comes from the ledger row the auth callout reads (§10), never from a scope token, which a
 parent could hand to the agents it spawns. A principal the callout resolves outside the ledger's row
 spaces, such as a chat session, has no kind and gets no row. `interactive` means an actor its person
 granted directly; it does not prove a human is typing.
+
+**A static space.** A static mint has no ledger row, so its rows come from its profile. Every `agent`
+mint serves, and no agent mint calls, whatever its capabilities: an agent holding `spawn`, `run` or
+`admin` calls no other agent's endpoint. The `agent-caller` profile is the person's caller of their
+agents. It holds its inbox, the `owner` rows and their reply read, and nothing else, so it shows no
+presence and reads no channel. Its `<cOwner>` is its own owner (`local` by default), so it reaches
+every agent under that owner. A mint without a lifecycle UID refuses it, since the rows name one, and
+the auth callout never mints it. Only a holder of the space's signing key mints it, such as the
+person's own command on the machine that runs the space.
+
+**An open mesh.** No row confines a process on an open mesh, so every process serves, and any client
+that reaches the broker calls any agent with any caller triple and either authority word. The caller
+is self-asserted there, and the route's guarantees are outside the security claims, as open mode is
+(§2, §9).
 
 **A person's own agents.** The same kind grants a person control of every agent under their owner,
 whatever the row's scope. A parent cannot hand its kind to the agents it spawns, so no agent
@@ -6580,15 +6619,15 @@ refused before its handler runs, and like every cast it gets no reply. Digests a
 output validation, the error catalog, the effect outcome, and discarding stored-message provenance
 headers.
 
-**Serving.** A process serves only in auth mode with a user-auth credential and a lifecycle UID; it
-refuses to serve on an open mesh or under a static credential, where no row names who may call, and
-refuses a cluster with a command that declares no `authorities`. It subscribes its own head with no
-queue group:
+**Serving.** A process serves with a lifecycle UID, under a user-auth or static credential or on an
+open mesh, and refuses a cluster with a command that declares no `authorities`. It subscribes its own
+head with no queue group:
 `P.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.*.*.*.*.*.*`.
 
 Serving is ready only on a positive check: the subscription was made, the connection flushed, and
 the broker reported no permission violation for that subject. A credential minted before the rows
-existed fails this check, and the process does not serve. The check runs again on every replaced
+existed fails this check, and the process does not serve. A static agent credential renewed from such
+an issuance still lacks them (§13.15), so that agent serves once it is respawned. The check runs again on every replaced
 connection, including one the client library re-subscribed on a reconnect, and a refusal there ends
 the serve. Stopping unsubscribes and waits for the handlers in flight, and stopping the client does
 the same before it closes the connection those handlers reply on. It waits for a handler only until
@@ -6667,16 +6706,19 @@ invokes registered endpoints does not reach them.
 
 The endpoint `agent` on the principal route (§13.21) is the command set an agent serves about the
 questions its harness stops to ask (a tool permission, a question, a plan to approve, a form),
-about the harness commands and skills it runs, about the turn it is running, and about its display
-name. Its contract is a core constant: cluster URN `ai.cotal.agent`, revision 4, every schema closed
-and frozen, nothing published to the contract store. A caller embeds the artifacts and pins their
-digests. Every command is ephemeral and untargeted. The prompt commands declare
-`authorities: ["owner", "grant"]`; `commands`, `command`, `command-cancel`, `command-state`,
-`interrupt` and `set-name` declare `authorities: ["owner"]`, so only the owner's interactive session
-runs an agent's commands, stops its turn or renames it.
+about the harness commands and skills it runs, about its turns, about what its harness reports of
+its usage, and about its display name. Its contract is a core constant: cluster URN
+`ai.cotal.agent`, revision 5, every schema closed and frozen, nothing published to the contract
+store. A caller embeds the artifacts and pins their digests. Every command is ephemeral and
+untargeted. The prompt commands declare `authorities: ["owner", "grant"]`; `commands`, `command`,
+`command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage` declare
+`authorities: ["owner"]`, so only the owner runs an agent's commands, gives it a turn, stops its turn,
+reads its usage or renames it. The owner calls from an interactive session on a user-auth space and
+from its `agent-caller` on a static space; on an open mesh any client calls (§13.21).
 
 Revision 2 adds `commands`, `command`, `command-cancel` and `command-state`, revision 3 adds
-`interrupt`, and revision 4 adds `set-name`. The earlier commands and their digests are unchanged, so
+`interrupt`, revision 4 adds `set-name`, and revision 5 adds `turn` and `usage`. The earlier commands
+and their digests are unchanged, so
 a caller pinned to an earlier revision still calls them. An agent that serves an earlier revision
 answers a command it lacks with `unimplemented`, `not-executed`.
 
@@ -6692,6 +6734,8 @@ answers a command it lacks with `unimplemented`, `not-executed`.
 | `command-state` | `agent.commands.read` | `{ id }` | `{ state: CommandState }` |
 | `interrupt` | `agent.turn.interrupt` | `{}` | `{ state: "interrupted" \| "idle" }` |
 | `set-name` | `agent.profile.write` | `{ name }` | `{ name }` |
+| `turn` | `agent.turn.start` | `{ text, images? }` | `{ id }` |
+| `usage` | `agent.usage.read` | `{}` | `{ supported: false }` or `{ supported: true, context?, cost? }` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
 `closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
@@ -6912,7 +6956,8 @@ interface CommandEntry {
 
 `{ supported: false }` means the agent's connector runs no commands now. It can change within a
 lifecycle, such as when the harness extension that runs them starts or stops, so a reader asks again
-later. Meanwhile `command` and `interrupt` name the cause in their `unimplemented` message.
+later. Meanwhile `command`, `turn` and `interrupt` name the cause in their `unimplemented` message,
+and the presence `agentEndpoint` field (§6) shows `interrupt`, `turn` and `images` as false.
 `{ supported: true }` with an empty list means it runs commands and has none. A list carries at most 512 entries and nothing else
 the harness keeps about a command, such as a file path or a skill's body. The agent leaves out a
 command whose name `command` cannot carry and shortens a longer text, marking the cut. A failed or
@@ -6978,7 +7023,7 @@ stops, and its outcome leaves with the process.
 | `command-state` | `id` is not known to the agent, or forgotten | `not-found`, `not-executed` |
 | `command-state` | Otherwise | `ok`, with `{ state }` |
 | `interrupt` | The caller principal is the agent itself | `permission-denied`, `not-executed`, whatever its row |
-| `interrupt` | The agent's connector cannot interrupt a turn | `unimplemented`, `not-executed` |
+| `interrupt` | The agent's connector cannot interrupt a turn, or cannot now | `unimplemented`, `not-executed` |
 | `interrupt` | The agent is stopping | `unavailable`, `not-executed` |
 | `interrupt` | The harness failed | `internal`, `unknown`: the turn may have stopped |
 | `interrupt` | No turn was running | `ok`, with `{ state: "idle" }`. Nothing changes. |
@@ -6989,6 +7034,16 @@ stops, and its outcome leaves with the process.
 | `set-name` | The agent cannot read presence | `unavailable`, `not-executed` |
 | `set-name` | Another live instance has the name, compared lowercased | `already-exists`, `not-executed`, with `name-refused` `{ reason: "name-taken" }` |
 | `set-name` | Otherwise | `ok`, with `{ name }`: the card carries the name and no `ai.cotal.label` |
+| `turn` | The caller principal is the agent itself | `permission-denied`, `not-executed`, whatever its row |
+| `turn` | The agent's connector takes no turn from its owner, or none now | `unimplemented`, `not-executed` |
+| `turn` | `images` is present and the agent's harness takes no images | `unimplemented`, `not-executed` |
+| `turn` | `text` is empty and `images` is absent | `bad-request`, `not-executed` |
+| `turn` | The agent is stopping | `unavailable`, `not-executed` |
+| `turn` | 8 commands and turns are `queued` | `resource-exhausted`, `not-executed` |
+| `turn` | Otherwise | `ok`, with `{ id }`, at once. The turn is `queued`. |
+| `usage` | The agent's connector reports no usage, or none now | `ok`, with `{ supported: false }` |
+| `usage` | The harness did not report within 10 s, or failed | `unavailable`, `not-executed` |
+| `usage` | Otherwise | `ok`, with `{ supported: true }` and the fields the harness reported |
 
 **Names.** `set-name` changes the agent's display name, `card.name` (§6), and nothing else: the
 principal, the lifecycle, and every subject, durable and grant keyed by them stay as they are. The
@@ -7004,6 +7059,22 @@ Two agents can still take one name at once, because presence is advisory. Messag
 the name they were sent under (§5). A launcher that starts the same lifecycle again, such as after a
 crash or a preserved resume, keeps it under the same principal and SHOULD start it with the name its
 presence last showed.
+
+**Turns.** `turn` gives the agent a turn on its owner's own words, as if the owner typed them at the
+harness's own input, never framed as a message from a peer. `text` is at most 262144 characters.
+`images` carries 1 to 16 images, each `{ mimeType, data }` with `mimeType` one of `image/png`,
+`image/jpeg`, `image/gif` and `image/webp` and `data` its bytes in standard base64; the whole request
+still fits the connection's `max_payload`. A turn joins the queue `command` uses: the reply carries
+its `id` at once, the agent takes it only while no turn runs, the bound of 8 counts commands and turns
+together, and `command-state` and `command-cancel` take its `id` with the same states and claims.
+`started` says the harness accepted the turn; it does not say the turn finished. The harness's
+refusal is `refused`, `failed-precondition`, and nothing started.
+
+**Usage.** `usage` reads what the agent's harness reports now: `context` is `{ used, size }`, the
+tokens in the model's context window and the window's size, and `cost` is `{ amount, currency }`, the
+session's cost so far, `amount` a non-negative number and `currency` an ISO 4217 code. A field the
+harness has not reported yet is absent, so `{ supported: true }` alone means nothing is known yet. The
+agent waits at most 10 s for the harness.
 
 **Labels from the first message.** A launcher MAY ask a new agent to label itself from the first
 message it receives (the Manager `spawn` field `autoName`, §9). The agent's own connector then
@@ -7036,9 +7107,14 @@ command. `interrupt` never moves a command's state:
 a `taken` or `started` command whose turn it stops keeps its state, and a `queued` command stays
 queued. A command queued behind a turn that never ends waits until the owner interrupts that turn.
 
+**What the agent serves now.** The agent's presence `agentEndpoint` field (§6) says which of
+`interrupt`, `turn`, images with a turn, and `usage` it serves at the moment. A caller that has
+another way to reach the agent, such as a launcher's own interrupt, picks one path from that field
+before it sends anything, and reports that path's failure as it is.
+
 The bounds:
 
-- At most 8 commands are `queued`. Only `queued` commands count.
+- At most 8 commands and turns are `queued`. Only `queued` ones count.
 - A queued command waits until the agent takes it, a caller cancels it, or the agent stops. It has no
   time bound, and it lives at most for the agent's lifecycle.
 - When the agent stops serving, every `queued` command becomes `refused` with `unavailable` before
@@ -7083,7 +7159,6 @@ follows it with `command-state` as it follows any command.
 | Case | Result |
 | --- | --- |
 | The harness's seats run no commands of that `target` | `spawn` refused, `failed-precondition`, `not-executed` |
-| The mesh is not user-auth, so no agent endpoint serves | `spawn` refused, `failed-precondition`, `not-executed` |
 | The Manager's runtime starts seats outside its host | `spawn` refused, `failed-precondition`, `not-executed` |
 | The spawn also names `prompt` or `once` | `spawn` refused, `failed-precondition`, `not-executed` |
 | The harness runs no commands within 60 s of the agent serving its endpoint | `refused`, `failed-precondition`, naming the harness's cause |
@@ -7808,7 +7883,8 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - for its own role and for each `role:<r>` token in its capabilities (§13.15): `P.take.<role>.<owner>.<actor>.>` (replies to its own anycast takes, §8.1)
 - `P.ep.reply.*.*.*.<owner>.<actor>.<uid>.*` (exact arity; the agent's own endpoint reply rail: every endpoint's replies to THIS caller triple + nonce, §13.2; replies never ride the per-connection `inbox`)
 - with a listing generation `<g>` (§13.15): `P.ep.v1.reply.*.*.*.<owner>.<actor>.<uid>.<g>.*`, its own versioned reply rail
-- minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin.agent.<owner>.<actor>.<uid>.*.*.*.*.*.*.*`,
+- minted by the auth callout from a ledger row of either kind, or by a static mint unless the issuance
+  it renews was made without it (§13.21, §13.15): `P.ep.prin.agent.<owner>.<actor>.<uid>.*.*.*.*.*.*.*`,
   its own principal-route subject for every runtime of its lifecycle; from an `interactive` row
   also `P.ep.prin-reply.*.*.*.*.*.<owner>.<actor>.<uid>.*`, its own principal-route reply read
 - `P.epe.…`; the exact fully-qualified event subtrees of every minted read capability
@@ -7824,13 +7900,13 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - `P.inst.*.*.<owner>.<actor>` (DM any recipient, forge-locked to me as sender)
 - `P.svc.*.<owner>.<actor>` (anycast any role, as me)
 - `P.live.<manager|delivery>.<owner>.<actor>` (plane liveness probe, as me, §6.1; the agent holds no `live` serve filter)
-- minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
+- with the serve row above: `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
   replies under its own principal-route head; from an `interactive` row also
   `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
-  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and `set-name`. The kind is the ledger row's, never a scope token's. A
-  static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
-  every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
-  principal-route row
+  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage`. The kind is the ledger row's, never a scope token's. A
+  static mint holds no caller row. A principal outside the ledger's row spaces such as a chat
+  session, every view, and every observer, admin, delivery, supervisor, serve and infrastructure
+  profile hold no principal-route row; the static `agent-caller` profile (below) holds the caller rows
 - with a listing generation `<g>` (§13.15): `P.ep.v1.one.registry.endpoints.<owner>.<actor>.<uid>.<g>.*`
   and `$JS.API.DIRECT.GET.KV_cotal_accepted_<space>.$KV.cotal_accepted_<space>.accepted.v1.<token>`,
   the listing's own accepted row and no other
@@ -7901,6 +7977,23 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 A bare/multi-filter consumer create on `CHAT` is **not** explicitly denied (that would also deny the
 pinned `chatHistD` create the agent needs), so it is default-denied (the agent holds no such allow),
 leaving the single-filter history consumer above as the agent's only CHAT consumer.
+
+### Agent caller
+
+A static mint only, with a lifecycle UID (§13.21). The person's caller of the agents under its own
+owner.
+
+`sub.allow`:
+
+- `inbox`
+- `P.ep.prin-reply.*.*.*.*.*.<owner>.<actor>.<uid>.*`, its own principal-route reply read
+
+`pub.allow`:
+
+- `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each command the `agent`
+  cluster admits with `owner`, and `describe`
+
+Nothing else: no presence, channel, delivery, endpoint or serve row.
 
 ### Observer
 
@@ -8193,9 +8286,13 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-11-25 | **A spawn runs only the variant and modes its model catalog lists (§13.6), breaking.** The Manager cluster advances to revision 56. A variant the catalog does not list was launched and then run at another effort by the harness; it is now refused. `spawn` takes `modes`, a map of mode ids to a toggle's boolean or a choice's option id. A `models` row MAY carry `isDefault`, `defaultVariant` and `modes`. Before anything is minted, the Manager refuses a variant or mode the connector's catalog does not list for the launched model, or for the default row when none is named, and refuses `modes` for a connector that does not render them or a runtime that starts seats elsewhere. A seat's modes are recorded with its launch and replayed on resume. A launch that names no variant and no mode is unchanged. |
+| 2026-11-25 | **A spawn runs only the variant and modes its model catalog lists (§13.6), breaking.** The Manager cluster advances to revision 57. A variant the catalog does not list was launched and then run at another effort by the harness; it is now refused. `spawn` takes `modes`, a map of mode ids to a toggle's boolean or a choice's option id. A `models` row MAY carry `isDefault`, `defaultVariant` and `modes`. Before anything is minted, the Manager refuses a variant or mode the connector's catalog does not list for the launched model, or for the default row when none is named, and refuses `modes` for a connector that does not render them or a runtime that starts seats elsewhere. A seat's modes are recorded with its launch and replayed on resume. A launch that names no variant and no mode is unchanged. |
+| 2026-11-24 | **Opt-in launch fields for permission prompts and reasoning (§9, §13.7), additive.** The Manager cluster advances to revision 56. Its `spawn` input takes the optional booleans `askPermissions`, which launches the harness asking before it uses a tool so its prompts reach the `agent` endpoint, and `reasoningEvents`, which publishes the model's reasoning on the event plane. Both default off. The manager refuses a field the connector does not declare before any provisioning, refuses `reasoningEvents` without the event plane, and keeps an accepted field with the seat across restarts. Every `status.connectors` row requires both as the connector's declarations, read as false when an installed extension's cache lacks them. No subject changes. |
 | 2026-11-24 | **An agent labels itself from its first message (§6, §9, §13.22), additive.** The Manager cluster advances to revision 55: the closed `spawn` input takes optional boolean `autoName`, which revision 54 rejects. A Manager refuses it on a `once` spawn and on a runtime that delegates seats outside its host, and never passes it again on a relaunch. The seat's connector makes one tool-less request to the seat's own model, outside its conversation, about the launch prompt or else the first live direct message or mention from a principal of the seat's own owner, and shows the cleaned reply as the card's `meta["ai.cotal.label"]`. `card.name` stays the launch name, so mentions, direct messages and name lookups keep resolving it, and readers show `meta["ai.cotal.label"] ?? name`. The card carries `meta["ai.cotal.naming"] = "pending"` from launch until naming settles, and the label and the key's removal reach presence in one record. An owner `set-name` before then ends naming with no label, and a `set-name` drops the label in the record that carries the new name. A connector that cannot make the request never shows the key. No subject changes. |
 | 2026-11-24 | **A launcher lists a harness's commands before launch and starts an agent with one (§13.6, §13.22, Appendix B), additive.** The Manager cluster advances to revision 54. The `harness-commands` launch read answers `{ agent, cwd, supported: true, commands }` with the entries a harness lists for a directory on the Manager's host, under the names a seat's `command` takes, or `{ supported: false, reason }` for a harness whose seats run no commands. It starts no seat, is granted where `list-dir` is, and a failed lookup is `unavailable`, never an empty list. `spawn` takes `firstCommand: { target, name, args? }`, and its acceptance names `firstCommand.id`, derived from the goal id. The agent queues the command under that id before any other and runs it as its first turn once its harness runs commands. A spawn whose harness runs no commands of that target, whose mesh is not user-auth, whose runtime starts seats elsewhere, or that also names `prompt` or `once` is refused before anything is provisioned. A harness that runs no commands within 60 s ends the command `refused` with its cause. Earlier commands, schemas and digests are unchanged. |
+| 2026-11-23 | **Agents serve the `agent` endpoint on static spaces and open meshes (§13.7, §13.15, §13.21, §13.22, Appendix B), additive.** An agent served its `agent` endpoint only under a user-auth credential, so on a static space or an open mesh nobody could answer its prompts, run its commands, give it a turn, stop its turn or rename it. A static `agent` mint now carries the serve rows and no caller row, whatever its capabilities. The new static `agent-caller` profile holds its inbox, the `owner` row for each command the cluster admits with `owner` over the agents under its own owner, and their reply read, and nothing else. It needs a lifecycle UID, and the auth callout never mints it. A renewal keeps the serve rows its first issuance recorded, so a static agent issued before this change renews byte-identical and serves once it is respawned. On an open mesh every agent serves, and any client calls it with a self-asserted caller, outside the security claims. The Manager's `status.connectors[].prompts` is the connector's declaration on every mesh mode; the Manager cluster revision and its schemas are unchanged. No subject changes. |
+| 2026-11-23 | **Presence says which `agent` endpoint commands a process serves now (§6, §13.22), additive.** Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, four required booleans, under the same gate as `prompts`. The process derives it from what its connector runs at the moment and writes presence when it changes, so a caller can pick the endpoint or another path before it sends anything. A reader drops a record whose `agentEndpoint` is not that shape. While `commands` answers `{ supported: false }`, `turn` now answers `unimplemented` with the cause, as `command` and `interrupt` do, and `usage` answers `{ supported: false }`. `spec/cotal.schema.json` gains `PresenceAgentEndpoint`. No subject, cluster or digest changes. |
+| 2026-11-23 | **The owner gives an agent a turn and reads its usage (§13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 5 with `turn`, capability `agent.turn.start`, input `{ text, images? }` and output `{ id }`, and `usage`, capability `agent.usage.read`, input `{}` and output `{ supported: false }` or `{ supported: true, context?: { used, size }, cost?: { amount, currency } }`, both `authorities: ["owner"]`. `turn` queues the owner's own words, with up to 16 images, on the queue `command` uses, so `command-state` and `command-cancel` take its id and the bound of 8 counts both. It refuses the agent itself as `permission-denied`, a connector that takes no turn, or images where the harness takes none, as `unimplemented`, and a turn with no text and no image as `bad-request`. `usage` answers what the harness reported, waiting at most 10 s, and `unavailable` when it did not. An `interactive` ledger row gains the `owner` rows for both; no `grant` row admits them. Earlier commands and their digests are unchanged. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |
 | 2026-11-21 | **A Manager command that interrupts a seat's turn (§9), additive.** The Manager cluster advances to revision 53 with the targeted `interrupt` command. It writes the interrupt key the seat's connector declares into the seat's terminal and answers `{ name }`. It is granted as `input` is. A connector that declares no key, or a runtime that owns no terminal input, is refused with `unimplemented`, and nothing is written. |

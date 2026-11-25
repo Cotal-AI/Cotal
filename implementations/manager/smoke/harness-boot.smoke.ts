@@ -110,11 +110,16 @@ try {
 
   let launchOpts: LaunchOpts | undefined;
   let presentCatalogBinary: string | undefined;
+  let catalogEnvAllow: readonly string[] | undefined;
   const connector: Connector = {
     kind: "connector",
     name: "boot-present",
     requires: ["present-harness"],
-    listModels: (opts) => { presentCatalogBinary = opts?.resolvedBinaries?.["present-harness"]; return { models: [] }; },
+    listModels: (opts) => {
+      presentCatalogBinary = opts?.resolvedBinaries?.["present-harness"];
+      catalogEnvAllow = opts?.envAllow;
+      return { models: [] };
+    },
     buildLaunch: (opts) => {
       launchOpts = opts;
       return { command: opts.resolvedBinaries?.["present-harness"] ?? "present-harness", args: [] };
@@ -161,8 +166,22 @@ try {
   process.env.PATH = `${earlier}${process.platform === "win32" ? ";" : ":"}${binDir}`;
   await manager.startAgent({ name: "pin-probe", agent: "boot-present", events: false });
   check("an application available at boot ignores an earlier PATH replacement", launchExec?.status === 0 && launchOpts?.resolvedBinaries?.["present-harness"] === present, launchExec?.status);
-  await (manager as unknown as { opModels(args: Record<string, unknown>): Promise<unknown> }).opModels({ agent: "boot-present" });
+  const opModels = (manager as unknown as { opModels(args: Record<string, unknown>): Promise<unknown> }).opModels.bind(manager);
+  await opModels({ agent: "boot-present" });
   check("model catalog retains the same boot binary after PATH changes", presentCatalogBinary === present, presentCatalogBinary);
+  // The catalog reads the environment a launch gets, so it lists the models that launch reaches.
+  const spawnEnv = (names: string[]) => writeFileSync(join(workspaceRoot, ".cotal", "config.json"), JSON.stringify({ spawn: { env: names } }));
+  spawnEnv(["CATALOG_PROBE_PROVIDER"]);
+  await manager.startAgent({ name: "pin-probe", agent: "boot-present", events: false });
+  await opModels({ agent: "boot-present" });
+  check("model catalog receives the spawn.env names a launch receives",
+    JSON.stringify(catalogEnvAllow) === JSON.stringify(["CATALOG_PROBE_PROVIDER"]) && JSON.stringify(launchOpts?.envAllow) === JSON.stringify(catalogEnvAllow), { catalogEnvAllow, launch: launchOpts?.envAllow });
+  spawnEnv(["CATALOG_PROBE_BASE_URL"]);
+  await opModels({ agent: "boot-present" });
+  check("model catalog reads spawn.env per call, as a spawn does", JSON.stringify(catalogEnvAllow) === JSON.stringify(["CATALOG_PROBE_BASE_URL"]), catalogEnvAllow);
+  rmSync(join(workspaceRoot, ".cotal", "config.json"));
+  await opModels({ agent: "boot-present" });
+  check("model catalog receives no extras when spawn.env declares none", catalogEnvAllow === undefined, catalogEnvAllow);
   await manager.stop({ withAgents: true });
   rmSync(present);
   process.env.PATH = binDir;

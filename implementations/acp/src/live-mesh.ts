@@ -14,12 +14,15 @@ import {
   DEV_OWNER,
   EVENT_CHANNEL_PREFIX,
   eventChannel,
+  eventPayloadSubject,
   eventChannelPrincipal,
   isEventChannel,
+  isPermissionDenied,
   noLiveInstances,
   parsePrincipalKey,
   principalKey,
   remoteManagerActors,
+  spacePrefix,
   spawnNameError,
   type CotalEndpoint,
   type CotalMessage,
@@ -31,14 +34,15 @@ import {
 import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
-import { openObserver } from "@cotal-ai/workspace/view";
-import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ManagerChoice, type Mesh, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
 const HISTORY_FRAMES = 1000;
-/** How long a `set-name` call waits for the agent's answer. */
-const RENAME_MS = 10_000;
+/** How long an `agent` endpoint call waits for the agent's answer: longer than the agent's own 10 s
+ *  bounds, as SPEC 13.22 asks of a reader. */
+const AGENT_CALL_MS = 20_000;
 
 export interface LiveMeshOptions {
   readonly space?: string;
@@ -68,6 +72,44 @@ export function managerChoice(instanceId: string, roster: readonly Presence[], h
   const row = roster.find((p) => (owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`) && p.status !== "offline");
   const seen = managerCandidate(instanceId, row).host;
   return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
+}
+
+/** Managers as choices, each from its current roster row when that names its host, else from the
+ *  host it reports in its own status. On a space where people sign in, the space's own manager has
+ *  no row under the person's principal, so its report describes it. */
+export function managerChoices(ids: readonly string[], roster: readonly Presence[], here: string, owner: string | undefined, reported: (instanceId: string) => Promise<string | undefined>): Promise<ManagerChoice[]> {
+  return Promise.all(ids.map(async (instanceId) => {
+    const seen = managerChoice(instanceId, roster, here, owner);
+    if (seen.host) return seen;
+    const host = await reported(instanceId);
+    return { instanceId, ...(host ? { host } : {}), local: host === here, live: host !== undefined };
+  }));
+}
+
+/** One connector row of a manager's `status`. */
+type ConnectorRow = { agent: string; state: string; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; reason?: string };
+/** One application's row of a manager's `models` reply. */
+type ModelsRow = { agent: string; error?: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] };
+
+/** The applications a manager's `status` reports, each with the models its `models` reply lists. */
+export function agentCatalogs(rows: readonly ConnectorRow[], catalogs: readonly ModelsRow[]): AgentCatalog[] {
+  return rows.map((row): AgentCatalog => {
+    const catalog = catalogs.find((c) => c.agent === row.agent);
+    return {
+      agent: row.agent,
+      available: row.state === "available",
+      eventPlane: row.eventPlane,
+      ...(row.askPermissions && row.prompts ? { askPermissions: true } : {}),
+      ...(row.reasoningEvents && row.eventPlane ? { reasoningEvents: true } : {}),
+      ...(row.reason ? { reason: row.reason } : {}),
+      ...(catalog?.error ? { modelsUnread: catalog.error } : {}),
+      models: (catalog?.models ?? []).map((m) => ({
+        id: m.id,
+        ...(m.name ? { name: m.name } : {}),
+        variants: (m.variants ?? []).map((v) => v.name),
+      })),
+    };
+  });
 }
 
 /** After a connection error, how often and how many times the bridge asks whether its sign-in changed. */
@@ -104,6 +146,9 @@ export function managerPlan(listed: readonly ManagerInstanceListing[]): { launch
   return { launch, read: [...remote, ...local], own: registered.map((m) => m.instanceId), ...(why ? { why } : {}) };
 }
 
+/** The order a plain `sort()` gives strings. */
+const byCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 /** A seat id as a manager reports it: the principal in user mode, a bare actor otherwise. */
 function principalOf(id: string): { owner: string; actor: string } {
   const p = parsePrincipalKey(id);
@@ -120,13 +165,15 @@ function listFailure(reply: ManagerReply, what: string): Error {
 }
 
 /** The frame a message carries, or undefined when it carries none. Only the agent publishes on
- *  its own event channel, so a frame from any other sender is none. */
-export function frameOf(msg: CotalMessage): SeatFrame | undefined {
+ *  its own event channel and payload rail, so a frame from any other sender is none. A payload
+ *  frame's envelope names the event channel it belongs to. */
+export function frameOf(msg: CotalMessage, plane: SeatFrame["plane"] = "events"): SeatFrame | undefined {
   const seat = msg.channel === undefined ? null : eventChannelPrincipal(msg.channel);
   if (!seat || msg.from?.id !== principalKey(seat.owner, seat.actor).key) return undefined;
   const part = (msg.parts as readonly Record<string, unknown>[]).find((p) => p.kind === AGUI_FRAME_KIND);
   if (!part || typeof part.runId !== "string" || typeof part.threadId !== "string" || typeof part.seq !== "number" || !Array.isArray(part.events)) return undefined;
   return {
+    plane,
     owner: seat.owner,
     actor: seat.actor,
     threadId: part.threadId,
@@ -148,12 +195,17 @@ function plain(e: unknown): Error {
   return e.code === "AUTH_REQUIRED" || noSpace ? new SignInRequired(message) : new Error(message);
 }
 
-/** The space connection: its target, the observer that reads it and, on a user-auth space, the
- *  person's sign-in. */
+/** The space connection: its target, the observer that reads it, the connection that calls the agents'
+ *  `agent` endpoints and, on a user-auth space, the person's sign-in. */
 interface Connected {
   readonly target: MeshTarget;
   readonly observer: CotalEndpoint;
+  /** Calls the agents' `agent` endpoints as their owner: the observer on a user-auth space, where it
+   *  connects on the person's sign-in, and on an open mesh; on a static space, an `agent-caller`
+   *  connection, since the observer's read-only credential holds no caller row (SPEC 13.21). */
+  readonly caller: CotalEndpoint;
   readonly events: string;
+  readonly payloads: string;
   readonly started: { owner: string; actor: string; lifecycleUid: string } | undefined;
   readonly signInNow: (() => Promise<string>) | undefined;
   readonly ownManagers: (() => Promise<ManagerInstanceListing[]>) | undefined;
@@ -162,9 +214,12 @@ interface Connected {
 async function connect(options: LiveMeshOptions): Promise<Connected> {
   let target: MeshTarget;
   let observer: CotalEndpoint;
+  let caller: CotalEndpoint;
   /** The event channels the observer follows, as a subject: every agent's on a static or open
    *  space, and the agents under the person's own owner on a user-auth space. */
   let events: string;
+  /** The payload rails the observer follows: every agent's, or those under the person's owner. */
+  let payloads: string;
   /** The person's sign-in on a user-auth space. The bridge acts as this sign-in throughout. */
   let started: { owner: string; actor: string; lifecycleUid: string } | undefined;
   /** On a user-auth space: asks the exchange for the sign-in again, and stops the bridge when it changed. */
@@ -189,6 +244,7 @@ async function connect(options: LiveMeshOptions): Promise<Connected> {
     // Only an agent publishes on its own event channel, so on a user-auth space the sender's owner
     // is the person's too.
     events = user ? chatSubject(conn.space, user.owner, "*", `${EVENT_CHANNEL_PREFIX}${user.owner}.*`) : chatSubject(conn.space, "*", "*", `${EVENT_CHANNEL_PREFIX}*.*`);
+    payloads = user ? eventPayloadSubject(conn.space, user.owner, "*") : `${spacePrefix(conn.space)}.evp.*.*`;
     observer = openObserver({ space: conn.space, server: conn.server, name: OBSERVER_NAME, ...(user ? { auth: { user }, lifecycleUid: user.lifecycleUid } : { auth: { creds: conn.creds } }) });
     // A re-grant ends the connection at once, while the endpoint renews its sign-in only mid-way
     // through the token. So a connection error asks the exchange now. The old lifecycle may still be
@@ -217,10 +273,12 @@ async function connect(options: LiveMeshOptions): Promise<Connected> {
       if (user) void checkSignIn(user.source);
     });
     await observer.start();
+    caller = target.mode === "auth" && target.auth ? openAgentCaller({ space: conn.space, server: conn.server, auth: target.auth, name: OBSERVER_NAME }) : observer;
+    if (caller !== observer) await caller.start();
   } catch (e) {
     throw plain(e);
   }
-  return { target, observer, events, started, signInNow, ownManagers };
+  return { target, observer, caller, events, payloads, started, signInNow, ownManagers };
 }
 
 /** The manager control calls, made as the person's sign-in when there is one. */
@@ -286,8 +344,6 @@ function controls(options: LiveMeshOptions, c: Connected) {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
-  const choice = (instanceId: string): ManagerChoice => managerChoice(instanceId, observer.getRoster(), hostname(), started?.owner);
-
   /** On a user-auth space, the person's managers as the space's auth service lists them. The list
    *  spends no selection, a manager whose presence has not arrived is still listed, and each later
    *  call is pinned to a manager it names, which the exchange authorizes again. */
@@ -296,41 +352,35 @@ function controls(options: LiveMeshOptions, c: Connected) {
     own = new Set(plan.own);
     return plan;
   };
-  return { ctx, client, resolve, ask, seatCommand, choice, yourManagers, own: (): ReadonlySet<string> => own };
+  return { ctx, client, resolve, ask, seatCommand, yourManagers, own: (): ReadonlySet<string> => own };
 }
 
 type Controls = ReturnType<typeof controls>;
 
 /** The reads a new thread's options come from, and the launch. */
 function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "manager" | "personas" | "spawn"> {
-  const { target, started } = c;
-  const { client, resolve, ask, choice, yourManagers } = p;
+  const { target, started, observer } = c;
+  const { client, resolve, ask, yourManagers } = p;
+  /** The host one manager reports in its own status, pinned to it. */
+  const reportedHost = async (instanceId: string): Promise<string | undefined> => {
+    const t = await resolve("control-caller-privileged", instanceId);
+    return reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
+  };
   return {
     async catalogs(instanceId) {
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
       if (!status.ok) throw listFailure(status, "the manager did not report its applications");
       if (!models.ok) throw listFailure(models, "the manager did not list its models");
-      const rows = (status.data as { connectors?: { agent: string; state: string; eventPlane: boolean; reason?: string }[] } | undefined)?.connectors ?? [];
+      const rows = (status.data as { connectors?: ConnectorRow[] } | undefined)?.connectors ?? [];
       if (!Array.isArray(models.data)) throw new Error("the manager did not list its models");
-      const catalogs = models.data as { agent: string; models?: { id: string; name?: string; variants?: { name: string }[] }[] }[];
-      return rows.map((row): AgentCatalog => ({
-        agent: row.agent,
-        available: row.state === "available",
-        eventPlane: row.eventPlane,
-        ...(row.reason ? { reason: row.reason } : {}),
-        models: (catalogs.find((c) => c.agent === row.agent)?.models ?? []).map((m) => ({
-          id: m.id,
-          ...(m.name ? { name: m.name } : {}),
-          variants: (m.variants ?? []).map((v) => v.name),
-        })),
-      }));
+      return agentCatalogs(rows, models.data as ModelsRow[]);
     },
 
     async managers() {
       if (started) {
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
-        return plan.launch.map((instanceId) => choice(instanceId));
+        return managerChoices(plan.launch, observer.getRoster(), hostname(), started.owner, reportedHost);
       }
       const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth).catch((e: unknown) => {
@@ -354,24 +404,22 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
     },
 
     async manager(instanceId) {
-      const seen = choice(instanceId);
-      if (seen.host) return seen;
-      // A manager whose presence row is not found here, such as the space's own, is asked its host.
-      const t = await resolve("control-caller-privileged", instanceId);
-      const host = await reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
-      return { instanceId, ...(host ? { host } : {}), local: host === hostname(), live: host !== undefined };
+      const [held] = await managerChoices([instanceId], observer.getRoster(), hostname(), started?.owner, reportedHost);
+      return held!;
     },
 
     async personas(instanceId) {
       const reply = await ask("listPersonas", undefined, instanceId);
       if (!reply.ok) throw listFailure(reply, "the manager did not list its personas");
-      const rows = (reply.data as { personas?: { name: string }[] } | undefined)?.personas ?? [];
-      return rows.map((p) => p.name).sort();
+      const rows = (reply.data as { personas?: { name: string; owner?: string }[] } | undefined)?.personas ?? [];
+      // The list names a persona's owner only to the caller who owns it (`list-personas`).
+      return rows.map((p): PersonaRow => ({ name: p.name, ...(p.owner ? { own: true } : {}) })).sort((a, b) => byCodeUnits(a.name, b.name));
     },
 
     async spawn(req: SpawnRequest) {
       const reply = await requestManagedLaunch(
-        { persona: req.persona ?? defaultPersona ?? "default", identity: req.name, agent: req.agent, model: req.model, variant: req.variant, cwd: req.cwd, prompt: req.prompt, ...(req.subscribe ? { subscribe: [...req.subscribe] } : {}), events: true },
+        { persona: req.persona ?? defaultPersona ?? "default", identity: req.name, agent: req.agent, model: req.model, variant: req.variant, cwd: req.cwd, ...(req.prompt ? { prompt: req.prompt } : {}), ...(req.subscribe ? { subscribe: [...req.subscribe] } : {}), events: true,
+          ...(req.askPermissions ? { askPermissions: true } : {}), ...(req.reasoningEvents ? { reasoningEvents: true } : {}) },
         (args) => ask("start", args, req.managerInstanceId, START_TIMEOUT_MS),
       );
       if (!reply.ok) throw failure(reply, `${req.name} did not start`);
@@ -381,8 +429,53 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
   };
 }
 
+/** The seat's `agent` endpoint (SPEC 13.22), called as its owner. Agents serve it on every space
+ *  (SPEC 13.21). */
+function agentCalls(c: Connected): Pick<Mesh, "agentCall" | "promptCounter" | "served"> {
+  const { observer, caller } = c;
+  /** The seat's current presence row, when it is live and is the incarnation the bridge holds. */
+  const row = (seat: SeatRef) => {
+    const id = principalKey(seat.owner, seat.actor).key;
+    return observer.getRoster().find((s) => s.card.id === id && s.lifecycleUid === seat.lifecycleUid && s.status !== "offline");
+  };
+  return {
+    async agentCall(seat, command, args) {
+      const runtime = row(seat)?.runtime?.id;
+      if (!runtime) throw new AgentCallFailed(`${seat.name} is not on the roster with its runtime`, "unavailable");
+      const contract = AGENT_CONTRACTS[command];
+      if (!contract) throw new AgentCallFailed(`the agent endpoint has no command ${command}`, "unimplemented");
+      let reply;
+      try {
+        reply = await caller.callPrincipal({
+          endpoint: AGENT_ENDPOINT,
+          principal: { owner: seat.owner, actor: seat.actor, uid: seat.lifecycleUid, runtimeId: runtime },
+          command,
+          authority: "owner",
+          args,
+          deadlineMs: AGENT_CALL_MS,
+          contract,
+        });
+      } catch (e) {
+        const code = (e as { code?: unknown }).code;
+        throw new AgentCallFailed(plain(e).message, typeof code === "string" ? code : "internal");
+      }
+      if (!reply.ok) throw new AgentCallFailed(reply.error.message, reply.error.code, reply.error.details);
+      return reply.data;
+    },
+
+    promptCounter(seat) {
+      const r = row(seat);
+      return r?.prompts && r.runtime ? { runtime: r.runtime.id, open: r.prompts.open, seq: r.prompts.seq } : undefined;
+    },
+
+    served(seat) {
+      return row(seat)?.agentEndpoint;
+    },
+  };
+}
+
 /** The agent list and the commands sent to one agent. */
-function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
   const { started, observer, target } = c;
   const { ctx, client, ask, seatCommand, yourManagers } = p;
   return {
@@ -456,22 +549,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
     },
 
     async rename(seat: SeatRef, name: string) {
-      // An agent serves its `agent` endpoint only under a user-auth credential (SPEC 13.21).
-      if (!started) throw new Error("renaming a running agent needs a space where people sign in, where the agent serves `set-name`");
-      const id = principalKey(seat.owner, seat.actor).key;
-      const runtime = observer.getRoster().find((s) => s.card.id === id && s.lifecycleUid === seat.lifecycleUid && s.status !== "offline")?.runtime?.id;
-      if (!runtime) throw new Error(`${seat.name} is not on the roster with its runtime, so it cannot be renamed now`);
-      const reply = await observer.callPrincipal({
-        endpoint: AGENT_ENDPOINT,
-        principal: { owner: seat.owner, actor: seat.actor, uid: seat.lifecycleUid, runtimeId: runtime },
-        command: AGENT_CMD_SET_NAME,
-        authority: "owner",
-        args: { name },
-        deadlineMs: RENAME_MS,
-        contract: AGENT_CONTRACTS[AGENT_CMD_SET_NAME]!,
-      }).catch((e: unknown) => Promise.reject(plain(e)));
-      if (!reply.ok) throw new Error(reply.error.message);
-      return (reply.data as SetNameIO).name;
+      return ((await agent.agentCall(seat, AGENT_CMD_SET_NAME, { name })) as SetNameIO).name;
     },
 
     spawnNameError(name: string) {
@@ -482,7 +560,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls): Pick<Me
 
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
 function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "roster" | "channels" | "close"> {
-  const { observer, events, started } = c;
+  const { observer, caller, events, payloads, started } = c;
   return {
     followFrames(onFrame) {
       let live = true;
@@ -491,15 +569,31 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
         const frame = frameOf(msg);
         if (frame) onFrame(frame);
       }, { subject: events });
+      observer.tap((_subject, msg) => {
+        if (!live || !msg || !isEventChannel(msg.channel)) return;
+        const frame = frameOf(msg, "payloads");
+        if (frame) onFrame(frame);
+      }, { subject: payloads });
       return () => (live = false);
     },
 
     async frameHistory(seat: SeatRef) {
       // A person's sign-in reads history through its own lifecycle's reader.
-      const rows = started
-        ? (await observer.channelHistoryPage(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat })).items
-        : await observer.channelHistory(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat });
-      return rows.map(frameOf).filter((f): f is SeatFrame => f !== undefined);
+      const [rows, payloadRows] = await Promise.all([
+        started
+          ? observer.channelHistoryPage(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat }).then((page) => page.items)
+          : observer.channelHistory(eventChannel(seat), { limit: HISTORY_FRAMES, publisher: seat }),
+        observer.eventPayloadHistory(seat.owner, seat.actor, { limit: HISTORY_FRAMES }).catch((e: unknown) => {
+          const why = plain(e).message;
+          throw new Error(`${seat.name}'s earlier tool inputs and results cannot be read from its payload history: ${isPermissionDenied(e) ? `this sign-in may not read it (${why})` : why}`);
+        }),
+      ]);
+      // A payload frame shares its event frame's epoch and seq, and goes right before it. One whose
+      // event frame the space has dropped belongs to no call the thread shows.
+      const key = (f: SeatFrame) => `${f.epoch}:${f.seq}`;
+      const before = new Map<string, SeatFrame[]>();
+      for (const f of payloadRows.map((m) => frameOf(m, "payloads"))) if (f) before.set(key(f), [...(before.get(key(f)) ?? []), f]);
+      return rows.map((m) => frameOf(m)).filter((f): f is SeatFrame => f !== undefined).flatMap((f) => [...(before.get(key(f)) ?? []), f]);
     },
 
     presence(seat: SeatRef) {
@@ -515,11 +609,15 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
     },
 
     async channels() {
-      return (await observer.listChannels()).map((c) => c.channel).filter((c) => !isEventChannel(c)).sort();
+      return (await observer.listChannels())
+        .filter((c) => !isEventChannel(c.channel))
+        .map((c): ChannelRow => ({ channel: c.channel, messages: c.messages, ...(c.config?.description ? { description: c.config.description } : {}) }))
+        .sort((a, b) => byCodeUnits(a.channel, b.channel));
     },
 
     async close() {
       await observer.stop();
+      if (caller !== observer) await caller.stop();
     },
   };
 }
@@ -528,6 +626,7 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
   const c = await connect(options);
   const { target } = c;
   const p = controls(options, c);
+  const agent = agentCalls(c);
   const defaultPersona = resolvePreference("persona", { space: target.space }).value;
   const defaultAgent = resolvePreference("harness", { space: target.space }).value;
 
@@ -535,7 +634,8 @@ export async function openLiveMesh(options: LiveMeshOptions): Promise<Mesh> {
     space: target.space,
     ...(defaultAgent ? { defaultAgent } : {}),
     ...launchCalls(c, p, defaultPersona),
-    ...seatCalls(options, c, p),
+    ...agent,
+    ...seatCalls(options, c, p, agent),
     ...spaceReads(c),
   };
 }

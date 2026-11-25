@@ -3,8 +3,12 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, nameEnv, controlEndpoint, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { HERMES_PROVIDER_KEYS, listHermesModels } from "./models.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
+
+// Part of the package's public exports, through index.ts.
+export { HERMES_PROVIDER_KEYS };
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
@@ -19,16 +23,6 @@ const LAUNCH_COMMAND = FROM_BUILD
 /** A Hermes session id as its own store mints them (`20261003_010101_ab12cd`), with room for older
  *  shapes. It reaches a SQL parameter only, but a path or a flag is never a session. */
 const HERMES_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
-
-export const HERMES_PROVIDER_KEYS: readonly string[] = [
-  ...MODEL_PROVIDER_KEYS,
-  "OPENCODE_GO_API_KEY", "OPENCODE_ZEN_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY",
-  "NOVITA_API_KEY", "DEEPSEEK_API_KEY", "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-  "KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_CN_API_KEY", "MINIMAX_API_KEY",
-  "MINIMAX_CN_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CODING_PLAN_API_KEY",
-  "STEPFUN_API_KEY", "ARCEEAI_API_KEY", "GMI_API_KEY", "NVIDIA_API_KEY", "KILOCODE_API_KEY",
-  "XIAOMI_API_KEY", "TOKENHUB_API_KEY", "OLLAMA_API_KEY", "AZURE_FOUNDRY_API_KEY",
-];
 
 /**
  * The Hermes (Nous Research) connector. Unlike Claude Code / Codex — where the harness *is* the
@@ -45,10 +39,24 @@ export const hermesConnector: Connector = {
   name: "hermes",
   supportsFreshStart: true,
   supportsResume: true,
+  supportsPrompt: true,
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
   supportsLaunchValidation: true,
+  // The AG-UI event plane, published from the plugin's turn journal (plugin/cotal/journal.py).
+  eventChannel,
+  // The journal records the reasoning text a provider returns; a launch asks for it on the plane.
+  supportsReasoningEvents: true,
+  // A launch with askPermissions keeps Hermes's command approvals on and serves each on the agent's
+  // prompt desk (src/approvals.ts).
+  supportsAskPermissions: true,
+  prompts: true,
+  // The models of the provider a launch's environment picks (src/models.ts).
+  listModels: listHermesModels,
+  // variant = the reasoning effort the managed profile sets (agent.reasoning_effort). The launcher
+  // checks it against the efforts the installed Hermes takes (launchEffort in src/launch.ts).
+  supportsModelVariant: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
@@ -66,11 +74,13 @@ export const hermesConnector: Connector = {
       if (process.env.COTAL_HERMES_ADOPT_HOME?.trim())
         throw new Error("the Hermes connector cannot resume into COTAL_HERMES_ADOPT_HOME: that profile already holds the session, so continue it there with Hermes' own /resume");
     }
-    if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
-    // Same rule for the initial prompt: the gateway has no first-turn carrier wired, and a prompt
-    // that is accepted and never submitted leaves the operator waiting on a turn that never starts.
-    if (opts.prompt !== undefined)
-      throw new Error("the Hermes connector does not support an initial prompt (prompt): its first turn is not wired yet");
+    if (opts.variant && process.env.COTAL_HERMES_ADOPT_HOME?.trim())
+      throw new Error("the Hermes connector cannot apply a variant to COTAL_HERMES_ADOPT_HOME: that profile's own config.yaml sets the reasoning effort, and this mode does not edit it");
+    // The initial prompt becomes the gateway's first turn (see submitTurn in bridge.ts). An empty one
+    // would start no turn while the operator waits on it.
+    const prompt = opts.prompt?.trim();
+    if (opts.prompt !== undefined && !prompt)
+      throw new Error("the Hermes connector was given an empty initial prompt (prompt): there is no first turn to submit");
     // The Hermes launcher reads a FIXED set of env vars, so it has no generic launch-option surface —
     // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
     if (opts.launchOptions && Object.keys(opts.launchOptions).length)
@@ -83,6 +93,7 @@ export const hermesConnector: Connector = {
       COTAL_SPACE: opts.space,
       ...nameEnv(opts),
     };
+    if (prompt) env.COTAL_HERMES_PROMPT = prompt;
     if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;
     // Adopt-home is a machine-wide operator decision ("put MY Hermes on the mesh"), not a
     // per-session value the manager assigns, so it crosses from this process like the other
@@ -90,6 +101,17 @@ export const hermesConnector: Connector = {
     // per-session; this one has no per-spawn meaning and would otherwise be unreachable, since a
     // seat cannot opt in to its own profile.
     const adoptHome = process.env.COTAL_HERMES_ADOPT_HOME?.trim();
+    // The operator's profile keeps its own approval settings, which may be off, and a launch does
+    // not edit them, so it could not promise to ask.
+    if (adoptHome && opts.askPermissions)
+      throw new Error("COTAL_HERMES_ADOPT_HOME runs the operator's own profile with its own approval settings, which this launch does not change, so askPermissions needs a managed profile");
+    // Armed by default, `events: false` opts out. The event plane's write-ahead log lives under the
+    // workspace root.
+    if (launchArmsEvents(opts)) {
+      if (!opts.workspaceRoot) throw new Error("the Hermes connector needs a workspace root for its event plane's state");
+      env.COTAL_EVENTS = "1";
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.validateOnly) {
       if (!adoptHome && !opts.model)
         throw new Error("A managed Hermes profile needs a model. Set one with --model or the agent file's model: field, or use your own profile with COTAL_HERMES_ADOPT_HOME=$HOME/.hermes.");
@@ -119,12 +141,14 @@ export const hermesConnector: Connector = {
       env.HERMES_MODEL = opts.model;
       env.COTAL_MODEL = opts.model;
     }
+    // The launcher writes it as the managed profile's reasoning effort.
+    if (opts.variant) env.COTAL_VARIANT = opts.variant;
     const artifacts: string[] = [];
     try {
       // The exit watcher owns the socket directory and the single carrier even on a forced stop.
       const control = controlEndpoint(opts.space, opts.name, artifacts);
       env.COTAL_CONTROL_SOCKET = control.path;
-      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       const seat = hermesSeatHome(opts.space, opts.name);
       if (!adoptHome && !opts.resume && !existsSync(join(seat.home, HERMES_FORK_RECORD))) {
         const root = mkdtempSync(join(tmpdir(), "cotal-hermes-"));

@@ -155,6 +155,13 @@ export interface LaunchOpts {
   events?: boolean;
   /** Publish tool inputs/results on the sibling rail. False retains names/times only. Defaults to true. */
   eventPayloads?: boolean;
+  /** Launch the harness in its mode that asks before it uses a tool, so its permission prompts reach
+   *  the agent's `agent` endpoint (SPEC 13.22) where the session serves one. Absent or false keeps
+   *  the connector's own launch mode. Gated upstream by {@link Connector.supportsAskPermissions}. */
+  askPermissions?: boolean;
+  /** Publish the model's reasoning (`REASONING_*`) on the session's event plane. Absent or false
+   *  publishes none. Gated upstream by {@link Connector.supportsReasoningEvents}. */
+  reasoningEvents?: boolean;
   /** The selected registration requires this session's structured event plane. A launcher sets this
    *  from trusted registration material; connectors carry it into launch material for session-side
    *  enforcement as well as arming the emitter. */
@@ -271,7 +278,8 @@ export interface ModeOption {
 /** A launch setting a model offers besides its variant, such as a fast tier or an agent. A toggle is
  *  on or off; a choice picks one option. `default` is what the harness runs when a launch does not
  *  name the mode. `unavailable` is set when the logged-in account cannot run the mode, and says why
- *  for a person to read; a manager refuses a launch that names the mode. */
+ *  for a person to read; a manager refuses a launch that turns the mode on, a toggle to `true` or a
+ *  choice to any option but `default`, and launches one that sets it off. */
 export type ModeInfo =
   | { id: string; label: string; kind: "toggle"; default: boolean; unavailable?: string }
   | { id: string; label: string; kind: "choice"; options: ModeOption[]; default: string; unavailable?: string };
@@ -313,6 +321,11 @@ export interface ModelCatalogOpts {
    *  these files rather than resolving the bare name again, so it runs the binary a spawn will run.
    *  Absent when no manager boot inventory exists, as for a standalone call. */
   resolvedBinaries?: Readonly<Record<string, string>>;
+  /** The extra environment names the operator declared in `spawn.env`, read from the config a spawn
+   *  would read now: what a managed launch receives as {@link LaunchOpts.envAllow}. A catalog that
+   *  runs its harness passes them on as the launch does, so it lists the models a seat reaches.
+   *  Absent when none are declared, or for a standalone call. */
+  envAllow?: readonly string[];
 }
 
 /** What a seat on a connector runs on its `agent` endpoint (SPEC 13.22), and how the manager lists
@@ -439,6 +452,12 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.askPermissions}. Default-deny, so a launch
+   *  that asks for it fails before any provisioning rather than running without asking. */
+  readonly supportsAskPermissions?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.reasoningEvents}. Default-deny, so a launch
+   *  that asks for it fails before any provisioning rather than publishing no reasoning. */
+  readonly supportsReasoningEvents?: boolean;
   /** The bytes a terminal sends for the key that interrupts the harness's live turn, such as
    *  `"\x1b"` for Escape. The manager's `interrupt` command writes them into a seat's terminal.
    *  Declare it only after a live check shows the key ending a turn. Absent, the command refuses

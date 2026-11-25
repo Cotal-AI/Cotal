@@ -175,6 +175,33 @@ try {
   check("condition:a turn someone stopped is not a failure, and the seat that ran it reports no condition",
     after?.status === "idle" && after.condition === undefined, { status: after?.status, condition: after?.condition });
 
+  // A form, such as the question tool's, waits on a person while it is open. This turn records
+  // nothing, so it publishes nothing.
+  const fed = (type: string, data: Record<string, unknown>) => second.feed({ type, durable: { aggregateID: SESSIONS[1]!, seq: seq++ }, data });
+  fed("session.execution.started", { sessionID: SESSIONS[1]! });
+  second.feed({ type: "form.created", data: { form: { id: "frm_1", sessionID: SESSIONS[1]!, title: "Questions", metadata: { kind: "question" }, fields: [] } } });
+  let asking = otto();
+  for (let i = 0; i < 25 && asking?.status !== "waiting"; i++, await sleep(200)) asking = otto();
+  check("waiting:an open question form reads waiting, with the form's title as the activity",
+    asking?.status === "waiting" && asking.activity === "Questions", { status: asking?.status, activity: asking?.activity });
+  // An answered ask leaves the turn running, so the seat reads working again until the turn ends.
+  const settledOn = async (status: string) => {
+    let now = otto();
+    for (let i = 0; i < 25 && now?.status !== status; i++, await sleep(200)) now = otto();
+    return now;
+  };
+  second.feed({ type: "form.replied", data: { id: "frm_1", sessionID: SESSIONS[1]!, answer: {} } });
+  const answered = await settledOn("working");
+  check("answered:a question form answered while its turn runs reads working again", answered?.status === "working", { status: answered?.status, activity: answered?.activity });
+  second.feed({ type: "permission.asked", data: { id: "per_1", sessionID: SESSIONS[1]!, action: "shell", resources: ["sleep 60"], save: ["sleep *"], source: { type: "tool", messageID: "msg_1", id: "call_1" } } });
+  await settledOn("waiting");
+  second.feed({ type: "permission.replied", data: { sessionID: SESSIONS[1]!, requestID: "per_1", reply: "once" } });
+  const allowed = await settledOn("working");
+  check("answered:a permission ask answered while its turn runs reads working again", allowed?.status === "working", { status: allowed?.status, activity: allowed?.activity });
+  fed("session.execution.interrupted", { sessionID: SESSIONS[1]! });
+  await sleep(300);
+
+  // Read from here on, so a close can be told from one the next prompt makes.
   const reader = new CotalEndpoint({ space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL] });
   reader.on("error", () => {});
   type Ev = Record<string, unknown> & { type: string };
@@ -184,19 +211,68 @@ try {
     for (const p of m.parts ?? []) for (const e of ((p.data ?? p) as { events?: Ev[] }).events ?? []) seen.push(e);
   });
   await reader.start();
+
+  // A rejected permission ends the execution as interrupted and records no `idle` (measured on
+  // OpenCode 2.0.24); the declined call's record is the live one, its text replaced.
+  const stopped = snapshotsOf("interrupted while streaming").at(-1)!;
+  const userRecord = (id: string, created: number, text: string) => ({ id, type: "user", time: { created }, text });
+  const rejected: OpenCode2Message[] = [
+    ...stopped,
+    userRecord("msg_05", 1794314120000, "[user 2]"),
+    { id: "msg_06", type: "assistant", time: { created: 1794314120010, streamed: 1794314120020, completed: 1794314120030 }, error: { type: "aborted", message: "Step interrupted" },
+      content: [{ type: "tool", id: "call_2", name: "shell", state: { status: "error", input: { command: "[input 2]" }, error: { type: "aborted", message: "The user declined this tool call" } }, time: { created: 1794314120011, ran: 1794314120015, completed: 1794314120029 } }] },
+  ];
+  await grow(second, SESSIONS[1]!, [rejected], "session.execution.interrupted");
+  const rejectedRun = () => seen.filter((e) => e.type === "RUN_STARTED" && e.threadId === SESSIONS[1]).at(-1)?.runId;
+  const closedBeforeNext = async () => {
+    for (let i = 0; i < 15; i++, await sleep(200)) if (seen.some((e) => e.type === "RUN_FINISHED" && e.runId === rejectedRun())) return true;
+    return false;
+  };
+  check("interrupted:a turn interrupted with no idle record closes its run before any next prompt", await closedBeforeNext(), { run: rejectedRun(), seen: seen.slice(-6) });
+  // A stop whose `idle` record lands after the interrupted event: the run is closed by then.
+  const lateStop: OpenCode2Message[] = [
+    ...rejected,
+    userRecord("msg_07", 1794314130000, "[user 3]"),
+    { id: "msg_08", type: "assistant", time: { created: 1794314130010, streamed: 1794314130020, completed: 1794314130030 }, content: [{ type: "text", text: "[text 2]" }] },
+  ];
+  await grow(second, SESSIONS[1]!, [lateStop], "session.execution.interrupted");
+  lists.set(SESSIONS[1]!, [...lateStop, { id: "msg_09", type: "idle", time: { created: 1794314130040 }, outcome: "interrupted" }]);
+  second.feed({ type: "session.updated", durable: { aggregateID: SESSIONS[1]!, seq: seq++ }, data: { sessionID: SESSIONS[1]! } });
+  await sleep(500);
+  const nextTurn: OpenCode2Message[] = [
+    ...lists.get(SESSIONS[1]!)!,
+    userRecord("msg_10", 1794314140000, "[user 4]"),
+    { id: "msg_11", type: "assistant", time: { created: 1794314140010, streamed: 1794314140020, completed: 1794314140030 }, content: [{ type: "text", text: "[text 3]" }] },
+    { id: "msg_12", type: "idle", time: { created: 1794314140040 }, outcome: "succeeded" },
+  ];
+  await grow(second, SESSIONS[1]!, [nextTurn], "session.execution.succeeded");
+  // A turn the provider refused before any output, as OpenCode 2.0.24 recorded one live: an
+  // assistant record with no content, then the failed idle.
+  const refusedTurn: OpenCode2Message[] = [
+    ...nextTurn,
+    userRecord("msg_13", 1794314150000, "[user 5]"),
+    { id: "msg_14", type: "assistant", time: { created: 1794314150010, completed: 1794314150020 }, error: { type: "provider.invalid-request", message: "[error 2]" }, content: [] },
+    { id: "msg_15", type: "idle", time: { created: 1794314150030 }, outcome: "failed" },
+  ];
+  await grow(second, SESSIONS[1]!, [refusedTurn], "session.execution.failed", { error: { type: "provider.invalid-request", message: "Model is unavailable." } });
+
   await sleep(3_000);
   await reader.stop().catch(() => {});
 
   const types = seen.map((e) => e.type);
   const TEXT = ["TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"];
   const expected = [
-    "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
     "RUN_STARTED", ...TEXT, "RUN_ERROR",
     "RUN_STARTED", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", "RUN_FINISHED",
+    "RUN_STARTED", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", ...TEXT, "RUN_FINISHED",
+    "RUN_STARTED", "RUN_ERROR",
   ];
   check("control:the stream reads back from the subject, so the cells below grade something", seen.length > 0, { frames: seen.length });
-  check("order:each turn's run, its tool call's start and end, its text, and its close, in order and once each",
+  check("order:each turn's run, its tool call's start, end and result marker, its text, and its close, in order and once each",
     JSON.stringify(types) === JSON.stringify(expected), types);
   check("control:the first session was read once for each of the 11 durable events fed to it, so the once-each order above held under repeated reads",
     readsFirst >= 11, { reads: readsFirst });
@@ -205,13 +281,19 @@ try {
   const wire = JSON.stringify(seen);
   check("withheld:no prompt, tool input, tool result, reasoning or upstream error text reaches the subject",
     !["[user", "[input", "[result", "[reasoning", "secret-detail", "provider.auth"].some((p) => wire.includes(p)));
+  const restarted = seen.filter((e) => e.threadId === SESSIONS[1] && e.type === "RUN_STARTED").map((e) => e.runId).slice(0, 4);
+  const closes = seen.filter((e) => e.type === "RUN_FINISHED" && restarted.includes(e.runId)).map((e) => e.runId);
+  check("late-idle:an idle recorded after an out-of-band close closes nothing, and each run of the restarted session closes once",
+    restarted.length === 4 && new Set(restarted).size === 4 && JSON.stringify(closes) === JSON.stringify(restarted), { restarted, closes });
+  check("refused:a turn the provider refused before any output publishes a run of its own that ends with RUN_ERROR",
+    JSON.stringify(seen.slice(-2).map((e) => [e.type, e.type === "RUN_STARTED" ? e.threadId : undefined])) === JSON.stringify([["RUN_STARTED", SESSIONS[1]], ["RUN_ERROR", undefined]]), seen.slice(-2));
   const error = seen.find((e) => e.type === "RUN_ERROR");
   check("fail:the failed turn ends its run with RUN_ERROR carrying only the fixed message", error?.message === "run failed" && error.code === undefined, error);
   const starts = seen.filter((e) => e.type === "RUN_STARTED").map((e) => e.threadId);
   check("restart:the same principal started again publishes its new session after the first, on its channel",
-    JSON.stringify(starts) === JSON.stringify([sid, sid, sid, SESSIONS[1]]), starts);
+    JSON.stringify(starts) === JSON.stringify([sid, sid, sid, SESSIONS[1], SESSIONS[1], SESSIONS[1], SESSIONS[1], SESSIONS[1]]), starts);
   check("deltas:each assistant text is published whole",
-    JSON.stringify(seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => e.delta)) === JSON.stringify(["[text 1]", "[text 2]", "[text 3]", "[text 1]"]));
+    JSON.stringify(seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => e.delta)) === JSON.stringify(["[text 1]", "[text 2]", "[text 3]", "[text 1]", "[text 2]", "[text 3]"]));
   check("arm:no seat exited at any point", exits.length === 0, { exits });
 } finally {
   for (const stop of stops) await stop().catch(() => {});
@@ -224,7 +306,7 @@ try {
   process.exit = exit;
 }
 
-const EXPECTED = 15;
+const EXPECTED = 21;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();
 process.exit();

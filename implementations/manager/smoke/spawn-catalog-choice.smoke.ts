@@ -1,8 +1,8 @@
 /**
- * A spawn's variant and modes against the connector's model catalog (Manager revision 56). The
+ * A spawn's variant and modes against the connector's model catalog (Manager revision 57). The
  * served `spawn` input takes `modes`. The Manager refuses a variant or mode the catalog does not list
- * for the launched model, and a mode it marks unavailable, before anything is minted or launched, and
- * reads each catalog once.
+ * for the launched model, and a value that turns on a mode it marks unavailable, before anything is
+ * minted or launched, and reads each catalog once. A value that sets such a mode off launches.
  * Offline: an open-mesh Manager with a fake endpoint and runtime; no broker or harness runs.
  *
  * Run: pnpm smoke:manager-spawn-catalog-choice
@@ -26,7 +26,7 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 
 // --- The served schema -------------------------------------------------------------------------
 const spawnInput = MANAGER_CONTRACTS.spawn!.input;
-check("the Manager cluster is at revision 56", managerShippedSurface().revision === 56, managerShippedSurface().revision);
+check("the Manager cluster is at revision 57", managerShippedSurface().revision === 57, managerShippedSurface().revision);
 check("spawn takes a toggle and a choice in modes", spawnInput.validate({ name: "worker", modes: { fast: true, agent: "plan" } }) === true);
 check("spawn refuses an empty modes object", spawnInput.validate({ name: "worker", modes: {} }) === false);
 check("spawn refuses a mode value that is neither a boolean nor an option id", spawnInput.validate({ name: "worker", modes: { fast: 1 } }) === false);
@@ -43,7 +43,7 @@ const deep = {
     { id: "fast", label: "Fast", kind: "toggle" as const, default: false },
     { id: "agent", label: "Agent", kind: "choice" as const, options: [{ id: "build", label: "Build" }, { id: "plan", label: "Plan" }], default: "build" },
     { id: "turbo", label: "Turbo", kind: "toggle" as const, default: false, unavailable: "Turbo has been disabled by your organization" },
-    { id: "lane", label: "Lane", kind: "choice" as const, options: [{ id: "left", label: "Left" }], default: "left", unavailable: "Lanes need a paid plan" },
+    { id: "lane", label: "Lane", kind: "choice" as const, options: [{ id: "left", label: "Left" }, { id: "right", label: "Right" }], default: "left", unavailable: "Lanes need a paid plan" },
   ],
 };
 const reads: Record<string, number> = {};
@@ -99,11 +99,14 @@ const unavailableOn = await spawn("cat", { model: "deep", modes: { turbo: true }
 check("an unavailable toggle named on is refused with its reason",
   refused(unavailableOn, /mode "turbo" of model "deep" is unavailable: Turbo has been disabled by your organization \(modes\)/), unavailableOn);
 const unavailableOff = await spawn("cat", { model: "deep", modes: { fast: true, turbo: false } });
-check("an unavailable toggle named off is refused too, beside a mode the model runs",
-  refused(unavailableOff, /mode "turbo" of model "deep" is unavailable: Turbo has been disabled/), unavailableOff);
-const unavailableChoice = await spawn("cat", { modes: { lane: "left" } });
-check("an unavailable choice is refused with its reason on the default row",
+check("an unavailable toggle set off launches beside a mode the model runs, and the connector receives both",
+  unavailableOff.ok && isDeepStrictEqual(launched[0]?.modes, { fast: true, turbo: false }), { unavailableOff, modes: launched[0]?.modes });
+const unavailableChoice = await spawn("cat", { modes: { lane: "right" } });
+check("an unavailable choice set to another option is refused with its reason on the default row",
   refused(unavailableChoice, /mode "lane" of model "deep" is unavailable: Lanes need a paid plan \(modes\)/), unavailableChoice);
+const unavailableChoiceDefault = await spawn("cat", { modes: { lane: "left" } });
+check("an unavailable choice set to its default option launches, and the connector receives it",
+  unavailableChoiceDefault.ok && isDeepStrictEqual(launched[0]?.modes, { lane: "left" }), { unavailableChoiceDefault, modes: launched[0]?.modes });
 const toggleKind = await spawn("cat", { model: "deep", modes: { fast: "yes" } });
 check("a toggle given an option id is refused", refused(toggleKind, /mode "fast" of model "deep" is a toggle, so it takes true or false, not "yes" \(modes\)/), toggleKind);
 const choiceKind = await spawn("cat", { model: "deep", modes: { agent: true } });

@@ -21,6 +21,6 @@ export async function checkLaunch(connector: Connector, launch: LaunchOpts, mana
   }
   if (managerChecked) return;
   const choice = { model: launch.model, variant: launch.variant, modes: launch.modes };
-  const refusal = await catalogChoiceRefusal(connector, choice, () => readModelCatalog(connector, {}));
+  const refusal = await catalogChoiceRefusal(connector, choice, () => readModelCatalog(connector, { resolvedBinaries: launch.resolvedBinaries, ...(launch.envAllow ? { envAllow: launch.envAllow } : {}) }));
   if (refusal) throw new CommandFailure("refused", "USAGE_INVALID", refusal, { target, remedy: `\`cotal models -H ${connector.name}\` lists what each model takes` });
 }

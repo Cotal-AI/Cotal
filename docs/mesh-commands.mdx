@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 56. 46 commands.
+Cluster `ai.cotal.manager`, revision 57. 46 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -211,7 +211,7 @@ Registered declaration:
   "targeted": false,
   "capability": "manager.read",
   "inputDigest": "sha256:1db0472aaee8e6b9d8d3d430ee021a1b6efc559ab7c0b99186898c972c53dd2d",
-  "outputDigest": "sha256:0f3b6c0ea655f46c6e99c5bcacff8673032b15affd67c57e7db7c1c57d793090"
+  "outputDigest": "sha256:5d3ec3bbc19fbf68ab24198bc8b3da8639390305c6baf3e00022c0eca40de8c6"
 }
 ```
 
@@ -298,7 +298,9 @@ Output schema:
           "state",
           "binaries",
           "eventPlane",
-          "prompts"
+          "prompts",
+          "askPermissions",
+          "reasoningEvents"
         ],
         "properties": {
           "agent": {
@@ -320,6 +322,12 @@ Output schema:
             "type": "boolean"
           },
           "prompts": {
+            "type": "boolean"
+          },
+          "askPermissions": {
+            "type": "boolean"
+          },
+          "reasoningEvents": {
             "type": "boolean"
           },
           "reason": {
@@ -1561,7 +1569,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.spawn",
-  "inputDigest": "sha256:6d54f5bfe07eb9db0baf0c1e7b84f0a07f2f348f43d1b2bb94b71b6eb6b6a613",
+  "inputDigest": "sha256:5e9e02eceb581747bc7f14825a533baf2d6b177fc6edfacabedb7ee0eb1e03aa",
   "outputDigest": "sha256:8db6027204c85b301a3fb109d3fd53dac815204b55d433824cff566d8b766154"
 }
 ```
@@ -1648,6 +1656,12 @@ Input schema:
       "type": "boolean"
     },
     "eventPayloads": {
+      "type": "boolean"
+    },
+    "askPermissions": {
+      "type": "boolean"
+    },
+    "reasoningEvents": {
       "type": "boolean"
     },
     "cwd": {

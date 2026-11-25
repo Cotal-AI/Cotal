@@ -21,13 +21,17 @@
  *
  * Run: pnpm smoke:claude-launch-model
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConnector } from "../src/extension.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const { check, finish, passed, failed } = createSuite();
+// Each launch makes its private directories under the temp dir, and nothing here starts a child to
+// remove them, so they go in a scratch temp dir this suite removes.
+const scratch = mkdtempSync(join(tmpdir(), "claude-launch-model-"));
+process.env.TMPDIR = scratch;
 
 const launch = (extra: Record<string, unknown>) =>
   claudeConnector.buildLaunch({ space: "s", name: "seat", events: false, ...extra } as never);
@@ -149,6 +153,16 @@ for (const variant of ["extreme", "minimal", "HIGH"]) {
     const msg = refusalFor({ model: "opus", modes: { fast: true }, launchOptions: { settings: '{"theme":"dark"}' }, validateOnly });
     check(`modes with --opt settings= are refused${validateOnly ? " by launch validation" : ""}, since claude would drop one of them`, msg !== null && /--opt settings=/.test(msg), msg);
   }
+  // reasoningEvents sets claude's thinking summaries, a setting too, so it joins the modes' one flag.
+  const reasoning = launch({ model: "opus", modes: { fast: true, ultracode: false }, reasoningEvents: true }) as { args: string[] };
+  const joined = flagValues(reasoning.args, "--settings");
+  check(
+    "a mode with reasoningEvents renders one --settings carrying the modes and the thinking summaries",
+    joined.length === 1 && JSON.stringify(JSON.parse(joined[0]!)) === JSON.stringify({ showThinkingSummaries: true, fastMode: true, ultracode: false }),
+    reasoning.args,
+  );
+  const doubled = refusalFor({ model: "opus", modes: { ultracode: true }, reasoningEvents: true, launchOptions: { settings: "{}" } });
+  check("a mode and reasoningEvents with --opt settings= are refused, naming both", doubled !== null && /reasoningEvents and the modes/.test(doubled) && /--opt settings=/.test(doubled), doubled);
   const raw = launch({ model: "opus", launchOptions: { settings: '{"theme":"dark"}' } }) as { args: string[] };
   check("--opt settings= without modes still passes through as written", JSON.stringify(flagValues(raw.args, "--settings")) === JSON.stringify(['{"theme":"dark"}']), raw.args);
   const unknown = refusalFor({ model: "opus", modes: { turbo: true } });
@@ -165,7 +179,7 @@ for (const variant of ["extreme", "minimal", "HIGH"]) {
 //
 // A count is the only thing that sees a cell that is not there. It is a real assertion and it is
 // allowed to fail on a legitimate edit: change the cases above and change this number deliberately.
-const EXPECTED = 44;
+const EXPECTED = 46;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   passed() + failed() === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it
@@ -173,5 +187,6 @@ check(
 );
 
 console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+rmSync(scratch, { recursive: true, force: true });
 finish();
 process.exit(failed() === 0 ? 0 : 1);

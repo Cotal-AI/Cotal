@@ -1,6 +1,6 @@
 import { drainAndClose } from "@cotal-ai/core";
 import { rmSync } from "node:fs";
-import { CotalEndpoint, lowerPersonaEndpoints, DEFAULT_SERVER, DEV_OWNER, dialerFor, DeprovisionError, addDeprovisionAccounting, type DeprovisionResourceAccounting, mintCreds, type IssuedStore, mintLifecycleUid, managedRetirementOpId, newIdentity, principalKey, provisionAgent, grantOverreach, withIssuerSession } from "@cotal-ai/core";
+import { CotalEndpoint, lowerPersonaEndpoints, DEFAULT_SERVER, DEV_OWNER, dialerFor, DeprovisionError, addDeprovisionAccounting, type DeprovisionResourceAccounting, mintCreds, type IssuedStore, mintLifecycleUid, managedRetirementOpId, newIdentity, principalKey, provisionAgent, grantOverreach, withIssuerSession, issuedPermitsPattern, epPrincipalServeGrantRows } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile } from "@cotal-ai/workspace";
 import type { RuntimeReference } from "@cotal-ai/core";
 import { makeManagerEndpointEvictionEvidence } from "./endpoint-evict.js";
@@ -515,17 +515,19 @@ export class ManagedStaticLifecycle {
     // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
     const issued = a.issued;
+    const space = this.config.space;
+    // Resolve this incarnation's original issuance, not its current spawner or a reconstructed run
+    // admission. Old seats and run helpers keep the exact ceiling they were minted with.
+    const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
+    const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space, auth: this.auth!, tls: false }, (s) =>
+      s.store.resolve({ space, ...caller }, s.sourceIsLive));
     const endpoints = lowerPersonaEndpoints(a.launch.endpoints);
     const reads = this.parts.seatLaunch.managedStaticInstanceReads(a.launch.capabilities);
-    if (reads.length) {
-      // Resolve this incarnation's original issuance, not its current spawner or a reconstructed
-      // run admission. Old seats and run helpers keep the exact ceiling they were minted with.
-      const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
-      const { evidence } = await withIssuerSession({ servers: this.config.servers ?? DEFAULT_SERVER, space: this.config.space, auth: this.auth!, tls: false }, (s) =>
-        s.store.resolve({ space: this.config.space, ...caller }, s.sourceIsLive));
-      if (!grantOverreach(this.config.space, caller, evidence.permissions, { endpoints: reads }).length)
-        endpoints.push(...reads);
-    }
+    if (reads.length && !grantOverreach(space, caller, evidence.permissions, { endpoints: reads }).length)
+      endpoints.push(...reads);
+    // A seat issued before static seats served their `agent` endpoint holds no serve row, and its
+    // renewal adds none (SPEC 13.15).
+    const principalServe = issuedPermitsPattern(evidence.permissions.subscribe, epPrincipalServeGrantRows(space, caller).sub[0]!);
     const creds = await this.deps.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
         eventPayloads: this.config.eventPayloadsWithheld ? false : a.launch.eventPayloads,
@@ -535,6 +537,7 @@ export class ManagedStaticLifecycle {
         capabilities: a.launch.capabilities,
         ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
         lifecycleUid: a.lifecycleUid,
+        principalServe,
         expiresAt: exp,
         issued,
         issuance: this.parts.brokerTransport.issuanceSeam(i, "renew", a, exp),

@@ -224,7 +224,7 @@ cotal spawn --harness claude --model sonnet
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
 The list marks the model Claude runs when a launch names none.
-A logged-out `claude` reports `claude is not logged in; run claude to log in`.
+With a logged-out `claude`, the read fails with `claude is not logged in; run claude to log in`.
 An alias such as `opus` is listed with the model it currently resolves to, for example `Opus 5.5 (claude-opus-5-5)`.
 The Claude connector rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
 Choose the corresponding connector for another provider's model.
@@ -255,13 +255,14 @@ cotal spawn --harness claude --model opus --mode ultracode=true
 
 `cotal models --harness claude` lists the modes each model offers your login, and both are off by default.
 It lists `fast` on each model that supports it.
-When your `claude` reports fast mode off, `fast` is listed as unavailable with Claude's reason, such as `Fast mode has been disabled by your organization`, and a launch that names `fast` is refused with that reason.
+When your `claude` reports fast mode off, `fast` is listed as unavailable with Claude's reason, such as `Fast mode has been disabled by your organization`, and a launch with `--mode fast=true` is refused with that reason.
+`--mode fast=false` still launches, so a template that keeps fast off runs for an organization that turns it off.
 The connector reads that state 2 seconds after your `claude` starts answering, which covers the normal case.
 Claude gives no sign that it has finished asking your organization, so on a slow network `fast` can be listed as usable although your organization turns it off.
 An agent launched with `fast` then runs at standard speed.
-The connector passes the chosen modes to Claude in one `--settings` flag.
+The connector passes the chosen modes to Claude in one `--settings` flag, together with the thinking summaries a [`reasoningEvents`](connectors.mdx#opt-in-launch-fields) launch turns on.
 A mode set to `false` is passed as off, so a fast mode you saved with `/fast` does not turn it back on.
-Claude keeps only the last `--settings` flag, so a launch with a mode refuses `--opt settings=`.
+Claude keeps only the last `--settings` flag, so a launch with a mode or `reasoningEvents` refuses `--opt settings=`.
 
 ### Choose a permission mode
 
@@ -281,7 +282,8 @@ cotal spawn --harness claude --opt permission-mode=default
 ```
 
 For an unattended agent, arrange a way to answer prompts before using that mode.
-On a signed-in space, the agent's owner can answer each tool permission from another session while Claude's dialog stays open.
+A launch with the [`askPermissions` field](connectors.mdx#opt-in-launch-fields) starts in that mode without `--opt`.
+The agent's owner can answer each tool permission from another session while Claude's dialog stays open.
 See [Tool permissions](claude-connector-reference.mdx#tool-permissions).
 Native `--opt` values carry host-launch authority. See [Launch agents](launch-agents.mdx#set-launch-options).
 

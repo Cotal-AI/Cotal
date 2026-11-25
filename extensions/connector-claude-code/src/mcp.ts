@@ -23,7 +23,6 @@ import {
   registerCotalTools,
   briefing,
   orientationCard,
-  type AguiEmitterHolder,
   controlFromEnv,
   GATEWAY_CONNECTING,
   GATEWAY_INSTRUCTIONS,
@@ -35,16 +34,17 @@ import {
 } from "@cotal-ai/connector-core";
 import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
-import { createClaudeHandle, createWakePolicy, type WakePolicy } from "./hooks.js";
+import { createClaudeHandle, createWakePolicy, type ClaudeHooks, type WakePolicy } from "./hooks.js";
 import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
 import { claudeNaming } from "./naming.js";
-import type { ClaudeEntry } from "./agui-map.js";
-import { createClaudeEventPlane } from "./claude-events.js";
+import { createClaudeEventPlane, type ClaudeEventHolder } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
 import { openWakeFeed } from "./wake-feed.js";
 import { openCommandFeed, type CommandFeed } from "./command-feed.js";
+import type { ModDelta } from "./command-frames.js";
 import { claudeCommands, commandTurns } from "./commands.js";
+import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
@@ -253,7 +253,7 @@ async function startSession(
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
    *  when launch policy arms it. Personal native connections use the same recorder through the
    *  app host, with a boundary captured when that conversation connects. */
-  let events: AguiEmitterHolder<ClaudeEntry> | undefined;
+  let events: ClaudeEventHolder | undefined;
 
   /** The `claude/channel` push side — set below once the MCP server exists. */
   let wake: WakePolicy | undefined;
@@ -279,18 +279,18 @@ async function startSession(
   // directory comes from that session's SessionStart hook instead.
   const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
   // The command mod's socket opens below, once the session's teardown is in place.
-  let commands: CommandFeed | undefined;
+  const commands = sessionCommands(env, claude, () => agent, warn);
   const agent: MeshAgent = new MeshAgent(config, env, {
     withholdProcessCwd: true,
     onceClaimBound: true,
-    commands: claudeCommands({ feed: () => commands, interrupting: () => claude.interrupting(agent), warn }),
+    commands: commands.dispatcher,
     naming: claudeNaming(env, config.model),
   });
   const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
   // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
-  // stays open. The desk exists once the agent serves that endpoint, which only a user-auth mesh does.
+  // stays open. The desk exists once the agent serves that endpoint.
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
   const hooks = launchedSessionHooks(prompts, claude, warn);
 
@@ -315,7 +315,7 @@ async function startSession(
       } catch {
         /* ignore */
       }
-      commands?.close();
+      commands.close();
       wake?.stop();
       try {
         await events?.close();
@@ -336,7 +336,7 @@ async function startSession(
     );
   };
   setClose(close);
-  if (opts.claudePid !== undefined) commands = await openCommandFeed(opts.claudePid, { warn });
+  await commands.open(opts.claudePid, plane && ((list) => plane.deltas(list)));
   controlServer = startControlServer(
     agent,
     control,
@@ -399,6 +399,26 @@ async function startSession(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,
   );
   return { name: config.name, close };
+}
+
+/** A session's command mod: the dispatcher its agent serves, and the mod's socket behind it, which
+ *  `open` opens for the named Claude Code process. With none named, the dispatcher refuses. */
+function sessionCommands(env: NodeJS.ProcessEnv, claude: Pick<ClaudeHooks, "interrupting">, agent: () => MeshAgent, warn: (msg: string) => void) {
+  let feed: CommandFeed | undefined;
+  return {
+    dispatcher: claudeCommands({
+      feed: () => feed, interrupting: () => claude.interrupting(agent()), warn,
+      imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent().once("stopping", stop),
+    }),
+    /** Serve the command socket of the Claude Code process `claudePid`, and, given a sink, ask its
+     *  mod to relay the reply text the session streams. */
+    async open(claudePid: number | undefined, deltas?: (list: ModDelta[]) => void): Promise<void> {
+      if (claudePid === undefined) return;
+      feed = await openCommandFeed(claudePid, { warn });
+      if (deltas) feed.stream(deltas);
+    },
+    close: (): void => feed?.close(),
+  };
 }
 
 /**

@@ -39,7 +39,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, constants as fsConstants, openSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
-import type { PresenceCondition } from "@cotal-ai/core";
+import type { PresenceCondition, TurnImage } from "@cotal-ai/core";
 import { codexCondition } from "./agui-map.js";
 
 /** Non-secret launch attribution variables a seat's shell needs for `cotal stop --self` and
@@ -180,6 +180,15 @@ interface RpcMessage {
   error?: { code?: number; message?: string };
 }
 
+/** A request the app-server sent this host, such as an approval. `gen` is the incarnation that
+ *  sent it: an answer reaches only that one. */
+export interface ServerRequest {
+  id: number | string;
+  method: string;
+  params: Record<string, unknown>;
+  gen: number;
+}
+
 interface DriverOpts {
   /** The agent's working directory (the thread's cwd). */
   cwd: string;
@@ -189,6 +198,11 @@ interface DriverOpts {
   configOverrides: readonly (readonly [string, string])[];
   /** Persona → `thread/start.developerInstructions`. */
   developerInstructions?: string;
+  /** Settings `thread/start` applies to the thread, such as an asking launch's approval policy. */
+  threadSettings?: Readonly<Record<string, unknown>>;
+  /** Settings every `turn/start` carries, such as the reasoning summary a reasoningEvents launch
+   *  asks for. */
+  turnSettings?: Readonly<Record<string, unknown>>;
   /** Extra env for the child, applied AFTER the COTAL_* scrub. The MCP bearer token rides here:
    *  the child genuinely needs that one capability, while everything else COTAL_* stays hidden.
    *  (That token is host-lifetime — the endpoint outlives app-server restarts — unlike the
@@ -197,6 +211,9 @@ interface DriverOpts {
   /** Binary override (tests point this at a fake server). */
   bin?: string;
   log?: (m: string) => void;
+  /** Takes a server request to answer later with {@link AppServerDriver.respond}, returning true,
+   *  or returns false and the driver declines it at once. */
+  hold?: (request: ServerRequest) => boolean;
 }
 
 /**
@@ -206,8 +223,12 @@ interface DriverOpts {
  *    `owned` is false for a turn the attached TUI started: this host may observe it, but only
  *    a turn it started itself may finalize its own delivery accounting.
  *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/presence)
- *  - `"waiting"` (detail)                              — an approval was requested (auto-answered)
+ *  - `"textDelta"` (itemId, text, kind)                — a piece of an agent message (`text`) or of a
+ *    reasoning summary (`reasoning`) as it streams
+ *  - `"planUpdated"` ({explanation, plan})             — the thread's plan changed (`turn/plan/updated`)
+ *  - `"waiting"` (detail)                              — an approval was requested
  *  - `"answered"` (detail)                             — that request's reply is written (→ working)
+ *  - `"resolved"` (requestId)                          — the app-server stopped waiting on a request
  *  - `"closed"` (code)                                 — the child exited
  */
 export class AppServerDriver extends EventEmitter {
@@ -248,6 +269,8 @@ export class AppServerDriver extends EventEmitter {
    *  event because the `ready` can land before anyone waits for it. */
   private readonly mcpStatus = new Map<string, { status: string; error?: string }>();
   private readonly mcpWaiters = new Set<() => void>();
+  /** The thread's context use, from its last `thread/tokenUsage/updated` that named a window. */
+  private context?: { used: number; size: number };
   /** Set by {@link stop}: this driver has been torn down ON PURPOSE, so the child's death is
    *  expected and must not be recovered from. */
   private terminal = false;
@@ -466,10 +489,12 @@ export class AppServerDriver extends EventEmitter {
     const started = (await this.request("thread/start", {
       cwd: this.opts.cwd,
       ...(this.opts.developerInstructions ? { developerInstructions: this.opts.developerInstructions } : {}),
+      ...this.opts.threadSettings,
     })) as { thread?: { id?: string }; model?: string };
     const id = started.thread?.id;
     if (!id) throw new Error("thread/start returned no thread id");
     this.threadId = id;
+    this.context = undefined;
     this.startedModel = started.model;
     // Materialize the thread's rollout file. `thread/start` alone writes NOTHING to disk, and
     // `thread/resume` (how the TUI attaches) fails with "no rollout found" until something does
@@ -525,13 +550,24 @@ export class AppServerDriver extends EventEmitter {
    *  order inside the read loop, so `turn/started` always precedes `turn/completed`, and by the
    *  time a terminal event is handled the id is set. Adopting from the awaited response instead
    *  would run as a later microtask — after a same-chunk `turn/started`+`turn/completed` already
-   *  cleared the id — and would resurrect the dead turn (falsely busy forever). */
-  async startTurn(text: string): Promise<void> {
+   *  cleared the id — and would resurrect the dead turn (falsely busy forever). Each image goes
+   *  as a data URL, and a turn of images alone sends no text. */
+  async startTurn(text: string, images: readonly TurnImage[] = []): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
     await this.request("turn/start", {
+      ...this.opts.turnSettings,
       threadId: this.threadId,
-      input: [{ type: "text", text, text_elements: [] }],
+      input: [
+        ...(text || images.length === 0 ? [{ type: "text", text, text_elements: [] }] : []),
+        ...images.map((i) => ({ type: "image", url: `data:${i.mimeType};base64,${i.data}` })),
+      ],
     });
+  }
+
+  /** The tokens in the thread's context window after its last model call, and the window's size,
+   *  as Codex's own context meter counts them. Absent until Codex reported both. */
+  get contextUsage(): { used: number; size: number } | undefined {
+    return this.context;
   }
 
   /** The skills Codex finds for this thread's working directory, re-read from disk. A repo skill
@@ -548,6 +584,7 @@ export class AppServerDriver extends EventEmitter {
   async startSkillTurn(name: string, path: string, args: string): Promise<void> {
     if (!this.threadId) throw new Error("thread not started");
     await this.request("turn/start", {
+      ...this.opts.turnSettings,
       threadId: this.threadId,
       input: [{ type: "skill", name, path }, ...(args ? [{ type: "text", text: args, text_elements: [] }] : [])],
     });
@@ -788,33 +825,45 @@ export class AppServerDriver extends EventEmitter {
       return;
     }
     // Server→client request (id AND method): approvals and elicitations.
-    if (msg.id !== undefined && msg.method) return this.onServerRequest(msg.id, msg.method);
+    if (msg.id !== undefined && msg.method) return this.onServerRequest(msg.id, msg.method, msg.params ?? {});
     // Notification (method, no id).
     if (msg.method) this.onNotification(msg.method, msg.params ?? {});
   }
 
-  private onServerRequest(id: number | string, method: string): void {
-    // Approvals. The host enforces approval_policy=never at launch (host.ts refuses an override
-    // to any interactive mode a headless session cannot honestly answer) and pre-approves its
-    // OWN MCP tools (`default_tools_approval_mode=approve`), so these shouldn't fire. If one
-    // arrives anyway, DECLINE with the method's own response shape — an unattended host must
-    // never grant authority the policy didn't, and an unanswered request would hang the turn
-    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know
-    // (item/permissions/requestApproval wants {permissions, scope}, not a decision).
+  private onServerRequest(id: number | string, method: string, params: Record<string, unknown>): void {
     const approval = method === "execCommandApproval"
       || method === "applyPatchApproval"
       || method === "item/commandExecution/requestApproval"
-      || method === "item/fileChange/requestApproval";
+      || method === "item/fileChange/requestApproval"
+      || method === "item/permissions/requestApproval"
+      || (method === "mcpServer/elicitation/request" && (params._meta as { codex_approval_kind?: unknown } | null | undefined)?.codex_approval_kind === "mcp_tool_call");
     this.emit("waiting", method, approval ? ({ code: "approval", source: method, since: Date.now() } satisfies PresenceCondition) : undefined);
+    // A held request is answered later; its `serverRequest/resolved` ends the wait.
+    if (this.opts.hold?.({ id, method, params, gen: this.generation })) return;
+    // Anything not held is DECLINED with the method's own response shape: an unattended host must
+    // never grant authority the policy didn't, and an unanswered request would hang the turn
+    // forever. Method-specific: a generic suffix match must not answer shapes it doesn't know.
     if (method === "execCommandApproval" || method === "applyPatchApproval")
       this.writeLine({ jsonrpc: "2.0", id, result: { decision: "denied" } }); // legacy ReviewDecision
     else if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval")
       this.writeLine({ jsonrpc: "2.0", id, result: { decision: "decline" } }); // v2 decision enums
-    // Anything else (permissions requests, elicitations, attestation, user-input): decline cleanly.
+    else if (method === "item/permissions/requestApproval")
+      this.writeLine({ jsonrpc: "2.0", id, result: { permissions: {}, scope: "turn" } }); // grants nothing
+    // A cancel leaves Codex no saved decision, where a decline is the person's refusal.
+    else if (method === "mcpServer/elicitation/request")
+      this.writeLine({ jsonrpc: "2.0", id, result: { action: "cancel", content: null, _meta: null } });
+    // Anything else (attestation, user-input): decline cleanly.
     else this.writeLine({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported by the cotal host" } });
     // The wait ended with the reply. Without this the turn could end waiting→idle, which is not the
     // working→idle turn boundary, and the condition would outlive the turn (#3840).
     this.emit("answered", method);
+  }
+
+  /** Answer a held server request. False when its incarnation is gone or the socket is closed,
+   *  so nothing was written. */
+  respond(request: ServerRequest, result: unknown): boolean {
+    if (!this.isCurrent(request.gen)) return false;
+    return this.writeLine({ jsonrpc: "2.0", id: request.id, result });
   }
 
   /** Tombstone a turn whose terminal has been seen, keeping only a short recent tail — a late
@@ -883,8 +932,11 @@ export class AppServerDriver extends EventEmitter {
       case "item/reasoning/textDelta":
       case "item/commandExecution/outputDelta":
       case "item/fileChange/outputDelta":
-        if (params.threadId === this.threadId && typeof params.delta === "string" && params.delta.length > 0)
-          this.emit("work");
+        if (params.threadId !== this.threadId || typeof params.delta !== "string" || params.delta.length === 0) return;
+        this.emit("work");
+        if (typeof params.itemId !== "string") return;
+        if (method === "item/agentMessage/delta") this.emit("textDelta", params.itemId, params.delta, "text");
+        if (method === "item/reasoning/summaryTextDelta") this.emit("textDelta", params.itemId, params.delta, "reasoning");
         return;
       case "mcpServer/startupStatus/updated": {
         const name = typeof params.name === "string" ? params.name : undefined;
@@ -895,7 +947,21 @@ export class AppServerDriver extends EventEmitter {
         for (const w of [...this.mcpWaiters]) w();
         return;
       }
+      case "turn/plan/updated":
+        if (params.threadId === this.threadId) this.emit("planUpdated", { explanation: params.explanation, plan: params.plan });
+        return;
       case "turn/failed": // terminal, but turn/completed (status:"failed") follows on the same turn
+        return;
+      case "thread/tokenUsage/updated": {
+        const usage = params.tokenUsage as { last?: { totalTokens?: unknown }; modelContextWindow?: unknown } | undefined;
+        const used = usage?.last?.totalTokens;
+        const size = usage?.modelContextWindow;
+        if (params.threadId === this.threadId && typeof used === "number" && typeof size === "number" && size > 0) this.context = { used, size };
+        return;
+      }
+      case "serverRequest/resolved":
+        if (params.threadId === this.threadId && (typeof params.requestId === "number" || typeof params.requestId === "string"))
+          this.emit("resolved", params.requestId);
         return;
       case "turn/completed": {
         // Terminal events are correlated by EXACT turn id: a stale or duplicated terminal for a

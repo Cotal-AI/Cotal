@@ -1,4 +1,4 @@
-import { EpEnvelopeError, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { EpEnvelopeError, loadCotalConfig, rejectionText, resolveAuthProvider, spawnEnvAllow } from "@cotal-ai/core";
 import type { Connector, ConnectorModelCatalog, ControlReply, EpCaller } from "@cotal-ai/core";
 import { agentAuthState, agentLifecycleSecretFilePaths, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash } from "node:crypto";
@@ -110,13 +110,21 @@ export class StatusAndModels {
     if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const requested = String(args.agent ?? "").trim();
     const refresh = args.refresh === true;
+    // The spawn.env names a spawn would read now, so a catalog lists what a launch reaches. A config
+    // that cannot be read fails the read, as it refuses a spawn.
+    let envAllow: readonly string[] | undefined;
+    try {
+      envAllow = spawnEnvAllow(loadCotalConfig(this.config.workspaceRoot));
+    } catch (e) {
+      return { ok: false, error: rejectionText(e) };
+    }
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
       await this.parts.connectorInventory.refreshUnavailableConnectors(connector.name, true);
       const harness = this.parts.harnessResolution.launchHarness(connector);
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
       if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
-        const catalog = await this.parts.harnessResolution.readCatalog(connector, harness.binaries, refresh);
+        const catalog = await this.parts.harnessResolution.readCatalog(connector, harness.binaries, envAllow, refresh);
         return { agent: connector.name, supported: catalog.unavailable === undefined, ...catalog };
       } catch (e) {
         return { agent: connector.name, supported: true, models: [], error: rejectionText(e) };
@@ -203,7 +211,7 @@ export class StatusAndModels {
       terminalSessions: this.config.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.config.startedAtMs,
-      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses, this.userMode),
+      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {

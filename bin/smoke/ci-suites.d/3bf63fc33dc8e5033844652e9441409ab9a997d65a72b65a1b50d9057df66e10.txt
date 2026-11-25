@@ -1,0 +1,3 @@
+# OpenCode 1.x and 2.x tool results reach the payload rail through the real emitter, one record per
+# read, and the public channel carries the result marker with the call's own error status.
+smoke:opencode-result-marker

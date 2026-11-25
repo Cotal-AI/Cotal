@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readModelCatalog, type ModelCatalog } from "@cotal-ai/core";
+import { catalogChoiceRefusal, discardLaunchArtifacts, readModelCatalog, type LaunchOpts, type ModelCatalog } from "@cotal-ai/core";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
 import { claudeConnector } from "../src/extension.js";
 
@@ -40,6 +40,15 @@ const timed = async (bin: string): Promise<{ catalog: ModelCatalog; waited: numb
   const catalog = await ask(bin);
   return { catalog, waited: Date.now() - asked };
 };
+/** A read that should fail: the catalog it listed instead, or the error it threw. */
+const failure = async (bin: string): Promise<{ catalog?: ModelCatalog; error: string; waited: number }> => {
+  const asked = Date.now();
+  try {
+    return { catalog: await ask(bin), error: "", waited: Date.now() - asked };
+  } catch (e) {
+    return { error: (e as Error).message, waited: Date.now() - asked };
+  }
+};
 const logged = (log: string) => readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 const alive = (pid: number): boolean => {
   try {
@@ -58,7 +67,7 @@ const FAST_IDS = ["opus", "fable", "claude-opus-5", "claude-opus-4-8"];
 const fastModes = (catalog: ModelCatalog) => Object.fromEntries(catalog.models.flatMap((m) => m.modes?.filter((x) => x.id === "fast").map((x) => [m.id, x]) ?? []));
 const ORG_OFF = "Fast mode has been disabled by your organization";
 
-console.log("claude connector: the model catalog asks claude, and never hangs or throws");
+console.log("claude connector: the model catalog asks claude, never hangs, and fails a read that lists nothing a seat can run");
 
 {
   const { bin, log } = standIn("logged-in", recorded.loggedIn);
@@ -133,6 +142,19 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   );
   const checked = await readModelCatalog({ name: "claude", listModels: () => catalog }, {}).then(() => "read", (e: Error) => e.message);
   check("core reads the catalog as consistent: one default model, and every default among its model's values", checked === "read", checked);
+  // The launch check a spawn runs, against this catalog where the organization turns fast off.
+  const refusal = (modes: Record<string, boolean>) => catalogChoiceRefusal(claudeConnector, { model: "opus", modes }, async () => catalog);
+  const on = await refusal({ fast: true });
+  check("core refuses a launch that turns the unavailable fast on, with claude's reason", on?.includes(ORG_OFF) === true, on);
+  const off = await refusal({ fast: false });
+  const spec = claudeConnector.buildLaunch({ space: "s", name: "seat", events: false, model: "opus", modes: { fast: false } } as LaunchOpts);
+  discardLaunchArtifacts(spec.artifacts ?? []);
+  const rendered = spec.args.flatMap((a, i) => (a === "--settings" ? [spec.args[i + 1]] : []));
+  check(
+    "fast=false passes core's check though fast is unavailable, and reaches claude as fast mode off",
+    off === undefined && JSON.stringify(rendered) === JSON.stringify(['{"fastMode":false}']),
+    { off, rendered },
+  );
   check(
     "claude gets a launch's env, without this process's mesh identity or Claude session marker",
     started.env.includes("PATH") && !started.env.includes("COTAL_NAME") && !started.env.includes("CLAUDECODE"),
@@ -148,8 +170,8 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
 }
 
 {
-  const catalog = await ask(standIn("logged-out", recorded.loggedOut).bin);
-  check("a logged-out claude is unavailable and says to log in, though it answered with its built-in aliases", catalog.models.length === 0 && /not logged in/.test(catalog.unavailable ?? ""), catalog);
+  const read = await failure(standIn("logged-out", recorded.loggedOut).bin);
+  check("a logged-out claude fails the read and says to log in, though it answered with its built-in aliases", read.catalog === undefined && /not logged in; run claude to log in/.test(read.error), read);
 }
 
 {
@@ -238,48 +260,59 @@ for (const [name, state, reason] of [
 }
 
 {
-  const { catalog } = await timed(standIn("no-get-settings", recorded.loggedIn, {}, withSettings({ refuse: "get_settings" })).bin);
-  check("a claude that refuses get_settings is unavailable with its reason, not a list without defaults", catalog.models.length === 0 && /refused.*get_settings/.test(catalog.unavailable ?? ""), catalog);
+  const read = await failure(standIn("no-get-settings", recorded.loggedIn, {}, withSettings({ refuse: "get_settings" })).bin);
+  check("a claude that refuses get_settings fails the read with its reason, not a list without defaults", read.catalog === undefined && /refused.*get_settings/.test(read.error), read);
 }
 
 {
-  const { catalog } = await timed(standIn("no-applied", recorded.loggedIn, {}, withSettings({ launchDefault: { model: 7 } })).bin);
-  check("a get_settings answer without the applied settings makes the catalog unavailable", catalog.models.length === 0 && /without the settings it applies/.test(catalog.unavailable ?? ""), catalog);
+  const read = await failure(standIn("no-applied", recorded.loggedIn, {}, withSettings({ launchDefault: { model: 7 } })).bin);
+  check("a get_settings answer without the applied settings fails the read", read.catalog === undefined && /without the settings it applies/.test(read.error), read);
 }
 
 {
   const models = recorded.loggedIn.response.response.models.map((m: Record<string, unknown>) => (m.value === "opus" ? { ...m, supportedEffortLevels: "high" } : m));
-  const catalog = await ask(standIn("levels-not-a-list", withModels(models)).bin);
-  check("a model whose effort levels are not a list of names makes the catalog unavailable", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
+  const read = await failure(standIn("levels-not-a-list", withModels(models)).bin);
+  check("a model whose effort levels are not a list of names fails the read", read.catalog === undefined && /malformed model list/.test(read.error), read);
 }
 
 {
-  const catalog = await ask(standIn("refused", recorded.refused).bin);
-  check("a refused request is unavailable with claude's own reason", catalog.models.length === 0 && (catalog.unavailable ?? "").includes(recorded.refused.response.error), catalog);
+  const read = await failure(standIn("refused", recorded.refused).bin);
+  check("a refused request fails the read with claude's own reason", read.catalog === undefined && read.error.includes(recorded.refused.response.error), read);
 }
 
 {
-  const catalog = await ask(standIn("not-a-list", withModels("opus")).bin);
-  check("a model list that is not a list makes the catalog unavailable", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
+  const read = await failure(standIn("not-a-list", withModels("opus")).bin);
+  check("a model list that is not a list fails the read", read.catalog === undefined && /malformed model list/.test(read.error), read);
 }
 
 {
-  const catalog = await ask(standIn("row-without-value", withModels([...recorded.loggedIn.response.response.models, { displayName: "Unnamed" }])).bin);
-  check("one model row with no value makes the catalog unavailable, not a partial list", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
+  const read = await failure(standIn("row-without-value", withModels([...recorded.loggedIn.response.response.models, { displayName: "Unnamed" }])).bin);
+  check("one model row with no value fails the read, not a partial list", read.catalog === undefined && /malformed model list/.test(read.error), read);
 }
 
 {
-  let thrown: unknown;
-  const catalog = await ask(join(dir, "missing", "claude")).catch((e: unknown) => {
-    thrown = e;
-    return undefined;
-  });
-  check("a missing claude is unavailable, naming the failed start, and never throws", thrown === undefined && catalog?.models.length === 0 && /could not start/.test(catalog.unavailable ?? ""), { thrown, catalog });
+  const catalog = await ask(standIn("no-list", withModels(undefined)).bin);
+  check("an answer with no model list at all is unavailable, since that claude has no catalog to list", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
 }
 
 {
-  const catalog = await ask(standIn("exits", "exit").bin);
-  check("a claude that exits before answering is unavailable, naming its exit", catalog.models.length === 0 && /exited \(3\)/.test(catalog.unavailable ?? ""), catalog);
+  const rows = [{ value: "opus", displayName: "Opus", supportsEffort: true, supportedEffortLevels: ["low", "turbo", "max"] }, { value: "haiku", displayName: "Haiku", supportsEffort: false, supportedEffortLevels: ["low"] }];
+  const catalog = await ask(standIn("odd-effort", withModels(rows)).bin);
+  check(
+    "a level --effort does not take is left out, and a model claude marks without effort has no variants",
+    JSON.stringify(catalog.models.map((m) => m.variants?.map((v) => v.name))) === JSON.stringify([["low", "max"], undefined]),
+    catalog.models,
+  );
+}
+
+{
+  const read = await failure(join(dir, "missing", "claude"));
+  check("a missing claude fails the read, naming the failed start", read.catalog === undefined && /could not start/.test(read.error), read);
+}
+
+{
+  const read = await failure(standIn("exits", "exit").bin);
+  check("a claude that exits before answering fails the read, naming its exit", read.catalog === undefined && /exited \(3\)/.test(read.error), read);
 }
 
 {
@@ -295,22 +328,38 @@ for (const [name, state, reason] of [
 
 {
   const { bin, log } = standIn("late-and-stubborn", recorded.loggedIn, { FAKE_CLAUDE_STUBBORN: "1", FAKE_CLAUDE_ANSWER_DELAY_MS: String(BOUND_MS - 500) });
-  const { waited } = await timed(bin);
+  const { waited } = await failure(bin);
   const { pid } = logged(log)[0];
   check("a stubborn claude that answers late still ends the whole read by the bound", waited < BOUND_MS + 500 && !alive(pid), { waited, pid });
 }
 
 {
   const { bin, log } = standIn("silent", "silent", { FAKE_CLAUDE_STUBBORN: "1" });
-  const { catalog, waited } = await timed(bin);
+  const { catalog, error, waited } = await failure(bin);
   check(
-    "a claude that never answers is unavailable once the bound passes, not a hang",
-    catalog.models.length === 0 && catalog.unavailable?.includes(`within ${BOUND_MS / 1000}s`) === true && waited >= BOUND_MS - 500 && waited < BOUND_MS + 3_000,
-    { waited, catalog },
+    "a claude that never answers fails the read once the bound passes, not a hang",
+    catalog === undefined && error.includes(`within ${BOUND_MS / 1000}s`) && waited >= BOUND_MS - 500 && waited < BOUND_MS + 3_000,
+    { waited, catalog, error },
   );
   check("the bound kills a stuck claude at once, without the exit grace an answered claude gets", waited < BOUND_MS + 900, waited);
   const { pid } = logged(log)[0];
   check("the lister kills the claude it gave up on", !alive(pid), pid);
+}
+
+{
+  // spawn.env names reach the catalog's claude as they reach a launch, so a provider that only
+  // spawn.env configures lists the models a seat would run. A name nobody declared stays out.
+  Object.assign(process.env, { CATALOG_GATEWAY_URL: "https://gateway.invalid", CATALOG_UNDECLARED: "undeclared" });
+  const { bin, log } = standIn("env-allow", recorded.loggedIn);
+  await claudeConnector.listModels!({ resolvedBinaries: { claude: bin }, envAllow: ["CATALOG_GATEWAY_URL"] });
+  const seen: string[] = logged(log)[0]?.env ?? [];
+  check(
+    "a catalog read gives claude the spawn.env names a launch gets, and no name spawn.env does not declare",
+    seen.includes("CATALOG_GATEWAY_URL") && !seen.includes("CATALOG_UNDECLARED"),
+    seen.filter((name) => name.startsWith("CATALOG_")),
+  );
+  delete process.env.CATALOG_GATEWAY_URL;
+  delete process.env.CATALOG_UNDECLARED;
 }
 
 for (const log of logs) {

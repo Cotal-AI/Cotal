@@ -85,7 +85,8 @@ The catalog marks each model's default variant and each mode's default.
 A mode the logged-in account cannot use, such as a fast tier its organization turned off, is listed as unavailable with the reason.
 
 A launch runs only a variant or mode the connector's catalog lists for its model.
-A launch that names an unavailable mode is refused with its reason, whatever value it gives.
+A launch that turns an unavailable mode on is refused with its reason.
+Setting it off, `false` for a toggle or the default option for a choice, launches, so a template that keeps a mode off still runs.
 The application would otherwise run a choice it does not support at some other setting, without saying so.
 Without `--model`, the check uses the model the catalog marks as the default.
 A launch that names no variant and no mode needs no catalog.
