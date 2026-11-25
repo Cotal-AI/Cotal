@@ -812,6 +812,8 @@ function reportInterruptedStart(values: RunValues, space: string): () => void {
   return () => { process.off("SIGINT", onInterrupt); process.off("SIGTERM", onTerminate); };
 }
 
+const OPEN_INVENTORY_WITHOUT_MANAGER = Symbol();
+
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
  *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
  *  ({@link invokeRepairingSplit}). The reply's data on success; a refusal throws as
@@ -838,7 +840,10 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
   try {
     // Only the operator's own unpinned instrument holds the registry rows `ps` scatters on; a seat's
     // credential and a user's manager view hold none.
-    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) await refuseWithoutLiveManager(nc, t, values.on);
+    if (!seat && auth.bearer === undefined && (auth.managerInstanceId === undefined || values.on !== undefined)) {
+      const openInventory = command === "run-ps" && t.mode === "open" && values.on === undefined && values.page !== true;
+      if (await refuseWithoutLiveManager(nc, t, values.on, openInventory)) return OPEN_INVENTORY_WITHOUT_MANAGER;
+    }
     // A logged-in user's manager view is issued at the callout (SPEC 13.15): its generation is read
     // back from this connection's accepted row, and every request rides `ep.v1` under it.
     const caller = auth.bearer !== undefined && auth.managerInstanceId !== undefined
@@ -913,13 +918,15 @@ async function chatStreamGone(nc: NatsConnection, space: string): Promise<boolea
 /** A hosted verb on a space whose registry lists no live manager is refused here, as `ps` refuses
  *  it, rather than after the describe has waited out its whole deadline for an answer no manager
  *  can send. So is an `on` pin that names none of the live managers, with the ones that run. Any
- *  other registry outcome, an unreadable registry included, leaves the describe to decide. */
-async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string): Promise<void> {
+ *  other registry outcome, an unreadable registry included, leaves the describe to decide. An
+ *  ordinary unpinned list on a known open mesh needs no manager to report an empty inventory. */
+async function refuseWithoutLiveManager(nc: NatsConnection, { space, server }: ControlTarget, on?: string, openInventory = false): Promise<true | undefined> {
   let live: Awaited<ReturnType<typeof freezeExpectedSet>>;
   try {
     live = await freezeExpectedSet(await jetstreamManager(nc, { checkAPI: false }), space, BASELINE_LIFECYCLE_ENDPOINT);
   } catch (e) {
     if (!(e instanceof EpEnvelopeError) || !noLiveInstances(e)) return;
+    if (openInventory) return true;
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space to host or read its workflow runs", {
       target: { space },
       native: { code: e.code, detail: `${e.code}: ${e.message}` },
@@ -1017,8 +1024,14 @@ async function hosted(values: RunValues, verb: string, a: string | undefined, b:
       }
       return;
     }
-    const rows = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined) as RunListRow[];
-    const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await ask("run-ps", undefined) as RunListRow[]) } : undefined;
+    const listed = await ask("run-ps", Object.keys(endpoint).length ? endpoint : undefined);
+    if (listed === OPEN_INVENTORY_WITHOUT_MANAGER) {
+      printRunList(space, [], values, undefined, true, true);
+      return;
+    }
+    const rows = listed as RunListRow[];
+    const all = values.endpoint !== undefined && !rows.length ? await ask("run-ps", undefined) : undefined;
+    const unmatched = Array.isArray(all) ? { endpoint: values.endpoint!, recordedUnder: recordedUnder(all) } : undefined;
     printRunList(space, rows, values, unmatched, open);
     return;
   }
