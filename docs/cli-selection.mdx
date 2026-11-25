@@ -75,21 +75,33 @@ definition names that root but its stack journal and broker configuration are no
 The root row then says the folder was moved or deleted, even if the broker is reachable or has
 recreated empty directories at the old path. Its next step stops the stack with
 `cotal down --space <space> --yes` from any folder. See [the missing-folder stop](cli-shutdown.mdx#down).
+`rootGone` is also true when a file obstructs the root of a locally started space. The root row
+names the obstruction and the next step explains how to restore the project folder or forget its
+registration.
 A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
 so is a bare `space show` outside a project with nothing selected. Each entry under `prepared` has `space`, `root`,
-`preparedAt`, `current`, `rootMissing`, which is true when its project folder no longer exists,
-`state` and `lastOperation`. `state` is `prepared` for a space that never started, `stopped` for one
+`preparedAt`, `current`, `rootMissing`, `state` and `lastOperation`. `rootMissing` is true when no
+directory is available at the recorded path. `state` is `prepared` for a space that never started, `stopped` for one
 whose stack ran and was stopped, and `unsettled` when its last `up` or `down` recorded no outcome.
 `lastOperation` names that operation and how it ended, such as `` `cotal down`, completed ``, or is null.
 `space show` of a prepared space gives those with the kind `prepared-space`. When the old path is
-gone and the current project holds the matching stack journal, `cotal space` and `cotal space show`
-identify the moved project and give the same recovery steps as `cotal up` and `cotal status`. For a
-confirmed stopped stack, run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
+missing or occupied by a file and the current project holds the matching stack journal,
+`cotal space` and `cotal space show`
+identify the moved project. If a file occupies the old path and saved instances still belong to
+the moved stack, restore the folder to the old path before trying again. When the old path is
+missing and Cotal offers adoption, run the displayed `cotal space forget <name>` and `cotal space create <name> --adopt --root <dir>`
 commands to keep the new location, then run `cotal up` from that folder. The recovery steps use the
 same launcher name across commands, such as `pnpm cotal` in a source checkout without `cotal` on PATH.
-Forget releases the stopped stack definitions and leaves the project data in place.
-When no matching journal is found, the listing marks the missing folder `(no longer exists)` and
-names forget and plain create instead.
+Forget releases the stopped
+stack definitions and leaves the project data in place. When no matching journal is found, the
+listing marks a missing folder `(no longer exists)` and names forget and plain create instead.
+If a file occupies the recorded path, Cotal does not suggest starting the space there. With no
+matching journal in the current folder, restore the original project folder, or run `cotal space
+forget <name>` and prepare it again at the new path with `cotal space create <name> --root <dir>`.
+Inspection leaves both the file and preparation untouched. `cotal space delete <name> --dry-run`
+cannot inspect the store at a file and asks you to restore the project folder first. A stopped
+local registration with a file at its root can be forgotten once its stack has stopped and its
+broker address is free. This leaves the file in place.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. If you omit
 the name from a registration using `--server`, insert it after `add` and keep the rest of the command.
@@ -571,6 +583,9 @@ runs in part, so every command there targets it, as with nothing selected, and t
 `Mesh:` heading says the selection applies outside the folder. `cotal status` there reports it as
 `Half started` or `Half stopped` with its Next, which for that `up` is `cotal down --yes` and then
 `cotal up --root <root>`.
+If you started the broker with `--root` from another folder, the interrupt notice and the next
+startup refusal give a stop command that changes to the broker's project first. Once it stops,
+repeat your original startup command from the folder where you ran it.
 Inside a project whose root
 has several running spaces, none of them the selection, the command targets the selection. Before it
 acts, it warns on stderr and in its JSON `warnings` with `SELECTION_NOT_FOLDER_SPACE`, naming those
@@ -621,6 +636,11 @@ and `cotal up`, and `status` names the same step. A selection does not change th
 that holds such a journal or configuration and no registration, as a moved project does, is refused
 the same way and never reaches the selected space.
 
+With `--server` and no `--space`, a matching registration takes precedence. If the project would
+otherwise use the default space `main`, it uses the space in its journal when the requested address
+matches the journal's open broker and the recorded process identity still matches. An unrelated
+raw address does not inherit the journal's space.
+
 When the journal names running members but this Cotal home has no instance records for them,
 commands report the missing records. They do not infer that the stack runs under another home.
 If the original home's records were removed, the project's `cotal down --dry-run` and
@@ -658,7 +678,9 @@ with another reachable record, the CLI checks the broker's space inventory. It l
 registration intact and excludes it from automatic selection if the broker does not serve that
 space. If the CLI cannot read the inventory and still has to refuse, it marks the unchecked
 record as unverified and gives the exact `--space` choice for each candidate. An explicit
-`--server` can still require `--space` when several records name that address.
+`--server` can still require `--space` when several records name that address. In that case,
+`cotal history` reads and `cotal ps` give a retry for each space, keeping the broker address and
+the other arguments without changing the saved selection.
 Every refusal of a target puts what to run next
 in `error.remedy`, apart from `error.message`, and names the space and root it concerns under
 `target` when they are known, as for a prepared space that is not started.
@@ -748,6 +770,9 @@ selected space, this folder's maintenance journal under Maintenance when it hold
 attempt and next step; `maintenance` in JSON), unsettled fresh and additive attempts in this folder
 when present, owned service records and useful commands under Next. Connection state, local process
 state and service replies remain separate observations.
+
+Infrastructure status does not accept `--creds`. Remove the flag and its value when you retry.
+Keep the other arguments so the retry uses the same target and output format.
 
 Under Next, `spawn`, `who` and `ps` name the reported space or broker so a different default does not redirect them.
 When Next offers a change of space, it lists `cotal space` to see the choices and `cotal use <name>`
@@ -862,6 +887,9 @@ names the `cotal up` that starts it there.
 `--json` carries the same as `folder.stackBlock`. A manager stop is decided by the manager's own
 receipts, which only `up` and `down` read, so `status` does not name it. When `status` verifies
 that a controller startup still holds the root's maintenance lock, it reports `Startup in progress`.
+For a prepared space, `status --space <name>` checks that space's root even from another folder.
+In the project's own folder, this includes an open stack restart while it registers the space again.
+Next does not suggest a store reset or settlement for that restart.
 Wait for startup to finish, then run the status command shown under Next.
 An `up` or `down` that was interrupted before it recorded an outcome and left some members running
 and others stopped is
@@ -977,6 +1005,7 @@ machine holds, which is also listed as unchanged; a command that targets it refu
 `DEPENDENCY_UNAVAILABLE` and the catalog's reason while its siblings keep working. An account whose catalog could not be refreshed keeps
 its last snapshot and is named in a `CATALOG_UNAVAILABLE` warning, so the result is partial, exit 4;
 when no account could be refreshed, `sync` refuses with `DEPENDENCY_UNAVAILABLE`, exit 2.
+If you selected an account with `--idp`, the suggested retry refreshes only that account.
 
 The registry is updated under the same lock that guards the catalog cache, so a command never lists
 a discovered space set that another command is still writing. The cache records a fetched snapshot
@@ -1135,8 +1164,10 @@ folder in `selected.recordedRoot`. `status` is a read-only report in this order:
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
 lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
-`cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
-mesh to inspect; it starts nothing.
+`cotal setup --skills`. The compact report shows out-of-date `.agents` skills even when no agent
+application is set up. If the skills ownership manifest is corrupt, restore a valid manifest at the
+reported path before running `cotal setup --skills`. `status` takes `--space` / `--server` to pick the
+mesh to inspect. It starts nothing.
 
 When `status` would suggest restarting the selected stopped local stack,
 `status` checks the recorded root's default `.cotal/channels.json` with the same validation as `up`.

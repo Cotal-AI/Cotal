@@ -12,7 +12,8 @@
  * Run: pnpm smoke:space-reads
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,43 +27,28 @@ if (!existsSync(BIN)) {
 
 const home = mkdtempSync(join(tmpdir(), "cotal-space-reads-"));
 const cotalHome = join(home, ".cotal");
+mkdirSync(cotalHome, { mode: 0o700 });
 const xdgConfigHome = join(home, ".config");
+const xdgRuntimeDir = join(home, "runtime");
+mkdirSync(xdgRuntimeDir, { mode: 0o700 });
 const hintProject = mkdtempSync(join(home, "hint-root-"));
 const hintSandbox = recordSmokeSandbox({ root: hintProject, cotalHome, xdgConfigHome });
 // Set before the workspace is imported: it reads COTAL_HOME on each call, so the real ~/.cotal is
 // never touched.
 process.env.COTAL_HOME = cotalHome;
-const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, removeMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { clearCurrent, findMesh, getCurrent, meshesDir, preparedSpacesDir, recordMesh, removeMesh, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
+const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 
-const brokerPort = await freePort();
-const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
-teardownOnSignal(broker);
-broker.on("error", () => {
-  console.error("needs nats-server on PATH");
-  process.exit(1);
-});
 const DEAD = `nats://127.0.0.1:${await freePort()}`;
-// A discovered space's broker: it accepts and says nothing, and counts who dialed it.
-let catalogDials = 0;
-const catalogServer = createServer((socket) => {
-  catalogDials++;
-  socket.destroy();
-});
-const CATALOG = `nats://127.0.0.1:${await listenOn(catalogServer, await freePort())}`;
-process.on("exit", () => {
-  broker.kill("SIGKILL");
-  catalogServer.close();
-  rmSync(home, { recursive: true, force: true });
-});
+process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) => {
   const options = {
     cwd,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdgConfigHome, XDG_RUNTIME_DIR: xdgRuntimeDir, COTAL_HOME: cotalHome, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
     encoding: "utf8" as const,
     timeout: 120_000,
   };
@@ -84,14 +70,21 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
 const itemOf = (env: Record<string, any> | undefined, name: string) => (env?.result?.items as { space: string }[] | undefined)?.find((s) => s.space === name) as Record<string, unknown> | undefined;
 const registryFiles = () => readdirSync(meshesDir()).sort().map((f) => `${f}:${readFileSync(join(meshesDir(), f), "utf8")}`);
 
-for (let i = 0; i < 50; i++) {
-  const { isReachable } = await import("@cotal-ai/core");
-  if (await isReachable(LIVE)) break;
-  await new Promise((r) => setTimeout(r, 100));
+function saveDormantBroker(space: string, project: string): string {
+  const declaration = join(home, `${space}-broker.json`), config = join(project, ".cotal", "server.conf");
+  writeFileSync(config, "", { mode: 0o600 });
+  writeFileSync(declaration, JSON.stringify({ schemaVersion: 1, space,
+    launch: { type: "adapter", adapter: "nats-broker", options: { root: project, config, binary: process.execPath, server: DEAD } },
+    readiness: { type: "adapter", timeoutMs: 30_000 },
+  }), { mode: 0o600 });
+  const added = json(["service", "add", "stack-broker", "--space", space, "--file", declaration], project);
+  const revision: unknown = added.env?.result?.revision;
+  if (added.status !== 0 || typeof revision !== "string") throw new Error(`could not save the dormant broker fixture: ${JSON.stringify(shown(added))}`);
+  return revision;
 }
 
 // An implicit config scope outside a project requires a running broker.
-{
+function checkConfigScope(live: string): void {
   const space = "config-probe";
   const entry = { space, server: DEAD, root: hintProject, mode: "open", origin: "manual", ts: new Date().toISOString() } as const;
   recordMesh(entry);
@@ -110,7 +103,7 @@ for (let i = 0; i < 50; i++) {
     const selected = json(["config", "get", "harness"]);
     check("a saved selection still reads the offline space", selected.status === 0 && selected.env?.result.setting.value === "codex" && selected.env.result.scope.from === "selected", shown(selected));
     clearCurrent();
-    recordMesh({ ...entry, server: LIVE });
+    recordMesh({ ...entry, server: live });
     const running = json(["config", "get", "harness"]);
     check("the only running space supplies its override", running.status === 0 && running.env?.result.setting.value === "codex" && running.env.result.scope.from === "running", shown(running));
   } finally {
@@ -129,6 +122,247 @@ for (let i = 0; i < 50; i++) {
   const none = json(["use"]);
   check("bare use with nothing selected reports no selection", none.status === 0 && none.env?.result.current === null && none.env.target === null, shown(none));
 }
+
+// Exercise the same preparation with its directory intact, missing, and replaced by a file.
+{
+  const space = "lab-07", project = mkdtempSync(join(home, `${space}-`));
+  const created = json(["space", "create", space, "--root", project]);
+  if (created.status !== 0) throw new Error(`could not prepare the fixture: ${JSON.stringify(shown(created))}`);
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`);
+  const preparedBefore = readFileSync(record);
+  const show = () => run(["space", "show", space, "--plain"]);
+  const who = () => json(["who", "--space", space]);
+  const startup = (launcher: string) => `start it with \`${launcher} up\` in ${project}`;
+  const recovery = (text: string) => text.includes(`cotal space forget ${space}`) &&
+    text.includes(`cotal space create ${space} --root <dir>`) && !text.includes("cotal up");
+  const intact = show(), intactTarget = who();
+  check("an intact prepared folder is still a place to start the space",
+    intact.status === 0 && ["cotal", "pnpm cotal"].some((launcher) => intact.stdout.includes(startup(launcher))) && intactTarget.status === 2 &&
+      intactTarget.env?.error?.code === "TARGET_UNAVAILABLE" && intactTarget.env.error.remedy === startup("cotal"),
+    [intact, intactTarget].map(shown));
+
+  if (process.platform !== "win32") {
+    chmodSync(project, 0);
+    try {
+      let searchable = true;
+      try { accessSync(project, constants.X_OK); } catch { searchable = false; }
+      if (!searchable) {
+        const denied = json(["space", "show", space]), deniedTarget = who();
+        check("a directory this account cannot enter offers restore-access advice instead of startup",
+          denied.status === 0 && denied.env?.result?.rootMissing === true &&
+            deniedTarget.status === 2 && deniedTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
+            deniedTarget.env.error.remedy.includes("restore access") && !deniedTarget.env.error.remedy.includes("cotal up"), [denied, deniedTarget].map(shown));
+        const deniedDelete = json(["space", "delete", space, "--dry-run"]);
+        const asksForAccess = (r: ReturnType<typeof json>, code: string) => r.status === 2 && r.env?.error?.code === code &&
+          r.env.error.message.includes(`${project} could not be accessed`) && r.env.error.remedy.includes("restore access") &&
+          !r.env.error.remedy.includes("cotal reset store");
+        check("delete preview asks for access instead of looking for the existing directory", asksForAccess(deniedDelete, "TARGET_UNAVAILABLE"), shown(deniedDelete));
+      }
+    } finally { chmodSync(project, 0o700); }
+  }
+
+  saveDormantBroker(space, project);
+
+  renameSync(project, `${project}.saved`);
+  const missing = show(), missingTarget = who();
+  check("a missing prepared folder is still reported as missing",
+    missing.status === 0 && missing.stdout.includes(`${project}, which no longer exists`) && recovery(missing.stdout) &&
+      missingTarget.status === 2 && missingTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      missingTarget.env.error.message.includes(`${project}, which no longer exists`) && recovery(missingTarget.env.error.remedy),
+    [missing, missingTarget].map(shown));
+  const bareProject = mkdtempSync(join(home, "bare-up-"));
+  mkdirSync(join(bareProject, ".cotal"), { mode: 0o700 });
+  // If target resolution admits startup, runtime preflight still prevents a launch.
+  const bareUp = () => json(["up", "--open", "--runtime", "smoke-missing-runtime", "--server", DEAD], bareProject);
+  setCurrent(space);
+  const missingUp = bareUp();
+  check("bare up refuses to start another space when the selected root is missing",
+    missingUp.status === 2 && missingUp.env?.error?.code === "TARGET_UNAVAILABLE" && missingUp.env.error.message.includes(`${project}, which no longer exists`), shown(missingUp));
+
+  const replacement = "replacement file\n";
+  writeFileSync(project, replacement);
+  clearCurrent();
+  const plain = show(), detail = json(["space", "show", space]), target = who();
+  const list = run(["space", "--plain"]), listed = json(["space"]);
+  const fileMessage = `${project}, which is not a directory`;
+  check("space show identifies a non-directory and offers recovery without startup advice",
+    plain.status === 0 && plain.stdout.includes(fileMessage) && plain.stdout.includes("restore the original project folder") && recovery(plain.stdout), shown(plain));
+  check("space list and detail JSON mark a non-directory as an unavailable project folder",
+    detail.status === 0 && listed.status === 0 &&
+      [detail.env?.result, listed.env?.result?.prepared?.[0]].every((row) => row?.rootMissing === true && !("rootProblem" in row)),
+    [detail, listed].map(shown));
+  check("space list labels a non-directory and does not offer startup advice for it",
+    list.status === 0 && list.stdout.includes(`${project} (not a directory)`) && recovery(list.stdout), shown(list));
+  check("who names the non-directory in its TARGET_UNAVAILABLE refusal and offers recovery",
+    target.status === 2 && target.env?.error?.code === "TARGET_UNAVAILABLE" && target.env.error.message.includes(fileMessage) &&
+      target.env.error.remedy.includes("restore the original project folder") && recovery(target.env.error.remedy), shown(target));
+  const deletion = json(["space", "delete", space, "--dry-run"]);
+  check("deletion preview names the non-directory without offering an unusable store reset",
+    deletion.status === 2 && deletion.env?.error?.code === "TARGET_UNAVAILABLE" && deletion.env.error.message.includes(`${project} is not a directory`) &&
+      deletion.env.error.remedy.includes("restore the original project folder") && deletion.env.error.remedy.includes(`cotal space forget ${space}`) &&
+      !deletion.env.error.remedy.includes("cotal reset store"), shown(deletion));
+
+  const selected = run(["use", space, "--plain"]);
+  check("selecting the preparation does not offer startup at a file", selected.status === 0 && selected.stdout.includes(fileMessage) && recovery(selected.stdout), shown(selected));
+  const elsewhere = mkdtempSync(join(home, "elsewhere-"));
+  const create = json(["space", "create", space, "--root", elsewhere]);
+  check("preparing the name elsewhere refuses with recovery advice", create.status === 2 && create.env?.error?.code === "CONFLICT" &&
+    create.env.error.message.includes(fileMessage) && recovery(create.env.error.remedy), shown(create));
+  const at = ["--space", space, "--server", DEAD];
+  const addressed = json(["who", ...at]);
+  check("an unreachable explicit broker still reports its address without offering startup at a file",
+    addressed.status === 2 && addressed.env?.error?.code === "TARGET_UNAVAILABLE" && addressed.env.error.message.includes(DEAD) &&
+      addressed.env.error.remedy.includes(`${project} is not a directory`) && recovery(addressed.env.error.remedy), shown(addressed));
+  mkdirSync(join(elsewhere, ".cotal"), { mode: 0o700 });
+  const diagnostic = json(["doctor", "auth", "--space", space], elsewhere);
+  check("auth diagnostics do not direct the operator to the invalid prepared root", diagnostic.status === 2 && diagnostic.env?.error?.code === "AUTH_REQUIRED" &&
+    diagnostic.env.error.remedy.includes(fileMessage) && recovery(diagnostic.env.error.remedy), shown(diagnostic));
+  const up = ["up", "--foreground", "--no-manager", "--open", ...at];
+  const explicit = run([...up, "--root", project], {}, elsewhere);
+  check("explicit up --root still refuses a file without starting anything", explicit.status === 2 &&
+    explicit.stderr.includes("TARGET_UNAVAILABLE") && explicit.stderr.includes("--root must name an existing prepared local project"), shown(explicit));
+  const namedUp = run(up, {}, elsewhere);
+  check("named up from another folder refuses without offering startup at a file", namedUp.status === 2 &&
+    namedUp.stderr.includes("TARGET_UNAVAILABLE") && namedUp.stderr.includes(fileMessage) && recovery(namedUp.stderr), shown(namedUp));
+  check("inspection and refusal leave the replacement file and prepared record intact",
+    readFileSync(project, "utf8") === replacement && readFileSync(record).equals(preparedBefore) && readdirSync(join(elsewhere, ".cotal")).length === 0);
+  const forgot = json(["space", "forget", space]);
+  check("the stale preparation can be forgotten without touching the replacement file",
+    forgot.status === 0 && !existsSync(record) && readFileSync(project, "utf8") === replacement, shown(forgot));
+  const reprepare = json(["space", "create", space, "--root", elsewhere]);
+  check("the space can then be prepared in a new directory", reprepare.status === 0 && reprepare.env?.result?.root === elsewhere, shown(reprepare));
+  const definition = json(["service", "show", "stack-broker", "--space", space], elsewhere);
+  check("forget releases the dormant definition bound to the file path",
+    forgot.env?.result?.releasedDefinitions?.join() === "stack-broker" && definition.status === 2 &&
+      definition.env?.error?.code === "TARGET_NOT_FOUND" && definition.env.error.message.includes("no saved service definition"),
+    [forgot, definition].map(shown));
+  const cleanup = json(["space", "forget", space]);
+  check("the recovery fixture leaves no preparation for the rest of the suite", cleanup.status === 0 && !existsSync(record), shown(cleanup));
+}
+
+{
+  const space = "nested-root", parent = mkdtempSync(join(home, "parent-")), project = join(parent, "child");
+  mkdirSync(project, { mode: 0o700 });
+  const created = json(["space", "create", space, "--root", project]);
+  if (created.status !== 0) throw new Error(`could not prepare the nested fixture: ${JSON.stringify(shown(created))}`);
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`), before = readFileSync(record);
+  renameSync(parent, `${parent}-moved`);
+  writeFileSync(parent, "ancestor file\n");
+  const add = json(["space", "add", space, "--server", DEAD, "--root", hintProject, "--force"]);
+  check("space add diagnoses an ancestor file without suggesting local startup",
+    add.status === 2 && add.env?.error?.code === "CONFLICT" && add.env.error.message.includes(`${project}, which is not a directory`) &&
+      add.env.error.remedy.includes(`space forget ${space}`) && !add.env.error.remedy.includes("cotal up") &&
+      readFileSync(parent, "utf8") === "ancestor file\n" && readFileSync(record).equals(before), shown(add));
+  json(["space", "forget", space]);
+}
+
+// A stopped stack's copied journal must be adopted if the project is kept at its new location.
+{
+  const space = "moved-stack", project = mkdtempSync(join(home, "original-")), moved = `${project}-moved`;
+  const created = json(["space", "create", space, "--root", project]);
+  if (created.status !== 0) throw new Error(`could not prepare the moved fixture: ${JSON.stringify(shown(created))}`);
+  const now = new Date().toISOString();
+  const journal = ".cotal/stack-controller.json";
+  const definitionRevision = saveDormantBroker(space, project);
+  const instanceId = randomUUID(), requestId = randomUUID(), instances = serviceInstanceStore(space);
+  const instance = {
+    schemaVersion: 1 as const, instanceId, definition: "stack-broker", definitionRevision,
+    space, host: processServiceHost(), requestId, launchRequestId: requestId, state: "stopped" as const,
+    launcher: requireProcessIdentity(process.pid), readiness: "not-checked" as const, supervisor: "none" as const,
+    foreground: false, createdAt: now, updatedAt: now,
+  };
+  instances.commit(instanceId, undefined, instance);
+  const bytes = JSON.stringify({ schemaVersion: 1, kind: "cotal-stack-controller", root: project, space, mode: "open", server: DEAD,
+    members: ["broker", "auth", "delivery", "manager"].map((role) => ({ role, definition: `stack-${role}`, instanceId: role === "broker" ? instanceId : null, state: role === "broker" ? "stopped" : "not-attempted" })),
+    operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
+  });
+  writeFileSync(join(project, journal), bytes, { mode: 0o600 });
+  renameSync(project, moved);
+  const obstruction = join(home, "obstruction");
+  writeFileSync(obstruction, "replacement\n");
+  symlinkSync(obstruction, project, "file");
+  const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`), before = readFileSync(record);
+  instances.commit(instanceId, instances.read(instanceId), { ...instance, host: { ...instance.host, machine: "f".repeat(64) } });
+
+  const show = run(["space", "show", "--plain"], {}, moved);
+  const list = run(["space", "--plain"], {}, moved);
+  const use = run(["use", space, "--plain"], {}, moved);
+  const who = json(["who", "--space", space], moved);
+  const movedRecovery = (text: string) => text.includes(`space forget ${space}`) &&
+    text.includes(`space create ${space} --adopt --root ${moved}`) && !text.includes("cotal up");
+  check("a foreign stopped instance at an obstructed old path does not get forget-and-adopt advice",
+    [list, show, use, who].every((r) => r.stdout.includes("move this folder back") && !r.stdout.includes("--adopt") && !r.stdout.includes(`space forget ${space}`)) &&
+      show.status === 0 && who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      readFileSync(record).equals(before) && readFileSync(obstruction, "utf8") === "replacement\n" &&
+      readFileSync(join(moved, journal), "utf8") === bytes, [list, show, use, who].map(shown));
+  rmSync(project);
+  instances.commit(instanceId, instances.read(instanceId), instance);
+  const missingShow = run(["space", "show", "--plain"], {}, moved);
+  const missingWho = json(["who", "--space", space], moved);
+  check("a confirmed stopped local stack with a missing old path still gets adoption advice",
+    missingShow.status === 0 && movedRecovery(missingShow.stdout) && missingWho.status === 2 &&
+      missingWho.env?.error?.code === "TARGET_UNAVAILABLE" && movedRecovery(missingWho.env.error.remedy), [missingShow, missingWho].map(shown));
+  instances.commit(instanceId, instances.read(instanceId), { ...instance, state: "starting" });
+  const unresolved = json(["who", "--space", space], moved);
+  check("a retained nonterminal instance is not offered adoption at a missing old path",
+    unresolved.status === 2 && unresolved.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      unresolved.env.error.remedy.includes("move this folder back") && !unresolved.env.error.remedy.includes("--adopt"), shown(unresolved));
+  instances.commit(instanceId, instances.read(instanceId), instance);
+  const forgot = json(["space", "forget", space]);
+  const adopted = json(["space", "create", space, "--adopt", "--root", moved], moved);
+  check("the advertised adoption succeeds without modifying the file at the old path",
+    forgot.status === 0 && forgot.env?.result?.releasedDefinitions?.join() === "stack-broker" && instances.read(instanceId) === undefined &&
+      adopted.status === 0 && adopted.env?.result?.root === moved &&
+      JSON.parse(readFileSync(join(moved, journal), "utf8")).root === moved && readFileSync(obstruction, "utf8") === "replacement\n", [forgot, adopted].map(shown));
+  const cleanup = json(["space", "forget", space]);
+  check("the moved fixture leaves no preparation", cleanup.status === 0, shown(cleanup));
+}
+
+{
+  const space = "stopped-registration", project = mkdtempSync(join(home, "stopped-registration-"));
+  recordMesh({ space, root: project, server: DEAD, mode: "open", origin: "up", stoppedByDown: true, ts: new Date().toISOString() });
+  renameSync(project, `${project}-moved`);
+  writeFileSync(project, "replacement file\n");
+  const recovery = (text: string) => text.includes("not a directory") && text.includes(`space forget ${space}`) && !text.includes("cotal up");
+  const selected = run(["use", space, "--plain"]), selection = json(["use"]);
+  const show = run(["space", "show", space, "--plain"]), detail = json(["space", "show", space]);
+  const who = json(["who", "--space", space]), status = run(["status", "--space", space, "--plain"]);
+  check("an obstructed stopped registration has recovery advice and no restart hint",
+    selected.status === 0 && recovery(selected.stdout) && selection.env?.result?.preparedState === "stopped" && selection.env.result.preparedRoot === project &&
+      show.status === 0 && recovery(show.stdout) && detail.env?.result?.rootGone === true &&
+      who.status === 2 && who.env?.error?.code === "TARGET_UNAVAILABLE" && recovery(`${who.env.error.message} ${who.env.error.remedy}`) &&
+      status.status === 4 && recovery(status.stdout) && !status.stderr.includes("/.cotal/nats.pid"), [selected, selection, show, detail, who, status].map(shown));
+  const forgot = json(["space", "forget", space]);
+  check("forget removes the stopped registration but leaves the file untouched", forgot.status === 0 && findMesh(space) === undefined &&
+    readFileSync(project, "utf8") === "replacement file\n", shown(forgot));
+}
+
+const brokerPort = await freePort();
+const LIVE = `nats://127.0.0.1:${brokerPort}`;
+const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+teardownOnSignal(broker);
+broker.on("error", () => {
+  console.error("needs nats-server on PATH");
+  process.exit(1);
+});
+// A discovered space's broker: it accepts and says nothing, and counts who dialed it.
+let catalogDials = 0;
+const catalogServer = createServer((socket) => {
+  catalogDials++;
+  socket.destroy();
+});
+const CATALOG = `nats://127.0.0.1:${await listenOn(catalogServer, await freePort())}`;
+process.on("exit", () => {
+  broker.kill("SIGKILL");
+  catalogServer.close();
+});
+
+for (let i = 0; i < 50; i++) {
+  const { isReachable } = await import("@cotal-ai/core");
+  if (await isReachable(LIVE)) break;
+  await new Promise((r) => setTimeout(r, 100));
+}
+checkConfigScope(LIVE);
 
 const ts = new Date().toISOString();
 const root = mkdtempSync(join(home, "root-"));

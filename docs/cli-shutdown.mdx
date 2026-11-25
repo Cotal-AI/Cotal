@@ -467,11 +467,12 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 | `--store-dir <dir>` | the recorded store, else `.cotal/nats` | With `--preserve-state`: the store to cut. A different path refuses `CONFLICT` before anything stops. Omit the flag or use the suggested shell-quoted option to name the recorded store |
 | `--session-store <dir>` | none | With `--preserve-state`: a harness transcript store directory to capture with every continuation-capable retained seat. Repeatable. No default and never inferred from a connector name; a path that does not exist or is not a directory is refused before anything stops |
 
-A legacy ledger preview selects the saved ledger by the manifest's source hash. If the preview
-refuses `--json` or `--plain`, omit that format and keep `--dry-run` and the original file or run ID.
+A legacy ledger preview selects the saved ledger by the manifest's source hash. If a ledger preview or teardown refuses `--json` or `--plain`, omit only the output flag. Keep the original file or run ID and keep `--dry-run` on a preview.
 It does not reload launch-time persona files, so a missing persona does not prevent that preview. When this
 root records a stack without an additive ledger, file-form apply refuses `UNSUPPORTED` and
 names bare `cotal down` from that root. It does not require a run ID or stop the stack implicitly.
+
+The recorded-stack preview reads the manifest and its referenced personas. A missing manifest or a non-directory parent gives `TARGET_NOT_FOUND`. If the account cannot read the manifest, the preview reports `PERMISSION_DENIED`. If the path names a directory, select the manifest file inside it. A missing referenced persona is a manifest validation error.
 
 If teardown of an additive ledger is incomplete, the retry command is `cotal down --run=<id>`.
 Run it from the checkout that holds the ledger. It does not need the manifest file.
@@ -907,9 +908,11 @@ selected by it. A controller stack that a completed `down` stopped has no regist
 prepared record and stack journal at the same root name its broker address, store and mode, and a
 reset keeps both, so a later `up` starts it again in the same mode. No reset changes a stack's mode;
 [up](cli-startup.mdx#up) names the way to run another one. After `reset space` of a user-auth space, that
-`up` needs `--user-auth --idp <auth base URL>`, as described below. A stack none of whose members ever started has
-no store to reset, so both refuse `TARGET_NOT_FOUND` and name `cotal up`. So does a prepared space
-no stack has run for, which also names `cotal space forget`. A stack whose last
+`up` needs `--user-auth --idp <auth base URL>`, as described below. Both routes refuse `TARGET_NOT_FOUND`
+and name `cotal up` for a stack that never started and has no adopted store. A prepared space
+no stack has run for also names `cotal space forget`. An adopted stack with a recorded store that
+has never started at its new root refuses `LIFECYCLE_BLOCKED`. From that root, run `cotal up --no-manager`
+and then `cotal down --yes` before retrying the preview. A stack whose last
 operation is not a completed `down` refuses `LIFECYCLE_BLOCKED` and names `cotal down --yes`. Each
 refusal names one reason and the command that clears it. A space that may still run names
 `cotal down --dry-run` to review the stop and `cotal down --yes` to confirm it, both from its root,
@@ -969,7 +972,7 @@ exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
 preview and the apply of both resets, even if its target is missing. The refusal names the link and
-its target. Nothing is removed. Replace the link with the store directory to reset it. A selected
+its target. Nothing is removed. Move the link aside, restore the space's original store directory at the recorded path, and rerun the preview. A selected
 root whose `.cotal` is a link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
 naming the link, and nothing is removed; when the records were moved away and linked back, the Next
 names moving them back. A store in the project folder itself

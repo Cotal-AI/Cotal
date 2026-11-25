@@ -45,6 +45,8 @@ import {
   migrateLegacyCotalMaterial,
   preparedSpaceAt,
   preflightTarget,
+  preparedRootRemedy,
+  projectRootProblemText,
   readPreparedSpaces,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
@@ -70,7 +72,7 @@ import {
   grantMintFlags,
   type AgentGrants,
 } from "@cotal-ai/workspace";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { preparedRootWriteProblem } from "../lib/paths.js";
@@ -204,6 +206,9 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
           : `${correct}.`;
       }
       if (error instanceof MeshTargetError && error.code === "not-started") {
+        const { root: recorded, rootProblem } = error.details;
+        if (recorded !== undefined && rootProblem !== undefined && rootProblem !== "missing")
+          return `"${named}" is prepared in ${recorded}, which ${projectRootProblemText(rootProblem)}. ${displayRemedy(preparedRootRemedy(named, rootProblem))}`;
         if (error.details.rootMissing) registered = error.details.root;
         else if (preparedNeverStarted(error.details)) prepared = error.details.root;
       }

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import type { Connector, LaunchSpec } from "@cotal-ai/core";
+import { execWords } from "../../cli/src/lib/exec-words.js";
 
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}named-open-`));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
@@ -45,8 +46,9 @@ const check = (label: string, condition: boolean, detail: unknown) => {
   console.log(`  ${condition ? "✓" : "✗"} ${label}`);
   checks++;
 };
-const cli = async (args: string[], format = "--json") => {
-  const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), ...args, "--server", server, "--space", space, format], {
+const cli = async (args: string[], format: string | null = "--json") => {
+  const words = format === null ? args : [...args, "--server", server, "--space", space, format];
+  const child = spawn(process.execPath, [join(repo, "bin", "dist", "cotal.js"), ...words], {
     cwd: dir, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "", err = "";
@@ -68,6 +70,18 @@ try {
   const started = await manager.startAgent({ name: "raw-seat", agent: "e2e-stub", model: "raw-pin", cwd: dir, events: false });
   assert.ok(started.ok, JSON.stringify(started));
   const iid = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
+  const badPin = await cli(["status", "absent-seat", "--on", "manager"]);
+  const error = JSON.parse(badPin.out).error;
+  const retryCommand = error?.remedy?.match(/rerun it as `([^`]+)`/)?.[1];
+  check("a named status selector refusal keeps JSON, space and broker in the retry",
+    badPin.code === 1 && badPin.err === "" && error?.code === "USAGE_INVALID"
+      && retryCommand === `cotal status absent-seat --json --space ${space} --server ${server} --on <instance>`
+      && error.message.includes(`\`${retryCommand}\``), badPin);
+  const retried = retryCommand ? await cli(execWords(retryCommand.replace("<instance>", iid)).slice(1), null) : undefined;
+  const result = retried?.out ? JSON.parse(retried.out) : undefined;
+  check("running the printed retry returns JSON from the selected manager",
+    retried?.code === 2 && retried.err === "" && result?.command === "status" && result.outcome === "refused"
+      && result.error?.code === "TARGET_NOT_FOUND" && result.target?.space === space && result.target.managerInstanceId === iid, retried);
   const ps = await cli(["ps"]);
   check("positive control: raw-open ps sees the held seat", ps.code === 0 && ps.out.includes("raw-seat"), ps);
   const row = (JSON.parse(ps.out).result.items as { name: string; id: string; lifecycleUid: string }[]).find(p => p.name === "raw-seat")!;

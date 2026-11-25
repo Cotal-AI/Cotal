@@ -111,12 +111,13 @@ export async function stopNamedServiceSet(args: ParsedArgs): Promise<void> {
     if (same) throw new CommandFailure("refused", "USAGE_INVALID", `${oneLine(same.requested)} and ${oneLine(requested)} both name ${oneLine(name)}; name each service once, and no service was stopped`, { target: { space, name } });
     if (resolved) presetTargets.push(resolved);
     const instances = serviceInstances(space, name);
+    const target = { space, name };
     let selected: ServiceInstanceSnapshot | undefined;
     if (instances.length > 1 && interactive) {
       const id = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: instances.map((row) => ({ value: row.name, label: row.name, hint: `${oneLine(row.record.value.host.name)} · ${observeServiceProcess(row.record.value)}` })) });
       if (prompts.isCancel(id)) { writeResult(presentation, { command: "down", target: { space, names: args.positionals }, result: { kind: "service-set-stop-cancelled", stopped: false }, noOp: true }, () => ({ sections: [{ title: "Services kept", blocks: [{ kind: "lines", lines: ["No stop was submitted."] }] }] })); return; }
-      selected = selectServiceInstance(instances, id);
-    } else selected = selectServiceInstance(instances, undefined);
+      selected = selectServiceInstance(instances, target, id);
+    } else selected = selectServiceInstance(instances, target, undefined);
     members.push({ definition, instance: selected!, requested });
   }
   for (const resolved of presetTargets) announcePresetTarget(resolved, space, presentation, args.values.space !== undefined);

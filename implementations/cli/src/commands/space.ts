@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
@@ -24,9 +23,14 @@ import {
   loadPreparedSpaces,
   noteFolderSpace,
   noteFolderSpaceShown,
+  oneLine,
   plainFlag,
   preparedLifecycle,
+  preparedRootRemedy,
   presentationOf,
+  projectRootDisplaced,
+  projectRootProblem,
+  projectRootProblemText,
   readCurrent,
   readCurrentSelection,
   recordOperationSpaceNote,
@@ -41,6 +45,7 @@ import {
   type OutputWarning,
   type Presentation,
   type PreparedSpace,
+  type ProjectRootProblem,
   type Report,
   type Section,
 } from "@cotal-ai/workspace";
@@ -116,7 +121,7 @@ export interface PreparedRow {
   readonly root: string;
   readonly preparedAt: string;
   readonly current: boolean;
-  /** Its project folder no longer exists, so `up` cannot start it there. */
+  /** No project directory is available at its recorded root. */
   readonly rootMissing: boolean;
   /** What its root's stack records, as `status` reports it: never started, stopped, or a last
    *  `up` or `down` with no recorded outcome. */
@@ -225,7 +230,7 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
   const project = canonicalRoot(findCotalRoot(process.cwd()));
   const recordedRoot = cotalDirLink(project) === undefined ? stackJournalRoot(project) : undefined;
   let moved: ReturnType<typeof journalRecordedElsewhere>;
-  if (recordedRoot !== undefined && !existsSync(recordedRoot)) {
+  if (recordedRoot !== undefined && projectRootDisplaced(projectRootProblem(recordedRoot))) {
     try { moved = journalRecordedElsewhere(project); } catch { /* An unusable journal does not identify a moved project. */ }
   }
   if (sub === undefined) {
@@ -304,7 +309,8 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
 }
 
 function preparedRow(p: PreparedSpace, current: string | null, moved?: string): PreparedRow {
-  const rootMissing = !existsSync(p.root);
+  const rootProblem = projectRootProblem(p.root);
+  const rootMissing = rootProblem !== undefined;
   const lifecycle = moved !== undefined ? preparedLifecycle(moved, p.space) : rootMissing ? undefined : preparedLifecycle(p.root, p.space);
   return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current, rootMissing, state: lifecycle?.state ?? "prepared", lastOperation: lifecycle?.lastOperation ?? null };
 }
@@ -338,7 +344,7 @@ export function detail(m: MeshEntry, current: string | null, check: Check): Spac
   return {
     kind: "space",
     ...base,
-    rootGone: stackRootGone(m.space, m.root),
+    rootGone: (m.origin === "up" && projectRootProblem(m.root) === "not-directory") || stackRootGone(m.space, m.root),
     recordedAt: m.ts,
     attachHost: m.attachHost ?? null,
     maxSessions: m.maxSessions ?? null,
@@ -374,12 +380,21 @@ function movedPreparedRemedy(project: string, moved: NonNullable<ReturnType<type
   return displayRemedy(stackElsewhereRemedy(project, moved.recordedRoot, moved.journal.space, moved.journal.members, moved.journal.operation));
 }
 
+function preparedRootCell(p: PreparedRow, problem: ProjectRootProblem | undefined, moved: boolean, project: string): Cell {
+  const root = oneLine(p.root);
+  if (moved) return { text: `${project} (moved from ${root})`, tone: "waiting" };
+  if (!problem) return { text: root, tone: "hint" };
+  const reason = problem === "not-directory" ? "not a directory" : projectRootProblemText(problem);
+  return { text: `${root} (${reason})`, tone: "waiting" };
+}
+
 function spacesView(result: SpacesResult, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   const cmd = displayCmd();
   const addBroker = checkRoot(undefined, process.cwd()).ok
     ? { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }
     : { command: "cotal space add <name> --server <url> --root <dir>", description: "Register an existing broker. Use any existing folder for an open space, or the folder whose .cotal/auth holds the space's trust for an auth space." };
   const movedRow = result.prepared.find((p) => moved?.recordedRoot === p.root && moved.journal.space === p.space);
+  const problems = new Map(result.prepared.filter((p) => p.rootMissing).map((p) => [p.space, projectRootProblem(p.root)]));
   // A space that ran and was stopped says so, as `status` does, rather than reading as never started.
   const ran = result.prepared.some((p) => p.state !== "prepared");
   const prepared: Section[] = result.prepared.length === 0 ? [] : [{
@@ -388,13 +403,19 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
       {
         kind: "table",
         columns: [{ key: "space", label: "Space" }, ...(ran ? [{ key: "state", label: "State" }] : []), { key: "root", label: "Project" }],
-        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: p === movedRow ? { text: `${project} (moved from ${p.root})`, tone: "waiting" } : p.rootMissing ? { text: `${p.root} (no longer exists)`, tone: "waiting" } : { text: p.root, tone: "hint" } })),
+        rows: result.prepared.map((p) => ({ space: nameCell(p, result.folder), state: lifecycleCell(p), root: preparedRootCell(p, problems.get(p.space), p === movedRow, project) })),
       },
-      // A folder that is gone cannot be started, so its space names the steps `space show` gives.
       { kind: "commands", items: [
         ...(result.prepared.some((p) => !p.rootMissing) ? [{ command: `${cmd} up`, description: "Start a prepared space from its project folder" }] : []),
-        ...(result.prepared.some((p) => p.state === "unsettled") ? [{ command: `${cmd} status`, description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
-        ...result.prepared.filter((p) => p.rootMissing && p !== movedRow).map((p) => ({ command: `${cmd} space forget ${shellWord(p.space)}`, description: `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}` })),
+        ...(result.prepared.some((p) => !p.rootMissing && p.state === "unsettled") ? [{ command: `${cmd} status`, description: "Run in its project folder, it names the step that finishes or settles its last operation" }] : []),
+        ...result.prepared.flatMap((p) => {
+          const problem = problems.get(p.space);
+          if (!problem || p === movedRow) return [];
+          const name = shellWord(p.space);
+          return problem === "missing"
+            ? [{ command: `${cmd} space forget ${name}`, description: `Its folder is gone: forget it, then prepare it again with ${codeSpan(`${cmd} space create ${name} --root <dir>`)}` }]
+            : [{ command: `${cmd} space show ${name}`, description: displayRemedy(preparedRootRemedy(p.space, problem), cmd) }];
+        }),
       ] },
       ...(movedRow && moved ? [{ kind: "lines" as const, lines: [{ text: movedPreparedRemedy(project, moved), tone: "hint" as const }] }] : []),
     ],
@@ -440,12 +461,16 @@ function spacesView(result: SpacesResult, project: string, moved: ReturnType<typ
 function preparedView(p: PreparedDetail, project: string, moved: ReturnType<typeof journalRecordedElsewhere>): Report {
   const cmd = displayCmd();
   const hints: Cell[] = [];
+  const problem = p.rootMissing ? projectRootProblem(p.root) : undefined;
+  if (moved && problem === "not-directory") hints.push(`${p.root} ${projectRootProblemText(problem)}`);
   if (moved !== undefined) {
     hints.push(
       { text: `this folder holds the stack journal of "${p.space}" and was moved from ${p.root}`, tone: "waiting" },
       { text: movedPreparedRemedy(project, moved), tone: "hint" });
-  } else if (p.rootMissing) {
-    hints.push({ text: `prepared in ${p.root}, which no longer exists`, tone: "waiting" }, { text: `forget it with ${codeSpan(`${cmd} space forget ${shellWord(p.space)}`)}, then prepare it again with ${codeSpan(`${cmd} space create ${shellWord(p.space)} --root <dir>`)}`, tone: "hint" });
+  } else if (problem !== undefined) {
+    hints.push(
+      { text: `prepared in ${p.root}, which ${projectRootProblemText(problem)}`, tone: "waiting" },
+      { text: displayRemedy(preparedRootRemedy(p.space, problem), cmd), tone: "hint" });
   } else if (p.state === "unsettled") {
     hints.push({ text: `run ${codeSpan(`${cmd} status`)} in ${p.root}, which names the step that finishes or settles it`, tone: "hint" });
   } else {
@@ -465,13 +490,14 @@ function preparedView(p: PreparedDetail, project: string, moved: ReturnType<type
 }
 
 function spaceView(s: SpaceDetail): Report {
+  const obstructed = s.rootGone && projectRootProblem(s.root) === "not-directory";
   const fields: [string, Cell][] = [
     ["space", nameCell(s)],
     ["broker", checkCell(s)],
     ["server", s.server],
     ["mode", s.modeChecked ? s.mode : { text: `${s.mode}, not checked: added with --force`, tone: "waiting" }],
     ["origin", originText(s.origin)],
-    ["root", s.rootGone ? { text: `${s.root} · folder was moved or deleted`, tone: "failed" } : s.root],
+    ["root", s.rootGone ? { text: `${s.root} · ${obstructed ? "not a directory" : "folder was moved or deleted"}`, tone: "failed" } : s.root],
     ["recorded", s.recordedAt],
   ];
   if (s.tlsRequired) fields.push(["tls", "required"]);
@@ -488,7 +514,8 @@ function spaceView(s: SpaceDetail): Report {
   }
   const space = shellWord(s.space);
   const hints: Cell[] = s.current ? [] : [{ text: `select it with ${codeSpan(`${displayCmd()} use ${s.space.startsWith("-") ? "-- " : ""}${space}`)}`, tone: "hint" }];
-  if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with ${codeSpan(`${displayCmd()} down --space ${space} --yes`)}`, tone: "waiting" });
+  if (obstructed) hints.unshift({ text: displayRemedy(preparedRootRemedy(s.space, "not-directory")), tone: "waiting" });
+  else if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with ${codeSpan(`${displayCmd()} down --space ${space} --yes`)}`, tone: "waiting" });
   if (!s.modeChecked && s.origin === "manual" && s.mode !== "user") {
     if (s.check === "reachable") {
       const flags = `${s.tlsRequired ? " --tls" : ""}${s.unencryptedOverlay ? " --allow-unencrypted-overlay" : ""}`;

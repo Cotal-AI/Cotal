@@ -123,9 +123,10 @@ The presets built into the CLI are `auth-service`, `broker`, `delivery`, `exec-e
 and `@cotal-ai/web` extensions, which `cotal ext add <package>` installs. Bare `service` lists the
 presets this machine has, and a name it does not have is refused as `DEPENDENCY_UNAVAILABLE`.
 
-`cotal service add <name> --preset <preset> --help` lists a preset's options. An option the preset
-fills itself shows `(default: ...)`, such as the space's root for `--root` and `pty` for the
-manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
+`cotal service add <name> --preset <preset> --help` lists a preset's options. So does
+`cotal help -- service add <name> --preset <preset>`. The `--` passes the preset flag to service help.
+An option the preset fills itself shows `(default: ...)`, such as the space's root for `--root` and
+`pty` for the manager's `--runtime`. A required option with no default is marked `(required)`, and an option that
 takes a path shows `<dir>`, `<file>` or `<path>`, and the broker's `--server` shows `<url>`. A `<dir>` or `<file>` option takes the absolute path
 of one that exists, and a relative one is refused. An option the service names in camelCase takes a
 dashed flag, so the broker's `logFile` is `--log-file <path>`, as `cotal up` spells it, and `add`
@@ -248,14 +249,18 @@ allocating an instance. An explicit `--instance` that does not belong to the ser
 with `TARGET_NOT_FOUND` (exit 2).
 With no recorded instance, `restart` without `--instance` also refuses with `TARGET_NOT_FOUND`.
 Its Next names `cotal service start <name> --space <space>` to create the first instance.
+For `restart --dry-run`, Next adds `--dry-run` and keeps `--json` or `--plain` when requested.
+Following that command previews the first start without allocating an instance or signalling a process.
 
 If a custom service name has no saved definition in the requested space, `service logs` and
 `service status` exit 2 and show how to list the saved definitions in that space.
 
 `service status <name>` reports `not started` and exits 0 for a saved definition with no recorded
 instances. It does not allocate an instance or start a process. With `--json`, the result has
-`recordedState: "not started"` and `instanceId: null`. If `--instance <id>` names an instance that
-does not belong to that service, `status` refuses with `TARGET_NOT_FOUND` (exit 2).
+`recordedState: "not started"` and `instanceId: null`. For a saved definition, `status` and `logs`
+refuse an explicit instance ID that does not belong to it with `TARGET_NOT_FOUND` (exit 2).
+The refusal names the definition and requested ID and points to `cotal service --space <space> --json`
+for the full IDs in that space.
 
 `status` names the file a running instance's process executes, as the kernel reports it, so the
 `stack-broker` row shows which `nats-server` serves the stack. `--json` carries it as `executable`.

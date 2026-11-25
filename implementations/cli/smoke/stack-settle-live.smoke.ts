@@ -196,7 +196,7 @@ import { createServer } from "node:net";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, assertSmokeSandboxTargetDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, deliveryLeaseHolderFor, idFromCreds, LEASE_TTL_MS, leaseKey, mintCreds, mintLifecycleUid, newIdentity, openDeliveryRegistry, type DeliveryLeaseInfo } from "@cotal-ai/core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, codeSpan, shellPath, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, processStopped, resolveOnPath, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
@@ -235,7 +235,8 @@ type Envelope = { outcome: string; target?: Record<string, unknown>; result?: Re
 type Run = { status: number | null; signal: NodeJS.Signals | null; ms: number; stdout: string; stderr: string; env?: Envelope };
 const cliAs = (childEnv: NodeJS.ProcessEnv, cwd: string, ...args: string[]): Run => {
   const options = { cwd, env: childEnv, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(anchors.get(cwd), args, options);
+  if (args[0] === "down" && args[1] === "web") assertSmokeSandboxTargetDown(anchors.get(cwd), args, options);
+  else assertSmokeSandboxDown(anchors.get(cwd), args, options);
   const began = Date.now();
   const run = spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   let parsed: Envelope | undefined;
@@ -307,6 +308,43 @@ const prepare = (space: string): string => {
   roots.push(root);
   return root;
 };
+
+async function checkStoppedReservation(): Promise<void> {
+  const holder = "stopped-reservation", holderRoot = join(projects, holder);
+  mkdirSync(join(holderRoot, ".cotal"), { recursive: true, mode: 0o700 });
+  anchors.set(holderRoot, recordSmokeSandbox({ root: holderRoot, cotalHome: home, xdgConfigHome: configDir }));
+  roots.push(holderRoot);
+  const port = await freePort(), server = `nats://127.0.0.1:${port}`;
+  const started = cli(holderRoot, "up", "--detach", "--open", "--server", server);
+  const stopped = cli(holderRoot, "down", "--yes");
+  check("legacy down leaves the other space registered at the stopped address",
+    started.status === 0 && stopped.status === 0 && findMesh(holder)?.server === server, { started: shown(started), stopped: shown(stopped) });
+
+  const probe = createServer();
+  await listenOn(probe, port);
+  await new Promise<void>((done) => probe.close(() => done()));
+
+  const space = "reserved-address", root = prepare(space);
+  const refused = cli(root, "up", "--foreground", "--open", "--server", server);
+  const retry = /`(?:pnpm )?cotal (up --foreground --open --server nats:\/\/127\.0\.0\.1:(\d+))`/.exec(refused.stderr);
+  check("a first foreground start refuses the stopped reservation and names a checked alternate",
+    refused.status === 2 && refused.stderr.includes("CONFLICT") && refused.stderr.includes(`space ${holder} in ${holderRoot} reserves ${server}`)
+    && retry !== null && Number(retry[2]) !== port && !refused.stderr.includes("inspect the stack's members")
+    && pidOf(space, "stack-broker") === null, shown(refused));
+  if (!retry || Number(retry[2]) === port) return;
+
+  const retried = cliAsync(root, ...retry[1]!.split(" "));
+  const ready = await until(() => runningPidOf(space, "stack-broker") !== null && runningPidOf(space, "stack-manager") !== null
+    && readStackJournal(root)?.journal.operation.phase === "completed", 60_000);
+  track(space);
+  const startedAt = findMesh(space)?.server;
+  const down = cli(root, "down", "--yes", "--json");
+  const result = await retried;
+  check("running the suggested foreground command starts both members and keeps the stopped reservation",
+    ready && down.status === 0 && result.status === 0 && result.stdout.includes("Foreground stack lifetime")
+    && startedAt === `nats://127.0.0.1:${retry[2]}` && findMesh(holder)?.server === server,
+    { ...shown(result), down: shown(down) });
+}
 
 /** Publish 900 KB messages over an operator credential until the broker refuses one; the refusal. */
 const fillStore = async (root: string, space: string): Promise<unknown> => {
@@ -633,6 +671,8 @@ try {
     const cleared = cli(other, "use", "--clear", "--json");
     check("the caller clears its selection", cleared.status === 0, shown(cleared));
   }
+
+  await checkStoppedReservation();
 
   // 3. A busy port on the first up (B2-02).
   {
@@ -1326,8 +1366,9 @@ try {
         && memberPlan.env?.result?.kind === "service-operation-preview" && memberPlan.env.target?.space === space
         && memberPlan.env.target.name === "stack-broker" && setManager !== null && alive(setManager), shown(alias));
     for (const names of [["web"], ["nosuch"], ["manager", "nosuch"]]) {
-      const missing = cli(otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
+      const missing = cli(names[0] === "web" ? root : otherRoot, "down", ...names, "--space", space, "--dry-run", "--json");
       check(`missing ${names.join(" ")} preview stays a scoped inventory read`, missing.status === 2
+        && missing.env?.error?.code === "TARGET_NOT_FOUND" && missing.env.target?.space === space
         && missing.env?.error?.remedy === `list this space's saved definitions with \`cotal service --space ${space} --json\``, shown(missing));
     }
     const unknownOne = cli(otherRoot, "down", "nosuch", "--space", space, "--yes", "--json");
@@ -2036,9 +2077,13 @@ try {
   // 13. An up interrupted before it registers the space leaves its broker running unregistered.
   {
     const space = "stranded";
-    const root = prepare(space);
-    const port = await freePort();
-    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--server", `nats://127.0.0.1:${port}`, "--json"], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    const root = prepare(space), caller = mkdtempSync(join(projects, "caller-"));
+    const launcher = mkdtempSync(join(home, "launcher-"));
+    writeFileSync(join(launcher, "cotal"), `#!/bin/sh\nexec ${shellPath(process.execPath)} --import ${shellPath(TSX_IMPORT)} ${shellPath(CLI)} "$@"\n`, { mode: 0o700 });
+    const childEnv = { ...env, PATH: `${launcher}${delimiter}${process.env.PATH ?? ""}` };
+    const port = await freePort(), args = ["up", "--root", `../${space}`, "--space", space, "--server", `nats://127.0.0.1:${port}`, "--json"];
+    const stop = codeSpan(`cd ${shellPath(root)} && cotal down --yes`);
+    const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: caller, env: childEnv, stdio: ["ignore", "ignore", "pipe"] });
     let upErr = "";
     child.stderr!.on("data", (chunk: Buffer) => { upErr += chunk.toString(); });
     // Freeze the broker once its process is pinned, so the up is provably waiting on it when it dies.
@@ -2049,15 +2094,18 @@ try {
     check("the up still waits on broker readiness when it is interrupted", pinned && child.exitCode === null, { pinned, exitCode: child.exitCode });
     child.kill("SIGINT");
     await exited(child);
-    check("the interrupted up exits 130 naming its unregistered broker's pid, cotal down --yes and then cotal up", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}. Run \`cotal down --yes\`, then \`cotal up\`.`), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
+    check("the interrupted up from another folder exits 130 and scopes its stop to the owning project", child.exitCode === 130 && upErr.includes(`its broker keeps running as pid ${broker}`) && upErr.includes(stop), { exitCode: child.exitCode, stderr: upErr.slice(-400) });
     if (broker !== null) process.kill(broker, "SIGCONT");
     check("the killed up left its broker running and the space unregistered", broker !== null && alive(broker) && findMesh(space) === undefined, { broker, registered: findMesh(space) !== undefined });
     const blocked = cli(root, "up", "--json");
     check("the next up refuses LIFECYCLE_BLOCKED naming the broker's pid and down --yes, and starts nothing",
       blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && Boolean(blocked.env.error.message.includes(`pid ${broker}`)) && Boolean(blocked.env.error.remedy?.includes("cotal down --yes")) && pidOf(space, "stack-delivery") === null && broker !== null && alive(broker), shown(blocked));
+    const retry = cliAs(childEnv, caller, ...args);
+    check("the same retry from the invoking folder names the same project-scoped stop", retry.status === 2 && retry.env?.error?.code === "LIFECYCLE_BLOCKED" && retry.env.error.remedy?.includes(stop) === true, shown(retry));
     const stopped = cli(root, "down", "--yes", "--json");
     check("down --yes stops that broker", stopped.status === 0 && await until(() => broker === null || !alive(broker), 10_000), shown(stopped));
-    const started = cli(root, "up", "--json");
+    const started = cliAs(childEnv, caller, ...args);
+    check("restarting from the invoking folder leaves it untouched", readdirSync(caller).length === 0);
     track(space);
     check("up then starts the whole stack", started.status === 0 && pidOf(space, "stack-manager") !== null, shown(started));
     // A frozen manager holds the down in its impact read, which holds the root's maintenance lock.
@@ -2179,6 +2227,16 @@ try {
     check(`${space}: status tells the operator to wait while the startup writer is alive`,
       pinned && child.exitCode === null && starting.status === 1 && starting.stdout.includes("Startup in progress") && starting.stdout.includes("Wait for startup to finish, then check again")
       && !starting.stdout.includes(" down --yes") && !starting.stdout.includes("last up ended"), { ...shown(starting), stdout: starting.stdout });
+    const outside = cli(projects, "status", "--plain", "--space", space);
+    const outsideHealth = cli(projects, "status", "--components", "--space", space);
+    const startupMessage = `"${space}" is prepared and its stack is starting`;
+    const outsideNext = outside.stdout.split("\nNext\n")[1]?.split("\n")[0] ?? "";
+    check(`${space}: status outside the project reports the same live writer and leads with waiting`,
+      outside.status === 0 && outside.stdout.includes(startupMessage) && outside.stdout.includes("Startup in progress") &&
+      ["cotal", "pnpm cotal"].some((cmd) => outsideNext.trimStart().startsWith(`${cmd} status --space ${space} `)) &&
+      outsideNext.includes("Wait for startup to finish, then check again") && !outside.stdout.includes("has no recorded outcome"), outside.stdout);
+    check(`${space}: component status outside the project keeps exit 1 and shows the active startup`,
+      outsideHealth.status === 1 && outsideHealth.stdout.split("\nComponent Health\n")[1]?.includes(`absent · not-started · ${startupMessage}`), outsideHealth.stdout);
     const startingJson = cli(root, "status", "--space", space, "--json");
     const startingFolder = startingJson.env?.result?.folder as Record<string, unknown> | undefined;
     check(`${space}: status --json reports no interrupted operation and adds no startup field`,
@@ -2188,6 +2246,10 @@ try {
     if (broker !== null) process.kill(broker, "SIGCONT");
     check(`${space}: the up killed while its broker is frozen left its operation applying and registered no space`, pinned && readStackJournal(root)?.journal.operation.phase === "applying" && findMesh(space) === undefined, { pinned, registered: findMesh(space) !== undefined });
     const cut = `"${space}" is prepared, and the last up of its stack in ${root} has no recorded outcome`;
+    const outsideCut = cli(projects, "status", "--plain", "--space", space);
+    check(`${space}: outside status names settlement instead of waiting when the writer is gone`,
+      outsideCut.status === 0 && outsideCut.stdout.includes(cut) && !outsideCut.stdout.includes("Startup in progress") &&
+      ["cotal", "pnpm cotal"].some((cmd) => outsideCut.stdout.includes(`run \`${cmd} status\` in ${root}, which names the step that finishes or settles it`)), outsideCut.stdout);
     const status = cli(root, "status");
     const [first, second] = status.stdout.slice(status.stdout.indexOf("\nNext\n") + 6).split("\n");
     check(`${space}: status names the half-started stack under the selected space and leads Next with down, then the up that starts it again`,

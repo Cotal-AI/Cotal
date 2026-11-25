@@ -32,7 +32,10 @@ import {
   pinnedFetch,
   PinnedFetchRefused,
   preparedRecordSpace,
+  preparedRootRemedy,
   preparedSpaceAt,
+  projectRootProblem,
+  projectRootProblemText,
   protectedLocalDirectory,
   readPreferences,
   recordMesh,
@@ -177,6 +180,9 @@ const refuse = (code: RefusalCode, message: string, target: unknown, remedy?: st
 export function handAddedRegistration(name: string, force: boolean, target: unknown): MeshEntry | undefined {
   const prepared = findPreparedSpace(name);
   if (prepared) {
+    const problem = projectRootProblem(prepared.root);
+    if (problem === "not-directory") throw refuse("CONFLICT", `"${name}" is prepared in ${prepared.root}, which is not a directory`, target,
+      `restore the original project folder at its recorded path, or run ${codeSpan(`${displayCmd()} space forget ${shellWord(name)}`)} to register the other broker, then repeat the add with the same options`);
     const start = codeSpan(`${displayCmd()} up --root ${shellWord(prepared.root)} --space ${name}`);
     throw refuse("CONFLICT", `"${name}" is a space prepared on this machine`, target, `to start the local space, restore its project folder first if it moved, then run ${start}; to register the other broker instead, run ${codeSpan(`${displayCmd()} space forget ${name}`)}, then repeat the add with the same options`);
   }
@@ -526,10 +532,10 @@ export function checkLocalSpace(name: string, root: string, flag: "--root" | "--
   const prepared = findPreparedSpace(name);
   if (prepared) {
     if (again && here(prepared.root)) return "prepared";
-    const gone = !existsSync(prepared.root);
-    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, target, gone
+    const problem = projectRootProblem(prepared.root);
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, target, problem === "missing"
       ? `forget it with \`cotal space forget ${name}\`, then run ${flag === "--project" ? "setup" : "this create"} again`
-      : flag === "--project"
+      : problem ? displayRemedy(preparedRootRemedy(name, problem)) : flag === "--project"
         ? `rerun setup with ${codeSpan(`--project ${shellWord(prepared.root)}`)}, or choose another --space name for this project`
         : `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
   }
@@ -686,8 +692,10 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       removeMesh(name);
       return forgotten(presentation, { space: name, server: null, root: null, origin: null, releasedDefinitions: [], keptServices: savedServicesLeft(name, undefined) }, preferencesRevision, damagedWarnings);
     }
+    // A non-directory cannot contain root-local ownership records. The space-wide check above
+    // still guards controller instances, and definition release checks their removability below.
     let runningOwner: string | undefined;
-    try { runningOwner = liveMeshOwner(p.root, name); }
+    try { if (projectRootProblem(p.root) !== "not-directory") runningOwner = liveMeshOwner(p.root, name); }
     catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code ?? ((error as Error)?.cause as NodeJS.ErrnoException | undefined)?.code;
       if (code !== "EACCES" && code !== "EPERM") throw error;
@@ -705,11 +713,14 @@ export async function spaceForget(rest: readonly string[], presentation: Present
     throw refuse("CONFLICT", `"${name}" is listed by a signed-in space catalog, so this machine does not own its registration`, target, "it is removed when the catalog no longer lists it and `cotal sync` runs");
   let unsettled: string[] = [];
   if (m.origin !== "manual") {
+    const obstructed = m.stoppedByDown === true && projectRootProblem(m.root) === "not-directory";
     let running: string | undefined, stack = false;
     try {
-      running = liveMeshOwner(m.root, m.space);
-      unsettled = unsettledStackMembers(m.root, m.space);
-      stack = running !== undefined && readStackJournal(m.root)?.journal.space === name;
+      if (!obstructed) {
+        running = liveMeshOwner(m.root, m.space);
+        unsettled = unsettledStackMembers(m.root, m.space);
+        stack = running !== undefined && readStackJournal(m.root)?.journal.space === name;
+      }
     } catch (e) {
       throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target, "check it with `cotal status`");
     }
@@ -719,7 +730,7 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
     // A deleted folder takes the pidfiles and stack journal that check reads, so a stack left running
     // there shows only in this machine's instance records or at its recorded address (#7325).
-    if (!existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
+    if (obstructed || !existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);
   }
   const release = releaseStackDefinitions(m.root, name), keptServices = savedServicesLeft(name, release.kept);
   removeDamaged();
@@ -757,8 +768,9 @@ function unregisteredStackStop(space: string, damaged: boolean): string {
  *  holding its port with nothing on this machine naming it. */
 async function refuseGoneFolderStack(m: MeshEntry, entries: readonly MeshEntry[]): Promise<void> {
   const target = { space: m.space, root: m.root, server: m.server };
-  const gone = `"${m.space}" started in ${m.root}, which no longer exists`;
-  const members = stackRootGone(m.space, m.root) ? runningStackRoles(m.space) : [];
+  const problem = projectRootProblem(m.root);
+  const gone = `"${m.space}" started in ${m.root}, which ${projectRootProblemText(problem === "not-directory" ? problem : "missing")}`;
+  const members = (problem === "not-directory" || stackRootGone(m.space, m.root)) ? runningStackRoles(m.space) : [];
   if (members.length) throw refuse("LIFECYCLE_BLOCKED", `${gone}, but its stack's ${members.join(", ")} still ${members.length === 1 ? "runs" : "run"}; nothing was forgotten`, target, `stop it with \`cotal down --space ${m.space} --yes\`, which also drops this record`);
   if (goneLegacyRoot(m.space, m) !== undefined) {
     const retained = goneLegacyMembers(m.space, m.root, m);
@@ -827,11 +839,15 @@ function forgotten(presentation: Presentation, r: Omit<SpaceForgotten, "kind" | 
 }
 
 function forgottenView(r: SpaceForgotten): Report {
+  const root = r.root === null ? "its record could not be read, so it named no folder"
+    : projectRootProblem(r.root) === "not-directory" ? `the entry at ${r.root} was left untouched`
+    : !existsSync(r.root) ? `its folder ${r.root} no longer exists`
+    : `the files under ${r.root} are kept`;
   const lines: Cell[] = [
     { text: `forgot ${r.space}`, tone: "ok", mark: "✓" },
     r.origin === null && r.root === null
       ? { text: "  its registration could not be read, so it named no broker or folder", tone: "hint" }
-      : { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${r.root === null ? "its record could not be read, so it named no folder" : existsSync(r.root) ? `the files under ${r.root} are kept` : `its folder ${r.root} no longer exists`}`, tone: "hint" },
+      : { text: `  ${r.server === null ? "prepared, not running" : r.server}; ${root}`, tone: "hint" },
   ];
   const removed = Object.entries(r.removedPreferences).filter(([, value]) => value !== undefined);
   if (removed.length) lines.push({ text: `  removed its per-space preferences: ${removed.map(([key, value]) => `${key}=${value}`).join(", ")} - \`cotal config set <key> <value> --space ${r.space}\` sets one again`, tone: "hint" });

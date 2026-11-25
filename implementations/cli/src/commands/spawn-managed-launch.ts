@@ -416,7 +416,8 @@ export function meshRelease(mesh: MeshTarget | undefined): ((lifecycleUid: strin
 async function reportStarting(start: { name: string; managerInstanceId: string; waitingFor?: string; expected?: { id: string; lifecycleUid: string } }, values: FlagValues<typeof spawnFlags>, space: string, server: string, target: Record<string, unknown>): Promise<void> {
   const selection = await managerSelection(values, start.managerInstanceId).catch(() => undefined);
   const selector = selection?.selector ?? start.managerInstanceId, host = selection?.manager.host ?? null;
-  const attach = `${displayCmd()} attach ${shellWord(start.name)} --on ${shellWord(selector)}`;
+  const explicitServer = values.server === undefined ? undefined : brokerAddressForDisplay(values.server);
+  const attach = `${onRerun(`${displayCmd()} attach`, { space, server: explicitServer }, [start.name])} --on ${shellWord(selector)}`;
   const presentation = presentationOf(values);
   const now = presentation !== "json" && canPrompt() && (start.waitingFor !== undefined || !values.detach);
   const place = `on ${selector}${host && host !== selector ? ` (${host})` : ""}`;

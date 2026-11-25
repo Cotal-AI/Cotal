@@ -4,7 +4,7 @@ import { parseCommandArgs, registry, type Command, type CompletionResult, type F
 import { codeSpan, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
-import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
@@ -465,9 +465,10 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
       target, selfContained: true, remedy: "replace the invalid host with `--console-host 127.0.0.1`, keeping the other flags unchanged",
     });
   }
-  writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
-    { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
-    { kind: "lines", lines: ["Nothing was saved, launched or loaded. The real start saves this definition first, then starts it."] },
+  const definitionWouldBeSaved = launch.adapter !== STACK_ADAPTER.manager || checkManagerStartRoster(launch.options.roster, target, true);
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
+    { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", definitionWouldBeSaved ? `would be saved from the ${resolved.preset} preset` : "would not be saved"], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
+    { kind: "lines", lines: [definitionWouldBeSaved ? "Nothing was saved, launched or loaded. The real start saves this definition first, then starts it." : "Nothing was saved or launched. Correct the roster before starting the manager."] },
   ] }] }));
 }
 

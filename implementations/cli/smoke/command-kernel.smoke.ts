@@ -74,14 +74,51 @@ const noop = async (): Promise<void> => {};
         assert.ok(!existsSync(join(home, "current-mesh")), "invalid input never selects a space");
       }
     }
-    const invalidWatch = run(["watch", "--view", "bad", "--json"]);
-    assert.equal(invalidWatch.status, 1, invalidWatch.stdout + invalidWatch.stderr);
-    assert.equal(invalidWatch.stderr, "");
-    const watchRecords = invalidWatch.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
-    assert.deepEqual(watchRecords.map(({ schemaVersion, stream, type }) => [schemaVersion, stream, type]), [[1, "watch", "error"], [1, "watch", "end"]]);
-    assert.equal(watchRecords[0].data.code, "USAGE_INVALID");
-    assert.match(watchRecords[0].data.message, /watch --view takes feed/);
-    assert.equal(watchRecords[1].data.reason, "setup-failed");
+    const missingSpace = /^--space needs a value$/;
+    const blankSpace = /^--space\/-s is empty; name one space$/;
+    const repeatedSpace = /^Option '-s, --space' cannot be repeated$/;
+    function checkStreamRefusal(words: string[], stream: string, target: object, message: RegExp, remedy?: string): void {
+      const result = run(words);
+      const label = JSON.stringify(words);
+      assert.equal(result.status, 1, `${label}: ${result.stdout}${result.stderr}`);
+      assert.equal(result.stderr, "", label);
+      const records = result.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(records.map(({ schemaVersion, stream, type, target }) => [schemaVersion, stream, type, target]),
+        [[1, stream, "error", target], [1, stream, "end", target]], label);
+      assert.equal(records[0].data.code, "USAGE_INVALID", label);
+      assert.match(records[0].data.message, message, label);
+      if (remedy !== undefined) assert.equal(records[0].data.remedy, remedy, label);
+      assert.equal(records[1].data.reason, "setup-failed", label);
+    }
+    for (const [flags, requestedSpace, message, remedy] of [
+      [["--view", "bad", "--json"], null, /^watch --view takes feed/],
+      [["--space", "watch-test", "--view", "bad", "--json"], "watch-test", /^watch --view takes feed/],
+      [["-j", "--space"], null, missingSpace, "write --space <s>"],
+      [["--space", "--json"], null, missingSpace, "write --space <s>"],
+      [["-j", "--space", "--space", "other"], null, missingSpace, "write --space <s>"],
+      [["-js", "--space=other"], null, missingSpace, "write --space <s>"],
+      [["-j", "--space", "first", "--space"], null, missingSpace, "write --space <s>"],
+      [["-j", "--space", "watch-test", "--view"], "watch-test", /^--view needs a value$/, "write --view <view>"],
+      [["-js"], null, missingSpace, "write --space <s>"],
+      [["--json", "--space="], null, blankSpace],
+      [["--json", "-s", "  "], null, blankSpace],
+      [["-j", "--space=", "-sarchive"], null, repeatedSpace],
+      [["-j", "--space=first", "-sarchive"], "archive", repeatedSpace],
+    ] as const) {
+      checkStreamRefusal(["watch", ...flags], "watch", { requestedSpace }, message, remedy);
+    }
+    for (const [stream, words, target] of [
+      ["history", ["history", "#review"], { space: null, channel: "review", dms: false }],
+      ["membership", ["channel", "members", "#review"], { space: null, channel: "review" }],
+    ] as const) {
+      checkStreamRefusal([...words, "-j", "--follow", "--space"], stream, target, missingSpace, "write --space <s>");
+      checkStreamRefusal([...words, "-j", "--follow", "--space", "--space", "other"], stream, target, missingSpace, "write --space <s>");
+      checkStreamRefusal([...words, "-j", "--follow", "--space=  "], stream, target, blankSpace);
+    }
+    checkStreamRefusal(["history", "--follow", "--dms", "--space", "\u00a0\t", "-sarchive", "-j"],
+      "history", { space: null, channel: null, dms: true }, repeatedSpace);
+    checkStreamRefusal(["channel", "members", "#review", "--follow", "-s", "\u00a0\t", "--space=archive", "-j"],
+      "membership", { space: null, channel: "review" }, repeatedSpace);
 
     const upHelp = run(["up", "--help"]);
     assert.equal(upHelp.status, 0, upHelp.stderr);
@@ -1117,7 +1154,7 @@ if (process.platform !== "win32") {
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
     writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
-    writeFileSync(join(installedDir, "index.js"), "");
+    writeFileSync(join(installedDir, "index.js"), "export {};\n");
   };
   const run = async (entry: InstalledExtension) => {
     const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });

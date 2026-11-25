@@ -89,8 +89,8 @@ import {
   journaledRestoredStreams,
   leftOutNotes,
   restoreComposition,
+  restoreHistory,
   restoreNextStep,
-  restoreOnlyCopy,
   type PreparedRestore,
 } from "../lib/restore.js";
 import { freshStackServer } from "../lib/up-broker-address.js";
@@ -111,10 +111,12 @@ export function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: str
   if (composition.note) console.log(c.yellow(composition.note));
   const cleanupRoot = invokedRoot && invokedRoot !== canonicalRoot(restored.root) ? restored.root : undefined;
   const cmd = displayCmd();
-  for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
+  const { onlyCopy, emptyNote } = restoreHistory(restored.root, restored.attemptId);
+  if (emptyNote) console.log(c.dim(emptyNote));
+  for (const line of leftOutNotes(restored.attemptId, restored.selection, onlyCopy, cleanupRoot, cmd)) console.log(c.yellow(line));
   const journal = readMaintenanceJournal(restored.root);
   if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, journal, cleanupRoot, cmd)}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
@@ -142,8 +144,8 @@ export function restoredBrokerRuns(root: string, attempt: string, pid: number, m
   });
 }
 
-/** The cleanup that retires an active restore. One that left something out keeps its only copy in the
- *  previous store, so its cleanup deletes that store only with `--discard-history`. */
+/** The cleanup that retires an active restore. If its previous store holds data the restore left
+ *  out, cleanup deletes that store only with `--discard-history`. */
 function retireRestore(attempt: string, leftOut: string | undefined): string {
   return leftOut
     ? `\`cotal backup cleanup-fallback ${attempt} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds`
@@ -155,7 +157,7 @@ export function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifes
   const maintenance = readMaintenanceJournal(root);
   if (!maintenance) return;
   if (maintenance.state === "active") {
-    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, restoreLeftOut(maintenance));
+    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, maintenance.restore.previousSource ? restoreLeftOut(maintenance) : undefined);
     if (!isManagerCommittedRestore(maintenance))
       throw new Error(`restore attempt ${attempt} is active without durable manager commit evidence`);
     if (!maintenance.listenerProof)
@@ -497,10 +499,11 @@ export async function resumeControllerStack(lock: MaintenanceLock, root: string,
       targetPath, runtime: launch.runtime, brokerPid: broker.pid, delivery: has("delivery"), authService: has("auth"), controlPlane: true, manager: true,
     };
     const composition = restoreComposition(space, result.restoredStreams, result.mode);
+    const { onlyCopy, emptyNote } = restoreHistory(root, attemptId);
     if (restoreSink) restoreSink(result);
     else writeResult(presentationOf(values), { command: "up", target: { root, space, server: launch.server }, result: { kind: "controller-stack-restore", root, space, server: launch.server, attemptId, targetPath, selection: result.selection, restored: composition.restored, recreatedEmpty: composition.recreatedEmpty, retiredBrokerRemoved: attempt.brokerRequired } }, (row) => ({ sections: [{ title: "Controller stack restored", blocks: [
       { kind: "fields", rows: [["Space", row.space], ["Root", row.root], ["Broker", row.server], ["Attempt", row.attemptId], ["Store", row.targetPath], ["Selection", row.selection], ["Restored", composition.restoredWords], ["Recreated empty", composition.emptyWords]] },
-      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...leftOutNotes(attemptId, result.selection, restoreOnlyCopy(root, attemptId))] },
+      { kind: "lines", lines: ["Each recorded member was started or adopted for this attempt, and the retained agents were resumed under the same principals. The restore journal stays active until its fallback is cleaned up. This is not agent or task readiness.", ...(composition.note ? [composition.note] : []), ...(emptyNote ? [emptyNote] : []), ...leftOutNotes(attemptId, result.selection, onlyCopy)] },
     ] }] }));
     return values.foreground === true && !restoreSink;
   }

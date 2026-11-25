@@ -13,7 +13,7 @@
  * Run: pnpm smoke:leading-output-flags
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -24,7 +24,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string }[] }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string; message?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -93,6 +93,40 @@ for (const placement of ["leading", "trailing"]) {
   check(`${placement} duplicates use the promoted alias grammar on the first invocation`, jsonDuplicate(r, "duplicate-probe") &&
     r.envelope?.warnings?.some((warning) => warning.code === "EXTENSION_COMMAND_COLLISION") === true &&
     !existsSync(journal) && existsSync(root), shown(r));
+}
+
+const collisionConfig = join(home, "retained-collision");
+const collisionRoot = join(collisionConfig, "cotal", "extensions");
+const collisionManifest = join(collisionRoot, "extensions.json");
+const collisionFixture = JSON.stringify({ extensions: [{ pkg: "output-fixture", spec: "output-fixture@1.0.0", version: "1.0.0", commands: [{ name: "config", summary: "Test a retained command collision" }] }] });
+mkdirSync(collisionRoot, { recursive: true });
+writeFileSync(collisionManifest, collisionFixture);
+const missingKey = ["config", "get", "missing-key"];
+const collisionRefusal = run([...missingKey, "--json"], collisionConfig);
+const collisionWarnings = collisionRefusal.envelope?.warnings;
+check("finite JSON refusal carries the retained extension collision once", collisionRefusal.status === 1 && collisionRefusal.stderr === "" &&
+  collisionRefusal.envelope?.command === "config" && collisionRefusal.envelope.outcome === "refused" &&
+  collisionRefusal.envelope.error?.code === "USAGE_INVALID" && collisionRefusal.envelope.error.message?.includes('unknown preference "missing-key"') === true &&
+  collisionWarnings?.length === 1 && collisionWarnings[0]?.code === "EXTENSION_COMMAND_COLLISION" &&
+  collisionWarnings[0].message?.includes("output-fixture@1.0.0") === true && readFileSync(collisionManifest, "utf8") === collisionFixture, shown(collisionRefusal));
+const collisionText = run(missingKey, collisionConfig);
+check("text refusal keeps the retained extension collision on stderr", collisionText.status === 1 && collisionText.stdout === "" &&
+  collisionText.stderr.includes("output-fixture@1.0.0"), shown(collisionText));
+const collisionParse = run(["--json", "config", "get", "color", "--unknown-option"], collisionConfig);
+check("JSON parser refusal carries the retained extension collision", collisionParse.status === 1 && collisionParse.stderr === "" &&
+  collisionParse.envelope?.error?.code === "USAGE_INVALID" && collisionParse.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionParse));
+const collisionSuccess = run(["cfg", "get", "color", "-j"], collisionConfig);
+check("JSON success keeps the built-in alias and the retained extension warning", collisionSuccess.status === 0 && collisionSuccess.stderr === "" &&
+  collisionSuccess.envelope?.command === "config" && collisionSuccess.envelope.outcome === "ok" &&
+  collisionSuccess.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionSuccess));
+for (const args of [["history", "general"], ["channel", "members", "general"]]) {
+  const finite = run([...args, "--json", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision in its finite JSON refusal`, finite.status === 1 && finite.stderr === "" &&
+    finite.envelope?.error?.code === "USAGE_INVALID" && finite.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(finite));
+  const stream = run([...args, "--json", "--follow", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision on stderr for its JSON stream refusal`, stream.status === 1 &&
+    stream.envelope === undefined && stream.stdout.includes('"type":"error"') && stream.stdout.includes('"type":"end"') &&
+    stream.stderr.includes("output-fixture@1.0.0"), shown(stream));
 }
 
 for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--json", "version"], ["--json", "--no-input", "version"]]) {

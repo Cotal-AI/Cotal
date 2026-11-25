@@ -32,7 +32,7 @@ It also keeps `--json` or `--plain` when requested.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. The suggested
 stdin command also keeps `--json` or `--plain` when requested. An empty
-`--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
+`--to`, `--channel` or `--role` value is refused before reading the body. Set that destination in the original command to keep the body source, space and output format.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
@@ -553,8 +553,9 @@ the id. A member the roster has not named says `name not reported`. JSON keeps t
 or null when the roster has none. With `--follow --json`, it emits membership NDJSON
 records. If it refuses invalid arguments or setup fails before the snapshot, it writes an `error`
 with the code and any remedy, then an `end` with `reason: "setup-failed"` and `lastAsOf: null`.
-Both records name the requested channel and the space when known.
-This includes the name retained by a directly started local space after it stops.
+Both records name the requested channel and the space when known, including the name retained by
+a directly started local space after it stops. If `--space` has a missing or blank value,
+`target.space` is `null` even if a later `--space` supplies a value.
 
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
@@ -575,11 +576,14 @@ On an open mesh, `channel show` explains that membership is unavailable and stil
 retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
-is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
-naming the registered spelling when only the case differs. In that case the suggested command
-inspects the registered channel without removing it. Otherwise the suggested list command names
-the resolved space and keeps any explicit `--server` and `--creds`. Removing a channel that has retained
+space and history scope. Scripts pass `--yes`. When the command requires `--yes`, the suggested
+retry keeps the target, `--purge` if given and any `--plain` or `--json` flag.
+
+A name with no saved entry and no retained messages is refused with `TARGET_NOT_FOUND` before the
+confirmation, listing the registered channels, or naming the registered spelling when only the case
+differs. In that case the suggested command inspects the registered channel without removing it.
+Otherwise the suggested list command names the resolved space and keeps any explicit `--server`
+and `--creds`. Removing a channel that has retained
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
 channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. When the chat stream is not on the broker, that
@@ -833,8 +837,10 @@ snapshot, it writes an `error` with the code and any remedy, then an `end` with 
 without a snapshot. Invalid arguments include a missing `--limit` value, an invalid `--server` URL
 and an empty `--space` value.
 Both targets include the requested `channel` (`null` if none) and `dms` flag, along with any known
-space or project root. An `end` record closes the stream. The exit code is the snapshot's, the
-failure's when setup or the credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+space or project root. If `--space` has a missing or blank value, `target.space` is `null` even if
+a later `--space` supplies a value.
+An `end` record closes the stream. The exit code is the snapshot's, the failure's when setup or the
+credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 
 To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
 you processed at that timestamp. Restart with `--since` set to one millisecond before the saved
