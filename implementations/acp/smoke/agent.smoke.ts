@@ -1249,7 +1249,6 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
 // On a running thread, the model and reasoning choices switch the seat through its `set-model`.
 {
   const space = new FakeMesh();
-  space.agentEndpoints = true;
   const shown = { interrupt: true, turn: true, images: true, usage: true, setModel: true };
   space.serving = shown;
   let refusal: AgentCallFailed | undefined;
