@@ -719,6 +719,30 @@ if (process.platform !== "win32") {
         && corrected.stderr === "" && report.result?.outcome === "completed" && report.result.elapsedMs === 1000, corrected);
     }
 
+    const typoHandler = "typo.json";
+    writeFileSync(join(dir, timerProgram), 'await sleep("1ms", { name: "timer" });\n');
+    writeFileSync(join(dir, typoHandler), '{"turn":{}}');
+    const typoJson = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    const typoPlain = run("simulate", timerProgram, "--handler", typoHandler, "--plain");
+    const typoError = JSON.parse(typoJson.stdout);
+    const typoMessage = `unknown simulation script field "turn" in the simulation results script ${typoHandler}`;
+    const typoRemedy = `replace "turn" in ${typoHandler} with "turns", then rerun the simulation`;
+    c("an unknown top-level key names the handler file and its supported replacement",
+      typoJson.status === 1 && typoJson.stderr === "" && typoError.outcome === "refused" && typoError.target?.file === typoHandler
+      && typoError.error?.code === "SCHEMA_INVALID" && typoError.error?.message === typoMessage && typoError.error?.remedy === typoRemedy
+      && typoPlain.status === 1 && typoPlain.stdout === "" && typoPlain.stderr.includes(typoMessage)
+      && typoPlain.stderr.includes(`\nNext\n  ${typoRemedy}`), { typoJson, typoPlain });
+    writeFileSync(join(dir, typoHandler), '{"turns":{}}');
+    const fixedTypo = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    const fixedResult = JSON.parse(fixedTypo.stdout).result;
+    c("replacing turn with turns lets the timer simulation complete in 1 ms",
+      fixedTypo.status === 0 && fixedTypo.stderr === "" && fixedResult?.outcome === "completed" && fixedResult.elapsedMs === 1, fixedTypo);
+    writeFileSync(join(dir, typoHandler), '{"other":{}}');
+    const unknownKey = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    c("an unknown key with no suggested replacement lists the supported keys",
+      unknownKey.status === 1 && JSON.parse(unknownKey.stdout).error?.remedy ===
+        `remove "other" from ${typoHandler} or use a supported top-level key: turns, asks, checkpoints, events, clock, faults`, unknownKey);
+
     const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
     writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
     const step = "/parallel:batch#0";
