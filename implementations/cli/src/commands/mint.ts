@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readlinkSync, realpathSync, unlinkSync, type Sta
 import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import {
   DEV_OWNER, accountRevocations, acquireLock, agentFilePath, assertValidRole, credsClaims, ensureDirNoSymlink, identityFromCreds,
-  loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionAgentDurables,
+  loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, oneLine, principalKey, provisionAgentDurables,
   resolveReadAcl, writeSecretFileAtomic, writeSecretFileCreateOnly,
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
 } from "@cotal-ai/core";
@@ -104,9 +104,10 @@ function outFolderRefusal(target: object, out: string, error: unknown): CommandF
     try { found = lstatSync(dir, { throwIfNoEntry: false }); } catch { break; }
     if (found === undefined) break;
     if (found.isSymbolicLink()) {
-      let real: string | undefined;
-      try { real = realpathSync(dir); } catch { /* a link that names no folder */ }
-      const suggested = real === undefined ? undefined : codeSpan(shellWord(join(real, relative(dir, out))));
+      let physical: string | undefined;
+      try { physical = join(realpathSync(dir), relative(dir, out)); } catch { /* a link that names no folder */ }
+      // An escaped display path would send the retry to a different file.
+      const suggested = physical !== undefined && oneLine(physical) === physical ? codeSpan(shellWord(physical)) : undefined;
       return new CommandFailure("refused", "PERMISSION_DENIED", `the --out path goes through ${dir}, a symbolic link to ${readlinkSync(dir)}, and a private credential is never written through a link; no credential was written`, {
         target: { ...target, folder: dir },
         remedy: `name the --out file by a path with no symbolic link in it${suggested === undefined ? "" : `, such as ${suggested} if that folder is yours`}`,
