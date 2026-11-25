@@ -181,10 +181,12 @@ cotal models --harness opencode --refresh  # 1.x: refresh the provider cache fir
 ```
 
 On 1.x the catalog comes from `opencode models --pure --verbose`. On 2.x it comes from
-`opencode api --standalone GET /api/model`, which starts a private OpenCode server for that one
-request and stops it on exit. `--refresh` does not apply to 2.x. A 2.x read that fails, returns
-something other than a model list, or takes longer than 6 seconds reports the catalog unavailable
-with the reason.
+`opencode serve --stdio GET /api/model`: the connector starts a private OpenCode server for the
+read and stops it afterwards. The server lists its models only once its plugins have loaded, so the
+connector first waits until `GET /api/plugin` lists any plugin, as `opencode models` does, for up to
+5 seconds. `--refresh` does not apply to 2.x. The catalog is reported unavailable, with the reason,
+when the server does not report its address within 6 seconds, its plugins do not load in time, a
+request fails, or the reply is not a model list or lists no models.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
 the absolute path the manager resolved when OpenCode became available. A binary placed earlier on
@@ -203,6 +205,8 @@ For an explicit model pin, the connector checks the running OpenCode server's `/
 listing before joining the mesh. If that server does not list the model, launch refuses with
 the id and names both the server listing and the `opencode models --pure --verbose` CLI catalog.
 The CLI catalog alone does not prove that the server serving this session has the model.
+On 2.x the check reads `GET /api/model` once the server's plugins have loaded, and refuses when
+they have not loaded within 10 seconds, because the list is incomplete until then.
 OpenCode's cold server bootstrap can take longer than the generic 30-second manager check;
 the connector declares a two-minute readiness window for this check and the mesh join.
 

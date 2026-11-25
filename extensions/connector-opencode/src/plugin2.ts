@@ -46,6 +46,7 @@ import { ReplyCheck } from "./reply-check.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { COMMAND_ROUTES, LISTS_LOAD_MS, readCommandLists } from "./command-routes.js";
 import { opencode2FailureCondition } from "./failure-condition.js";
+import { readSettledModels } from "./settled-models.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -60,9 +61,9 @@ const guard = globalThis as { __cotalOpencodeSetup?: SetupState };
 
 /** 2.x model check: `GET /api/model` lists the configured model directly (no `/provider.all`
  *  nesting to walk, unlike 1.x's `verifyServerModel`). Same refusal sentence shape, different
- *  route and body. An empty listing during location boot is polled every 200 ms until the
- *  provider appears rather than refused on the first read. The wait is bounded: a server that
- *  never lists anything within the deadline is a real refusal, not a hang. */
+ *  route and body. The check runs while the server is still loading its plugins, so it judges only
+ *  the settled list (settled-models.ts). The wait is bounded: a server whose plugins never finish
+ *  loading within the deadline is a real refusal, not a hang. */
 const MODEL_LIST_SETTLE_MS = 10_000;
 
 /** The bare nudge a focus @mention wake submits; the mention itself is read with cotal_inbox. */
@@ -77,24 +78,17 @@ async function verifyServerModel2(
   const slash = selectedModel.indexOf("/");
   const provider = selectedModel.slice(0, slash);
   const model = selectedModel.slice(slash + 1);
-  const deadline = Date.now() + settleMs;
-  for (;;) {
-    const response = await fetch(`${serverUrl}/api/model`, {
-      headers: { authorization: serverAuth },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok)
-      throw new Error(`opencode connector: server /api/model returned HTTP ${response.status} while checking model ${selectedModel}`);
-    const listing = (await response.json()) as { data?: Array<{ providerID?: string; modelID?: string }> };
-    if (slash < 1 || !model) throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
-    const data = listing.data ?? [];
-    if (data.some((m) => m.providerID === provider && m.modelID === model)) return;
-    if (data.some((m) => m.providerID === provider))
-      throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
-    if (Date.now() >= deadline)
-      throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));
-    await new Promise((r) => setTimeout(r, 200));
+  let data: unknown[];
+  try {
+    data = await readSettledModels(serverUrl, serverAuth, settleMs);
+  } catch (error) {
+    throw new Error(modelRefusalSentence(selectedModel, (error as Error).message));
   }
+  const listed = data.some((m) => {
+    const { providerID, modelID } = (m ?? {}) as Record<string, unknown>;
+    return providerID === provider && modelID === model;
+  });
+  if (slash < 1 || !model || !listed) throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
 }
 
 class OpenCodeHttpError extends Error {

@@ -79,6 +79,7 @@ To inspect a connector's model IDs and variants, run `cotal models --harness <co
 Every connector except Hermes lists a catalog.
 For OpenCode, select one with `--model provider/model --variant high`.
 For Claude, the variant is the effort level, as in `--model opus --variant high`.
+For pi, the variant is the thinking level, as in `--model anthropic/claude-opus-4-6 --variant high`.
 A model can also list modes, such as a fast tier, which `--mode id=value` chooses: `true` or `false` for a toggle, or an option id for a choice.
 The catalog marks each model's default variant and each mode's default.
 

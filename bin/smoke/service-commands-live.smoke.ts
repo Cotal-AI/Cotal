@@ -65,6 +65,29 @@ const presetRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-comm
 const PRESET_SPACE = "servicecommandspreset";
 const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
+function checkRecordedManagerTail(path: string): void {
+  const saved = `${path}.saved`;
+  renameSync(path, saved);
+  try {
+    const commands = [["manager", "logs"], ["service", "logs", "stack-manager"]];
+    const tail = (args: string[]) => upCotal([...args, "--space", UP_SPACE, "--tail", "2", "--json"]);
+    for (const args of commands) {
+      const run = tail(args), report = JSON.parse(run.stdout);
+      check(`cotal ${args.join(" ")} refuses a missing log while the manager runs`,
+        run.status === 2 && run.stderr === "" && report.outcome === "refused" && report.error?.code === "TARGET_NOT_FOUND"
+          && report.completeness === "not-checked" && report.result === null && report.target?.path === path
+          && report.error.message.includes(path) && !existsSync(path), out(run));
+    }
+    writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+    for (const args of commands) {
+      const run = tail(args), report = JSON.parse(run.stdout);
+      check(`cotal ${args.join(" ")} reads an existing empty log successfully`,
+        run.status === 0 && run.stderr === "" && report.outcome === "ok" && report.completeness === "complete"
+          && report.result?.path === path && Array.isArray(report.result.lines) && report.result.lines.length === 0, out(run));
+    }
+  } finally { renameSync(saved, path); }
+}
+
 function checkBlankServiceCwd(): void {
   const add = ["service", "add", "cwd-check", "--space", PRESET_SPACE, "--exec", "/bin/sleep 600"];
   const show = ["service", "show", "cwd-check", "--space", PRESET_SPACE, "--json"];
@@ -101,6 +124,34 @@ function checkBrokerForegroundPreview(): void {
     preview.status === 0 && result?.kind === "service-operation-preview" && result.dryRun === true
     && result.allocated === false && result.providerCodeLoaded === false
     && status.status === 0 && /Recorded state:\s+not started/.test(out(status)), { preview: out(preview), status: out(status) });
+}
+
+function checkControllerBrokerRestart(controller: (args: string[]) => ReturnType<typeof cotal>, root: string, space: string): void {
+  const restart = ["service", "restart", "stack-broker", "--space", space];
+  const status = () => JSON.parse(controller(["service", "status", "stack-broker", "--space", space, "--json"]).stdout).result;
+  const before = status();
+  const preview = controller([...restart, "--dry-run", "--json"]);
+  const receipt = JSON.parse(preview.stdout);
+  const down = `down --dry-run --json --space ${space}`;
+  check("a running controller broker restart preview suggests only the read-only stop preview",
+    preview.status === 2 && preview.stderr === "" && receipt.outcome === "refused" && receipt.error?.code === "LIFECYCLE_BLOCKED"
+    && receipt.error.remedy === `change to the project folder with \`cd '${root}'\`, then run \`cotal ${down}\`. This previews only the stop part of a restart.`, out(preview));
+  const plain = controller([...restart, "--dry-run", "--plain"]);
+  check("the controller broker restart preview preserves plain output",
+    plain.status === 2 && ["cotal", "pnpm cotal"].some((cli) => out(plain).includes(`\`${cli} down --dry-run --plain --space ${space}\``)), out(plain));
+  const inspected = controller(down.split(" "));
+  const inspection = JSON.parse(inspected.stdout);
+  check("the suggested whole-stack preview only inspects the same running broker",
+    inspected.status === 0 && inspection.target?.space === space && inspection.result?.kind === "controller-stack-stop-preview"
+    && inspection.result.signalled === false && inspection.result.members.some((member: { instanceId: string; process: string }) =>
+      member.instanceId === before?.instanceId && member.process === "running"), out(inspected));
+  const apply = controller([...restart, "--yes", "--json"]);
+  const refusal = JSON.parse(apply.stdout);
+  const after = status();
+  check("an applied controller broker restart still names the stop and start and leaves the broker running",
+    apply.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED" && refusal.error.remedy?.includes("`cotal down`")
+    && refusal.error.remedy.includes(`\`cotal up --root '${root}' --space ${space}\``)
+    && after?.observedProcess === "running" && after.instanceId === before?.instanceId && after.pid === before?.pid, out(apply));
 }
 
 /** A plain `logs --follow` in `at`, read until it exits. */
@@ -372,7 +423,7 @@ try {
         run.status === 2 && report.outcome === "refused" && report.error?.code === "TARGET_NOT_FOUND"
         && report.error.message === missingInstanceMessage && report.target?.instanceId === missingId, out(run));
     }
-    const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
+    const isManagerLog = (path?: string): path is string => path !== undefined && dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
     let upLogs = upCotal(["manager", "logs"]);
     for (let i = 0; i < 30 && !out(upLogs).includes("manager up"); i++) { await sleep(500); upLogs = upCotal(["manager", "logs"]); }
     check("cotal manager logs reads the log of the manager up started, exit 0",
@@ -386,6 +437,7 @@ try {
       json.outcome === "ok" && json.result?.kind === "service-logs" && json.result.lines?.length === 5 && isManagerLog(json.result.path) && json.result.recordedProcess?.savedService === false, json);
     const stackManager = envelope(upCotal(["service", "logs", "stack-manager", "--json", "--tail", "5"]));
     check("  and cotal service logs stack-manager reads the same file", stackManager.outcome === "ok" && stackManager.result?.path === json.result?.path && stackManager.result?.lines?.length === 5, stackManager);
+    if (isManagerLog(json.result?.path)) checkRecordedManagerTail(json.result.path);
     const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
       refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through `cotal down`, or where `cotal supervise` runs it; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents", refusedStop);
@@ -443,7 +495,7 @@ try {
       Boolean(stoppedInstall.error?.message?.includes("manager runs through the manager-service adapter, whose stop is a native request")) && !stoppedInstall.error?.message?.includes("service service"), stoppedInstall.error?.message);
 
     // ---- With the log it left removed, the read says the log is gone ----------------------------
-    const goneLog = stoppedJson.result?.path ?? "";
+    const goneLog = stoppedJson.result?.path;
     if (isManagerLog(goneLog)) rmSync(goneLog);
     const gone = upCotal(["manager", "logs"]);
     const goneJson = envelope(upCotal(["manager", "logs", "--json"])) as LogsEnvelope & { target?: { path?: string }; error?: { code?: string; message?: string; remedy?: string } };
@@ -512,6 +564,7 @@ try {
     const controllerServer = `nats://127.0.0.1:${await freePort()}`;
     const controllerUp = controller(["up", "--open", "--space", controllerSpace, "--server", controllerServer, "--seat-cap", "2", "--max-sessions", "3"]);
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
+    checkControllerBrokerRestart(controller, controllerRoot, controllerSpace);
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
     const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);

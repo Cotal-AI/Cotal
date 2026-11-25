@@ -294,19 +294,18 @@ errno. Fix the directory's permissions on the seat's private state and start aga
 never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
 alone.
 
-`cotal models --harness jcode` reads the declared catalog from the operator Jcode home's
-`config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
-and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
-instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
-without model entries.
+`cotal models --harness jcode` runs `jcode model list --json` with the binary and environment a
+seat's host gets, so Jcode reads the home and logins a seat would mirror. A model is listed when
+Jcode reports at least one available route for it. Jcode also lists models whose every route it
+reports unavailable, such as Claude models without a Claude login, and the catalog leaves those
+out. A listed model names its provider: the provider Jcode selected when that provider carries the
+model, or else the only provider that does. Jcode's availability is its own claim, not a launch
+check. With an OpenAI-compatible profile selected, Jcode marks routes of other built-in profiles
+available, while the session sends every model to the selected profile.
 
-The listed effort tiers are display declarations, not Jcode runtime capabilities. Jcode's named
-model config does not assign effort support per model. A named provider profile enables it through
-provider configuration or Jcode's model-family detection. `cotal models` prints
-that caveat inline as `(declared, not provider-verified)` after each configured tier list,
-so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
-so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
-launch. `--refresh` does not turn this local declaration into a live probe.
+Jcode reports no reasoning efforts per model, so the catalog offers no variants. When Jcode cannot
+list, for example before `jcode login`, the read fails and names the error Jcode printed. Each read
+runs `jcode model list` again, so `--refresh` changes nothing.
 
 The Harness API can set a requested effort but cannot read an effective effort back. Its runtime
 identity reports provider, model, and routes only; no reply or event carries the applied tier. Cotal
@@ -502,7 +501,7 @@ See [Private instance ownership](#private-instance-ownership) for the current co
 
 ### Declared catalog
 
-See [Private instance ownership](#private-instance-ownership) for the current connector contract.
+See [Model selection](#model-selection) for the current catalog.
 
 ### Requested reasoning effort
 

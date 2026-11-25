@@ -40,6 +40,8 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
 in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
+If `stop`, `attach`, `input` or named `status` refuses an empty pin or a roster principal ID, look up
+the manager in the space and on the broker you selected. The refusal identifies that roster.
 
 Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
 and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach
@@ -87,12 +89,14 @@ command.
 When a recorded local stack is stopped, `ps` refuses with exit 2. If the broker store is not
 writable, `ps` reports `PERMISSION_DENIED` and names the store and how to repair it, including when
 `--server` names the saved broker. A different `--server` does not use the local store to diagnose
-the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the recorded root's default
+the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the project's `.cotal` directory
+lacks write or search access, the refusal gives the permission repair instead of recommending
+a restart. If the recorded root's default
 `.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
 and the repair instead of recommending a restart. After `down` removes a foreground stack's
 registration, `ps` still checks its channel seed and saved broker address. If another program holds
 the controller stack's recorded address, the refusal tells you to free it before restarting the stack.
-`ps` does not change the store or the file, and it does not stop the listener.
+`ps` does not change permissions or files, and it does not stop the listener.
 
 On a stopped local stack, `ps` reports an unreadable or invalid stack journal and its recovery step
 when no `--server` is passed or when it matches the saved broker address. A different address does

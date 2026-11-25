@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, listSpaceAccounts } from "@cotal-ai/workspace";
+import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, listSpaceAccounts, preparedRootRemedy, preparedSpaceAt, projectRootProblem, shellPath } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -27,11 +27,33 @@ export function preparedUpRoot(value: string): string {
     const cotal = lstatSync(join(root, ".cotal"));
     if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
   } catch {
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { target: { root: resolve(value) }, remedy: "prepare it with `cotal space create <space> --root <dir>`, then retry with that root" });
+    throw unavailableUpRoot(resolve(value));
   }
   if (canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
     throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with `cotal space create <space> --root <dir>`" });
   return root;
+}
+
+/** Preparing a path a file occupies, or one this account cannot enter, cannot succeed, so only a
+ *  reachable directory with no `.cotal` of its own is told to prepare it. Nothing is changed. */
+function unavailableUpRoot(requested: string): CommandFailure {
+  const target = { target: { root: requested } };
+  const problem = projectRootProblem(requested);
+  if (problem === "not-directory") {
+    let isFile = false, prepared: string | undefined;
+    try { isFile = statSync(requested).isFile(); } catch { isFile = false; }
+    try { prepared = preparedSpaceAt(requested)?.space; } catch { prepared = undefined; }
+    const occupant = isFile ? "a file" : "something other than a directory";
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `--root ${requested} is not a directory: ${occupant} occupies the project path; nothing was started or changed`, {
+      ...target,
+      remedy: prepared !== undefined
+        ? `move ${shellPath(requested)} aside and ${preparedRootRemedy(prepared, "not-directory")}`
+        : `move ${shellPath(requested)} aside and restore the original project folder there, or pass the root of another prepared project`,
+    });
+  }
+  if (problem === "inaccessible")
+    return new CommandFailure("refused", "TARGET_UNAVAILABLE", `--root ${requested} could not be accessed by this account; nothing was started or changed`, { ...target, remedy: `restore this account's access to ${shellPath(requested)}, then try again` });
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", "--root must name an existing prepared local project with its own .cotal directory; no ancestor or other space was selected", { ...target, remedy: "prepare it with `cotal space create <space> --root <dir>`, then retry with that root" });
 }
 
 /** An invoking folder that vanished during up cannot be restored. Keep the operation's outcome. */
