@@ -229,7 +229,7 @@ try {
     // A config folder other accounts may write: the trust file is refused, the seed attempt recorded.
     mkdirSync(process.env.XDG_CONFIG_HOME, { mode: 0o777 });
     chmodSync(process.env.XDG_CONFIG_HOME, 0o777);
-    const failed = await cli(box, ["meshes", "--json"]);
+    const failed = await cli(box, ["status", "--json"]);
     check("a seed that cannot write the trust file warns only in the JSON envelope", !existsSync(trustedProjectsPath()) && failed.stderr === ""
       && JSON.parse(failed.stdout).warnings.some((w: { code: string }) => w.code === "PROJECT_TRUST_SEED_FAILED"), failed.out.slice(-300));
     const between = mkdtempSync(join(box, "retry-between-"));
@@ -617,7 +617,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 55 : 57;
+const EXPECTED = process.getuid?.() === 0 ? 56 : 58;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);
