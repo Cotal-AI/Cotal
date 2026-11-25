@@ -917,7 +917,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
   const configRead = builtin?.name === "config" && !wantsHelp && (readMode === undefined || readMode === "get");
   const completionStatus = builtin?.name === "completion" && !wantsHelp && readMode === undefined;
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start" && !configRead && !completionStatus;
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -956,7 +956,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     try {
       commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
-      if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
+      if (((configRead || completionStatus) && e instanceof CorruptExtensionsManifestError) || skipUnreadableConnectorOverlay(e))
+        commands = registry.all<Command>("command");
       else {
         if (repeatedLeading) usageExit(`Option '${repeatedLeading}' cannot be repeated`);
         // A corrupt extensions manifest must not silently shrink the surface.
