@@ -527,6 +527,18 @@ try {
   check("a planned server still lists the named prepared project's local catalog",
     offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
     /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  if (process.platform !== "win32") {
+    const link = agentFilePath(realpathSync(offlineRoot), "shared");
+    symlinkSync("../../shared.md", link);
+    try {
+      const legacy = native(["personas", "list", "--space", "offline-audit"], CWD);
+      check("legacy list keeps readable personas and explains how to fix a missing link target",
+        legacy.status === 4 && /^default\s+default$/m.test(legacy.stdout) &&
+        /^shared\s+⨯ missing link target /m.test(legacy.stdout) &&
+        legacy.stdout.includes(`${link} is a link to ../../shared.md. Restore the target or replace the link with a regular persona file.`) &&
+        !legacy.stdout.includes("unparseable"), legacy.stdout + legacy.stderr);
+    } finally { unlinkSync(link); }
+  }
   const only = "offline-only";
   writeFileSync(agentFilePath(offlineRoot, only), `---\nname: ${only}\n---\nOnly in the other catalog.\n`);
   const listReceipt = native(args, CWD);
