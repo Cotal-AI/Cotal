@@ -802,6 +802,8 @@ cotal ext seed [--repair|--reset|--force]
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
+For a folder below the current directory, include the `./` prefix: `./plugins/example`.
+An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
