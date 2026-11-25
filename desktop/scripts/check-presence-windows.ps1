@@ -223,6 +223,16 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     if ($installFrames.Count -ne 1 -or $installFrames[0].ok -ne $true) { throw "$kind app bridge did not install the background service: $($bridgeOut -join ' ')" }
     $serviceTask = (Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json).unit
     if (@(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -ceq $serviceTask }).Count -ne 1) { throw "$kind background service task $serviceTask is not registered before uninstall" }
+    # Ending the task in Task Scheduler must stop the daemon, not only the launcher that started it.
+    $mineNow = { @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$directory\", [StringComparison]::OrdinalIgnoreCase) }) }
+    $deadline = (Get-Date).AddSeconds(60)
+    do { Start-Sleep -Milliseconds 500; $running = @(& $mineNow | Where-Object { $_.Name -eq 'node.exe' }) } while ($running.Count -lt 1 -and (Get-Date) -lt $deadline)
+    if ($running.Count -lt 1) { throw "$kind background service has no running daemon after install" }
+    Get-ScheduledTask | Where-Object { $_.TaskName -ceq $serviceTask } | Stop-ScheduledTask
+    $deadline = (Get-Date).AddSeconds(15)
+    do { Start-Sleep -Milliseconds 500; $left = & $mineNow } while ($left.Count -gt 0 -and (Get-Date) -lt $deadline)
+    if ($left.Count -ne 0) { throw "$kind ending the background service task left $($left.Count) process(es) running: $(($left | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" }
+    Get-ScheduledTask | Where-Object { $_.TaskName -ceq $serviceTask } | Start-ScheduledTask
     # The disconnected welcome cannot enable startup. Seed the real plugin's exact Run entry to test uninstaller cleanup separately.
     $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     New-ItemProperty -Path $run -Name Cotal -PropertyType String -Value "`"$path`" --background" -Force | Out-Null
@@ -256,7 +266,7 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $installed = $false
     $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
-    $checks += 'uninstall-service', 'uninstall-while-open'
+    $checks += 'end-task-stops-daemon', 'uninstall-service', 'uninstall-while-open'
     $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {

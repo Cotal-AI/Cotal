@@ -28,7 +28,18 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     }
     // Task Scheduler supervises this process. It returns the one child's result without retrying.
     // It never initializes a tray/webview or enters the app's single-instance handler.
-    let status = Command::new(node)
+    // Ending the task terminates only this launcher, so Node runs in a job that ends with the
+    // launcher's last handle. Silent breakaway keeps what Node starts out of that job, so its process
+    // custodians and their agents outlive the daemon as they do under a CLI-installed service.
+    use std::os::windows::io::AsRawHandle;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK};
+    let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }?;
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+    unsafe { SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as *const std::ffi::c_void, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32) }?;
+    let mut child = Command::new(node)
         .args(["--max-semi-space-size=1"])
         .arg(entry)
         .args(["daemon", "serve"])
@@ -40,8 +51,12 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()?;
-    Ok(status.code().unwrap_or(1))
+        .spawn()?;
+    if let Err(error) = unsafe { AssignProcessToJobObject(job, HANDLE(child.as_raw_handle())) } {
+        let _ = child.kill();
+        return Err(error.into());
+    }
+    Ok(child.wait()?.code().unwrap_or(1))
 }
 
 /// The uninstallers' one call before program files go: remove the background service this
