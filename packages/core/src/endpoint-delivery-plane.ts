@@ -817,7 +817,8 @@ export class EndpointDeliveryPlane {
     if (req.op === "evictSessionConnections" && !hasFilter)
       return { ok: false, error: "evictSessionConnections: send connections with the exact broker serverId and cid for each target" };
     // The $SYS observer and evictor credentials live outside this endpoint, in the delivery daemon.
-    const evict = this.plane3?.evictPrincipal;
+    const plane3 = this.plane3;
+    const evict = plane3?.evictPrincipal;
     if (!evict)
       return { ok: false, error: hasFilter ? "evictSessionConnections: no eviction executor is wired; install and restart a delivery daemon that supports targeted session eviction" : "evictPrincipal: no eviction executor wired on this daemon" };
     const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
@@ -837,8 +838,8 @@ export class EndpointDeliveryPlane {
     }
     try {
       const result = connections === undefined
-        ? await evict(principal)
-        : await evict(principal, connections.map((target) => ({ ...target })));
+        ? await evict.call(plane3, principal)
+        : await evict.call(plane3, principal, connections.map((target) => ({ ...target })));
       if (connections !== undefined) {
         const selected = (result as { connections?: unknown } | null)?.connections;
         if (!Array.isArray(selected) || selected.length !== connections.length || selected.some((value, i) => {
