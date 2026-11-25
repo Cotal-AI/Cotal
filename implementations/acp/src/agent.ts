@@ -262,6 +262,18 @@ interface Bridge {
   readonly close: () => Promise<void>;
 }
 
+/** Why a run of the turn failed: the harness's text and kind from the seat's presence condition, which
+ *  a connector writes apart from the run's `RUN_ERROR` and may write after it. */
+async function runFailure(opened: Promise<Mesh> | undefined, session: Session, turn: Turn, said: string | undefined): Promise<RequestError> {
+  const seat = session.seat;
+  const m = seat ? await opened?.catch(() => undefined) : undefined;
+  const read = () => (seat && m ? m.condition(seat, turn.sent) : undefined);
+  let condition = read();
+  for (const end = Date.now() + CONDITION_MS; !condition && m && session.turn === turn && Date.now() < end; condition = read())
+    await new Promise((r) => setTimeout(r, CONDITION_POLL_MS));
+  return turnFailure(seat?.name ?? session.id, condition, said);
+}
+
 function bridge(options: CotalAgentOptions): Bridge {
   const sessions = new Map<string, Session>();
   const byPrincipal = new Map<string, Session>();
@@ -312,7 +324,7 @@ function bridge(options: CotalAgentOptions): Bridge {
     if (!turn.runs.has(run.runId)) return;
     if (run.outcome === "error") {
       turn.failing = true;
-      void failure(session, turn, run.message).then((failed) => {
+      void runFailure(opened, session, turn, run.message).then((failed) => {
         turn.failing = false;
         if (session.turn !== turn || !turn.runs.has(run.runId)) return;
         if (turn.waiting) turn.waiting.set(run.runId, failed);
@@ -321,17 +333,6 @@ function bridge(options: CotalAgentOptions): Bridge {
     } else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
   };
 
-  /** Why a run of the turn failed: the harness's text and kind from the seat's presence condition,
-   *  which a connector writes apart from the run's `RUN_ERROR` and may write after it. */
-  const failure = async (session: Session, turn: Turn, said: string | undefined): Promise<RequestError> => {
-    const seat = session.seat;
-    const m = seat ? await opened?.catch(() => undefined) : undefined;
-    const read = () => (seat && m ? m.condition(seat, turn.sent) : undefined);
-    let condition = read();
-    for (const end = Date.now() + CONDITION_MS; !condition && m && session.turn === turn && Date.now() < end; condition = read())
-      await new Promise((r) => setTimeout(r, CONDITION_POLL_MS));
-    return turnFailure(seat?.name ?? session.id, condition, said);
-  };
 
   const mesh = (): Promise<Mesh> => {
     opened ??= options.mesh().then((m) => {
