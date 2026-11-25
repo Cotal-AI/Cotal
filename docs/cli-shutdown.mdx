@@ -971,7 +971,7 @@ exclude aliases, remote tenants or live attachments. A negative credless probe
 cannot prove absence for TLS-first listeners. A custom store path must be
 absolute and one real directory. A recorded store path that is a link refuses `CONFLICT` in the
 preview and the apply of both resets, even if its target is missing. The refusal names the link and
-its target. Nothing is removed. Replace the link with the store directory to reset it. A selected
+its target. Nothing is removed. Move the link aside, restore the space's original store directory at the recorded path, and rerun the preview. A selected
 root whose `.cotal` is a link refuses both resets and their previews `CONFLICT`, exit 2, before anything reads through it,
 naming the link, and nothing is removed; when the records were moved away and linked back, the Next
 names moving them back. A store in the project folder itself

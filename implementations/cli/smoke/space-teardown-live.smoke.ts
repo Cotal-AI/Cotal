@@ -560,7 +560,8 @@ try {
       const reset = cli(root, "reset", kind, space, mode, "--json");
       check(`reset ${kind} ${mode} refuses a dangling store link`, reset.status === 2 && reset.env?.error?.code === "CONFLICT"
         && reset.env.error.message.includes(`the recorded store path ${store} is a link to ${missing}`)
-        && reset.env.error.message.includes("nothing was removed"), shown(reset));
+        && reset.env.error.message.includes("nothing was removed") && reset.env.error.remedy?.includes("restore this space's original store directory at the recorded path") === true
+        && reset.env.error.remedy.includes(`cotal reset ${kind} ${space} --dry-run`), shown(reset));
     }
     check("the dangling link and parked store remain", readlinkSync(store) === missing
       && !existsSync(missing) && existsSync(join(moved, "jetstream")));
