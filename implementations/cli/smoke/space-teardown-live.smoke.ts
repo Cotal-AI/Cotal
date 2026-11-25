@@ -70,7 +70,8 @@
  *     removes the three stack definitions, and the journal names none of their instances. `space
  *     create` there and `up --no-manager` start a new broker and delivery with no manager instance,
  *     and `down --yes` stops them. Each down leaves no member process.
- *  16. A forgotten open stack starts in its original mode at the recorded address and store,
+ *  16. Forgetting a running open stack refuses and names a stop that works without a terminal.
+ *      Once forgotten, it starts in its original mode at the recorded address and store,
  *      without delivery, and can read its retained history.
  *
  * Sandboxes COTAL_HOME and every project root. Run: pnpm smoke:space-teardown:live
@@ -920,13 +921,18 @@ try {
     anchor(root);
     const started = cli(root, "up", "--open", "--no-manager", "--server", server, "--store-dir", store, "--json");
     const sent = cli(root, "send", "-c", "audit", text, "--json");
-    const stopped = cli(root, "down", "--yes", "--json");
+    const blocked = cli(root, "space", "forget", space, "--plain");
+    const stop = /stop it with `(?:pnpm )?cotal (down --yes)`/.exec(blocked.stderr)?.[1];
+    check("forget of a running stack keeps the registration and names how to confirm its stop without a terminal",
+      blocked.status === 2 && blocked.stderr.includes("LIFECYCLE_BLOCKED") && stop !== undefined
+        && blocked.stderr.includes(`in ${root} to explicitly confirm the stop`) && findMesh(space)?.root === root, shown(blocked));
+    const stopped = stop === undefined ? undefined : cli(root, ...stop.split(" "));
     const forgot = cli(root, "space", "forget", space, "--json");
     const recreated = cli(root, "space", "create", space, "--json");
     check("the open stack stored a message and was stopped, forgotten and prepared again",
-      created.status === 0 && started.env?.result?.mode === "open" && sent.status === 0 && stopped.status === 0
+      created.status === 0 && started.env?.result?.mode === "open" && sent.status === 0 && stopped?.status === 0
         && forgot.status === 0 && JSON.stringify(forgot.env?.result?.releasedDefinitions) === '["stack-broker"]' && recreated.status === 0,
-      { created: shown(created), started: shown(started), sent: shown(sent), stopped: shown(stopped), forgot: shown(forgot), recreated: shown(recreated) });
+      { created: shown(created), started: shown(started), sent: shown(sent), stopped: stopped && shown(stopped), forgot: shown(forgot), recreated: shown(recreated) });
     const restarted = cli(root, "up", "--no-manager", "--json");
     const delivery = (restarted.env?.result?.members as { role: string; instanceId: string | null }[] | undefined)?.find((row) => row.role === "delivery");
     const history = cli(root, "history", "audit", "--limit", "10", "--json");
