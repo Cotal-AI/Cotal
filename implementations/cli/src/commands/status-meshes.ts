@@ -16,6 +16,7 @@ import {
   isMeshRegistryError,
   isWorkspaceTargetError,
   preparedNeverStarted,
+  preflightTarget,
   readCurrent,
   readMeshRegistry,
   preparedRecordSkipped,
@@ -30,6 +31,8 @@ import {
   movedProject,
   operationWarnings,
   spaceStreamsExpected,
+  shellPath,
+  unsearchableFolder,
   withdrawOperationNote,
 } from "@cotal-ai/workspace";
 import { type DeliveryResponderState } from "../lib/delivery-responder.js";
@@ -47,6 +50,19 @@ import { rootStoreProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { statusFlags, type Selected, type SelectedPreflight, UnregisteredRoot, type PersonaCatalog, type StatusResult, type SelectedResult, Gaps, displayStatusBroker } from "./status-model.js";
 import { servedStack } from "./status-render.js";
+
+export async function readStatusPreflight(selected: Selected, gaps: Gaps, hints: string[]): Promise<{ preflight: SelectedPreflight; pidfileUnreadable: boolean }> {
+  if (!selected.ok || selected.target.mode === "user") return { preflight: undefined, pidfileUnreadable: false };
+  const { root, space } = selected.target;
+  let pidfileUnreadable = false;
+  const preflight = await preflightTarget(selected.target, undefined, (path, error) => {
+    pidfileUnreadable = true;
+    gaps.add("PIDFILE_UNREADABLE", `the nats pidfile could not be read: ${error.message}`, { root, space, process: "nats" });
+    const folder = unsearchableFolder(path);
+    hints.push(`make it readable by you, for example with chmod ${folder === undefined ? "u+r" : "u+rx"} ${shellPath(folder ?? path)}`);
+  });
+  return { preflight, pidfileUnreadable };
+}
 
 /** Replace the current folder's restart banner when its directory or broker store blocks startup. */
 export function reportHeldRestartProblem(root: string, hints: string[]): boolean {
@@ -223,7 +239,7 @@ export function selectedStackStarting(selected: Selected, folder: StatusResult["
   } catch { return false; } // The selection report names an unusable journal.
 }
 
-export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
+export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], { preflight, pidfileUnreadable }: Awaited<ReturnType<typeof readStatusPreflight>>, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -370,10 +386,10 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // this machine started keeps its registration, as a connect keeps it, so Next names the `up` that
     // starts it again rather than a registration to repair.
     const offline = preflight.kind === "unreachable" && !overridden && target.origin === "up";
-    const store = offline ? rootStoreProblem(target.root) : undefined;
+    const store = offline && !pidfileUnreadable ? rootStoreProblem(target.root) : undefined;
     let seedBlock: CommandFailure | undefined;
     // A blocked stack refuses that `up`, and Next names the step that clears the block instead.
-    if (preflight.kind === "unreachable" && (overridden || offline || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
+    if (preflight.kind === "unreachable" && (overridden || offline && !pidfileUnreadable || target.origin === "manual") && !(servedStack(folder, base) && folder.stackBlock)) {
       const { message, remedy, restartRoot } = workspaceErrorParts({ kind: "preflight", failure: "unreachable", target, pruned: !offline && preflight.prune });
       seedBlock = store || restartRoot === undefined ? undefined : channelSeedRestartBlock(restartRoot);
       if (store) hints.push(`${store.message}; ${store.remedy}`);

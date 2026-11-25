@@ -1326,6 +1326,10 @@ not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`. A broker that takes the connection and does not answer, as a
 stopped one does, leaves it unchecked too, and `status` still exits.
 
+When permission to read a selected local space's broker PID file is denied, `status` keeps the
+rest of the report and exits `4`. The warning names the unreadable record, and Next says which
+permissions to restore. A failed connection does not establish that the broker process stopped.
+
 
 ### Local records
 
