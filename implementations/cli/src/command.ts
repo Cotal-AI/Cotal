@@ -7,6 +7,7 @@ import {
   CommandFailure,
   commandFailureReport,
   cachedPreferences,
+  CorruptExtensionsManifestError,
   cotalDirProblem,
   cotalHomeProblem,
   findCotalRoot,
@@ -879,7 +880,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // Root only resolves a path. The JSON list classifies inventory errors in its handler.
   const extDiagnostics = builtin?.name === "ext" && !wantsHelp
     && (extMode === "root" || ((extMode === undefined || extMode === "list") && asksForJson(builtin, words)));
-  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start";
+  const readMode = builtin && !wantsHelp && (builtin.name === "config" || builtin.name === "completion")
+    ? metadataPositionals(builtin, words).positionals[0]?.value : undefined;
+  const configRead = builtin?.name === "config" && !wantsHelp && (readMode === undefined || readMode === "get");
+  const completionStatus = builtin?.name === "completion" && !wantsHelp && readMode === undefined;
+  let useExtensionOverlay = opts.extensions && !updateCheck && !selfUpdate && !preference?.auto && !preference?.notify && builtin?.name !== "start" && !configRead && !completionStatus;
   function skipUnreadableConnectorOverlay(error: unknown): boolean {
     if (!(error instanceof UnreadableConnectorSelection) || !builtin || !["version", "status", "down"].includes(builtin.name)) return false;
     if (builtin.name === "down") {
@@ -1102,6 +1107,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     recordTelemetryError(e);
     const mode = parsed.positionals[0];
     const json = structured(cmd, mode) && parsed.values.json === true;
+    if (configRead && e instanceof CorruptExtensionsManifestError)
+      failureExit(cmd, new CommandFailure("refused", "SCHEMA_INVALID", e.diagnosis, { remedy: e.remedy, cause: e }), json, parsed.values.plain === true, scope, rest);
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json, parsed.values.plain === true, undefined, rest);
     // A refused manager selection among several live managers becomes the choice: each manager

@@ -147,6 +147,21 @@ channels:
   mkdirSync(root, { recursive: true });
   writeFileSync(manifest, corrupt);
   const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
+  for (const args of [["config", "get", "harness", "--json"], ["--json", "config"], ["completion", "-j"]]) {
+    const r = run(args, offline);
+    const receipt = r.stdout ? JSON.parse(r.stdout) : undefined;
+    const harness = receipt?.result?.setting ?? receipt?.result?.settings?.find((setting: { key: string }) => setting.key === "harness");
+    const command = args.includes("config") ? "config" : "completion";
+    check(`${args.join(" ")} reads local settings with a corrupt manifest`,
+      r.status === 0 && r.stderr === "" && receipt?.command === command && receipt.outcome === "ok" &&
+      (command === "config" ? harness?.key === "harness" && harness.winner?.source === "default" : Array.isArray(receipt.result?.shells)), shown(r));
+  }
+  const override = run(["config", "get", "harness", "--json"], { ...offline, COTAL_DEFAULT_AGENT: "custom-harness" });
+  const refusal = override.stdout ? JSON.parse(override.stdout) : undefined;
+  check("config get classifies a corrupt manifest when it must validate an environment harness",
+    override.status === 1 && override.stderr === "" && refusal?.command === "config" && refusal.outcome === "refused" &&
+    refusal.error?.code === "SCHEMA_INVALID" && refusal.error.message.includes(manifest) &&
+    refusal.error.remedy.includes("cotal ext seed --repair"), shown(override));
   for (const flag of ["auto", "notify"]) {
     const write = run(["--json", "update", `--${flag}`, "off"], offline);
     const read = run(["update", `--${flag}`, "-j"], offline);
