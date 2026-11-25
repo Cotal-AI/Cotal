@@ -133,6 +133,9 @@ The refusal names the persona, the value and its source, and the allowed IDs. Ro
 and personas with no role are unconstrained.
 A seat launches on the model and variant that were checked, even if its persona file changes after
 the check.
+The launcher tells a seat in a role with a policy entry so through `COTAL_MODEL_POLICY`, and the
+seat then refuses every owner `set-model` that would switch its running model, since the policy is
+checked only at launch. Start a new agent on an allowed model instead.
 
 A space-local role entry replaces the operator-level entry for that role. Roles present in only one
 file keep their entry. Each entry accepts only `models` and `variants`. Both lists must be non-empty
