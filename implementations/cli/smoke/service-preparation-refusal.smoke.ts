@@ -173,6 +173,9 @@ check("its Next names the remove --instance command for each stopped record", [o
 const unconfirmed = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1"]);
 const confirm = unconfirmed.envelope?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
 check("remove --instance in a script needs --yes and its confirmation keeps --json", unconfirmed.status === 1 && unconfirmed.envelope?.error?.code === "USAGE_INVALID" && confirm === `svc remove worker --space b1 --instance ${two} --yes --json`, shown(unconfirmed));
+const unconfirmedPlain = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--plain", "--no-input"]);
+const confirmPlain = unconfirmedPlain.stderr.match(/`(?:pnpm )?cotal (svc remove [^`]+)`/)?.[1];
+check("a plain remove --instance confirmation keeps both the instance and --plain", unconfirmedPlain.status === 1 && confirmPlain === `svc remove worker --space b1 --instance ${two} --yes --plain`, shown(unconfirmedPlain));
 const cleared = run(confirm?.split(" ") ?? []);
 check("remove --instance forgets that stopped record, exit 0", cleared.status === 0 && cleared.envelope?.result?.kind === "service-instance-record-removed" && cleared.envelope.result.instanceId === two, shown(cleared));
 const again = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--yes"]);
