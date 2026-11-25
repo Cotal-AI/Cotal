@@ -1,6 +1,6 @@
 # Upgrading a running deployment
 
-## Ended terminal sessions on user-auth spaces in 0.180.0
+## Ended terminal sessions on user-auth spaces in 0.181.0
 
 A user-auth terminal connection now closes when the auth service confirms that its session
 ended. A different session or control connection for the same actor stays connected. Open
@@ -18,6 +18,32 @@ If you embed delivery, edit the `startPlane3` eviction hook to take
 the scan, disconnect, and verification to those broker `{serverId, cid}` pairs for that
 principal, then return the same ordered pairs in the result's `connections` field. A
 principal-only hook still handles ordinary principal eviction.
+
+## Switching a running agent's model
+
+The `agent` cluster advances to revision 6 with `set-model`, which the owner
+calls to switch a running agent's model and variant. The auth callout grants it, so update and
+restart every member of the callout queue, then reconnect each person's clients. A connect that an
+old member answers gets no `set-model` permission. An agent whose connector predates `set-model`
+omits `setModel` from its presence `agentEndpoint`, and a client reads that as not served.
+
+Presence `agentEndpoint` gains the optional boolean `setModel`. A reader older than this accepts the
+field, because it checks only the four flags it knows.
+
+A Manager keeps a switch the agent's presence shows and starts the agent on it when it restarts or
+resumes it. An older Manager starts it on its launch model. The Manager and `cotal spawn` also tell
+an agent whose role `modelPolicy` governs, through `COTAL_MODEL_POLICY`, so it refuses every switch.
+An agent launched by an older Manager or CLI is not told, so on a space whose cotal config sets
+`modelPolicy`, update the Manager and the CLI with the connectors.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
+recognise it as running here.
 
 ## The agent endpoint on every space
 
