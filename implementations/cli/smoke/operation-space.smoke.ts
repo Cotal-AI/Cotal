@@ -222,6 +222,15 @@ rmSync(nullOptions);
 const roleOk = cotal("persona", "create", "goodrole", "--prompt", "x", "--role", "reviewer", "--subscribe", "", "--json");
 check("control: a valid role token is created", roleOk.status === 0 && existsSync(agentFilePath(root, "goodrole")), shown(roleOk));
 
+const legacyNew = ["personas", "new", "--prompt", "Review changes.", "--subscribe", "", "--"];
+const invalidLegacyNew = cotal(...legacyNew, "-legacy-reviewer");
+check("personas new refuses a leading hyphen before writing and explains how to retry",
+  invalidLegacyNew.status === 1 && invalidLegacyNew.stderr.includes('cannot start with "-"') &&
+  invalidLegacyNew.stderr.includes("then retry") && !existsSync(agentFilePath(root, "-legacy-reviewer")), shown(invalidLegacyNew));
+const validLegacyNew = cotal(...legacyNew, "legacy-reviewer");
+check("personas new with a corrected name creates the definition",
+  validLegacyNew.status === 0 && existsSync(agentFilePath(root, "legacy-reviewer")), shown(validLegacyNew));
+
 // A malformed --on names the command to rerun, with --on written once.
 for (const [argv, rerun] of [
   [["persona", "--on", "bad"], "cotal persona --on <instance>"],
@@ -333,6 +342,24 @@ const drafts = join(home, "drafts");
 mkdirSync(drafts);
 const editorScript = (file: string, body: string) => { const path = join(home, file); writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 }); return path; };
 const saved = readFileSync(persona, "utf8");
+if (process.platform !== "win32") {
+  const editTo = (name: string) => {
+    const editor = editorScript(`ed-${name}`, `printf '%s\\n' '---' 'name: ${name}' 'subscribe: []' '---' 'Review changes.' > "$1"`);
+    return outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "legacy-reviewer", "--json"], {
+      cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000,
+    }));
+  };
+  const path = agentFilePath(root, "legacy-reviewer");
+  const before = readFileSync(path, "utf8");
+  const refused = editTo("-reviewer");
+  check("persona edit refuses a new hyphen-leading launch name without saving and keeps the draft",
+    refused.status === 1 && refused.envelope?.error?.message?.includes('the new frontmatter name cannot start with "-"') === true &&
+    refused.envelope.error.remedy?.includes("cotal persona edit legacy-reviewer --json") === true && readFileSync(path, "utf8") === before, shown(refused));
+  const corrected = editTo("reviewer");
+  check("retrying the edit with a corrected frontmatter name saves it",
+    corrected.status === 0 && readFileSync(path, "utf8").includes("name: reviewer\n"), shown(corrected));
+  for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
   ...[3, 126, 127].map(code => [

@@ -1,5 +1,22 @@
 # Upgrading a running deployment
 
+## Agent names that start with a hyphen
+
+`cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with
+one that starts with a letter, digit or `_`, for example `cotal personas new reviewer --prompt "Review changes" --subscribe ""`.
+When editing a persona, change its `name:` to `reviewer` rather than `-reviewer`.
+The same name rule applies when defining a persona through `cotal_persona`.
+
+`cotal team check` and `cotal team deploy` refuse a manifest with an `agents:` key starting with `-`.
+Rename the key from `-reviewer` to `reviewer` and change the corresponding channel `subscribe`,
+`allowSubscribe` and `allowPublish` entries, then run `cotal team check cotal.yaml` before deploying.
+A refused manifest creates no channels or agents.
+
+If you call the tmux, herdr, cmux or Orca runtime directly, pass `reviewer` instead of `-reviewer`
+as the first argument to `spawn`.
+
+Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
+`cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
 ## Labelling an agent from its thread title
 
 The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label

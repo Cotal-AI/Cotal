@@ -86,6 +86,8 @@ export function resolveManifest(src: string, sourcePath: string, logFileOverride
   for (const name of agentNames)
     try {
       assertValidName(name);
+      if (name.startsWith("-"))
+        throw new Error(`invalid agent name ${JSON.stringify(name)}: a name may not begin with "-". Rename the key under agents to start with a letter, digit or _, and update its channel references`);
     } catch (e) {
       add((e as Error).message, ["agents", name]);
     }

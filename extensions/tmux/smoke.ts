@@ -65,6 +65,14 @@ function sessionListed(name: string): boolean {
   }
 }
 
+// Name validation runs before the runtime checks whether tmux is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
+  let refusal = "";
+  try { new TmuxRuntime("cotal-tmux-smoke-dash").spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
+  catch (error) { refusal = (error as Error).message; }
+  ok(`spawn refuses an agent name that begins with - (${dashed})`, refusal.includes("not starting with -"));
+}
+
 // Needs a real tmux. Skip cleanly where it isn't installed (local `pnpm check` on a tmux-less box);
 // CI installs tmux explicitly so this runs there.
 if (!tmux.available()) {

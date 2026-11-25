@@ -340,7 +340,8 @@ export class PersonaCatalog {
   opShowPersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
-    const nameErr = this.nameError(name);
+    const legacyStem = name.startsWith("-") && /^[A-Za-z0-9_-]+$/.test(name);
+    const nameErr = legacyStem ? undefined : this.nameError(name);
     if (nameErr) return { ok: false, error: nameErr };
     const path = agentFilePath(this.config.workspaceRoot, name);
     if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
