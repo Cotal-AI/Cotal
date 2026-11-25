@@ -1761,7 +1761,7 @@ export class Manager {
   /** {@link HarnessResolution.capabilityRefusal}. */
   protected capabilityRefusal(...args: Parameters<HarnessResolution["capabilityRefusal"]>): ReturnType<HarnessResolution["capabilityRefusal"]> { return this.harnessResolutionComponent.capabilityRefusal(...args); }
   /** {@link SeatLaunch.onceRefusal}. */
-  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
+  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt" | "autoName">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
 
   /** {@link HarnessResolution.eventsRefusal}. */
   protected eventsRefusal(...args: Parameters<HarnessResolution["eventsRefusal"]>): ReturnType<HarnessResolution["eventsRefusal"]> { return this.harnessResolutionComponent.eventsRefusal(...args); }

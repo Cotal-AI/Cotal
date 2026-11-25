@@ -49,6 +49,7 @@ import { opencode2FailureCondition } from "./failure-condition.js";
 import { opencode2Asks, type Send } from "./prompt-asks.js";
 import { opencode2Commands } from "./commands2.js";
 import { OpenCodeHttpError, type OpenCodeApi } from "./opencode2-http.js";
+import { opencode2Naming } from "./naming2.js";
 import { readSettledModels } from "./settled-models.js";
 
 function log(msg: string): void {
@@ -179,7 +180,10 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     primed: () => { primed = true; },
     signal: controller.signal,
   });
-  const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
+  const agent = new MeshAgent(config, undefined, {
+    commands: commands.dispatcher,
+    naming: opencode2Naming({ api: opencodeApi, session: () => sessionReady, log, launchPrompt: process.env.COTAL_OPENCODE_PROMPT }),
+  });
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {

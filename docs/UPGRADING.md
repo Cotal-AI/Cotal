@@ -2,10 +2,19 @@
 
 ## Opt-in launch fields
 
-The Manager cluster advances to revision 55. Its `spawn` takes the optional `askPermissions` and
-`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 54
+The Manager cluster advances to revision 56. Its `spawn` takes the optional `askPermissions` and
+`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 55
 reject either, so update Managers and their callers together. A launch without the fields runs as
 before.
+
+## Agents that label themselves
+
+The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, and a revision-54
+Manager refuses the field. Check that a Manager reports revision 55 or later before you send it.
+A seat labels itself only when the Manager and the seat's connector are both updated. An older
+connector ignores `COTAL_AUTO_NAME` and shows no label. The label is card metadata,
+`meta["ai.cotal.label"]`, and the seat keeps its launch name as its address. A client that lists
+agents shows `meta["ai.cotal.label"] ?? name`.
 
 ## A person's control of their own agents
 

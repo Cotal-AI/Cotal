@@ -1351,11 +1351,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  `spawn` input takes `firstCommand`, and its acceptance names `firstCommand.id`. A new served
  *  command cannot fold into 53.
  *
- *  55 = `spawn` takes the opt-in `askPermissions` and `reasoningEvents`, and every `status.connectors`
+ *  55 = `spawn` takes `autoName`, so the seat labels itself from its first message. The input schema
+ *  is closed, so a revision-54 contract rejects this field.
+ *
+ *  56 = `spawn` takes the opt-in `askPermissions` and `reasoningEvents`, and every `status.connectors`
  *  row requires both as booleans, the connector's declarations. The spawn input and status output
- *  schemas are closed, so a revision-54 contract rejects either. */
+ *  schemas are closed, so a revision-55 contract rejects either. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 55, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 56, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

@@ -11,6 +11,7 @@ import { launchFieldArgs } from "./launch-fields.js";
 import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
 import { imageFolder } from "./turn-images.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
+import { claudeNamingLaunchEnv } from "./naming.js";
 import { claudeCommandCatalog } from "./command-catalog.js";
 
 export { CLAUDE_PROVIDER_KEYS };
@@ -197,6 +198,7 @@ export const claudeConnector: Connector = {
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    Object.assign(env, claudeNamingLaunchEnv(opts, prompt));
     // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))
