@@ -203,10 +203,15 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
   }
   const local = gate(["journal"], { local: true, space: "beta", endpoint: "worker", limit: "5", plain: true });
   c("the local lookup retains its endpoint and leaves the journal limit for the read", isCommandFailure(local) && local.remedy === "`cotal run --local --space beta --endpoint worker --plain` lists the runs; run `cotal run journal <run-id> --local --space beta --endpoint worker --limit 5 --plain`", local);
-  const resume = gate(["resume"], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", file: "workflow.cotal.js", timeout: "5m" });
-  c("the local resume remedy names the local list without repeating a private broker URL",
-    usageRefusal(resume, "run resume takes one identifier") && isCommandFailure(resume)
-      && resume.remedy === "run `cotal run list --local` with the original target options. Then add a run ID after `run resume` in the original command", resume);
+  for (const [ids, message, correction] of [
+    [[], "run resume takes one identifier", "Then add a run ID after `run resume` in the original command"],
+    [["bad/id"], idFormat, "Then replace only the run ID in the original command"],
+  ] as const) {
+    const resume = gate(["resume", ...ids], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", file: "workflow.cotal.js", timeout: "5m" });
+    c("the local resume remedy names the local list without repeating a private broker URL",
+      usageRefusal(resume, message) && isCommandFailure(resume)
+        && resume.remedy === `run \`cotal run list --local\` with the original target options. ${correction}`, resume);
+  }
   const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
   c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
@@ -433,7 +438,8 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   for (const text of ['{"clock":{"start":"1000"}}', '{"clock":{"start":null}}', '{"clock":{"start":1e999}}']) {
     const invalid = await simulateText(text);
-    c(`an invalid clock start is refused (${text})`, scriptRefusal(invalid, "clock.start must be a finite number in milliseconds"), invalid);
+    c(`an invalid clock start is refused (${text})`,
+      scriptRefusal(invalid, `clock.start in the simulation results script ${handler} must be a finite number in milliseconds`), invalid);
   }
   // A start past the safe-integer range cannot step by whole milliseconds: 9007199254740992
   // plus a 1ms sleep rounds back to the start, so the simulation would report elapsedMs 0.
@@ -690,6 +696,53 @@ if (process.platform !== "win32") {
     c("an empty object lets the same timer simulation complete", validObject.status === 0
       && validObject.stderr === "" && JSON.parse(validObject.stdout).result?.outcome === "completed", validObject);
 
+    for (const [field, file, invalid, valid, requirement, remedy] of [
+      ["start", "bad start.json", "0", 0, "a finite number in milliseconds",
+        "set clock.start in ./bad start.json to a JSON integer such as 0 (without quotes), then rerun the simulation"],
+      ["wait", "bad clock.json", "one minute", "5m", 'a duration string such as "5m"',
+        'replace clock.wait in ./bad clock.json with a quoted duration such as "5m", then rerun the simulation'],
+    ] as const) {
+      const handler = `./${file}`;
+      writeFileSync(join(dir, file), JSON.stringify({ clock: { [field]: invalid } }));
+      const plain = run("simulate", timerProgram, "--handler", handler, "--plain");
+      const json = run("simulate", timerProgram, "--handler", handler, "--json");
+      const refusal = JSON.parse(json.stdout);
+      const message = `clock.${field} in the simulation results script ${handler} must be ${requirement}`;
+      c(`invalid clock.${field} names the results file and correction in plain output and JSON`,
+        plain.status === 1 && plain.stdout === "" && plain.stderr.includes(message) && plain.stderr.includes(`\nNext\n  ${remedy}`)
+        && json.status === 1 && json.stderr === "" && refusal.outcome === "refused" && refusal.target?.file === handler
+        && refusal.error?.code === "SCHEMA_INVALID" && refusal.error?.message === message && refusal.error?.remedy === remedy, { plain, json });
+      writeFileSync(join(dir, file), JSON.stringify({ clock: { [field]: valid } }));
+      const corrected = run("simulate", timerProgram, "--handler", handler, "--json");
+      const report = JSON.parse(corrected.stdout);
+      c(`correcting clock.${field} lets the same simulation complete`, corrected.status === 0
+        && corrected.stderr === "" && report.result?.outcome === "completed" && report.result.elapsedMs === 1000, corrected);
+    }
+
+    const typoHandler = "typo.json";
+    writeFileSync(join(dir, timerProgram), 'await sleep("1ms", { name: "timer" });\n');
+    writeFileSync(join(dir, typoHandler), '{"turn":{}}');
+    const typoJson = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    const typoPlain = run("simulate", timerProgram, "--handler", typoHandler, "--plain");
+    const typoError = JSON.parse(typoJson.stdout);
+    const typoMessage = `unknown simulation script field "turn" in the simulation results script ${typoHandler}`;
+    const typoRemedy = `replace "turn" in ${typoHandler} with "turns", then rerun the simulation`;
+    c("an unknown top-level key names the handler file and its supported replacement",
+      typoJson.status === 1 && typoJson.stderr === "" && typoError.outcome === "refused" && typoError.target?.file === typoHandler
+      && typoError.error?.code === "SCHEMA_INVALID" && typoError.error?.message === typoMessage && typoError.error?.remedy === typoRemedy
+      && typoPlain.status === 1 && typoPlain.stdout === "" && typoPlain.stderr.includes(typoMessage)
+      && typoPlain.stderr.includes(`\nNext\n  ${typoRemedy}`), { typoJson, typoPlain });
+    writeFileSync(join(dir, typoHandler), '{"turns":{}}');
+    const fixedTypo = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    const fixedResult = JSON.parse(fixedTypo.stdout).result;
+    c("replacing turn with turns lets the timer simulation complete in 1 ms",
+      fixedTypo.status === 0 && fixedTypo.stderr === "" && fixedResult?.outcome === "completed" && fixedResult.elapsedMs === 1, fixedTypo);
+    writeFileSync(join(dir, typoHandler), '{"other":{}}');
+    const unknownKey = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    c("an unknown key with no suggested replacement lists the supported keys",
+      unknownKey.status === 1 && JSON.parse(unknownKey.stdout).error?.remedy ===
+        `remove "other" from ${typoHandler} or use a supported top-level key: turns, asks, checkpoints, events, clock, faults`, unknownKey);
+
     const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
     writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
     const step = "/parallel:batch#0";
@@ -701,17 +754,22 @@ if (process.platform !== "win32") {
       && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
       && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
 
-    for (const handler of [undefined, "timer's $results file.json"]) {
+    for (const handler of [undefined, "timer's $results file.json"]) for (const jsonMode of [false, true]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
-      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
-      const retry = /rerun with `([^`]+)`/.exec(missing.stderr ?? "")?.[1];
+      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]), ...(jsonMode ? ["--json"] : []));
+      const failure = jsonMode ? JSON.parse(missing.stdout) : undefined;
+      const retry = /rerun with `([^`]+)`/.exec(jsonMode ? failure.error?.remedy ?? "" : missing.stderr ?? "")?.[1];
       writeFileSync(join(dir, handler ?? "results.json"), '{"checkpoints":{"expiry":{"status":"expired"}}}');
       const replayed = retry?.startsWith("cotal run simulate ")
         ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\n${retry}`], options)
         : undefined;
-      c(`the printed simulation retry runs verbatim with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
-        missing.status === 5 && replayed?.status === 0 && /Program outcome:\s+completed/.test(replayed.stdout)
-        && /Virtual time:\s+23000 ms/.test(replayed.stdout), { missing, replayed });
+      const envelope = jsonMode && retry?.endsWith(" --json") && replayed?.status === 0 ? JSON.parse(replayed.stdout) : undefined;
+      c(`the printed simulation retry runs verbatim in ${jsonMode ? "JSON" : "human output"} with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
+        missing.status === 5 && replayed?.status === 0 && (jsonMode
+          ? missing.stderr === "" && failure.error?.code === "OPERATION_FAILED" && failure.error?.cause?.code === "L6001"
+            && replayed.stderr === "" && envelope?.outcome === "ok" && envelope.completeness === "complete"
+            && envelope.result?.outcome === "completed" && envelope.result.elapsedMs === 23000
+          : /Program outcome:\s+completed/.test(replayed.stdout) && /Virtual time:\s+23000 ms/.test(replayed.stdout)), { missing, replayed });
     }
     for (const [empty, named] of [["--admit-read", "--admit-publish"], ["--admit-publish", "--admit-read"]]) {
       const refused = run("start", program, "--local", "--server", "nats://127.0.0.1:1", empty!, " , , ", named!, "none");
@@ -1132,13 +1190,17 @@ if (process.platform !== "win32") {
   const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
   const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
   for (const amend of [false, true]) {
-    const missing = managerRefusal("run-answer", "beta", { runId: "run-missing", amend }, { code: "not-found", message: "run run-missing: no run is recorded under that id" }, "mgr-1");
+    const missing = managerRefusal("run-answer", "beta", { runId: "run-missing", amend }, { code: "not-found", message: "run run-missing: no run is recorded under that id" }, { on: "mgr-1" });
     c(`a missing run on ${amend ? "amend" : "answer"} lists the same space and manager`, missing.remedy === "list the recorded runs with `cotal run --space beta --on mgr-1`", missing);
-    const step = managerRefusal("run-answer", "beta", { runId: "run-1", endpoint: "other", amend }, { code: "not-found", message: "no step is recorded under that key" }, "mgr-1");
+    const step = managerRefusal("run-answer", "beta", { runId: "run-1", endpoint: "other", amend }, { code: "not-found", message: "no step is recorded under that key" }, { on: "mgr-1" });
     c(`a missing step on ${amend ? "amend" : "answer"} reads the run on the same target`, step.remedy === `read the run's ${amend ? "answers" : "open requests"} with \`cotal run show run-1 --space beta --on mgr-1 --endpoint other\``, step);
   }
   c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1 --space s`", blocked);
-  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
+  const notFound = { code: "not-found", message: "run run-1: no record on endpoint manager" };
+  const missing = managerRefusal("run-status", "beta", { runId: "run-1" }, notFound, { on: "mgr-1", endpoint: "manager", server: "nats://127.0.0.1:4321", json: true });
+  const selection = "--space beta --server 'nats://127.0.0.1:4321' --endpoint manager --on mgr-1 --json";
+  c("a hosted missing journal lists and reads on the selected broker and manager in JSON", missing.code === "TARGET_NOT_FOUND" && missing.remedy === `\`cotal run ${selection}\` lists the runs; run \`cotal run show <run-id> ${selection}\``, missing);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, { on: "mgr-1" }).remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
 }
 

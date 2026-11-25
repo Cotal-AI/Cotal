@@ -94,7 +94,7 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
-    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: sendAgain(destination, values, '"<message>"', `<${what}>`) });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `set ${option} in the original command and keep the same message body and options` });
   }
   const output = values.json ? "--json " : values.plain ? "--plain " : "";
   const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
@@ -135,15 +135,14 @@ function targetOptions(values: ConnectFlags): string[] {
 }
 
 /** A remedy that replaces the body without changing where or as whom the message is sent. */
-function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string, recipientPlaceholder?: string): string {
+function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string): string {
   // Body grammar is also checked before the dispatcher validates --server. Never echo an unchecked URL.
   if (values.server !== undefined) {
     const checked = checkServer(values.server, "--server");
     if (!checked.ok) return checked.remedy ?? checked.message.replace(/^✗ /, "");
   }
   const [long, short] = destination.mode === "msg" ? ["channel", "-c"] : destination.mode === "ask" ? ["role", "-r"] : ["to", "-t"];
-  const recipient = recipientPlaceholder !== undefined ? `${short} ${recipientPlaceholder}`
-    : destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
+  const recipient = destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
   const options = targetOptions(values);
   options.push(...(values.mention ?? []).map((name) => option("mention", name)));
   if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));

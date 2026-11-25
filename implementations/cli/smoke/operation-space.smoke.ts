@@ -215,7 +215,7 @@ for (const [argv, rerun] of [
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
-  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
+  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --json --space elsewhere --on <instance>"],
@@ -245,7 +245,7 @@ check("persona create with a malformed pin tells JSON callers to replace only th
 // the --space it was given; it used to keep only the verb.
 for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
-  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
+  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
@@ -257,6 +257,9 @@ for (const [argv, rerun] of [
   check(`${argv.join(" ")} names ${rerun}`,
     refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
 }
+const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
+check("a malformed named status pin keeps plain output on the retry",
+  plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));
 const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
 check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
   attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
@@ -285,13 +288,24 @@ const editorScript = (file: string, body: string) => { const path = join(home, f
 const saved = readFileSync(persona, "utf8");
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
-  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 0, "Edit cancelled: the editor exited with status 3."],
+  ...[3, 126, 127].map(code => [
+    `an editor that exits ${code}`, editorScript(`ed-exit-${code}`, `printf '\\nUnsaved instructions.\\n' >> "$1" || exit 4; exit ${code}`),
+    0, `Edit cancelled: the editor exited with status ${code}.`,
+  ] as const),
 ] as const) {
   const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
   const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
   check(`persona edit with ${label} keeps the draft, names it and leaves the catalog file unchanged`,
-    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) &&
+      readFileSync(kept[0]!, "utf8") !== saved && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
   for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
+if (process.platform !== "win32") {
+  const editor = join(home, "missing-editor");
+  const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
+  check("persona edit with a missing editor refuses without keeping a draft or changing the catalog file",
+    edit.status === 2 && edit.stderr.includes("DEPENDENCY_UNAVAILABLE") && edit.stderr.includes(`the editor ${JSON.stringify(editor)} was not found - not saved`) &&
+      readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(edit));
 }
 // A save refused because the catalog became unwritable while the editor was open keeps the edited
 // draft and names it beside the chmod that fixes the catalog. Root writes through any mode.
