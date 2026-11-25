@@ -387,18 +387,25 @@ function notice(message: string, error = false): void {
   el("notice").classList.toggle("error", error);
   if (message) announce(message);
 }
+let agentActionProblem = false;
 function clearDetails(): void {
   problem = undefined;
   statusProblem = false;
+  agentActionProblem = false;
   text("refusal-detail", ""); el("setup-lines").replaceChildren(); el("details").hidden = true;
   el<HTMLDetailsElement>("details").open = false;
+}
+function showRefusalDetail(error: unknown): void {
+  const exact = error instanceof Error ? error.message : String(error);
+  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact);
+  el("details").hidden = false;
+  el<HTMLDetailsElement>("details").open = true;
 }
 /** `fromStatus` marks an error the background status check raised, which the next good check clears.
  *  Any other error stays until the person acts on it. */
 function refusal(error: unknown, fromStatus = false): void {
-  const exact = error instanceof Error ? error.message : String(error);
-  text("refusal-detail", error instanceof DaemonRefusal ? `${error.code}${error.native ? ` (${error.native})` : ""}\n${exact}` : exact); el("details").hidden = false;
-  el<HTMLDetailsElement>("details").open = true;
+  agentActionProblem = false;
+  showRefusalDetail(error);
   problem = error instanceof DaemonRefusal ? error.native ?? error.code : "OPERATION_FAILED";
   statusProblem = fromStatus;
   notice("", true);
@@ -492,7 +499,7 @@ function showStage(next: Stage, focus = false): void {
   el("service-explanation").hidden = loginActive;
   text("step-caption", finished ? "Ready for your next agent" : `Step ${["welcome", "sign-in", "connect", "finished"].indexOf(next) + 1} of 4`);
   el("step-caption").hidden = finished;
-  if (finished && !problem) el("details").hidden = true;
+  if (finished && !problem && !agentActionProblem) el("details").hidden = true;
   let title: string, description: string;
   if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
@@ -849,6 +856,7 @@ async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void
   if (!agent.lifecycleUid) return;
   const key = JSON.stringify([agent.space, agent.name, agent.lifecycleUid]);
   if (pendingAgentActions.has(key)) return;
+  if (agentActionProblem) clearDetails();
   pendingAgentActions.set(key, op);
   if (serviceStatus) renderAgentRows(serviceStatus);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -861,7 +869,12 @@ async function actOnLocalAgent(agent: LocalAgent, op: AgentAction): Promise<void
       if (result.started !== true) throw new Error("The app did not confirm that it opened the terminal.");
       notice(`Terminal opened for ${agent.name}.`);
     }
-  } catch (error) { refusal(error); }
+  } catch (error) {
+    agentActionProblem = true;
+    showRefusalDetail(error);
+    notice("", true);
+    showStage(stage);
+  }
   finally {
     if (timer) clearTimeout(timer);
     pendingAgentActions.delete(key);
