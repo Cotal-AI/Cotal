@@ -235,6 +235,10 @@ journal section below describes.
 
 ### External supervisors
 
+If the local controller broker exits, run `cotal up --space <space>` from its project to recover it.
+When it restarts with the same recorded settings, `up` leaves a separately started read-only web
+dashboard running with its existing browser sessions.
+
 A foreground `up` holds the root's maintenance lock only while it starts the stack. If a concurrent
 `up` encounters that lock, it refuses `LIFECYCLE_BLOCKED`, exit 2. The foreground terminal keeps the
 stack after startup. Run `cotal status` from the project to inspect it, or press Ctrl-C in the
