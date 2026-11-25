@@ -24,6 +24,8 @@
  *    described by what its rail reports;
  *  - a manager is local only by the machine id it names: this machine's manager under a host name it
  *    no longer has is local and starts no second one, and another machine's under this host name is not;
+ *  - a manager that names no machine, as one an older release started, is local when this machine's
+ *    service record names its instance, so a new thread starts no second manager beside it;
  *  - `launchManagers` starts this machine's manager when no listed one is, remote live included, and
  *    fails the thread when the start fails or its manager is still not listed here;
  *  - the model select and model state list `<agent>/default` once when the catalog names a model
@@ -345,6 +347,25 @@ const HERE = "1".repeat(64), THERE = "2".repeat(64);
   let starts = 0;
   const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
   check("so a new thread starts this machine's manager", starts === 1, { starts, got: got instanceof Error ? got.message : got });
+}
+
+// A manager that an older release started names no machine, as a manager service that kept running
+// across `cotal update --self` does. This machine's service record for the space names the instance it
+// runs here, and that one is local; a manager that names a machine is still decided by it.
+{
+  const card = (id: string, machine?: string) => ({ card: { id: `u_p.manager_${id}`, name: `manager_${id}`, meta: { host: "mac", ...(machine ? { machine } : {}) } }, status: "idle" }) as unknown as Presence;
+  const roster = [card("old"), card("far", THERE)];
+  const old = managerChoice("old", roster, HERE, "u_p", "old");
+  check("a manager row that names no machine is local when this machine's service record names it", old.live === true && old.local === true, old);
+  const other = managerChoice("old", roster, HERE, "u_p", "another");
+  check("and not when the record names another instance", other.live === true && other.local === false, other);
+  const far = managerChoice("far", roster, HERE, "u_p", "far");
+  check("a row that names another machine stays not local, whatever the record says", far.live === true && far.local === false, far);
+  const listed = listedChoice("space", { host: "mac" }, [], HERE, "u_p", "space");
+  check("a rail report that names no machine is local when the record names the instance", listed?.live === true && listed.local === true, listed);
+  let starts = 0;
+  const got = await launchManagers({ space: "s", managers: async () => [old], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
+  check("so a new thread starts no second manager beside the older one", starts === 0 && Array.isArray(got) && got.length === 1, { starts, got: got instanceof Error ? got.message : got });
 }
 
 // This machine's identity could not be read, as in a container with no /etc/machine-id. A manager a
