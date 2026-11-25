@@ -363,10 +363,12 @@ export class SeatLaunch {
 
   /** The refusal for a `once` spawn this manager cannot run as one task: every check is made before
    *  anything is allocated, so a refused spawn leaves nothing behind. */
-  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined {
+  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt" | "autoName">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined {
     if (!hooks?.onOnce) return "once: a once task rides the spawn action, which this launch door is not";
     if (launch.prompt === undefined || launch.prompt.trim() === "") return "once: needs a prompt, which is the task";
     if (launch.supervise !== undefined) return "once: a once seat is never restarted, so it cannot carry supervise";
+    // The task reaches the seat as a relayed turn, never as a message, so the seat would wait to be labelled forever.
+    if (launch.autoName) return "once: a once seat cannot label itself from its first message (autoName)";
     if (!connector.supportsTurnRelay)
       return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
     if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)

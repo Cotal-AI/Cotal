@@ -51,6 +51,9 @@ export interface AgentConfig {
    *  gave this seat, which its launcher restores on a restart (`COTAL_DISPLAY_NAME`). `name` stays
    *  the launch name, which in user mode is also the actor. */
   displayName?: string;
+  /** Name the seat from its first message (`COTAL_AUTO_NAME`, SPEC 13.22). Off when the launcher
+   *  restored a display name (`COTAL_DISPLAY_NAME`): the seat keeps the name it last showed. */
+  autoName?: boolean;
   role?: string;
   description?: string;
   tags?: string[];
@@ -387,6 +390,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     userAuth,
     name,
     ...(displayName !== undefined && displayName !== name ? { displayName } : {}),
+    ...(envFlag(env, "COTAL_AUTO_NAME") === true && displayName === undefined ? { autoName: true } : {}),
     // Untrimmed: a role is an address, so the endpoint refuses a padded one rather than routing it.
     role: env.COTAL_ROLE || def?.role || undefined,
     description: def?.description,
