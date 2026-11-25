@@ -1,15 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
-import { claudeInitialize } from "./claude-initialize.js";
+import { listClaudeModels } from "./model-catalog.js";
 import { claudeCommandCatalog } from "./command-catalog.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
@@ -154,56 +152,9 @@ function assertServableModel(model: string): void {
   );
 }
 
-const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
-
 /** The levels `claude --effort` accepts (2.1.330). Given another level, claude warns on stderr and
  *  runs at its default effort, so a variant outside this list is refused at launch. */
 const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-
-interface ModelRow {
-  value: string;
-  displayName: string;
-  resolvedModel?: string;
-  supportedEffortLevels?: string[];
-}
-
-function isModelRow(row: unknown): row is ModelRow {
-  const { value, displayName, resolvedModel, supportedEffortLevels: levels } = (row ?? {}) as Partial<Record<keyof ModelRow, unknown>>;
-  return (
-    typeof value === "string" &&
-    typeof displayName === "string" &&
-    (resolvedModel === undefined || typeof resolvedModel === "string") &&
-    (levels === undefined || (Array.isArray(levels) && levels.every((level) => typeof level === "string")))
-  );
-}
-
-/** An alias such as `opus` follows each new release, and some logins name it only "Opus", so its name
- *  also carries the model it resolves to today. A value that extends that model, such as
- *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. */
-function modelInfo(row: ModelRow): ModelInfo {
-  const { value, resolvedModel } = row;
-  const resolves = resolvedModel && resolvedModel !== value ? ` (${value.startsWith(resolvedModel) ? value : resolvedModel})` : "";
-  const levels = row.supportedEffortLevels ?? [];
-  return { id: value, name: row.displayName + resolves, ...(levels.length ? { variants: levels.map((name) => ({ name })) } : {}) };
-}
-
-async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
-  // claude applies the settings of the project it runs in, so it runs in an empty private directory.
-  const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
-  try {
-    const bin = opts.resolvedBinaries?.claude ?? "claude";
-    const answer = await claudeInitialize({ bin, cwd, env: launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS }), boundMs: 6_000, what: "its models" });
-    if ("failed" in answer) return unavailable(answer.failed);
-    const { account, models: rows } = answer.response;
-    // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
-    if (account?.tokenSource === "none" && !account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
-    if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
-    // `default` points at claude's own default model, which a launch that names no model gets anyway.
-    return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map(modelInfo) };
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
-}
 
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
@@ -230,7 +181,7 @@ export const claudeConnector: Connector = {
   }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
-  listModels: listClaudeModels,
+  listModels: (o) => listClaudeModels(o ?? {}, launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS })),
   supportsModelVariant: true, // variant = claude's `--effort` level
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
