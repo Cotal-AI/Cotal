@@ -55,6 +55,7 @@ if (!existsSync(BIN)) {
 }
 
 const { check, finish } = createSuite();
+process.env.DO_NOT_TRACK = "1";
 
 // A supervising seat's COTAL_* (COTAL_SKIP_CONNECTOR_SEED above all) would suppress the seed under
 // test, so the host's are scrubbed and checkout seeding is opted in deliberately.
