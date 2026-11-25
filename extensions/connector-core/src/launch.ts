@@ -24,6 +24,8 @@ import {
   parsePrincipalKey,
   principalKey,
   writeLaunchMaterial,
+  discardLaunchArtifacts,
+  type ControlEndpoint,
   type LaunchMaterial,
   type McpServerSpec,
   type UserAuthLaunch,
@@ -146,7 +148,8 @@ export const OPERATOR_ENV_KEEP = [
  *  keys, `mcpKeys` (the `${VAR}` secrets a shared MCP server references), and names deliberately
  *  added by `spawn.env`. There is no inherit mode: omitting `envAllow` adds no extras, never the
  *  manager's ambient environment. Host-session markers therefore cannot leak unless a persona or
- *  operator names them on `spawn.env`.
+ *  operator names them on `spawn.env`. `source` is the environment copied from, this process's by
+ *  default.
  *
  *  Allow-list matching is CASE-INSENSITIVE and each value is copied under the OS's OWN key casing:
  *  Windows spells these `Path`/`ComSpec`/`windir`, so a canonical-only copy would either miss them
@@ -159,6 +162,7 @@ export const OPERATOR_ENV_KEEP = [
  *  forwarded one would stand in for a role, model or read set this launch never had. */
 export function launchEnv(
   opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
+  source: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   for (const [source, keys] of [["spawn.env", opts.envAllow], ["MCP environment references", opts.mcpKeys]] as const) {
     for (const k of keys ?? []) {
@@ -169,16 +173,27 @@ export function launchEnv(
   }
   const env: Record<string, string> = {};
   const sourceKey = new Map<string, string>();
-  for (const k of Object.keys(process.env)) sourceKey.set(k.toLowerCase(), k);
+  for (const k of Object.keys(source)) sourceKey.set(k.toLowerCase(), k);
   const copy = (name: string): void => {
     const src = sourceKey.get(name.toLowerCase());
     if (src === undefined) return;
-    const v = process.env[src];
+    const v = source[src];
     if (v !== undefined) env[src] = v;
   };
   for (const k of OS_ENV_ALLOW) copy(k);
   for (const k of OPERATOR_ENV_KEEP) copy(k);
   for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);
+  return env;
+}
+
+/** The seat's names as `COTAL_*` env: the launch name, the display name a relaunch restores when
+ *  the seat was renamed, and whether the seat labels itself from its first message. Every connector
+ *  forwards them, so a seat keeps its actor and shows its last name. */
+export function nameEnv(opts: { name: string; displayName?: string; autoName?: boolean }): Record<string, string> {
+  const env: Record<string, string> = {};
+  env.COTAL_NAME = opts.name;
+  if (opts.displayName !== undefined) env.COTAL_DISPLAY_NAME = opts.displayName;
+  if (opts.autoName === true) env.COTAL_AUTO_NAME = "1";
   return env;
 }
 
@@ -264,7 +279,9 @@ export function connectorLaunchOptions(
  * The file's private directory is appended to `artifacts`, the launch's artifact list (core
  * launch-artifacts), so the launcher that spawns the spec removes it once the child has exited, the
  * same way it removes a persona carrier. Call it after the connector's last refusal: a launch that
- * throws returns no spec, and then nothing owns the directory.
+ * throws returns no spec, and then nothing owns the directory. When it fails, it removes every
+ * artifact recorded so far (the control socket's directory included) before the error propagates,
+ * as `writeLaunchArtifact` does.
  *
  * Refuses a creds+userAuth combination here (one launch, one identity plane - U10), which is where
  * `userAuthEnv` refused it.
@@ -274,22 +291,38 @@ export function materialEnv(
     creds?: string;
     servers?: string;
     token?: string;
-    controlToken?: string;
+    control?: ControlEndpoint;
     eventsRequired?: boolean;
     eventPayloads?: boolean;
+    askPermissions?: boolean;
+    reasoningEvents?: boolean;
     userAuth?: UserAuthLaunch;
   },
   artifacts: string[],
 ): Record<string, string> {
+  try {
+    return writeMaterial(opts, artifacts);
+  } catch (e) {
+    discardLaunchArtifacts(artifacts);
+    throw e;
+  }
+}
+
+function writeMaterial(opts: Parameters<typeof materialEnv>[0], artifacts: string[]): Record<string, string> {
   if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
   const material: LaunchMaterial = {};
   if (opts.creds) material.creds = opts.creds;
   if (opts.servers) material.servers = opts.servers;
   if (opts.token) material.token = opts.token;
-  if (opts.controlToken) material.controlToken = opts.controlToken;
+  if (opts.control) {
+    material.controlKey = opts.control.token;
+    material.controlVersion = opts.control.version;
+  }
   if (opts.eventsRequired) material.eventsRequired = true;
   if (opts.eventPayloads === false) material.eventPayloadsWithheld = true;
+  if (opts.askPermissions) material.askPermissions = true;
+  if (opts.reasoningEvents) material.reasoningEvents = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;

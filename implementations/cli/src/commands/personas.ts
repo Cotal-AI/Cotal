@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { readFileSync } from "node:fs";
 import {
   agentFilePath,
@@ -8,10 +9,12 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cachedPreferences, CommandFailure, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { cachedPreferences, codeSpan, CommandFailure, exitCode, resolvePreference, parseCommaList, personaDefinitionProblem, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -51,17 +54,18 @@ export async function personas(args: ParsedArgs): Promise<void> {
   }
   const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
+  const catalogTarget = { space: values.space, server: values.server };
   switch (positionals[0] ?? "list") {
     case "list":
       return list(values.verbose === true, values.running === true, values);
     case "show":
-      return show(positionals[1], values);
+      return show(positionals[1], catalogTarget);
     case "edit":
-      return edit(positionals[1], values);
+      return edit(positionals[1], catalogTarget);
     case "new":
       return create(positionals[1], values);
     case "rm":
-      return remove(positionals[1], values.force === true, values);
+      return remove(positionals[1], values.force === true, catalogTarget);
     default:
       return usage();
   }
@@ -134,41 +138,38 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   // A refusal names the space it read, as `persona` names it.
   const { root, space } = personaCatalog(values);
   recordOperationSpace(space);
-  // A catalog folder that is a file or a looping link is not an empty catalog.
-  const folder = catalogFolderProblem(personaDir(root));
-  if (folder) throw folder;
   // Only an absent folder is an empty catalog. One that cannot be read is refused, as `persona` refuses it.
   let entries: PersonaEntry[];
   try { entries = readPersonas(root); }
   catch (error) { throw catalogReadRefusal(personaDir(root), error); }
-  if (!entries.length) {
-    console.log(
-      c.dim(`no personas in ${personaDir(root)}\n`) +
-        c.dim('create one:  `cotal personas new <name> --prompt "<who they are>"`'),
-    );
-    return;
-  }
-  // `--running` is an explicit live overlay: connect, snapshot who's present, and mark each persona.
-  // Fails loud if the mesh is unreachable (presentNames exits) — never a silent best-effort. The
-  // marks follow the mesh they were read from, as every other report that reads one begins.
+  // An explicit live overlay checks the mesh even when there are no local personas to mark.
   const overlay = running ? await presentNames(values) : undefined;
   const present = overlay?.names;
   if (overlay) console.log(`${renderReport({ space: overlay.space, sections: [] }, "rich", process.stdout)}\n`);
+  if (!entries.length) {
+    const spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
+    const serverFlag = values.server === undefined ? "" : ` --server ${shellWord(values.server)}`;
+    const example = `cotal personas new example${spaceFlag}${serverFlag} --prompt "Help with this project" --subscribe ""`;
+    console.log(
+      c.dim(`no personas in ${personaDir(root)}\n`) +
+        c.dim(`create one:  ${codeSpan(example)}`),
+    );
+    return;
+  }
   // A catalog travels with a cloned repo, so every value read from it is shown with its control
   // characters escaped, as `persona` and `persona show` show them.
   const pad = Math.max(...entries.map((e) => oneLine(e.name).length));
   for (const e of entries) {
     const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
-      // A parser diagnostic spans lines, the reason and then an excerpt with a caret under the
-      // fault, so each line is escaped and printed on its own.
-      const [reason = "", ...excerpt] = e.error.trimEnd().split(/\r?\n/).filter((line) => line.trim());
-      console.log(`${c.red(name)}  ${c.red("⨯ unparseable")} ${c.dim(oneLine(reason))}`);
-      for (const line of excerpt) console.log(c.dim(`    ${oneLine(line)}`));
+      const prefix = `agent file ${e.path}: `;
+      const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
+      const blankSelector = hasBlankPersonaSelector(e);
+      console.log(`${c.red(blankSelector ? JSON.stringify(e.name) : name)}  ${c.red(blankSelector ? "⨯ invalid selector" : "⨯ unparseable")} ${c.dim(oneLine(reason))}`);
       continue;
     }
     const d = e.def!;
-    const live = present ? (present.has(e.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
+    const live = present ? (present.has(d.name) ? c.green("● running") : c.dim("○ not running")) : undefined;
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
@@ -180,6 +181,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     if (desc && !(verbose && desc.trim() === firstLine(d.persona))) for (const line of wrapWords(oneLine(desc), terminalWidth(process.stdout) - 2)) console.log(c.dim(`  ${line}`));
     if (verbose && d.persona) console.log(d.persona.split(/\r?\n/).map((line) => `    ${oneLine(line)}`).join("\n") + "\n");
   }
+  if (entries.some((entry) => entry.error)) process.exitCode = exitCode("partial", "OPERATION_PARTIAL");
 }
 
 /** Snapshot the names currently present on the mesh — the live overlay behind `personas list
@@ -197,8 +199,8 @@ async function presentNames(values: ConnectValues): Promise<{ space: string; nam
 function show(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   // A bad name, a missing persona and an invalid definition are refused as `persona show` refuses them.
-  const path = personaPath(targetRoot(values), name);
-  const bytes = requirePersonaSource(path).bytes;
+  const path = personaPath(targetRoot(values), name, "show");
+  const bytes = requirePersonaSource(path, targetWords(values)).bytes;
   validatePersona(bytes, path);
   // The canonical card (frontmatter + persona body). Piped or redirected it is the file byte for
   // byte and nothing else, so `show p > p.md` copies it. A catalog travels with a cloned repo, so on
@@ -218,7 +220,7 @@ async function edit(name: string | undefined, values: { space?: string; server?:
   if (!resolvePreference("editor", { preferences: cachedPreferences() }).value)
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const catalog = personaCatalog(values);
-  const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
+  const edit = await editPersona(personaPath(catalog.root, name), name, catalog, targetWords(values));
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
   else if (edit.action === "unchanged") console.log(c.dim(`"${name}" is unchanged, so nothing was saved`));
   else console.log(c.yellow(`edit cancelled: the editor exited with status ${edit.status}, so nothing was saved${edit.draft ? `; your draft is kept in ${edit.draft}` : ""}`));
@@ -248,8 +250,14 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   // Body from --prompt <text>, or --from <file|-> (- = stdin). No fallback — one must be given.
   let persona: string;
   if (v.prompt !== undefined) persona = v.prompt;
-  else if (v.from !== undefined) persona = readFileSync(v.from === "-" ? 0 : v.from, "utf8");
-  else {
+  else if (v.from !== undefined) {
+    const bytes = readFileSync(v.from === "-" ? 0 : v.from);
+    if (!isUtf8(bytes)) {
+      const source = v.from === "-" ? "standard input" : oneLine(v.from);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona body: ${source} is not valid UTF-8`, { remedy: "convert the input to UTF-8 and retry" });
+    }
+    persona = bytes.toString("utf8");
+  } else {
     console.error(c.red('provide the persona body: --prompt "<text>"  or  --from <file|->'));
     process.exit(1);
   }
@@ -277,18 +285,20 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
   }
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
-  commitPersona(path, expected, bytes);
+  commitPersona(path, expected, bytes, targetWords(v));
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  \`cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}\``));
 }
 
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
-  const expected = requirePersonaSource(path);
+  const path = personaPath(targetRoot(values), name, "legacy-remove");
+  const expected = requirePersonaSource(path, targetWords(values));
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
-    console.error(c.dim(`cotal personas rm ${name} --force`));
+    const target = targetWords({ space: values.space, server: values.server });
+    const word = shellWord(name);
+    console.error(c.dim(name.startsWith("-") ? `cotal personas rm${target} --force -- ${word}` : `cotal personas rm ${word}${target} --force`));
     process.exit(1);
   }
   commitPersona(path, expected, undefined);

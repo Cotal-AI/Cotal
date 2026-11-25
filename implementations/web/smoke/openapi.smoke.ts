@@ -99,8 +99,15 @@ try {
   });
   assert.equal(deletion.status, 403, 'Native dashboard cannot acquire channel purge authority');
   conforms(responseSchema('/api/channel/delete', 403, 'post'), await deletion.json());
+  const readPath = (path: string) => base + path.replace('{channel}', 'general').replace('{agent}', encodeURIComponent(seed!.card.id));
+  for (const path of Object.keys(spec.paths).filter((path) => spec.paths[path].get)) {
+    const response = await fetch(readPath(path), { method: 'PUT', headers, signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 405, `PUT ${path}`);
+    assert.equal(response.headers.get('allow'), 'GET', `PUT ${path}`);
+    assert.deepEqual(await response.json(), { error: 'GET only' }, `PUT ${path}`);
+  }
   for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed' && path !== '/api/meta' && spec.paths[path].get)) {
-    const response = await fetch(base + path.replace('{channel}', 'general').replace('{agent}', encodeURIComponent(seed!.card.id)), { headers });
+    const response = await fetch(readPath(path), { headers });
     assert.equal(response.status, 200, `${path}: ${response.status}`);
     const body = await response.json();
     conforms(responseSchema(path, 200), body);
@@ -112,6 +119,16 @@ try {
     assert.equal(response.status, 400);
     const path = target.includes('/channels/') ? '/api/channels/{channel}/history' : target.split('?')[0];
     conforms(responseSchema(path, 400), await response.json());
+  }
+  for (const path of ['/api/activity', '/api/dms', '/api/channels/{channel}/history', '/api/agents/{agent}/events']) {
+    const limit = spec.paths[path].get.parameters.find((param: { name: string }) => param.name === 'limit').schema;
+    assert.equal(limit.minimum, 0, path);
+    assert.equal(limit.maximum, 2000, path);
+    for (const [value, status] of [[0, 200], [2000, 200], [2001, 400]]) {
+      const response = await fetch(`${readPath(path)}?limit=${value}`, { headers });
+      assert.equal(response.status, status, `${path}?limit=${value}`);
+      conforms(responseSchema(path, status!), await response.json());
+    }
   }
   for (const query of ['?limit=', '?limit=0']) {
     const response = await fetch(base + '/api/dms' + query, { headers });

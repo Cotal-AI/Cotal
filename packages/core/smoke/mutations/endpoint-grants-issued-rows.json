@@ -38,7 +38,7 @@
     },
     {
       "name": "drop the mint-time bound on the composed user JWT",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-jwt.ts",
       "find": "  if (userJwtBytes > MAX_MINTED_JWT_BYTES) {",
       "replace": "  if (false) {",
       "expectRed": "six 4096-char allowSubscribe channels (each individually valid) are refused at the mint, naming the size and the bound",

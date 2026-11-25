@@ -41,13 +41,13 @@
       "cell": "2.x: an unlisted model refuses before join (GET /api/model, empty list)"
     },
     {
-      "name": "plugin2.ts refuses on the first empty listing instead of waiting",
-      "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "    if (Date.now() >= deadline)\n      throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));",
-      "replace": "    throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));",
+      "name": "settled-models.ts reads the model list without waiting for OpenCode's plugins",
+      "file": "extensions/connector-opencode/src/settled-models.ts",
+      "find": "    while ((await list(\"/api/plugin\")).length === 0) await sleep(PLUGIN_POLL_MS, undefined, { signal });\n",
+      "replace": "",
       "command": "pnpm smoke:opencode",
-      "expectRed": "2.x: an empty listing is waited on, and the model check passes once the server lists it",
-      "cell": "2.x: an empty listing is waited on, and the model check passes once the server lists it"
+      "expectRed": "2.x: the model check waits for OpenCode's plugins and passes once the settled listing names the model",
+      "cell": "2.x: the model check waits for OpenCode's plugins and passes once the settled listing names the model"
     },
     {
       "name": "plugin2.ts never reads the operator's boot prompt off the environment",

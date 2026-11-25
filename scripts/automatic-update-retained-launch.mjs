@@ -4,6 +4,7 @@ import {createServer} from 'node:net';
 import {mkdirSync,writeFileSync,readFileSync,readdirSync,readlinkSync,statfsSync} from 'node:fs';
 import {join,resolve,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import {candidateRegistry} from './automatic-update-platform-baseline.mjs';
 
 function birth(pid) { const fields=readFileSync(`/proc/${pid}/stat`,'utf8').split(') ').slice(1).join(') ').split(' ');assert.notEqual(fields[0],'Z');return fields[19]; }
@@ -76,4 +77,8 @@ try{
 assert.equal(report.cleanup.code,0);assert.deepEqual(report.finalNative,[]);
 return report;
 }
-if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){const[root,candidate,nextCandidate]=process.argv.slice(2);assert(root&&candidate&&nextCandidate,'usage: automatic-update-retained-launch.mjs <root> <candidate> <next>');console.log(JSON.stringify(await retainedLaunchCell({root,candidate,nextCandidate})));}
+if (isMainEntry(import.meta.url)) {
+  const [root, candidate, nextCandidate] = process.argv.slice(2);
+  assert(root && candidate && nextCandidate, 'usage: automatic-update-retained-launch.mjs <root> <candidate> <next>');
+  console.log(JSON.stringify(await retainedLaunchCell({ root, candidate, nextCandidate })));
+}

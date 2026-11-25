@@ -34,7 +34,7 @@ let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
 
 interface ManagerLike {
-  readinessTimeoutMs: number;
+  config: { readinessTimeoutMs: number };
   start(): Promise<void>;
   stop(options?: { withAgents?: boolean }): Promise<void>;
   startAgent(o: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
@@ -93,7 +93,7 @@ const broker = await bootBroker(auth, dir);
 recordMesh({ space, server: broker.servers, root: workspaceRoot, mode: "auth", ts: new Date().toISOString() });
 
 const mgr = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
-mgr.readinessTimeoutMs = 2500; // echo never joins; do not wait the full window
+mgr.config.readinessTimeoutMs = 2500; // echo never joins; do not wait the full window
 const consoleArgs = ["--space", space, "--server", broker.servers];
 
 let session: ConsoleSession | undefined;
@@ -108,7 +108,7 @@ try {
 
   console.log("1. attach → type through → detach → repaint");
   session = new ConsoleSession(consoleArgs, home);
-  check("console: the TUI paints the space status bar", await session.waitFor(`${space} · #`, 40_000), clean(session.out).slice(-400));
+  check("console: the TUI paints the space status bar", await session.waitFor(`${space} · all`, 40_000), clean(session.out).slice(-400));
   const psFrom = session.out.length;
   await session.command("ps");
   check(":ps lists the echo seat", await session.waitFor("agents: echo", 30_000, psFrom), clean(session.out.slice(psFrom)).match(/(agents: |ps: )[^│\n]*/)?.[0] ?? clean(session.out.slice(psFrom)).slice(-300));
@@ -129,13 +129,13 @@ try {
   session.write("\x1d"); // Ctrl-]
   check("detach: the console re-enters its alternate screen", await session.waitFor("\x1b[?1049h", 15_000, detachFrom), clean(session.out.slice(detachFrom)).slice(-400));
   check("detach: the verdict notice confirms it", await session.waitFor("detached from echo", 15_000, detachFrom), clean(session.out.slice(detachFrom)).slice(-400));
-  check("detach: the status bar repaints", await session.waitFor(`${space} · #`, 10_000, detachFrom), clean(session.out.slice(detachFrom)).slice(-400));
+  check("detach: the status bar repaints", await session.waitFor(`${space} · all`, 10_000, detachFrom), clean(session.out.slice(detachFrom)).slice(-400));
   check("quit: the console exits cleanly after a full attach cycle", await session.quit(), session.exited);
   await session.close();
 
   console.log("2. an invalid COTAL_DETACH_KEY stays a notice; the console survives");
   session = new ConsoleSession(consoleArgs, home, { COTAL_DETACH_KEY: "bogus" });
-  check("bad key: the TUI paints", await session.waitFor(`${space} · #`, 40_000), clean(session.out).slice(-400));
+  check("bad key: the TUI paints", await session.waitFor(`${space} · all`, 40_000), clean(session.out).slice(-400));
   const attach2From = session.out.length;
   await session.command("attach echo");
   check("bad key: the invalid COTAL_DETACH_KEY becomes a notice", await session.waitFor("invalid COTAL_DETACH_KEY", 10_000, attach2From), clean(session.out.slice(attach2From)).slice(-400));

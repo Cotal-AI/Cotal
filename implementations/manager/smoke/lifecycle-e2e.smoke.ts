@@ -34,7 +34,7 @@ import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths, authDir, renewalRecordPath, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, killAndAwaitExit, createSuite } from "@cotal-ai/smoke-kit";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -48,11 +48,7 @@ process.env.COTAL_SEAT_ROOT = seatRoot;
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const space = `life-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -210,7 +206,7 @@ try {
   // 3b — UNCERTAIN: a process that runs but never joins presence → neither started nor failed within the
   // backstop → {ok:false} uncertain, and the agent is KEPT (not deprovisioned; it may still be booting).
   console.log("3b. runs-but-never-joins → uncertain + kept:");
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000; // shrink the backstop for the test
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 3000; // shrink the backstop for the test
   const r3b = await mgr.startAgent({ name: "idle1", agent: "e2e-idle", cwd: repoRoot, events: false });
   check("startAgent reports {ok:false}", r3b.ok === false, r3b);
   check("failure names it 'uncertain'", /uncertain/i.test((r3b as { error?: string }).error ?? ""), (r3b as { error?: string }).error);
@@ -218,7 +214,7 @@ try {
   const uidIdle = uidOf("idle1");
   check("uncertain agent is KEPT (still managed, not despawned)", idleId !== "" && (await footprint(idleId, uidIdle, "idle1")).creds, [...(mgr as unknown as { agents: Map<string, unknown> }).agents.keys()]);
   check("uncertain agent NOT deprovisioned (footprint intact)", (await footprint(idleId, uidIdle, "idle1")).dm, await footprint(idleId, uidIdle, "idle1"));
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000; // restore for w2 below
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 30000; // restore for w2 below
 
   // 3c — FAIL BEFORE PRESENCE (SPEC 13.1, residual #6): an authed launch whose connector DROPS
   // the launcher uid (a broken launcher, the pre-cut shape) or LIES a different one while
@@ -249,11 +245,11 @@ try {
     // proof, so it DOES publish presence with its lied uid (a ghost record exists). The manager
     // readiness LIFECYCLE FENCE rejects it anyway - client-authored kind is not the authority
     // boundary; the manager owns the expected uid, so the ghost never reports STARTED.
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 3000;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 3000;
     const rBypass = await mgr.startAgent({ name: "bypass1", agent: "e2e-bypass-kind", cwd: repoRoot, events: false });
     check("a kind:endpoint child with a lied uid never reports STARTED (manager readiness lifecycle fence, not client kind)",
       rBypass.ok === false && /uncertain/i.test((rBypass as { error?: string }).error ?? ""), rBypass);
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 30000;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 30000;
   }
 
   // 4 — EXPLICIT SHUTDOWN teardown: withAgents deprovisions the still-managed agents (w2 + the kept idle1).
@@ -271,8 +267,8 @@ try {
   check("w2 read-ACL row gone after explicit stop", !fp2.acl, fp2);
   check("w2 creds file gone after explicit stop", !fp2.creds, fp2);
 
-  console.log(`\nLIFECYCLE E2E ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-  if (fail) process.exitCode = 1;
+  console.log(`\nLIFECYCLE E2E ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+  finish();
 } catch (e) {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;

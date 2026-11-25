@@ -63,7 +63,7 @@ const root = (tag: string) => {
   return path;
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
-type Priv = { managerInstanceId: string; serviceServe: { nc: NatsConnection }; leaseStopping: boolean };
+type Priv = { managerInstanceId: string; leaseStopping: boolean; servePlane: { serviceServe: { nc: NatsConnection }; } };
 let broker: ReturnType<typeof spawn> | undefined;
 let release: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -258,6 +258,16 @@ try {
   for (const op of ["attach", "stop", "input"]) {
     const refused = await askManager(client, space, servers, op, { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) }, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat });
     check(`located ${op} refuses stale lifecycle before submission`, !refused.ok && refused.code === "expired" && refused.preSubmitRefusal === true, refused);
+    // The caller also pins the run it chose, with the manager's own row id. A replaced chosen run is
+    // named by its own pin, before the presence pin.
+    const current = await askManager(client, space, servers, "status", { name: "second" }, admin.auth, "any", undefined, { instanceId: loc.instanceId });
+    const row = current.data as { id: string; lifecycleUid: string };
+    const args = { name: "SECOND", ...(op === "input" ? { text: "never submitted" } : {}) };
+    const replaced = await askManager(client, space, servers, op, args, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat, expectedTarget: { id: row.id, lifecycleUid: loc.expectedSeat!.lifecycleUid } });
+    check(`located ${op} whose chosen run was replaced says so before submission`, current.ok && !replaced.ok && replaced.code === "not-found" && replaced.error?.includes("was replaced by a new run") === true && replaced.preSubmitRefusal === true && replaced.selectedSeatChanged === true, { current, replaced });
+    // The run it chose is current and only the presence pin is stale: the presence pin refuses.
+    const chosenCurrent = await askManager(client, space, servers, op, args, admin.auth, "any", undefined, { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid } });
+    check(`located ${op} whose chosen run is current is still refused by its stale presence pin`, current.ok && !chosenCurrent.ok && chosenCurrent.code === "expired" && chosenCurrent.error?.includes("changed lifecycle") === true && chosenCurrent.preSubmitRefusal === true, chosenCurrent);
   }
   const staleAttach = await attachSeat({ ...ctx, name: "second" }, { control: staleClient, reconnect: false, onRefusal: "throw", verb: "cotal attach" });
   check("public workspace attach loop refuses the stale located lifecycle", staleAttach.kind === "gone" || staleAttach.kind === "failed" && staleAttach.message.includes("changed lifecycle"), staleAttach);
@@ -294,13 +304,16 @@ try {
   check("class-only spawn remains launched with an explicit permission-refused pin audit", deniedSpawn.ok && String((deniedSpawn.data as { pinAudit?: { error?: string } })?.pinAudit?.error).includes("permission-denied"), deniedSpawn);
   // Stop only the owned manager's serving connection while its real seat continues publishing.
   (m1 as unknown as Priv).leaseStopping = true;
-  await (m1 as unknown as Priv).serviceServe.nc.close();
+  await (m1 as unknown as Priv).servePlane.serviceServe.nc.close();
   const unavailable = await granted.tool("cotal_invoke", { endpoint: "manager", command: "inspect", args: { name: "first" }, timeoutMs: 500 });
   check("unanswered owner is TARGET_UNAVAILABLE naming that instance, with no class fallback", unavailable.isError && unavailable.text.includes("TARGET_UNAVAILABLE") && unavailable.text.includes(iid1), unavailable);
   const cliUnavailable = await cli("inspect", { args: JSON.stringify({ name: "first" }), timeout: "500" });
   check("generic CLI owner silence names the owner as TARGET_UNAVAILABLE", cliUnavailable.code !== 0 && cliUnavailable.err.includes("TARGET_UNAVAILABLE") && cliUnavailable.err.includes(iid1), cliUnavailable);
   const statusUnavailable = await cliAgent("agentStatus", "first");
   check("actual CLI named status reports its silent owner as TARGET_UNAVAILABLE", statusUnavailable.code === 2 && statusUnavailable.out.includes("TARGET_UNAVAILABLE") && statusUnavailable.out.includes(iid1) && !statusUnavailable.out.includes("all-managers"), statusUnavailable);
+  const pinnedUnavailable = await cliAgent("agentStatus", "first", false, iid1);
+  check("named status still reports that a registered but silent pinned manager did not answer",
+    pinnedUnavailable.code === 2 && pinnedUnavailable.out.includes("TARGET_UNAVAILABLE") && pinnedUnavailable.out.includes(`manager instance ${iid1} did not answer`), pinnedUnavailable);
   const statusOther = await cliAgent("agentStatus", "second");
   check("actual CLI named status does not depend on an unrelated silent manager", statusOther.code === 0 && statusOther.out.includes(iid2) && !statusOther.out.includes(iid1), statusOther);
   const other = await invoke(granted.tool, "second");

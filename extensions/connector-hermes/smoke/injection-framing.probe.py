@@ -57,6 +57,9 @@ _base.BasePlatformAdapter = BasePlatformAdapter
 _base.MessageEvent = MessageEvent
 _base.MessageType = MessageType
 _base.SendResult = SendResult
+_base.cache_image_from_bytes = lambda data, ext=".jpg": ""
+_session = types.ModuleType("gateway.session")
+_session.build_session_key = lambda source, **kw: ""
 
 _cfg = types.ModuleType("gateway.config")
 
@@ -79,6 +82,7 @@ sys.modules.update(
         "gateway.platforms": types.ModuleType("gateway.platforms"),
         "gateway.platforms.base": _base,
         "gateway.config": _cfg,
+        "gateway.session": _session,
     }
 )
 
@@ -86,7 +90,8 @@ sys.modules.update(
 # dial it. The inject path under test never touches the socket.
 os.environ.setdefault("COTAL_BRIDGE_SOCKET", "/nonexistent/cotal-injection-framing.sock")
 # The probe never connects (its socket path does not exist); the token only lets the authenticated client construct.
-os.environ.setdefault("COTAL_CONTROL_TOKEN", "injection-framing-probe-token")
+os.environ.setdefault("COTAL_CONTROL_KEY", "injection-framing-probe-token")
+os.environ.setdefault("COTAL_CONTROL_VERSION", "1")
 sys.path.insert(0, PLUGIN_PARENT)
 
 from cotal.adapter import CotalAdapter  # noqa: E402

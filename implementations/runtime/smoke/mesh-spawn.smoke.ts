@@ -809,7 +809,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
       launches: placements.length - wrongBefore });
   // ITEM 3, identity half, THE TABLE'S HALF ONLY. This reads `PRIMITIVES.spawn`, so it grades the
   // TABLE: that the option is declared and declared hashed. It is deliberately NOT the cell any
-  // mutant of the projection names, because it cannot be: deleting the projection in `perform.ts`
+  // mutant of the projection names, because it cannot be: deleting the projection in `perform-dispatch.ts`
   // leaves this assertion evaluating to `true`, measured. The BEHAVIOUR that the table describes is
   // graded by the live retargeted replay in row 5 of 3e below, and that is what the re-anchored
   // M20 reddens. Two cells, because the table and the projection are two things that can disagree.
@@ -973,7 +973,7 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
   // The interpreter's journal lookup must call that divergence rather than replay A's recorded
   // resolution under B's name. Killed by M20 "the placement target is dropped from the step-identity
   // PROJECTION", which deletes the `placement` spread from the spawn projection in
-  // `packages/lang/src/perform.ts`: the two hashes then match, the recorded entry replays, and
+  // `packages/lang/src/perform-dispatch.ts`: the two hashes then match, the recorded entry replays, and
   // nothing diverges. The mutant used to remove `"placement"` from `hashedOptions` in
   // `primitives.ts` instead and name the STATIC cell in 3d, which reads that same array back — one
   // metadata array graded against itself, able to pass while this replay was broken.

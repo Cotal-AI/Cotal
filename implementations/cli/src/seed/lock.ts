@@ -1,5 +1,6 @@
 import { existsSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "@cotal-ai/workspace";
 import { SEED_BUILTINS, reconcileChildPath, reconcileCursorPath, reconcileLockPath, reconcileRecoveryPath, readJsonFile, writeJsonAtomic } from "./paths.js";
 
@@ -26,8 +27,8 @@ export interface ReconcileLock {
 
 /** Acquire the reconcile lock, waiting (bounded) on a live reconcile and reclaiming a dead owner's.
  *  A reconcile installs four connectors via npm, so the wait bound is generous. */
-export function acquireReconcileLock(): ReconcileLock {
-  const held: HeldLock = acquireLock(reconcileLockPath(), {
+export function acquireReconcileLock(config?: string): ReconcileLock {
+  const held: HeldLock = acquireLock(config === undefined ? reconcileLockPath() : join(config, "seed", "reconcile.lock"), {
     label: "a connector reconcile",
     waitMs: 300000,
     onTimeout: (owner) =>

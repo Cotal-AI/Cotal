@@ -135,4 +135,16 @@ try {
   // Keep this sandbox and its logs for the caller's evidence. The sandbox watchdog handles an
   // interrupted suite, and the final down above completes before the smoke returns.
 }
+const fresh = join(home, "fresh-workspace");
+mkdirSync(fresh, { mode: 0o700 });
+mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+const listener = createServer();
+await new Promise<void>((done) => listener.listen(0, "127.0.0.1", done));
+try {
+  const address = listener.address();
+  assert(address && typeof address !== "string");
+  const refused = spawnSync(process.execPath, [bin, "up", "--server", `nats://127.0.0.1:${address.port}`], { cwd: fresh, env, encoding: "utf8", timeout: 120_000 });
+  check("busy-port refusal in fresh folder exits with conflict", refused.status === 2);
+  check("busy-port refusal removes its temporary .cotal", !existsSync(join(fresh, ".cotal")));
+} finally { await new Promise<void>((done, reject) => listener.close((error) => error ? reject(error) : done())); }
 finish();

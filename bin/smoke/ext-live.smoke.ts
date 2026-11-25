@@ -148,15 +148,17 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
 
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const goodFixture = fixture("cotal-ext-fixture", GOOD, { bin: { "fixture-bin": "bin.js" } });
+  const goodFixture = fixture("cotal-ext-fixture", GOOD, { main: "./index", bin: { "fixture-bin": "bin.js" } });
   writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
   const r = cotal(["ext", "add", goodFixture]);
-  ok("add exits 0", r.status === 0, r.stderr.slice(-400));
+  ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
   ok("add names the contributed command", /hello-ext/.test(r.stdout), r.stdout);
   ok("manifest written + announced", existsSync(manifestPath) && /→ wrote extensions manifest/.test(r.stderr), r.stderr.slice(-300));
   ok("core is linked to OUR copy", /→ wrote @cotal-ai\/core link/.test(r.stderr));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
+  const run = cotal(["hello-ext"]);
+  ok("a later command resolves the same npm main", run.status === 0 && run.stdout.trim() === "hello world", run);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
@@ -284,7 +286,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   writeFileSync(manifestPath, "{ not json");
   const r = cotal(["--help"]);
   ok("corrupt manifest fails every invocation", r.status === 1, r.status);
-  ok("...as one red line naming the manifest + the fix", /corrupt extensions manifest/.test(r.stderr) && /ext add/.test(r.stderr), r.stderr.slice(0, 300));
+  ok("...as one red line naming the manifest and the repair command", /corrupt extensions manifest/.test(r.stderr) && /cotal ext seed --repair/.test(r.stderr), r.stderr.slice(0, 300));
   ok("...not an unhandled-rejection stack dump", !/ModuleJob|at async/.test(r.stderr), r.stderr.slice(0, 300));
   writeFileSync(manifestPath, good);
 }
@@ -317,7 +319,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   const staleRun = cotal(["hello-ext", "stale-lock"]);
   ok("lazy extension import ignores a dead owner's stale mutation lock", staleRun.status === 0 && /hello stale-lock/.test(staleRun.stdout), staleRun.stdout + staleRun.stderr);
   const staleClaim = cotal(["ext", "remove", "not-installed"]);
-  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 1 && /no installed extension/.test(staleClaim.stderr) && !existsSync(mutationLock), staleClaim.stderr);
+  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 0 && /already absent/.test(staleClaim.stdout) && !existsSync(mutationLock), staleClaim.stdout + staleClaim.stderr);
 
   mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
   const unreadableStarted = Date.now();

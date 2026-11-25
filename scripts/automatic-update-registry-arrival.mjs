@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainEntry } from './main-entry.mjs';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
 /** Upgrade two normal packed closures through the installed entry while the target archive propagates. */
@@ -75,7 +75,7 @@ export async function registryArrivalUpgrade({ oldDirectory, targetDirectory, ro
   }
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   const [oldDirectory, targetDirectory, root] = process.argv.slice(2);
   assert(oldDirectory && targetDirectory && root, 'usage: automatic-update-registry-arrival.mjs <old-pack> <target-pack> <private-root>');
   const result = await registryArrivalUpgrade({ oldDirectory, targetDirectory, root });

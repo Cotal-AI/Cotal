@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { isMainEntry } from './main-entry.mjs';
 
 export function verifySelectedGraphs(graph, version) {
   assert(graph && typeof graph.logicalEntry === 'string' && graph.logicalEntry.startsWith('/'), 'selected root identity missing');
@@ -93,7 +92,7 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
   return { acceptance: true, routes: 3, checks: report.checks.length };
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (isMainEntry(import.meta.url)) {
   assert(process.argv[2], 'usage: automatic-update-two-homes-evidence.mjs <result.json>');
   console.log(JSON.stringify(verifyTwoHomeUpgrade(JSON.parse(readFileSync(process.argv[2], 'utf8')))));
 }

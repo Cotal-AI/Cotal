@@ -211,7 +211,7 @@ try {
     check("muted hard-drop still wins under fail-closed classification", !a2.peekInbox().some((i) => i.id === "unsafe-muted"));
 
     await a2.setChannelMode("ch", "normal");
-    (a2 as unknown as { _attention: string })._attention = "focus";
+    ((a2 as unknown as { inboxState: unknown }).inboxState as unknown as { _attention: string })._attention = "focus";
     a2.ep.emit("message", msg("unsafe-focus"), mkDelivery(true, { n: 0 }), meta);
     check("normal focus ack-drop still wins under fail-closed classification", !a2.peekInbox().some((i) => i.id === "unsafe-focus"));
 
@@ -233,9 +233,9 @@ try {
 
     const focused = new MeshAgent({ ...cfg, id: "focus_transition" });
     focused.on("error", () => {});
-    (focused as unknown as { _attention: string })._attention = "focus";
+    ((focused as unknown as { inboxState: unknown }).inboxState as unknown as { _attention: string })._attention = "focus";
     focused.ep.emit("message", msg("focus-live"), mkDelivery(false, { n: 0 }), meta);
-    (focused as unknown as { _attention: string })._attention = "open";
+    ((focused as unknown as { inboxState: unknown }).inboxState as unknown as { _attention: string })._attention = "open";
     const focusDurable = { n: 0 };
     focused.ep.emit("message", msg("focus-live"), mkDelivery(true, focusDurable), meta);
     check("live focus drop stays dropped after focus→open before durable copy", focused.inboxCount() === 0 && focusDurable.n === 1);
@@ -287,7 +287,7 @@ try {
     (a2.ep as unknown as { setAttention(mode: string): Promise<void> }).setAttention = async () => {};
     const focusing = a2.setAttention("focus");
     let windowOpen = false;
-    for (let i = 0; i < 1_000 && !(windowOpen = (a2 as unknown as { enteringFocus: boolean }).enteringFocus); i++)
+    for (let i = 0; i < 1_000 && !(windowOpen = ((a2 as unknown as { inboxState: unknown }).inboxState as unknown as { enteringFocus: boolean }).enteringFocus); i++)
       await Promise.resolve();
     check(`focus-entry ${quiet ? "quiet" : "normal"} transition window opened before the retain emit`, windowOpen);
     const id = quiet ? "focus-transition-quiet" : "focus-transition-normal";
@@ -306,8 +306,8 @@ try {
   {
     const a2 = new MeshAgent({ ...cfg, id: "focus_exclusion_cap", quiet: ["ch"] });
     a2.on("error", () => {});
-    (a2 as unknown as { _attention: string; focusSince: number })._attention = "focus";
-    (a2 as unknown as { _attention: string; focusSince: number }).focusSince = 0;
+    ((a2 as unknown as { inboxState: unknown }).inboxState as unknown as { _attention: string; focusSince: number })._attention = "focus";
+    ((a2 as unknown as { inboxState: unknown }).inboxState as unknown as { _attention: string; focusSince: number }).focusSince = 0;
     for (let i = 0; i < 4100; i++) a2.ep.emit("message", msg(`focus-excluded-${i}`), mkDelivery(false, { n: 0 }), meta);
     (a2.ep as unknown as { joinedChannels(): string[] }).joinedChannels = () => ["ch", "other"];
     (a2.ep as unknown as { recallChannel(channel: string, since: number): Promise<{ messages: CotalMessage[]; dropped: boolean }> }).recallChannel =

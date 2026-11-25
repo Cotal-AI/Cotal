@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "the worktree refusal comes back under the seam's code",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "        \"L4008\", \"worktree\",\n        `spawn(${persona}) would put a second agent into the worktree \"${worktree}\" while ${holder.name}#${holder.uid} is live in it;",
       "replace": "        \"L5016\", \"worktree\",\n        `spawn(${persona}) would put a second agent into the worktree \"${worktree}\" while ${holder.name}#${holder.uid} is live in it;",
       "expectRed": "no runtime source names L5016: the reference handler refuses nothing as not-yet-durable",

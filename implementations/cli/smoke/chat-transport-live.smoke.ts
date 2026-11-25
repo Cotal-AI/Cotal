@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { isReachable } from "@cotal-ai/core";
+import { isReachable, setupSpaceStreams } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const { check, finish } = createSuite();
@@ -20,6 +20,8 @@ for (const name of ["home", "cotal", "config", "runtime"]) mkdirSync(join(root, 
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const space = "chat-transport";
+const run = (args: string[], input = "", cwd = root) =>
+  spawnSync(process.execPath, [cli, ...args], { cwd, env, encoding: "utf8", input, timeout: 30_000 });
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(test: () => boolean, timeout = 15_000): Promise<void> {
   const start = performance.now();
@@ -41,7 +43,7 @@ function broker(tag: string) {
     writeFileSync(join(root, `broker-${tag}.log`), log);
   } };
 }
-type RecordLine = { type: string; id?: string; scope?: string; outcome?: string; result?: { state?: string; identity?: { principal: string; lifecycleUid: string } }; message?: { text: string } };
+type RecordLine = { type: string; id?: string; scope?: string; outcome?: string; error?: { code: string; message: string }; result?: { state?: string; identity?: { principal: string; lifecycleUid: string } }; message?: { text: string } };
 const clients: { close(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> }[] = [];
 function open(name: string, mode: "stdio" | "plain" = "stdio") {
   const child = spawn(process.execPath, [cli, "chat", "general", `--${mode}`, "--space", space, "--name", name], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -62,8 +64,7 @@ function open(name: string, mode: "stdio" | "plain" = "stdio") {
   child.stderr.on("data", (b: Buffer) => { err += b.toString(); });
   let serial = 0;
   const client = { child, records, output: () => out.replace(/\x1b\[[0-9;]*m/g, ""),
-    async request(type: string, fields = {}) {
-      const id = `${name}-${++serial}`;
+    async request(type: string, fields = {}, id = `${name}-${++serial}`) {
       child.stdin.write(`${JSON.stringify({ schemaVersion: 1, type, id, ...fields })}\n`);
       await until(() => records.some(({ record }) => record.id === id));
       return records.find(({ record }) => record.id === id)!.record;
@@ -87,21 +88,100 @@ function open(name: string, mode: "stdio" | "plain" = "stdio") {
   return client;
 }
 const gaps = (client: ReturnType<typeof open>) => client.records.filter(({ record }) => record.type === "gap" && record.scope === "live");
+
+async function checkSizeRefusal(chat: ReturnType<typeof open>): Promise<void> {
+  const channel = "size.probe";
+  const limit = 1_048_576;
+  const bodyAtLimit = "é".repeat(limit / 2);
+  const before = await chat.request("send", { channel, text: "before" });
+  for (const text of [bodyAtLimit + "x", bodyAtLimit]) {
+    const over = await chat.request("send", { channel, text });
+    check(`a ${Buffer.byteLength(text)}-byte body that exceeds the limit with its envelope is refused`,
+      over.outcome === "refused" && over.error?.code === "UNSUPPORTED" &&
+      over.error.message.includes(`${limit}-byte message limit`) &&
+      over.error.message.includes("nothing was stored") && /shorten.*split/i.test(over.error.message), over);
+  }
+  const after = await chat.request("send", { channel, text: "after" });
+  check("chat keeps accepting valid posts after a size refusal", before.outcome === "stored" && after.outcome === "stored", { before, after });
+  const history = spawnSync(process.execPath, [cli, "history", channel, "--space", space, "--json"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  const texts = history.status === 0 ? (JSON.parse(history.stdout).result.items as { text: string }[]).map(({ text }) => text) : undefined;
+  check("only the valid posts appear in channel history", JSON.stringify(texts) === JSON.stringify(["before", "after"]), texts ?? history.stderr);
+}
+
+function checkPlainDraftBoundary(): void {
+  const text = "x".repeat(65_524) + "END-OF-DRAFT";
+  const split = text.slice(0, 30_000) + "\n" + text.slice(30_001);
+  for (const [channel, draft, rejected] of [["exact", text, false], ["split", split, false], ["overflow", split, true]] as const) {
+    const input = `:multi\n${draft}${rejected ? "\nnot retained" : ""}\n.\ny\n/quit\n`;
+    const chat = run(["chat", channel, "--plain", "--space", space, "--name", "boundary-writer"], input);
+    check(`${channel}: plain chat confirms the draft and reports a dropped line only when it exceeds the limit`,
+      chat.status === 0 && chat.stdout.includes(`send to #${channel}?`) && chat.stdout.includes("line not added") === rejected,
+      chat.stdout.slice(0, 1_000) + chat.stderr);
+    const history = run(["history", channel, "--json", "--space", space]);
+    const items = history.status === 0 ? JSON.parse(history.stdout).result.items as { text: string }[] : [];
+    check(`${channel}: history retains the exact draft`, items.length === 1 && items[0]?.text === draft, history.stderr);
+  }
+}
+
+function checkUnsupportedRetry(): void {
+  const cwd = join(root, "offline");
+  mkdirSync(cwd, { recursive: true });
+  const prepared = run(["space", "create", "audit-offline", "--plain"], "", cwd);
+  if (prepared.status !== 0) throw new Error(prepared.stderr);
+  const args = ["chat", "general", "--space", "audit-offline", "--plain"];
+  const refused = run([...args, "--role", "reviewer"], "", cwd);
+  check("unsupported role tells a piped user to remove only the role and its value",
+    refused.status === 2 && refused.stderr.includes("UNSUPPORTED") &&
+      refused.stderr.includes("remove only `--role` and its value, then rerun the original command"), refused.stderr);
+  const retry = run(args, "", cwd);
+  check("the retry keeps the front end and reaches the selected offline space",
+    retry.status === 2 && retry.stderr.includes("TARGET_UNAVAILABLE") && retry.stderr.includes('"audit-offline" is prepared but not started'), retry.stderr);
+}
+
+function checkPlainHistory(): void {
+  const result = spawnSync(process.execPath, [cli, "chat", "--plain", "--space", space, "--name", "history-reader"], {
+    cwd: root, env, encoding: "utf8", timeout: 30_000, input: "/history\n:to #general\n/history 1\n/quit\n",
+  });
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  check("plain /history gives the :to remedy and reads the stored post after selecting a channel",
+    result.status === 0 && output.includes("/history denied (USAGE_INVALID): enter :to #<channel>, then retry /history")
+      && !output.includes("(Tab)") && /^\d[^\n]* #general [^\n]*: healthy-control$/m.test(output), output);
+}
+
 let srv = broker("initial");
 const observations: unknown[] = [];
 try {
   await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
+  await setupSpaceStreams({ servers: server, space });
   const added = spawnSync(process.execPath, [cli, "meshes", "add", space, "--server", server, "--mode", "open", "--root", root], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
   writeFileSync(join(root, "meshes-add.log"), added.stdout + added.stderr);
   if (added.status !== 0) throw new Error(`mesh registration failed: ${added.status}`);
+  checkUnsupportedRetry();
+  checkPlainDraftBoundary();
   const chat = open("outage-check");
   const peer = open("peer-listener");
   const initial = await chat.request("connection");
   check("positive control: both shipped sessions report connected", initial.result?.state === "connected" && (await peer.request("connection")).result?.state === "connected");
+  const spaced = await chat.request("connection", {}, "request 1");
+  check("a shipped session echoes the exact ID containing an ASCII space", spaced.type === "result" && spaced.id === "request 1"
+    && spaced.outcome === "ok" && spaced.result?.state === "connected", spaced);
+  const fromBoundary = chat.records.length;
+  const cases = [["limit-lf", "\n"], ["limit-crlf", "\r\n"]] as const;
+  for (const [id, eol] of cases) {
+    const request = JSON.stringify({ schemaVersion: 1, type: "connection", id });
+    chat.child.stdin.write(request.padEnd(1_048_576) + eol);
+  }
+  const afterBoundary = await chat.request("connection");
+  const boundary = chat.records.slice(fromBoundary).map(({ record }) => record)
+    .filter((r) => r !== afterBoundary && (r.type === "result" || r.type === "error"));
+  check("a shipped session accepts requests at the line limit with LF and CRLF", boundary.length === 2
+    && boundary.every((r, i) => r.type === "result" && r.id === cases[i]?.[0] && r.outcome === "ok"), boundary);
   const sent = await peer.request("send", { channel: "general", text: "healthy-control" });
   await until(() => chat.records.some(({ record }) => record.message?.text === "healthy-control"));
   await wait(1_000);
   check("positive control: a stored post arrives without a live gap", sent.outcome === "stored" && gaps(chat).length === 0);
+  checkPlainHistory();
+  await checkSizeRefusal(chat);
 
   for (const [tag, duration] of [["short", 5_000], ["sustained", 23_000]] as const) {
     const before = chat.records.length;

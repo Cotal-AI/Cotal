@@ -34,7 +34,7 @@
   "mutations": [
     {
       "name": "the role gate stops granting STREAM.INFO on TASK at all",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    pubAllow.push(`$JS.API.STREAM.INFO.${TASK}`);\n",
       "replace": "",
       "expectRed": "STREAM.INFO TASK succeeds for the role-carrying agent",
@@ -43,7 +43,7 @@
     },
     {
       "name": "STREAM.INFO on TASK escapes the role gate",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
       "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${TASK}`,\n",
       "expectRed": "STREAM.INFO TASK is denied to the role-less agent (the role gate is what grants it)",
@@ -52,7 +52,7 @@
     },
     {
       "name": "STREAM.INFO on the DM stream is granted to every agent again",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-permissions.ts",
       "find": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n",
       "replace": "    `$JS.API.STREAM.INFO.${CHAT}`, `$JS.API.STREAM.INFO.${KV}`, `$JS.API.STREAM.INFO.${CHKV}`,\n    `$JS.API.STREAM.INFO.${DM}`,\n",
       "expectRed": "STREAM.INFO DM is denied to the role-carrying agent (no subject enumeration)",

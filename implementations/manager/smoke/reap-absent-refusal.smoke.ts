@@ -20,12 +20,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { requireRuntimeReap } from "../src/runtime/index.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const reference = { kind: "pty", id: "seat-1554-abcdef" };
 // Custodial by duck type (`reserve` + `reap` both functions), which is how isCustodialRuntime
@@ -84,7 +81,7 @@ check(
 // absent outcome, because absent cannot reach one. A sample would not have caught the second site.
 const here = dirname(fileURLToPath(import.meta.url));
 const managerFile = resolve(here, "..", "src", "manager.ts");
-const managerFiles = ["manager.ts", "seat-custody.ts"].map((name) => resolve(here, "..", "src", name));
+const managerFiles = ["manager.ts", "seat-custody.ts", "preservation.ts", "preserved-resume.ts"].map((name) => resolve(here, "..", "src", name));
 const managerSrc = managerFiles.map((file) => readFileSync(file, "utf8")).join("\n");
 const renderings = managerSrc.split('outcome === "absent"').length - 1;
 check(
@@ -372,7 +369,7 @@ instrument.forEach(([name, , holds], i) => {
 //   spawnCustodied: carries it into the throw, saying the seat was not proved gone.
 // restartSupervisedSeat no longer calls requireRuntimeReap. It proves the previous seat's local work
 // ended through runtime.reapWork before the resume launches, and a refusal there stays with that proof.
-const REVIEWED_SITES = ["Manager.adoptReleasedSeat", "Manager.reapOrphanedResumeSeat", "SeatCustody.reapOrphanSeat", "SeatCustody.spawnCustodied"];
+const REVIEWED_SITES = ["Preservation.adoptReleasedSeat", "PreservedResume.reapOrphanedResumeSeat", "SeatCustody.reapOrphanSeat", "SeatCustody.spawnCustodied"];
 const managerConfig = ts.getParsedCommandLineOfConfigFile(resolve(here, "..", "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: (d) => { throw new Error(ts.flattenDiagnosticMessageText(d.messageText, " ")); } })!;
 const managerProgram = ts.createProgram({ rootNames: managerFiles, options: { ...managerConfig.options, noEmit: true } });
 const managerSources = managerFiles.map((file) => managerProgram.getSourceFile(file)!);
@@ -406,10 +403,11 @@ check(
   { elementTotal, elements: census.elements },
 );
 check(
-  "CONTROL: the bypass scan sees the one typeof feature probe of reap, in Manager.orphanedResumeSeat",
-  census.probes.length === 1 && census.probes[0]!.startsWith("Manager.orphanedResumeSeat "),
+  "CONTROL: the bypass scan sees the one typeof feature probe of reap, in PreservedResume.orphanedResumeSeat",
+  census.probes.length === 1 && census.probes[0]!.startsWith("PreservedResume.orphanedResumeSeat "),
   { probes: census.probes },
 );
 
-console.log(`\nREAP-ABSENT-REFUSAL ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nREAP-ABSENT-REFUSAL ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

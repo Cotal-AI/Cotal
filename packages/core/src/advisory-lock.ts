@@ -60,6 +60,8 @@ export interface AcquireOptions {
   readonly waitMs?: number;
   /** Poll interval while waiting (default 200). */
   readonly pollMs?: number;
+  /** Called once before the first wait on a live holder or reclaimer. */
+  readonly onWait?: () => void;
   /** The loud error thrown when the wait bound elapses with the lock still live-held. */
   readonly onTimeout?: (owner: LockOwner) => Error;
 }
@@ -312,6 +314,7 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
   const pollMs = opts.pollMs ?? 200;
   const attempt = newAttempt(path, opts);
   const deadline = Date.now() + waitMs;
+  let waiting = false;
 
   for (;;) {
     const result = tryAcquireOnce(attempt);
@@ -319,6 +322,7 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
     if (result.kind === "retry") continue;
     const left = deadline - Date.now();
     if (left <= 0) throw lockTimeoutError(path, opts, result.owner, waitMs);
+    if (!waiting) { waiting = true; opts.onWait?.(); }
     sleepSync(Math.min(result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs, left));
   }
 }
@@ -341,6 +345,7 @@ export async function acquireLockAsync(path: string, opts: AcquireOptions = {}):
   const pollMs = opts.pollMs ?? 200;
   const attempt = newAttempt(path, opts);
   const deadline = Date.now() + waitMs;
+  let waiting = false;
 
   for (;;) {
     const result = tryAcquireOnce(attempt);
@@ -348,6 +353,7 @@ export async function acquireLockAsync(path: string, opts: AcquireOptions = {}):
     if (result.kind === "retry") continue;
     const left = deadline - Date.now();
     if (left <= 0) throw lockTimeoutError(path, opts, result.owner, waitMs);
+    if (!waiting) { waiting = true; opts.onWait?.(); }
     const interval = result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs;
     await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, left)));
   }

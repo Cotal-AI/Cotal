@@ -24,19 +24,10 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..");
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 /** Each entry names the incident that put it here. Retire one only with evidence, never for tidiness. */
 const QUARANTINE: { dep: string; why: string }[] = [
@@ -89,5 +80,6 @@ check(
   `${seen} matches across ${PUBLISHED.length} published packages`,
 );
 
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

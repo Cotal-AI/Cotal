@@ -6,7 +6,8 @@ import { verifyIdpToken } from "./idp.js";
 import { findInteractiveActor, ledgerAuthorizeGrant } from "./ledger.js";
 import { completeRemoteRetainedAgentValidation } from "./retained-manager-validation.js";
 import { readJsonBody, REFUSAL_STATUS, refuseCapability, refuseExchange, RequestBodyError, send, sendRequestError } from "./service-http.js";
-import type { ExchangePolicy, HandlerCtx, ManagedLifecycleActivationRequest, ManagedLifecycleActivationResult } from "./service.js";
+import type { ExchangePolicy } from "./service-exchange-routes.js";
+import type { HandlerCtx, ManagedLifecycleActivationRequest, ManagedLifecycleActivationResult } from "./service.js";
 
 type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "authorizeManagerParticipation" | "admitManagerRun" | "submitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun" | "cancelManagerRun">;
 

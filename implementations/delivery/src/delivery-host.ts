@@ -18,7 +18,8 @@
  */
 import type { ParsedArgs } from "@cotal-ai/core";
 import { runSpaceHost } from "@cotal-ai/workspace";
-import { daemonRoot, openDeliveryLane, type DeliveryLog } from "./delivery.js";
+import { openDeliveryLane, type DeliveryLog } from "./delivery.js";
+import { daemonRoot } from "./delivery-creds.js";
 import { hostKickAuthority } from "./kick-authority.js";
 import { retainedBrokerSeed } from "./sys-creds.js";
 

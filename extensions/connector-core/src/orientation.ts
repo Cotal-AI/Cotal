@@ -10,7 +10,8 @@
  * it (the text the model reads). A future MCP resource can JSON-stringify the object directly.
  */
 import { isConcreteChannel, parsePrincipalKey, peerLabel, type AttentionMode, type PresenceStatus } from "@cotal-ai/core";
-import { presenceReadCondition, type MeshAgent, type RosterRead } from "./agent.js";
+import type { MeshAgent, RosterRead } from "./agent.js";
+import { presenceReadCondition } from "./agent-messaging.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
 
@@ -40,7 +41,7 @@ export const MESH_FIRST_STEER =
   "otherwise cotal_dm or cotal_anycast to reach one) so the work stays visible to the user and " +
   "addressable by peers rather than hidden inside a private subagent. Use a harness subagent only for " +
   "a self-contained job nobody else needs to follow. For a single task, cotal_spawn with once: true " +
-  "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.";
+  "starts a helper that is stopped when the task ends.";
 
 /** Workflow-run steer, folded in beside {@link MESH_FIRST_STEER} for every connector. Points agents
  *  at durable cotal-lang runs for coordination that must outlive their own session, so the reflex is
@@ -145,6 +146,15 @@ export interface Orientation {
   actions: { read: string; replyChannel: string; replyPrivate: string; askRole: string };
 }
 
+/** The tool for each intent, as the card shows it. The three that are not `read` are the ways a
+ *  reply reaches a peer. */
+export const MESH_ACTIONS = {
+  read: "cotal_inbox",
+  replyChannel: "cotal_send",
+  replyPrivate: "cotal_dm",
+  askRole: "cotal_anycast",
+} as const;
+
 /** The everyday loop (the `core` group); every other tool falls into `more`. Keep in sync with the
  *  reply/loop tools an agent reaches for each turn. An unknown/new tool defaults to `more`. */
 const CORE_TOOLS = new Set([
@@ -211,14 +221,14 @@ export function buildOrientation(
     generatedAt,
     identity: {
       state: agent.connected ? "bound" : "unbound",
-      display: { name: config.name, role: config.role ?? "unknown" },
+      display: { name: agent.displayName, role: config.role ?? "unknown" },
       principal: principal ?? { owner: "unknown", actor: "unknown" },
       lifecycleUid: config.lifecycleUid ?? "unknown",
       replacement: {
         state: "unknown",
         predecessorLifecycleUid: "unknown",
       },
-      name: config.name,
+      name: agent.displayName,
       role: config.role,
       space: config.space,
       id: agent.id,
@@ -248,18 +258,14 @@ export function buildOrientation(
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
-    actions: {
-      read: "cotal_inbox",
-      replyChannel: "cotal_send",
-      replyPrivate: "cotal_dm",
-      askRole: "cotal_anycast",
-    },
+    actions: { ...MESH_ACTIONS },
   };
 }
 
 /** Render the card as compact, glanceable text — the view the model reads. */
 export function renderOrientation(o: Orientation): string {
   const fmt = (cs: string[]) => (cs.length ? cs.map((c) => `#${c}`).join(", ") : "—");
+  const tools = new Set([...o.tools.core, ...o.tools.more].map((t) => t.name));
   const who = peerLabel(o.identity);
   const aclDiffers =
     o.access.readAcl.length !== o.access.read.length ||
@@ -272,8 +278,10 @@ export function renderOrientation(o: Orientation): string {
     `  • principal: ${o.identity.principal.owner}.${o.identity.principal.actor}`,
     `  • lifecycle UID: ${o.identity.lifecycleUid}`,
     `  • replacement: ${o.identity.replacement.state} · predecessor lifecycle UID: ${o.identity.replacement.predecessorLifecycleUid}`,
-    `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
-      "Consult it before answering about Cotal or writing code against it; don't rely on training memory.",
+    tools.has("cotal_docs")
+      ? `Cotal v${o.identity.cotalVersion} — call cotal_docs for the version-exact spec, schema, and guides. ` +
+        "Consult it before answering about Cotal or writing code against it; don't rely on training memory."
+      : `Cotal v${o.identity.cotalVersion}.`,
     o.identity.model
       ? `Model pin: ${o.identity.model} (from COTAL_MODEL; the harness default is not knowable from here when this line is absent).`
       : "Model pin: none recorded (COTAL_MODEL was unset; the harness default is not knowable from here).",
@@ -283,11 +291,15 @@ export function renderOrientation(o: Orientation): string {
   ];
   if (aclDiffers) lines.push(`  • may join (read ACL): ${fmt(o.access.readAcl)}`);
   if (o.access.joinable.length)
-    lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")} · join one with cotal_join`);
+    lines.push(`  • not on yet: ${o.access.joinable.map((j) => `#${j.channel}${j.note ? ` (${j.note})` : ""}`).join(", ")}${tools.has("cotal_join") ? " · join one with cotal_join" : ""}`);
+  const endpointHelp = tools.has("cotal_endpoints") ? "cotal_endpoints lists what your credential's grants cover" : "";
+  const pinHelp = o.endpoints.some((e) => e.includes("(instance ")) && tools.has("cotal_describe") && tools.has("cotal_invoke")
+    ? "pass a command's instance to cotal_describe and cotal_invoke as instance" : "";
+  const endpointAdvice = [endpointHelp, pinHelp].filter(Boolean).join("; ");
   lines.push(
     `  • post: ${o.access.post.length ? fmt(o.access.post) : "— (read-only; no post channels)"}`,
     `  • capabilities: ${o.capabilities.length ? o.capabilities.join(", ") : "none beyond defaults"}`,
-    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")} (cotal_endpoints lists what your credential's grants cover${o.endpoints.some((e) => e.includes("(instance ")) ? "; pass a command's instance to cotal_describe and cotal_invoke as instance" : ""})`] : []),
+    ...(o.endpoints.length ? [`  • endpoint commands handed at launch: ${o.endpoints.join(", ")}${endpointAdvice ? ` (${endpointAdvice})` : ""}`] : []),
     "",
     `Tools — core loop: ${o.tools.core.map((t) => t.name).join(", ") || "—"}`,
     `Tools — more: ${o.tools.more.map((t) => t.name).join(", ") || "—"}`,
@@ -297,9 +309,11 @@ export function renderOrientation(o: Orientation): string {
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
     `  • presence view: ${o.presence.live ? "live" : `NOT LIVE — ${o.presence.detail}`}`,
     `  • unread: ${o.unread.total}`,
-    "",
-    `Act → read: ${o.actions.read} · reply on a channel: ${o.actions.replyChannel} · ` +
-      `private: ${o.actions.replyPrivate} · ask a role: ${o.actions.askRole}`,
   );
+  const actions = ([
+    ["read", o.actions.read], ["reply on a channel", o.actions.replyChannel],
+    ["private", o.actions.replyPrivate], ["ask a role", o.actions.askRole],
+  ] as const).filter(([, tool]) => tools.has(tool)).map(([action, tool]) => `${action}: ${tool}`);
+  if (actions.length) lines.push("", `Act → ${actions.join(" · ")}`);
   return lines.join("\n");
 }

@@ -14,11 +14,11 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, MEMBERSHIP_FEED_KEY, standaloneConnectOpts, dlvDurable, type MembershipChange } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const MON = await pickFreePort();
@@ -32,6 +32,41 @@ const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) 
 });
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+
+async function checkStopWhileRedialing(dir: string, space: string): Promise<void> {
+  const port = await pickFreePort();
+  const servers = `nats://127.0.0.1:${port}`;
+  const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", join(dir, "redial")], { stdio: "ignore" });
+  const release = teardownOnSignal(broker);
+  let nc: NatsConnection | undefined;
+  const ep = new CotalEndpoint({
+    space, servers, consume: false, watchPresence: false, registerPresence: false,
+    card: { name: "redial-observer", kind: "endpoint" }, onConnection: (connection) => { nc = connection; },
+  });
+  ep.on("error", () => {});
+  try {
+    // An open broker lets the watch attempt its consumer delete without a credential fence.
+    await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
+    await setupSpaceStreams({ servers, space });
+    await ep.start();
+    await ep.watchMembership(() => {});
+    let disconnected = false;
+    ep.on("transport", (s) => { if (!s.connected) disconnected = true; });
+    await killAndAwaitExit(broker);
+    for (let i = 0; i < 40 && !disconnected; i++) await wait(50);
+    if (!disconnected || !nc || nc.isClosed()) throw new Error("fixture did not observe a disconnected, open transport");
+    const result = await Promise.race([
+      ep.stop().then(() => "stopped", (err: Error) => err.message),
+      wait(2000).then(() => "pending after 2 seconds"),
+    ]);
+    check("endpoint stops within two seconds with a membership watch while its transport redials", result === "stopped" && nc.isClosed(), result);
+  } finally {
+    await killAndAwaitExit(broker);
+    await nc?.close();
+    await ep.stop().catch(() => {});
+    release();
+  }
+}
 
 const space = `delivery-reconnect-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -183,7 +218,7 @@ try {
 
   // Invoke the public stop while its broker consumer is live, then terminal-close that epoch.
   // Read-only cleanup must settle and unbind without attempting an ungranted delete on either epoch.
-  const raceNc = (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc;
+  const raceNc = (observer as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc;
   const raceFeed = await new Kvm(raceNc).open(membershipBucket(space));
   const raceBucket = raceFeed as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<import("@nats-io/jetstream").PushConsumer> } } };
   const raceGet = raceBucket.js.consumers.getPushConsumer.bind(raceBucket.js.consumers);
@@ -192,7 +227,7 @@ try {
     raceConsumer = await raceGet(...args);
     return raceConsumer;
   };
-  (observer as unknown as { membershipFeedKv: unknown }).membershipFeedKv = raceFeed;
+  (observer as unknown as { conn: { membershipFeedKv: unknown } }).conn.membershipFeedKv = raceFeed;
   const raceHandle = await observer.watchMembership(() => {});
   // The broker marks the consumer push-bound only once it sees the subscribe, which can trail the watch.
   for (let i = 0; i < 20 && (await membershipConsumers()).length !== 1; i++) await wait(50);
@@ -247,7 +282,7 @@ try {
   observer = new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "admin"), channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "observer-broker-down", role: "observer", kind: "endpoint" } });
   observer.on("error", () => {}); await observer.start();
   const brokerDownWatch = await observer.watchMembership(() => {});
-  await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
+  await (observer as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc.close();
   const brokerDownStop = brokerDownWatch.stop();
   void brokerDownStop.catch(() => {});
   const endpointStopped = await Promise.race([observer.stop().then(() => true), wait(2000).then(() => false)]);
@@ -271,7 +306,7 @@ try {
   const terminalBefore = await membershipConsumers();
   check("the terminal-close control starts with one membership consumer", terminalBefore.length === 1, terminalBefore);
   const healed = reconnected(observer);
-  await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
+  await (observer as unknown as { conn: { nc: import("@nats-io/transport-node").NatsConnection } }).conn.nc.close();
   await Promise.race([healed, wait(5000)]);
   await wait(200);
   const terminalAfter = await membershipConsumers();
@@ -286,7 +321,7 @@ try {
 
   // A transient failed arm leaves a rejected promise in the per-watch queue. A later rebuild must
   // reset that rejection before appending cleanup/rearm work, or this watch is poisoned forever.
-  const terminalIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ arm: Promise<void> }> }).membershipFeedWatches][0];
+  const terminalIntent = [...(observer as unknown as { conn: { membershipFeedWatches: Set<{ arm: Promise<void> }> } }).conn.membershipFeedWatches][0];
   terminalIntent.arm = Promise.reject(new Error("transient membership arm failure"));
   void terminalIntent.arm.catch(() => {}); // handled, but intentionally still the rejected queue value
   let recoveredFromRejectedArm = false;
@@ -296,10 +331,10 @@ try {
   // A watch iterator closed under a live connection must reach the caller through onClosed,
   // not just the generic endpoint error event.
   const closedReasons: string[] = [];
-  const watchesBeforeClosedCell = new Set([...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]);
+  const watchesBeforeClosedCell = new Set([...(observer as unknown as { conn: { membershipFeedWatches: Set<{ iter?: { stop(): void } }> } }).conn.membershipFeedWatches]);
   const closedWatch = await observer.watchMembership(() => {}, (err) => { closedReasons.push(err.message); });
   await wait(200);
-  const closedWatchIntent = [...(observer as unknown as { membershipFeedWatches: Set<{ iter?: { stop(): void } }> }).membershipFeedWatches]
+  const closedWatchIntent = [...(observer as unknown as { conn: { membershipFeedWatches: Set<{ iter?: { stop(): void } }> } }).conn.membershipFeedWatches]
     .find((w) => !watchesBeforeClosedCell.has(w));
   closedWatchIntent?.iter?.stop();
   for (let i = 0; i < 40 && closedReasons.length === 0; i++) await wait(50);
@@ -342,6 +377,8 @@ try {
   check("the not-ready warning names the durable, space, condition, and reconnect repair", notReadyWarning?.message.includes(durable) === true && notReadyWarning.message.includes(space) && notReadyWarning.message.includes("no ready delivery lease") && notReadyWarning.message.includes("reconnect against it"), notReadyWarning?.message);
   check("the warned not-ready bind delivers no message", notReadyLease.messages === 0, notReadyLease);
   await daemon.releaseDeliveryLease(0, notReadyRev);
+
+  await checkStopWhileRedialing(dir, space);
 
   console.log(`\nDELIVERY-RECONNECT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
