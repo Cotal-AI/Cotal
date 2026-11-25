@@ -27,9 +27,15 @@ export function resolveManifest(src: string, sourcePath: string, logFileOverride
   // Best-effort location: try the exact node, then walk up the path (union/object-level errors
   // often have no node of their own), finally the document root. Diagnostics only — never on the
   // resolved model (engineer, round-6).
-  const locate = (path?: (string | number)[]): { line?: number; col?: number } => {
+  const locate: Locate = (path, key) => {
     if (!path) return {};
     const p = [...path];
+    if (key !== undefined) {
+      const map = doc.getIn(p, true);
+      const written = isMap(map) && map.items.find((pair) => isScalar(pair.key) && pair.key.value === key)?.key;
+      if (isScalar(written) && written.range) return lc.linePos(written.range[0]);
+      p.push(key);
+    }
     for (;;) {
       const node = doc.getIn(p, true) as { range?: [number, number, number] } | undefined;
       if (node?.range) {
@@ -107,7 +113,7 @@ export function resolveManifest(src: string, sourcePath: string, logFileOverride
   };
 }
 
-type Locate = (path?: (string | number)[]) => { line?: number; col?: number };
+type Locate = (path?: (string | number)[], key?: string) => { line?: number; col?: number };
 
 /** The schema's issues as located problems. An unknown key that misspells a required key left out of
  *  the same object is one problem naming both, where it used to count as two. */
@@ -140,8 +146,8 @@ function schemaIssues(zodIssues: readonly { code: string; path: PropertyKey[]; m
     const unknown = ((iss as { keys?: string[] }).keys ?? []).filter((key) => !paired.some((typo) => typo.key === key));
     // Point the line at the offending unknown key, not just its containing object.
     return [
-      ...paired.map(({ key, meant }) => ({ message: `unknown key "${key}": did you mean "${meant}", which is required?`, path, ...locate([...path, key]) })),
-      ...(unknown.length ? [{ message: paired.length ? `Unrecognized key${unknown.length > 1 ? "s" : ""}: ${unknown.map((key) => `"${key}"`).join(", ")}` : iss.message, path, ...locate([...path, unknown[0]!]) }] : []),
+      ...paired.map(({ key, meant }) => ({ message: `unknown key "${key}": did you mean "${meant}", which is required?`, path, ...locate(path, key) })),
+      ...(unknown.length ? [{ message: paired.length ? `Unrecognized key${unknown.length > 1 ? "s" : ""}: ${unknown.map((key) => `"${key}"`).join(", ")}` : iss.message, path, ...locate(path, unknown[0]!) }] : []),
     ];
   });
 }

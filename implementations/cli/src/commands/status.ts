@@ -2,7 +2,6 @@ import { accessSync, constants, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import {
   CotalEndpoint,
-  agentFilePath,
   globalConfigDir,
   isReachable,
   mintCreds,
@@ -75,6 +74,7 @@ import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas } from "../lib/personas.js";
+import { directPersonaPath } from "../lib/spawn-defaults.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -436,16 +436,18 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
     const persona = resolvePreference("persona", context);
     defaults = { harness: resolvePreference("harness", context).value, persona: persona.value };
     if (selected.ok) {
-      const path = agentFilePath(selected.target.root, persona.value!);
+      let path: string | undefined;
       try {
+        path = directPersonaPath(selected.target.root, persona.value!);
         const definition = loadLaunchPersonaFile(path);
         defaults.harness = resolvePreference("harness", { ...context, pin: definition.agent }).value;
       } catch (error) {
+        const { code, path: errorPath } = error as NodeJS.ErrnoException;
         // A bare spawn writes the shipped, unpinned default only when the product default is absent.
         // Every other failed read leaves the effective harness unknown, never the saved preference.
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || persona.winner?.source !== "default") {
+        if (code !== "ENOENT" || persona.winner?.source !== "default") {
           defaults.harness = null;
-          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path });
+          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path: path ?? errorPath });
         }
       }
     }
@@ -685,13 +687,27 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     return unreadable(`unreadable trust material · ${(e as Error).message.split(" - ")[0]}`, (e as Error).message);
   }
   const userDisk = Boolean(auth && hasUserAuthState(root, auth.space));
-  // An open mesh has no account record to name its space, so the folder's space is read off its
-  // runtime records - and a root whose records show two spaces RUNNING has no single answer, the
+  let journal: StackJournal | undefined, elsewhere = false, unusable = false;
+  try { journal = readStackJournal(root)?.journal; }
+  catch (error) {
+    // A journal no command can use is named with its way out, in the warnings and under Next;
+    // the rest of the report still stands.
+    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
+      unusable = true;
+      stackJournal = "unreadable";
+      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
+      if (error.remedy) hints.push(error.remedy);
+    }
+    // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
+    elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
+  }
+  const activeStartup = journal !== undefined && stackUpInProgress(journal);
+  // A root whose records show two spaces running has no single answer, the
   // same shape as the multi-account case above. The process rows below are keyed by one space, so
   // report that state and stop rather than crashing in the recovery command that names it.
   let space: string;
   try {
-    space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined);
+    space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined, activeStartup && journal?.mode === "open" ? journal.space : undefined);
   } catch (e) {
     hints.push((e as Error).message);
     return { folder: folder({ state: "none", spaces: [], userAuth: false, error: null }), stackStarting: false };
@@ -732,21 +748,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   // "your usual flags": a stopped stack's flags are not all recorded. A static-auth broker that
   // exited here is named the repair `up` first, under Next (see `nextActions`).
   // A controller stack's broker has no legacy pidfile, so that heuristic says nothing about it.
-  let controllerStack = false, journal: StackJournal | undefined, elsewhere = false, unusable = false;
-  try { journal = readStackJournal(root)?.journal; controllerStack = journal?.space === space; }
-  catch (error) {
-    controllerStack = false;
-    // A journal no command can use is named with its way out, in the warnings and under Next; the
-    // rest of the report still stands.
-    if (isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED")) {
-      unusable = true;
-      stackJournal = "unreadable";
-      gaps.add(error.code === "PERMISSION_DENIED" ? "STACK_JOURNAL_UNREADABLE" : "STACK_JOURNAL_INVALID", error.remedy ? `${error.message}; ${error.remedy}` : error.message, { root });
-      if (error.remedy) hints.push(error.remedy);
-    }
-    // A journal another folder recorded, as a copy or a moved folder keeps it: clean store refuses here.
-    elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
-  }
+  const controllerStack = journal?.space === space;
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
   if (brokerIndex !== -1) processes[brokerIndex] = unusable
     ? { name: "nats", state: "unreadable", pid: null, detail: "stack journal unreadable; no broker stopped state was inferred" }
@@ -757,7 +759,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (managerIndex !== -1 && legacyManagerStopped(root, space, localManagerInstanceId(root, space)))
     processes[managerIndex] = { ...processes[managerIndex]!, detail: "stopped" };
   const noManager = journal !== undefined && controllerStack && stackRecordedWithoutManager(journal);
-  const stackStarting = journal !== undefined && controllerStack && stackUpInProgress(journal);
+  const stackStarting = controllerStack && activeStartup;
   // Name settlement blocks only when no active startup writer holds the stack.
   let stackBlock: StackOperationBlock | null = null;
   if (journal && controllerStack && !stackStarting) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }

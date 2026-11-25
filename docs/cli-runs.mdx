@@ -381,7 +381,9 @@ It must be a regular file or a symlink to one, as the program file must be.
 A missing file or dangling link is refused with `TARGET_NOT_FOUND`, and an unreadable file with
 `PERMISSION_DENIED`, exit 2. A directory, device, FIFO or socket is refused with `USAGE_INVALID`,
 exit 1. An empty file, invalid JSON, or a top-level value other than an object is refused with `SCHEMA_INVALID`, exit 1.
-These refusals name the path, the cause and a next step. A file that is not valid UTF-8 is refused
+These refusals name the path, the cause and a next step. An unknown top-level key is also refused
+with `SCHEMA_INVALID`, exit 1. The refusal names the file and suggests a replacement, such as
+`turns` for `turn`, or lists the supported keys. A file that is not valid UTF-8 is refused
 with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
 No invalid bytes are replaced. A repeated key is refused with `SCHEMA_INVALID`, exit 1. Use an array
 under one key to give that step multiple sequential results. Each results table is an object keyed

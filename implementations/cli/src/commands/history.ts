@@ -32,7 +32,7 @@ import { credentialEnded } from "../lib/connect.js";
 import { spaceChoiceRemedy } from "../lib/choose-target.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
-import { historySetupFailureRecords } from "../lib/follow-setup-failure.js";
+import { historySetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";

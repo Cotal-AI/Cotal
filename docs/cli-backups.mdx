@@ -193,16 +193,20 @@ Run `cotal backup cleanup-fallback <attempt> --yes` to retire its journal withou
 A later `down --preserve-state` then
 starts a new backup cycle. A registry restore leaves every other stream out, chat and DM history
 and workflow runs included. A full restore of an artifact with no workflow runs leaves the runs out,
-and a full restore of an artifact made before the state it replaced was preserved leaves out what
-was written after the artifact. A backup holds one account, so any restore also leaves out the
-streams of another account in the store it replaced, such as an open mesh's account beside a static
-space's after both ran in one folder. When the restore retained an old store, that store holds the
+and a full restore of an older artifact can leave out newer messages, workflow runs, channel
+settings, access grants, members, or history limits. A backup holds one account, so any restore also
+leaves out the streams of another account in the store it replaced, such as an open mesh's account
+beside a static space's after both ran in one folder. When the restore retained an old store, that store holds the
 only copy of what it left out. In that case, `--dry-run` warns with
 `HISTORY_ONLY_IN_PREVIOUS_STORE` and names what it left out, with those accounts in `otherAccounts`, and the cleanup refuses
 `USAGE_INVALID` (exit 1) and deletes nothing unless `--discard-history` is given.
 That refusal names the flag and does not print the command help.
+The age difference alone does not require consent if restore verifies that the newer cut held no
+additional backed-up state.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
-without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
+without taking a maintenance lock or writing. Passing both flags refuses `USAGE_INVALID` (exit 1)
+before looking up the attempt. Use `--dry-run` to review or `--yes` to apply.
+Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
 or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
@@ -243,9 +247,15 @@ history and workflow runs start empty. Its receipt says so with a `HISTORY_NOT_R
 If the restore set aside a store, `previousStore` names it and the receipt says that
 `backup cleanup-fallback` deletes it only with `--discard-history`. A full restore of
 an artifact made before the state it replaced was preserved, such as a backup taken before a later
-`cotal up` and `down --preserve-state`, leaves out the chat and DM history and workflow runs written
-after the artifact. Its receipt says so with a `NEWER_HISTORY_NOT_RESTORED` warning that names the
-store it set aside, which holds their only copy, and its next step includes `--discard-history` too.
+`cotal up` and `down --preserve-state`, can omit changes to channel settings, access grants, members,
+history limits, message history, or workflow runs. When the full artifact includes the workflow
+journal, restore checks the newer cut on an isolated copy. A fresh cut can qualify if its streams
+hold no additional state, its history limits match the backup, and any initial channel-default
+entry matches the restored copy. A cut with consumers does not qualify. Cuts made in auth mode or
+user mode have consumers and do not qualify for cleanup without consent based on this check. If restore verifies that
+the cut qualifies, the plain receipt says so, and cleanup does not require `--discard-history` for
+the age difference alone. If the check finds additional state or cannot rule it out, the receipt warns with
+`NEWER_HISTORY_NOT_RESTORED` and cleanup still requires `--discard-history`.
 When the store a restore replaced also held another account's streams, the receipt says they are not
 restored and names the accounts in `otherAccounts`. That is an `OTHER_ACCOUNTS_NOT_RESTORED` warning,
 or the warning above when the restore also left out history or workflow runs, and its next step
@@ -260,9 +270,9 @@ cleanup, list the previous store's `jetstream` folder: each folder there is one 
 When that restore brought the workflow runs back, it also names each run it rolled back and each
 step that was answered after the artifact and is open again, and says that answer is only in the
 store it set aside. A reopened step accepts an answer again. `cotal status` and the
-`backup cleanup-fallback` preview name the same runs. To find them, the restore copies the store it
-sets aside and reads its run journals on one more isolated broker, so such a restore takes longer
-and needs disk space for that copy.
+`backup cleanup-fallback` preview name the same runs. Restore checks for additional state and reads
+the prior run journals on the same isolated copy of the store it sets aside, so such a restore takes
+longer and needs disk space for that copy.
 
 If `--store-dir` names a symbolic link to an existing directory, restore refuses `USAGE_INVALID`
 (exit 1) before staging. Choose an unused path inside an existing writable directory instead of
