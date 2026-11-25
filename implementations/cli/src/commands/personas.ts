@@ -162,6 +162,10 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   for (const e of entries) {
     const name = oneLine(e.name).padEnd(pad);
     if (e.error) {
+      if (e.link !== undefined && /^(?:ENOENT|ENOTDIR):/.test(e.error)) {
+        console.log(`${c.red(name)}  ${c.red("⨯ missing link target")} ${c.dim(`${oneLine(e.path)} is a link to ${oneLine(e.link)}. Restore the target or replace the link with a regular persona file.`)}`);
+        continue;
+      }
       const prefix = `agent file ${e.path}: `;
       const reason = e.error.startsWith(prefix) ? `${prefix}${personaDefinitionProblem(e.error, e.path)}` : e.error;
       const blankSelector = hasBlankPersonaSelector(e);
