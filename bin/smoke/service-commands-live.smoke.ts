@@ -141,11 +141,11 @@ function stopControllerAfterRefusedRemoval(controller: (args: string[]) => Retur
   const instance = cotal([...remove, "--instance", before.instanceId, "--json"]);
   const { outcome, error, target } = JSON.parse(instance.stdout);
   const stop = ["down", "--space", space, "--yes"];
-  const remedy = `from the project folder ${project}, run \`cotal ${stop.join(" ")}\`, then run \`cotal space forget ${space}\``;
+  const remedy = `from the project folder \`${project}\`, run \`cotal ${stop.join(" ")}\`, then run \`cotal space forget ${space}\``;
   check("removing a controller definition from another project refuses and names the rooted stop",
     definition.status === 2 && out(definition).includes("UNSUPPORTED") && out(definition).includes(remedy), out(definition));
   check("removing a controller instance from another project refuses with the same remedy",
-    instance.status === 2 && outcome === "refused" && error?.code === "UNSUPPORTED" && target?.instanceId === before.instanceId
+    instance.status === 2 && outcome === "refused" && error?.code === "UNSUPPORTED" && target?.instanceId === before.instanceId && target?.root === project
     && error.remedy === remedy, out(instance));
   const after = JSON.parse(status().stdout).result;
   check("the refusals keep the same broker instance running",

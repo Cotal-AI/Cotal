@@ -113,6 +113,22 @@ function legacyProcesses(context: LocalProcessContext) {
   });
 }
 
+function stackRemovalFolder(root: string): string {
+  if (oneLine(root) === root) return `from the project folder ${codeSpan(root)},`;
+  if (process.platform === "win32") {
+    const encoded = Buffer.from(root).toString("base64");
+    const change = `Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))`;
+    return `in PowerShell, change to the project folder with ${codeSpan(change)}, then`;
+  }
+  // printf %b decodes UTF-8 bytes without relying on the shell locale.
+  const escaped = [...root].map((char) => {
+    if (char === "\\") return "\\\\";
+    if (oneLine(char) === char) return char;
+    return Array.from(Buffer.from(char), (byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
+  }).join("");
+  return `change to the project folder with ${codeSpan(`cd "$(printf '%b' ${shellWord(escaped)})"`)}, then`;
+}
+
 function refuseStackMemberRemoval(root: string, target: { space: string; name: string; instanceId?: string }): never {
   const message = target.instanceId === undefined
     ? "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed"
@@ -120,7 +136,7 @@ function refuseStackMemberRemoval(root: string, target: { space: string; name: s
   const space = shellWord(target.space);
   const stop = codeSpan(`cotal down --space ${space} --yes`);
   throw new CommandFailure("refused", "UNSUPPORTED", message, {
-    target, remedy: `from the project folder ${oneLine(root)}, run ${stop}, then run ${codeSpan(`cotal space forget ${space}`)}`,
+    target: { ...target, root }, remedy: `${stackRemovalFolder(root)} run ${stop}, then run ${codeSpan(`cotal space forget ${space}`)}`,
   });
 }
 

@@ -272,8 +272,30 @@ check("rig: a definition under a stack member's name is saved", member.status ==
 const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
 check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming the rooted stop and keeping the definition",
   keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED"
-    && keptMember.envelope.error.remedy === `from the project folder ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
+    && keptMember.envelope.error.remedy === `from the project folder \`${realpathSync(root)}\`, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
     && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
+
+if (process.platform !== "win32") {
+  const project = join(realpathSync(home), "owner's \\ ✈\ufe0f");
+  mkdirSync(project);
+  const prepared = run(["space", "create", "unicode", "--root", project]);
+  const saved = run(["service", "add", "stack-manager", "--preset", "manager", "--root", project, "--space", "unicode"]);
+  check("rig: a controller definition is saved for a project path with a variation selector",
+    prepared.status === 0 && saved.status === 0, { prepare: shown(prepared), save: shown(saved) });
+  const remove = ["service", "remove", "stack-manager", "--space", "unicode", "--yes"];
+  const plain = run([...remove, "--plain"]), json = run(remove);
+  const encoded = project.replaceAll("\\", "\\\\").replaceAll("'", "'\\''").replace("\ufe0f", "\\0357\\0270\\0217");
+  const enter = `cd "$(printf '%b' '${encoded}')"`;
+  const remedy = `change to the project folder with \`${enter}\`, then run \`cotal down --space unicode --yes\`, then run \`cotal space forget unicode\``;
+  check("removal escapes the invisible character in the human and JSON remedy but preserves the exact target path",
+    plain.status === 2 && plain.stderr.includes(remedy) && !plain.stderr.includes("\ufe0f")
+    && json.status === 2 && json.envelope?.error?.code === "UNSUPPORTED" && json.envelope.error.remedy === remedy
+    && json.envelope.target?.root === project, { plain: shown(plain), json: shown(json) });
+  const printed = json.envelope?.error?.remedy?.split("`")[1];
+  const entered = printed === enter ? spawnSync("/bin/sh", ["-c", `${printed} && pwd -P`], { cwd: root, env: { ...env, LC_ALL: "C" }, encoding: "utf8" }) : undefined;
+  check("the directory command reaches the exact project in a POSIX shell even in the C locale",
+    entered?.status === 0 && entered.stdout === `${project}\n`, entered?.stderr);
+}
 
 // A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same
 // name each record which one ran.

@@ -350,6 +350,8 @@ and retains its logs, the definition and other instances.
 Neither operation removes a process or OS unit. Both forms refuse to remove a controller stack
 member. In the stack's project folder, run `cotal down --space <space> --yes`, then run
 `cotal space forget <space>` to release the records with the stack.
+If the folder path contains invisible characters, the refusal gives a shell command to enter it.
+With `--json`, `target.root` has the exact path.
 A preset is not installed under an OS supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
 and the setup seed record a service receipt for an extension that declares service adapters or
