@@ -59,8 +59,9 @@ export interface ChannelRow {
 /** A manager the bridge can spawn through. */
 export interface ManagerChoice {
   readonly instanceId: string;
+  /** The host name it reported, shown and never compared. */
   readonly host?: string;
-  /** The manager runs on the host this process runs on. */
+  /** The manager names this machine's id (`managerMachineId`), so it runs on this process's machine. */
   readonly local: boolean;
   /** The manager's presence is current, or, with no presence row to read, it answered for its host.
    *  A registration whose computer is gone can stay listed. */
@@ -169,6 +170,15 @@ export class NoLaunchManager extends Error {
   override readonly name = "NoLaunchManager";
 }
 
+/** No live manager is registered for the space, as once the last one stopped itself, so none runs
+ *  there to list the agents. */
+export class NoManagerRegistered extends Error {
+  override readonly name = "NoManagerRegistered";
+  constructor(readonly space: string) {
+    super(`No live manager is registered for ${space}`);
+  }
+}
+
 /** What a person on a space where people sign in can do about a registered manager that does not
  *  answer. Its registration stays listed until it is removed, as `cotal ps` says. */
 export function deregisterRemedy(space: string, instanceIds: readonly string[]): string {
@@ -195,6 +205,13 @@ export interface Mesh {
   /** The managers this caller can spawn through. On a space where people sign in, rejects with
    *  {@link NoLaunchManager} when none may. */
   managers(): Promise<ManagerChoice[]>;
+  /** Start this machine's manager for the space, for a new agent that no manager may start. It stops
+   *  itself after a while with no agents. Resolves with the line the thread shows; rejects with
+   *  {@link NoLaunchManager} naming the start's reason. */
+  startManager(): Promise<string>;
+  /** Why this machine's identity could not be read, undefined when it could. Without it no manager
+   *  reads as this machine's, so a thread neither defaults to one nor starts one. */
+  machineUnreadable(): string | undefined;
   /** One manager as a choice, described from its presence, or from its own answer when its presence
    *  row is not found. */
   manager(instanceId: string): Promise<ManagerChoice>;
@@ -203,7 +220,8 @@ export interface Mesh {
   personas(managerInstanceId?: string): Promise<PersonaRow[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
-  /** Every managed seat the caller can see. */
+  /** Every managed seat the caller can see. Rejects with {@link NoManagerRegistered} when no live
+   *  manager is registered for the space. */
   seats(): Promise<SeatList>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;
