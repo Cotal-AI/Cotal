@@ -268,6 +268,16 @@ export interface ModelPolicyLaunch {
   launchOptions?: Record<string, unknown>;
 }
 
+/** The launch env that tells a seat its role is under `modelPolicy`, naming the role. The policy is
+ *  judged at launch only, so the seat's connector refuses an owner's `set-model` (SPEC 13.22). */
+export const MODEL_POLICY_ENV = "COTAL_MODEL_POLICY";
+
+/** The env a seat launched under `role` takes: {@link MODEL_POLICY_ENV} when `modelPolicy` names the
+ *  role, and none otherwise. Every launcher that runs {@link modelPolicyRefusal} sets it. */
+export function modelPolicyEnv(config: CotalConfig, role: string | undefined): Record<string, string> {
+  return role !== undefined && config.modelPolicy && Object.hasOwn(config.modelPolicy, role) ? { [MODEL_POLICY_ENV]: role } : {};
+}
+
 /** The operator-facing refusal for a launch whose role `modelPolicy` constrains and whose model or
  *  variant is absent or not on the role's list, or that carries launch options, or undefined when it
  *  may launch. A role with no entry, and a launch with no role, are unconstrained. An absent model is

@@ -32,6 +32,9 @@
  *  - with only another computer's manager live, a new session starts this machine's manager and
  *    defaults to it, and uses the other computer only when Machine names it; a failed start, or one
  *    whose manager is still not listed here, fails the session;
+ *  - the selects hold the chosen machine's applications: choosing a machine whose manager reports an
+ *    application unavailable offers it in neither select, moves the selection to that machine's
+ *    default, refuses the application with the manager's reason, and a prompt starts the default;
  *  - `cotal manager status` output names the native instance of this machine's running manager
  *    service, and names none when it is gone, never started or refused;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
@@ -51,6 +54,11 @@
  *    asked once; a prompt opened while the thread runs no turn is asked on its next prompt, whose
  *    turn stays open until the client answers; the seat's commands and skills are offered and run through
  *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it;
+ *  - on a running thread, choosing a model or a reasoning variant of the seat's application switches
+ *    the seat through its `set-model`, and the options show the choice; the seat's refusal fails the
+ *    choice with its reason; another application and an option that applies at spawn are refused
+ *    naming `/despawn`, and so is a seat whose connector cannot switch, naming its harness and the
+ *    cause the seat gives, or nothing is called when the seat predates `set-model`;
  *  - a prompt or seat command the seat queues behind work the thread did not start answers once its
  *    own run ends, however long it waited. Cancelled while still queued, it leaves the queue through
  *    `command-cancel` and the other work is not interrupted; cancelled once taken, its run is; its
@@ -363,6 +371,46 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   check("with no manager listed, a new thread fails with the reason and starts none", space.starts === 0 && none?.code === -32603 && none.message === (linux
     ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or start a manager with `cotal manager start --space fake` and choose it in the Machine option."
     : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Start a manager with `cotal manager start --space fake` and choose it in the Machine option."), { starts: space.starts, none });
+  c.conn.close();
+}
+// Each manager reports its own applications. OpenCode runs on m1, and m2's status row says it is not
+// installed there. A thread that chooses m2 offers only what m2 can run and starts there on m2's
+// default, and choosing m1 again offers OpenCode again.
+{
+  const missing = "opencode harness needs opencode on PATH - not found";
+  const space = new FakeMesh();
+  space.managerList = [{ instanceId: "m1", host: "here", local: true, live: true }, { instanceId: "m2", host: "there", local: false, live: true }];
+  const byManager = new Map<string | undefined, AgentCatalog[]>([
+    ["m1", [...CATALOGS, { agent: "opencode", available: true, eventPlane: true, models: [{ id: "gpt", variants: ["high"] }] }]],
+    ["m2", [...CATALOGS, { agent: "opencode", available: false, eventPlane: true, reason: missing, models: [] }]],
+  ]);
+  space.catalogs = async (instanceId?: string) => { space.catalogsAsked.push(instanceId); return byManager.get(instanceId) ?? []; };
+  const c = connect(async () => space);
+  await c.init;
+  type Opts = readonly { id: string; currentValue?: unknown; options?: unknown }[] | null | undefined;
+  const offered = (o: Opts) => {
+    const model = o?.find((x) => x.id === "model") as { currentValue?: string; options?: { group: string; options: { value: string }[] }[] } | undefined;
+    const agent = o?.find((x) => x.id === "agent") as { options?: { value: string }[] } | undefined;
+    const variant = o?.find((x) => x.id === "variant") as { currentValue?: string } | undefined;
+    return { model: model?.currentValue, variant: variant?.currentValue, groups: (model?.options ?? []).map((g) => g.group), harnesses: (agent?.options ?? []).map((x) => x.value) };
+  };
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const set = (configId: string, value: string) => c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId, value });
+  check("on a machine that runs OpenCode, the selects offer it", offered(s.configOptions).groups.includes("opencode") && offered(s.configOptions).harnesses.includes("opencode"), offered(s.configOptions));
+  await set("model", "opencode/gpt");
+  await set("variant", "high");
+  const moved = await set("machine", "m2");
+  check("choosing a machine whose manager says OpenCode is unavailable offers it in neither select", !offered(moved.configOptions).groups.includes("opencode") && !offered(moved.configOptions).harnesses.includes("opencode"), offered(moved.configOptions));
+  check("and the selection moves to that machine's default", offered(moved.configOptions).model === "claude/default" && offered(moved.configOptions).variant === "default", offered(moved.configOptions));
+  const refused = await errorOf(set("model", "opencode/default"));
+  check("choosing OpenCode there is refused with the manager's reason", refused?.code === -32602 && refused.message?.includes(missing) === true, refused);
+  const back = await set("machine", "m1");
+  check("choosing the first machine again offers OpenCode again", offered(back.configOptions).groups.includes("opencode") && offered(back.configOptions).harnesses.includes("opencode"), offered(back.configOptions));
+  await set("model", "opencode/gpt");
+  await set("machine", "m2");
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const ran = await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("a prompt there starts that machine's default, not OpenCode", ran?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m2" && space.spawned.at(-1)?.agent === "claude", { ran, spawned: space.spawned.at(-1) });
   c.conn.close();
 }
 // a thread no manager may start starts this machine's manager
@@ -1259,6 +1307,67 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   await tick(300);
   space.present.set(seat.actor, "idle");
   check("once answered, the answer goes back and the turn ends", (await next)?.stopReason === "end_turn" && callsOf("prompt-answer").length === 1 && callsOf("prompt-answer")[0]!.args.option === "yes", { next: await next, answers: callsOf("prompt-answer") });
+  c.conn.close();
+}
+// On a running thread, the model and reasoning choices switch the seat through its `set-model`.
+{
+  const space = new FakeMesh();
+  const shown = { interrupt: true, turn: true, images: true, usage: true, setModel: true };
+  space.serving = shown;
+  let refusal: AgentCallFailed | undefined;
+  space.onAgentCall = (_seat, command, args) => {
+    switch (command) {
+      case "prompts": return { runtime: { id: "rt", startedAt: 1 }, seq: 0, open: [], closed: [] };
+      case "commands": return { supported: false };
+      case "usage": return { supported: false };
+      case "set-model":
+        if (refusal) throw refusal;
+        return { model: args.model, ...(args.variant !== undefined ? { variant: args.variant } : {}) };
+    }
+    throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
+  };
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const c = connect(async () => space);
+  await c.init;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const set = (configId: string, value: string) => c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId, value });
+  const current = (r: { configOptions?: readonly { id: string }[] | null } | undefined, id: string) => (r?.configOptions?.find((o) => o.id === id) as { currentValue?: string } | undefined)?.currentValue;
+  const calls = () => space.agentCalls.filter((x) => x.command === "set-model").map((x) => x.args);
+  await set("model", "claude/opus");
+  space.counters.set(`actor-${s.sessionId}`, { runtime: "rt", open: 0, seq: 0 });
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  let failed: unknown;
+  const switched = await set("model", "claude/sonnet").catch((e: unknown) => { failed = e; return undefined; });
+  check("choosing another model of the seat's application on a running thread switches the seat through set-model, and the options show it",
+    JSON.stringify(calls()) === '[{"model":"sonnet"}]' && current(switched, "model") === "claude/sonnet", failed ?? { calls: calls(), options: switched?.configOptions });
+  failed = undefined;
+  const effort = await set("variant", "low").catch((e: unknown) => { failed = e; return undefined; });
+  check("choosing a reasoning variant there switches it with the model it runs, and the options show it",
+    JSON.stringify(calls().at(-1)) === '{"model":"sonnet","variant":"low"}' && current(effort, "variant") === "low", failed ?? { calls: calls(), options: effort?.configOptions });
+  const before = calls().length;
+  const harness = await errorOf(set("model", "pi/default"));
+  check("a model of another application is refused there, naming /despawn, and switches nothing", harness?.code === -32602 && String(harness.message).includes("/despawn") && calls().length === before, harness);
+  refusal = new AgentCallFailed("the harness has no model gpt-x", "failed-precondition");
+  const refusedSwitch = await errorOf(set("model", "claude/haiku"));
+  check("the seat's refusal fails the choice with its reason and keeps the model it runs",
+    refusedSwitch?.code === -32602 && String(refusedSwitch.message).includes("has no model gpt-x"), refusedSwitch);
+  refusal = undefined;
+  const kept = await set("variant", "default").catch(() => undefined);
+  check("...and keeps the model it runs: the model default variant switches that model",
+    JSON.stringify(calls().at(-1)) === '{"model":"sonnet"}' && current(kept, "model") === "claude/sonnet" && current(kept, "variant") === "default", { calls: calls(), options: kept?.configOptions });
+  const persona = await errorOf(set("persona", "reviewer"));
+  check("an option that applies only at spawn is still refused on a running thread", persona?.code === -32602 && String(persona.message).includes("/despawn"), persona);
+  space.serving = { ...shown, setModel: false };
+  refusal = new AgentCallFailed("this agent's connector cannot switch its model now: the command mod is not running in this Claude Code session", "unimplemented");
+  const unsupported = await errorOf(set("model", "claude/haiku"));
+  check("a seat that shows it cannot switch now is refused with the harness, the seat's own cause and /despawn",
+    unsupported?.code === -32602 && String(unsupported.message).includes("claude: this agent's connector cannot switch its model now: the command mod is not running") && String(unsupported.message).includes("/despawn"), unsupported);
+  refusal = undefined;
+  space.serving = { interrupt: true, turn: true, images: true, usage: true };
+  const called = calls().length;
+  const older = await errorOf(set("model", "claude/haiku"));
+  check("a seat that predates set-model is refused with the harness named and /despawn, and nothing is called",
+    older?.code === -32602 && String(older.message).includes("whose connector cannot switch") && String(older.message).includes("/despawn") && calls().length === called, older);
   c.conn.close();
 }
 // /name, /open and the thread links.

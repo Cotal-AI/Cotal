@@ -22,7 +22,7 @@ import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
 import { PiEvents } from "./events.js";
 import { askBeforeTools } from "./approvals.js";
-import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiSessionView } from "./commands.js";
+import { piCommandDispatcher, piRunsCommands, piSwitchesModels, type PiCommandHost, type PiSessionView } from "./commands.js";
 import { savedProjectTrust } from "./trust.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
@@ -138,13 +138,14 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>, runsCommands: boolean): PiRuntime {
+function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>, piVersion: string): PiRuntime {
   let runtime: PiRuntime | undefined;
   const commands = piCommandDispatcher({
     host: () => runtime?.commandHost,
     turns: (): PiDriver => driver,
     session: () => runtime?.session,
-    commands: runsCommands,
+    commands: piRunsCommands(piVersion),
+    models: piSwitchesModels(piVersion),
   });
   const mesh = new MeshAgent(config, undefined, { commands });
   const driver = new PiDriver(mesh);
@@ -220,7 +221,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     // resolves to itself. A copy installed beside this extension, as in this repo's checkout, wins
     // over that, so there the version is the copy's.
     const { VERSION } = await import("@earendil-works/pi-coding-agent");
-    runtime = createRuntime(config, control, piRunsCommands(VERSION));
+    runtime = createRuntime(config, control, VERSION);
     runtimes.set(key, runtime);
   }
   if (eventsEnabled) {
@@ -235,7 +236,8 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     persistSessionId(startupSessionId);
   }
   runtime.driver.bind(pi);
-  // The pinned Pi types predate sendUserMessage's expandPromptTemplates; piRunsCommands gates its use.
+  // The pinned Pi types predate sendUserMessage's expandPromptTemplates and the max thinking level;
+  // piRunsCommands and piSwitchesModels gate their use.
   runtime.commandHost = pi as unknown as PiCommandHost;
   registerCotalTools(pi, runtime.mesh, runtime.config);
   if (runtime.config.askPermissions) askBeforeTools(pi, () => runtime.mesh.prompts);
