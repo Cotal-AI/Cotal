@@ -3,4 +3,4 @@
 "cotal-ai": patch
 ---
 
-When a file blocks the recorded project path, the `cotal down` refusal tells you to restore the original folder before retrying there.
+If `cotal down` returns `TARGET_NOT_FOUND` from a folder with no stack of its own, it now tells you to restore the target stack's original folder when a file blocks its recorded path.
