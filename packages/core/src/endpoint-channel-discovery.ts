@@ -5,7 +5,9 @@
 import type { ChannelRegistryState } from "./endpoint-channel-registry-state.js";
 import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
-import { JetStreamApiCodes, type ConsumerInfo } from "@nats-io/jetstream";
+import { randomUUID } from "node:crypto";
+import type { Msg, NatsConnection } from "@nats-io/transport-node";
+import { JetStreamApiCodes, jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import {
   openChannelRegistry,
@@ -14,17 +16,22 @@ import {
   readChannelConfig,
   readChannelDefaults,
   decodeChannelEntry,
+  ChannelRegistryConflict,
 } from "./channels.js";
+import { changeChannelConfig, readChannelStateLeader, validateChannelChange, type ChannelChange, type ChannelState } from "./channel-config.js";
+export type { ChannelChange } from "./channel-config.js";
 import { isPublishPermissionDenied } from "./endpoint-dial.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
 import { lastKvEntries } from "./kv-scan.js";
-import { CHANNEL_DEFAULTS_KEY, channelBucket, isConcreteChannel } from "./subjects.js";
+import { CHANNEL_DEFAULTS_KEY, assertValidChannel, channelBucket, channelConfigReplySubject, channelConfigSubject, isConcreteChannel } from "./subjects.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 
 /** What the channel discovery component reads from its endpoint. State is read when it is used,
  *  never copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointChannelDiscoveryDeps {
   notLiveMsg: () => string;
+  authed: () => boolean;
+  requestBoundReply: (nc: NatsConnection, subject: string, body: string, reply: string, timeoutMs: number) => Promise<Msg>;
   bindKvWatch: (kv: KV) => Promise<{ iter: Awaited<ReturnType<KV["watch"]>>; info: ConsumerInfo } | undefined>;
   emitRecoverable: (err: Error) => void;
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -89,6 +96,38 @@ export class EndpointChannelDiscovery {
   /** This channel's registry config from the local cache (undefined if unset). */
   getChannelConfig(channel: string): ChannelConfig | undefined {
     return this.channelRegistry.channelConfigs.get(channel);
+  }
+
+  async channelState(channel: string): Promise<ChannelState> {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) throw new Error("Settings apply to one channel by its full name, not to a family.");
+    if (!this.conn.nc) throw new Error(this.notLiveMsg());
+    const jsm = await jetstreamManager(this.conn.nc, { checkAPI: false });
+    try { return await readChannelStateLeader(jsm, this.identity.space, channel); }
+    catch (e) {
+      if (!this.deps.authed() && isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) return { revision: 0 };
+      throw e;
+    }
+  }
+
+  async configureChannel(channel: string, change: ChannelChange): Promise<ChannelState> {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) throw new Error("Settings apply to one channel by its full name, not to a family.");
+    validateChannelChange(change);
+    const nc = this.conn.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    const { space, card } = this.identity;
+    if (!this.deps.authed()) {
+      if (change.patch?.deliveryClass === "durable") throw new Error("An open mesh cannot enable durable delivery.");
+      const kv = this.conn.channelKv ?? await openChannelRegistry(nc, space, { create: true });
+      return changeChannelConfig(kv, channel, change, card.id);
+    }
+    const subject = channelConfigSubject(space, card.id, channel);
+    const reply = channelConfigReplySubject(space, card.id, randomUUID());
+    const result = (await this.deps.requestBoundReply(nc, subject, JSON.stringify(change), reply, 5000)).json<{ ok: boolean; data?: ChannelState; error?: string; code?: string }>();
+    if (result.code === "CONFLICT") throw new ChannelRegistryConflict(result.error);
+    if (!result.ok || !result.data) throw new Error(result.error ?? "The channel write returned no confirmed state.");
+    return result.data;
   }
 
   /** Effective replay-on-join policy for a channel: per-channel override ?? space default ??
@@ -160,7 +199,10 @@ export class EndpointChannelDiscovery {
     if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
       if (isDefaults) this.channelRegistry.channelDefaults = decodeChannelEntry(e);
-      else this.channelRegistry.channelConfigs.set(e.key, decodeChannelEntry(e));
+      else {
+        const config = decodeChannelEntry(e);
+        if (!config.removed) this.channelRegistry.channelConfigs.set(e.key, config);
+      }
     } catch (err) {
       this.emitRecoverable(new Error(`dropped channel registry entry for key ${JSON.stringify(e.key)}: ${(err as Error).message}`));
     }

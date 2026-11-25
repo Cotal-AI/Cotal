@@ -1074,6 +1074,37 @@ try {
     }
   }
 
+  {
+    const { seedDefaultPersona } = await import("../src/lib/default-persona.js");
+    seedDefaultPersona(root);
+    const delivery = new CotalEndpoint({ space: SPACE, servers: broker.servers,
+      creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false,
+      registerPresence: false, card: { name: "channel-delivery", kind: "endpoint" } });
+    delivery.on("error", () => {});
+    try {
+      await delivery.start();
+      await delivery.startPlane3(() => []);
+      const out = join(root, "channel-config.creds");
+      const plain = join(root, "channel-plain.creds");
+      const grant = ["--provision", "--allow-publish", "fix.x"];
+      const minted = await runMint(["default", ...grant, "--out", out]);
+      check("the default persona mints a provisioned credential scoped to fix.x", minted.code === 0, minted.out);
+      const unprivileged = await runMint(["channel_plain", "--no-persona", ...grant, "--out", plain]);
+      check("a provisioned credential without the capability mints with the same publish grant", unprivileged.code === 0, unprivileged.out);
+      const set = (channel: string, text: string, creds: string) => runCotal(["channel", "set", channel, "--desc", text, "--creds", creds, "--space", SPACE, "--server", broker.servers, "--json"]);
+      const write = await set("fix.x", "agent-authored purpose", out);
+      check("the provisioned default persona writes within its publish grant", write.code === 0, write.out);
+      const outside = await set("general", "out-of-scope purpose", out);
+      check("the same credential is refused outside its publish grant", outside.code === 2 && outside.out.includes("PERMISSION_DENIED"), outside.out);
+      const refused = await set("fix.x", "unprivileged purpose", plain);
+      check("the same publish grant without the capability cannot write", refused.code === 2 && refused.out.includes("PERMISSION_DENIED"), refused.out);
+      const allowed = await runCotal(["channel", "show", "fix.x", "--json"]);
+      const denied = await runCotal(["channel", "show", "general", "--json"]);
+      check("operator read-back confirms only the allowed change and its writer", allowed.code === 0 && allowed.out.includes("agent-authored purpose") && allowed.out.includes('"writer":"local.'), allowed.out);
+      check("operator read-back confirms the out-of-scope channel was not changed", denied.code === 0 && !denied.out.includes("out-of-scope purpose"), denied.out);
+    } finally { await delivery.stop(); }
+  }
+
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);
 } finally {
   for (const fn of cleanup.reverse()) await fn();

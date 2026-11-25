@@ -93,6 +93,13 @@ console.log("capabilities");
   ok("admin from a non-admin spawner is refused", same(a, ["capabilities:admin"]), a);
   const u = names(over(evidence({ capabilities: ["spawn"] }), { capabilities: ["superuser"] }));
   ok("an unknown token is refused, never read as an empty grant", same(u, ["capabilities:superuser"]), u);
+  const configure = { capabilities: ["channel-config"], allowPublish: ["review.work"] };
+  const holder = evidence({ capabilities: ["channel-config"], allowPublish: ["review.>"] });
+  ok("a channel-config holder can hand on channel configuration within its post grants", over(holder, configure).length === 0);
+  const noConfig = names(over(evidence({ allowPublish: ["review.>"] }), configure));
+  ok("a post grant alone cannot delegate channel-config", same(noConfig, ["capabilities:channel-config"]), noConfig);
+  const outside = names(over(holder, { ...configure, allowPublish: ["outside"] }));
+  ok("channel-config cannot be delegated beyond the spawner's post grants", same(outside, ["allowPublish:outside", "capabilities:channel-config"]), outside);
 }
 
 console.log("ceiling modes");

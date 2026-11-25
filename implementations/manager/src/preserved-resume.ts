@@ -19,7 +19,7 @@ import type { ManagerStartState } from "./manager-start-state.js";
 
 /** Scope written by local user-mode provisioning from the persona capabilities. */
 export function localUserAgentScope(capabilities: readonly string[] = []): string[] {
-  return capabilities.filter((c) => c === "spawn" || c === "run" || c === "admin" || /^role:[A-Za-z0-9_-]+$/.test(c));
+  return capabilities.filter((c) => c === "spawn" || c === "run" || c === "admin" || c === "channel-config" || /^role:[A-Za-z0-9_-]+$/.test(c));
 }
 
 /** How often a resumed seat whose readiness was uncertain is checked for a join its predecessor's

@@ -9,6 +9,8 @@ import { aclRetired, readAcl } from "./acls.js";
 import { ANYCAST_CANCEL_OP, ANYCAST_STATUS_OP, ANYCAST_TAKES_OP } from "./anycast-requests.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { DELIVERY_LIMIT_HEADER, HISTORY_NO_COUNT } from "./backup-config.js";
+import { serveChannelConfig } from "./channel-config.js";
+import { openChannelRegistry } from "./channels.js";
 import { isRestoredConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import type { CotalEndpoint } from "./endpoint.js";
@@ -24,7 +26,7 @@ import { CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, FANOUT_DURABLE, INBOX_READER_
 import type { ControlReply, ControlRequest, CotalMessage, MessageMeta, Plane3Entry } from "./types.js";
 import { JetStreamApiCodes, type ConsumerConfig, type JetStreamManager, type JetStreamPublishOptions, type JsMsg } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
-import { headers } from "@nats-io/transport-node";
+import { headers, type Subscription } from "@nats-io/transport-node";
 
 const PLANE3_FRAME_HEADER = "Cotal-Delivery-Frame";
 
@@ -138,6 +140,7 @@ export class EndpointDeliveryPlane {
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   deliveryServeSub?: import("@nats-io/transport-node").Subscription;
   deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
+  private channelConfigSub?: Subscription;
   /** The lifecycles whose membership inventory this daemon has been asked for, as principal to uids
    *  (#4965). A durable join or leave bound to one of them is refused, so no row of a retiring lifecycle
    *  is written after its inventory read starts. An entry goes when a later inventory for the same
@@ -537,6 +540,7 @@ export class EndpointDeliveryPlane {
    *  up, because the daemon still has to ask the broker who owns the shard. */
   async quiescePlane3(): Promise<void> {
     this.plane3Quiesced = true;
+    this.dropChannelConfig();
     if (this.deliveryServeSub) {
       try { this.deliveryServeSub.unsubscribe(); } catch { /* already dead */ }
       this.deliveryServeSub = undefined;
@@ -601,9 +605,30 @@ export class EndpointDeliveryPlane {
     if (this.plane3Quiesced) return;
     await this.manager(); // the manager runs consume:false, so this.conn.jsm is lazy — ensure it
     this.armDeliveryControl();
+    await this.armChannelConfig();
     await this.armAnycastRequests();
     await this.runFanout();
     await this.runReader();
+  }
+
+  private dropChannelConfig(): void {
+    const sub = this.channelConfigSub;
+    if (!sub) return;
+    this.channelConfigSub = undefined;
+    sub.unsubscribe();
+    const i = this.delivery.subs.indexOf(sub);
+    if (i >= 0) this.delivery.subs.splice(i, 1);
+  }
+
+  private async armChannelConfig(): Promise<void> {
+    this.dropChannelConfig();
+    const nc = this.conn.nc;
+    if (!nc) throw new Error(this.notLiveMsg());
+    const kv = await openChannelRegistry(nc, this.identity.space);
+    if (!this.plane3MayAct() || nc !== this.conn.nc) return;
+    this.channelConfigSub = serveChannelConfig(nc, this.identity.space, kv,
+      () => this.plane3MayAct() && nc === this.conn.nc && !this.lifecycle.stopped, (e) => this.emit("error", e));
+    this.delivery.subs.push(this.channelConfigSub);
   }
 
   /** (Re)register the `ctl.delivery` control responder on the CURRENT connection. A reconnect drains the

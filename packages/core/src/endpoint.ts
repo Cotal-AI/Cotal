@@ -84,7 +84,7 @@ import { EndpointAnycast } from "./endpoint-anycast.js";
 import { EndpointConsumers } from "./endpoint-consumers.js";
 import { EndpointPrincipalServe } from "./endpoint-principal-serve.js";
 import { EndpointSubscriptions, membershipConsumerReleased, type MembershipFeedWatch } from "./endpoint-subscriptions.js";
-import { EndpointChannelDiscovery } from "./endpoint-channel-discovery.js";
+import { EndpointChannelDiscovery, type ChannelChange } from "./endpoint-channel-discovery.js";
 import { EndpointLiveness } from "./endpoint-liveness.js";
 import { EndpointCredentials } from "./endpoint-credentials.js";
 import { EndpointReconnect } from "./endpoint-reconnect.js";
@@ -1290,6 +1290,8 @@ export class CotalEndpoint extends EventEmitter {
   /** The channel registry cache, its policy lookups and the registry watch that fills it, of this
    *  endpoint. Every dependency is read when it is used, so a field assigned after construction is seen. */
   private readonly channelDiscovery = new EndpointChannelDiscovery(this.identity, this.conn, this.channelRegistry, {
+    authed: () => this.authed,
+    requestBoundReply: (nc, subject, body, reply, timeoutMs) => this.requestBoundReply(nc, subject, body, reply, timeoutMs),
     notLiveMsg: () => this.notLiveMsg(),
     bindKvWatch: (kv) => this.bindKvWatch(kv),
     emitRecoverable: (err) => this.emitRecoverable(err),
@@ -1315,15 +1317,13 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** This channel's registry config from the local cache (undefined if unset). */
-  getChannelConfig(channel: string): ChannelConfig | undefined {
-    return this.channelDiscovery.getChannelConfig(channel);
-  }
+  getChannelConfig(channel: string): ChannelConfig | undefined { return this.channelDiscovery.getChannelConfig(channel); }
+  channelState(channel: string) { return this.channelDiscovery.channelState(channel); }
+  configureChannel(channel: string, change: ChannelChange) { return this.channelDiscovery.configureChannel(channel, change); }
 
   /** Effective replay-on-join policy for a channel: per-channel override ?? space default ??
    *  true. Reads the live cache, so it reflects runtime registry edits. */
-  channelReplay(channel: string): boolean {
-    return this.channelDiscovery.channelReplay(channel);
-  }
+  channelReplay(channel: string): boolean { return this.channelDiscovery.channelReplay(channel); }
 
   /** Effective replay window for a channel (per-channel override ?? space default), or undefined
    * for the full retained window. Only meaningful when {@link channelReplay} is true. */

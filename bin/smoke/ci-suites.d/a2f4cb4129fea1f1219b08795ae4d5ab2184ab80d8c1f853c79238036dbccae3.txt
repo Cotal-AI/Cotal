@@ -1,0 +1,2 @@
+# Registry text stays inside its advisory frame on every agent surface.
+smoke:channel-text-containment
