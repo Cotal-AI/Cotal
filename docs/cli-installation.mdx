@@ -1064,6 +1064,9 @@ Only an automatically adopted selection yields to a running space registered for
 With no space running here it is the selected space, or the only running one. Outside a project,
 with no saved selection, an offline registration does not take the place of your defaults.
 You can still read that space's saved values with `--space <name>`. `--user` reads your defaults alone.
+A damaged extension inventory does not stop a preference read unless Cotal needs the inventory to
+validate a harness from the environment. In that case, `--json` reports a `SCHEMA_INVALID` refusal
+with the repair command. A preference read does not repair a damaged inventory.
 If `config get` or `config unset` already has a key, or `config set` has both a key and a value,
 remove an unknown option rather than moving it after `--`.
 
@@ -1113,10 +1116,11 @@ cotal completion uninstall [shell] [--json|--plain]
 
 ### Completion inspection
 
-Bare `completion` reads local integration files. It reports the script version, startup reference
-and recorded ownership separately. It does not inspect or load the running shell. An unreadable
-file or ownership record produces a warning and a partial result, exit 4. The warning names the
-file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
+Bare `completion` reads local integration files even if the extension inventory is damaged. It
+reports the script version, startup reference and recorded ownership separately. It does not inspect
+or load the running shell. An unreadable file or ownership record produces a warning and a partial
+result, exit 4. The warning names the file and why. A record wired into another startup file, as an
+install under another `ZDOTDIR` leaves
 one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
 owned by another account, or writable by an account that is not you is named once, with the `chmod`
 that fixes it when one does. Group write is accepted when the group is your proven user private
