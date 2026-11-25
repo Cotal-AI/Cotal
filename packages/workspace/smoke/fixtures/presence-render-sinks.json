@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1143,
+    "total": 1147,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 921
+    "non-render/control": 925
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -5654,6 +5654,34 @@
       "anchor": "\"waiting\"",
       "class": "non-render/control",
       "rationale": "Stack down result table: \"waiting\" is the color tone for a member stop result, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-down.ts",
+      "kind": "derived-output",
+      "anchor": "projectRootProblem(root)",
+      "class": "non-render/control",
+      "rationale": "Stack down refusal control flow: checks the recorded project path on the local filesystem."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-down.ts",
+      "kind": "derived-output",
+      "anchor": "`${root}, which ${projectRootProblemText(problem)}`",
+      "class": "non-render/control",
+      "rationale": "Stack down refusal text: names the recorded project path and its obstruction."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-down.ts",
+      "kind": "derived-output",
+      "anchor": "projectRootProblemText(problem)",
+      "class": "non-render/control",
+      "rationale": "Stack down refusal text: describes a local filesystem condition, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-down.ts",
+      "kind": "derived-output",
+      "anchor": "`${retry} from ${root}`",
+      "class": "non-render/control",
+      "rationale": "Stack down refusal remedy: names the command and the recorded project folder for the retry."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
