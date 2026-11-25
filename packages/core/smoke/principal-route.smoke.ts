@@ -2,8 +2,9 @@
  * The principal route and the `agent` endpoint, broker-free (SPEC 13.21, 13.22): the subject
  * grammar, the parser branch and the sentinel; the `authorities` field of a cluster command and
  * its parse refusals (cell 26); the envelope agreement branch (cells 9 and 21); the serve-side
- * construction refusals (cell 23); the row builders; the two mint arms and every profile that
- * gets nothing; and the maximum-capability credential's size with the new rows.
+ * construction refusals (cell 23); the row builders; the callout and static mint arms, the
+ * `agent-caller` profile, a static renewal that keeps the rows its issuance had, and every profile
+ * that gets nothing; and the maximum-capability credential's size with the new rows.
  *
  * The cells that need a broker run in `pnpm smoke:principal-route:auth`.
  *
@@ -19,7 +20,8 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
-  principalRouteCommands, EpEnvelopeError, ContractInvalidError,
+  importNativeSubjectPermissions, issuedPermitsPattern, grantOverreach, mintAcceptedToken, mintGeneration, type IssuedCaller,
+  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
 import * as coreRoot from "../src/index.js";
@@ -111,19 +113,96 @@ check("the builder writes authorities, and a row without it writes none",
   buildClusterDocument("ai.cotal.test", 1, [{ name: "a", targeted: false, authorities: ["owner"], capability: "x.y", input: {}, output: {} },
     { name: "b", targeted: false, capability: "x.y", input: {}, output: {} }]).commands.map((c) => c.authorities?.join() ?? "-").join("|") === "owner|-");
 
-// ── the `agent` cluster, revision 1 (SPEC 13.22) ──
+// ── the `agent` cluster, revision 5 (SPEC 13.22) ──
 const agentDoc = parseClusterDocument(structuredClone(AGENT_CLUSTER));
-check("the agent cluster is ai.cotal.agent revision 1 with prompts, prompt and prompt-answer",
-  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 1 && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer");
-check("every command is ephemeral, untargeted, without modes, and admits owner and grant",
-  agentDoc.commands.every((c) => c.class === "ephemeral" && c.targeted === false && c.modes === undefined && c.authorities?.join() === "owner,grant"));
-check("capabilities: reads under agent.prompts.read, the answer under agent.prompts.answer",
-  agentDoc.commands.map((c) => c.capability).join() === "agent.prompts.read,agent.prompts.read,agent.prompts.answer");
+check("the agent cluster is ai.cotal.agent revision 5 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn and usage",
+  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 5
+  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage", agentDoc.commands.map((c) => c.name));
+check("every command is ephemeral, untargeted and without modes",
+  agentDoc.commands.every((c) => c.class === "ephemeral" && c.targeted === false && c.modes === undefined));
+check("the prompt commands admit owner and grant, and the four command commands, interrupt, set-name, turn and usage admit owner only",
+  agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`).join()
+    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner,set-name:owner,turn:owner,usage:owner",
+  agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`));
+check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read, and the interrupt, the rename, the turn and the usage read as their own",
+  agentDoc.commands.map((c) => c.capability).join()
+    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt,agent.profile.write,agent.turn.start,agent.usage.read",
+  agentDoc.commands.map((c) => c.capability));
 check("the declared digests are the compiled contracts' closure digests",
   agentDoc.commands.every((c) => AGENT_CONTRACTS[c.name].input.closureDigest === c.inputDigest && AGENT_CONTRACTS[c.name].output.closureDigest === c.outputDigest));
 check("the cluster constant, its commands and its schemas are frozen",
   Object.isFrozen(AGENT_CLUSTER) && Object.isFrozen(AGENT_CLUSTER.commands) && AGENT_COMMANDS.every((r) => Object.isFrozen(r.input) && Object.isFrozen(r.output)));
 check("the closure digest is stable across calls", agentClusterArtifacts().closureDigest === agentClusterArtifacts().closureDigest);
+
+const turnIn = AGENT_CONTRACTS.turn.input.validate, usageOut = AGENT_CONTRACTS.usage.output.validate;
+const PNG = { mimeType: "image/png", data: "iVBORw0KGgo=" };
+check("turn takes { text, images? }: text up to 262144 characters, 1 to 16 images of the four types in base64, and nothing else",
+  turnIn({ text: "hi" }) && turnIn({ text: "", images: [PNG] }) && turnIn({ text: "x".repeat(262144) }) && turnIn({ text: "a", images: Array(16).fill(PNG) })
+  && !turnIn({}) && !turnIn({ text: "x".repeat(262145) }) && !turnIn({ text: "a", images: [] }) && !turnIn({ text: "a", images: Array(17).fill(PNG) })
+  && !turnIn({ text: "a", images: [{ mimeType: "image/svg+xml", data: "PHN2Zz4=" }] }) && !turnIn({ text: "a", images: [{ mimeType: "image/png", data: "not base64!" }] })
+  && !turnIn({ text: "a", images: [{ ...PNG, url: "https://x" }] }) && !turnIn({ text: "a", extra: 1 }));
+check("usage answers { supported: false }, or { supported: true } with an optional context of two counts and a cost in an ISO currency",
+  usageOut({ supported: false }) && usageOut({ supported: true }) && usageOut({ supported: true, context: { used: 10, size: 200000 }, cost: { amount: 0.5, currency: "USD" } })
+  && !usageOut({ supported: false, context: { used: 1, size: 2 } }) && !usageOut({ supported: true, context: { used: -1, size: 2 } })
+  && !usageOut({ supported: true, cost: { amount: 1, currency: "usd" } }) && !usageOut({ supported: true, cost: { amount: -1, currency: "USD" } }) && !usageOut({ supported: true, tokens: 5 }));
+
+const cmdIn = AGENT_CONTRACTS.command.input.validate, cmdOut = AGENT_CONTRACTS.command.output.validate;
+const listIn = AGENT_CONTRACTS.commands.input.validate, listOut = AGENT_CONTRACTS.commands.output.validate;
+const NAMES: [unknown, boolean][] = [["review", true], ["sub/nested", true], ["émoji😀", true], ["x".repeat(128), true], ["x".repeat(129), false],
+  ["", false], ["has space", false], ["tab\tx", false], ["zero\u200bwidth", false], ["line\nbreak", false], [7, false]];
+check("command takes { target, name, args? } and nothing else",
+  cmdIn({ target: "command", name: "review" }) && cmdIn({ target: "skill", name: "browser", args: "a\nb" }) && cmdIn({ target: "command", name: "review", args: "" })
+  && !cmdIn({ target: "agent", name: "review" }) && !cmdIn({ name: "review" }) && !cmdIn({ target: "command" }) && !cmdIn({ target: "command", name: "review", args: 1 })
+  && !cmdIn({ target: "command", name: "review", agent: "u_alice.coder" }));
+check("a command name is 1 to 128 characters with no whitespace and none of Unicode category C, in the schema and in isAgentCommandName",
+  NAMES.every(([name, ok]) => cmdIn({ target: "command", name }) === ok && isAgentCommandName(name) === ok), NAMES.map(([n]) => [n, cmdIn({ target: "command", name: n }), isAgentCommandName(n)]));
+const contractOf = (command: string, side: "input" | "output") => (v: unknown): boolean => AGENT_CONTRACTS[command]?.[side].validate(v) === true;
+const COMMAND_ID = `${"a".repeat(24)}27`;
+const NOT_IDS = ["a".repeat(25), "a".repeat(27), "A".repeat(26), `${"a".repeat(25)}8`, `${"a".repeat(25)}1`, "", 7];
+check("command answers { id }, 26 characters of a-z and 2-7, and nothing else",
+  cmdOut({ id: COMMAND_ID }) && NOT_IDS.every((id) => !cmdOut({ id })) && !cmdOut({}) && !cmdOut({ id: COMMAND_ID, state: { kind: "queued" } }) && !cmdOut(null),
+  NOT_IDS.filter((id) => cmdOut({ id })));
+const cancelIn = contractOf("command-cancel", "input"), stateIn = contractOf("command-state", "input");
+const stateOuts = [contractOf("command-cancel", "output"), contractOf("command-state", "output")];
+check("command-cancel and command-state take { id } of that grammar and nothing else",
+  [cancelIn, stateIn].every((v) => v({ id: COMMAND_ID }) && !v({}) && NOT_IDS.every((id) => !v({ id })) && !v({ id: COMMAND_ID, target: "command" })));
+const STATES = [{ kind: "queued" }, { kind: "taken" }, { kind: "started" }, { kind: "cancelled" },
+  ...["not-found", "failed-precondition", "unavailable"].map((code) => ({ kind: "refused", code, message: "the harness said no" })),
+  { kind: "unknown", code: "internal", message: "socket hang up" }, { kind: "refused", code: "unavailable", message: "" }];
+check(`command-cancel and command-state answer { state } with each of the ${STATES.length} states`,
+  stateOuts.every((v) => STATES.every((state) => v({ state }))), STATES.filter((state) => !stateOuts.every((v) => v({ state }))));
+const NOT_STATES: unknown[] = [{}, { kind: "running" }, { kind: "queued", code: "unavailable" }, { kind: "taken", message: "m" }, { kind: "started", at: "now" },
+  { kind: "cancelled", by: "u_alice.web" }, { kind: "refused", code: "internal", message: "m" }, { kind: "refused", code: "not-found" },
+  { kind: "refused", message: "m" }, { kind: "unknown", code: "unavailable", message: "m" }, { kind: "unknown", code: "internal" },
+  { kind: "refused", code: "not-found", message: 7 }, { kind: "unknown", code: "internal", message: "m", started: false }, "queued", null];
+check("the state is a closed oneOf: no other kind, refused only as not-found, failed-precondition or unavailable, unknown only as internal, and no other field",
+  stateOuts.every((v) => v({ state: { kind: "queued" } }) && NOT_STATES.every((state) => !v({ state })) && !v({}) && !v({ state: { kind: "queued" }, id: COMMAND_ID })),
+  NOT_STATES.filter((state) => stateOuts.some((v) => v({ state }))));
+check("a state's message is at most 2048 characters, counted as code points",
+  stateOuts.every((v) => v({ state: { kind: "refused", code: "unavailable", message: "m".repeat(2048) } }) && !v({ state: { kind: "refused", code: "unavailable", message: "m".repeat(2049) } })
+    && v({ state: { kind: "unknown", code: "internal", message: "😀".repeat(2048) } }) && !v({ state: { kind: "unknown", code: "internal", message: "😀".repeat(2049) } })));
+const intIn = contractOf("interrupt", "input"), intOut = contractOf("interrupt", "output");
+check("interrupt takes {} and answers { state } of interrupted or idle, and nothing else",
+  intIn({}) && !intIn({ id: COMMAND_ID }) && !intIn({ resume: true }) && intOut({ state: "interrupted" }) && intOut({ state: "idle" })
+  && !intOut({ state: "running" }) && !intOut({}) && !intOut({ state: "idle", interrupted: false }) && !intOut({ interrupted: true }));
+const nameIn = contractOf("set-name", "input"), nameOut = contractOf("set-name", "output");
+check("set-name takes { name } of any string, so the agent gives every name it refuses the same typed answer, and nothing else",
+  nameIn({ name: "Reviewer Bot" }) && nameIn({ name: "" }) && nameIn({ name: "x".repeat(200) }) && nameIn({ name: " padded " })
+  && !nameIn({}) && !nameIn({ name: 7 }) && !nameIn({ name: "a", role: "b" }));
+check("set-name answers { name }, a name of 1 to 128 characters, and nothing else",
+  nameOut({ name: "Reviewer Bot" }) && nameOut({ name: "x".repeat(128) }) && !nameOut({ name: "" }) && !nameOut({ name: "x".repeat(129) })
+  && !nameOut({}) && !nameOut({ name: "a", changed: true }));
+const entry = (e: Record<string, unknown> = {}) => ({ supported: true, commands: [{ name: "review", target: "command", ...e }] });
+check("commands takes {} and answers { supported: false } or { supported: true, commands }",
+  listIn({}) && !listIn({ target: "skill" }) && listOut({ supported: false }) && listOut({ supported: true, commands: [] }) && listOut(entry({ description: "d", inputHint: "[pr]" }))
+  && !listOut({ supported: false, commands: [] }) && !listOut({ supported: true }) && !listOut({}));
+check("a listed entry carries name, target, description and inputHint only: no path, content or other field a harness keeps",
+  !listOut(entry({ path: "/x/SKILL.md" })) && !listOut(entry({ content: "SKILL-BODY" })) && !listOut(entry({ id: "x" })) && !listOut(entry({ target: "agent" }))
+  && !listOut(entry({ name: "has space" })) && !listOut(entry({ description: "" })));
+check("a description is at most 1024 characters, an input hint at most 256, and a list at most 512 entries",
+  listOut(entry({ description: "d".repeat(1024), inputHint: "h".repeat(256) })) && !listOut(entry({ description: "d".repeat(1025) })) && !listOut(entry({ inputHint: "h".repeat(257) }))
+  && listOut({ supported: true, commands: Array.from({ length: 512 }, (_, i) => ({ name: `c${i}`, target: "command" })) })
+  && !listOut({ supported: true, commands: Array.from({ length: 513 }, (_, i) => ({ name: `c${i}`, target: "command" })) }));
 
 const TS = "2026-11-17T10:00:00.000Z";
 const content: PromptContent = {
@@ -203,7 +282,7 @@ const handlers = (["prompts", "prompt", "prompt-answer"] as const).map((command)
 const plain = buildClusterDocument("ai.cotal.test", 1, [{ name: "prompts", targeted: false, capability: "agent.prompts.read", input: AGENT_COMMANDS[0].input, output: AGENT_COMMANDS[0].output }]);
 throws("cell 23: a cluster command without authorities is never served on the principal route",
   () => servePrincipalRoute(noConn, SPACE, agent, { endpoint: AGENT_ENDPOINT, cluster: plain, handlers: [handlers[0]] }), "declares no authorities");
-throws("a def for a command the cluster lacks is refused", () => servePrincipalRoute(noConn, SPACE, agent, { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: [...handlers, { ...handlers[0], command: "interrupt" }] }), "not in the cluster");
+throws("a def for a command the cluster lacks is refused", () => servePrincipalRoute(noConn, SPACE, agent, { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: [...handlers, { ...handlers[0], command: "resume" }] }), "not in the cluster");
 throws("a declared command without a def is refused", () => servePrincipalRoute(noConn, SPACE, agent, { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: handlers.slice(0, 2) }), "has no def");
 throws("a custom describe def is refused", () => servePrincipalRoute(noConn, SPACE, agent, { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: [...handlers, { ...handlers[0], command: "describe" }] }), "reserved");
 throws("compiled contracts that differ from the declared digests are refused",
@@ -221,8 +300,9 @@ check("serve rows: subscribe its own head for every runtime, publish replies und
 check("the serve subscribe row has the request's 15 tokens and the reply row the reply's 13",
   serve.sub[0].split(".").length === 15 && serve.pub[0].split(".").length === 13);
 const own = epPrincipalOwnerGrantRows(SPACE, web);
-check("owner rows: describe, prompts, prompt and prompt-answer, the caller's own owner pinned in the head",
-  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer"].map((cmd) => `${P}.ep.prin.agent.u_alice.*.*.*.${cmd}.owner.u_alice.web.${CUID}.*`).join("|"), own.pub);
+check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn and usage, the caller's own owner pinned in the head",
+  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage"]
+    .map((cmd) => `${P}.ep.prin.agent.u_alice.*.*.*.${cmd}.owner.u_alice.web.${CUID}.*`).join("|"), own.pub);
 check("owner rows: one reply read with the caller triple pinned", own.sub.join("|") === `${P}.ep.prin-reply.*.*.*.*.*.u_alice.web.${CUID}.*`);
 const grantee: EpCaller = { owner: "u_bob", actor: "builder", uid: UID2 };
 const grant = epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["prompts", "prompt-answer"]);
@@ -233,9 +313,19 @@ check("no caller row puts * in the command position: rows are per command", [...
 throws("a grant row whose target is the grantee's own principal is refused (R4)", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_bob", actor: "builder", uid: UID }, ["prompts"]), "own prompt");
 throws("a grant row never has a wildcard in the target's principal or lifecycle", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "*", uid: UID }, ["prompts"]));
 throws("a grant row's target lifecycle is a lifecycle UID, never _nr", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: "_nr" }, ["prompts"]));
-throws("a grant names only commands the cluster admits with grant", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["interrupt"]), "admits");
-check("the (command, word) pairs come from the cluster constant", principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer"
-  && principalRouteCommands("grant").join() === "describe,prompts,prompt,prompt-answer" && Object.isFrozen(principalRouteCommands("owner")));
+throws("a grant names only commands the cluster admits with grant", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["resume"]), "admits");
+throws("no grant row runs a command: command admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["command"]), "admits");
+throws("no grant row lists commands: commands admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["commands"]), "admits");
+throws("no grant row cancels a command: command-cancel admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["command-cancel"]), "admits");
+throws("no grant row reads a command's state: command-state admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["command-state"]), "admits");
+throws("no grant row interrupts a turn: interrupt admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["interrupt"]), "admits");
+throws("no grant row renames an agent: set-name admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["set-name"]), "admits");
+throws("no grant row gives a turn: turn admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["turn"]), "admits");
+throws("no grant row reads usage: usage admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["usage"]), "admits");
+check("the (command, word) pairs come from the cluster constant",
+  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage"
+  && principalRouteCommands("grant").join() === "describe,prompts,prompt,prompt-answer" && Object.isFrozen(principalRouteCommands("owner")),
+  { owner: principalRouteCommands("owner"), grant: principalRouteCommands("grant") });
 
 // ── the two mint arms: which mints get which rows (SPEC 13.21) ──
 const prinRows = (perms: Record<string, unknown>) => {
@@ -251,17 +341,68 @@ check("a managed-agent ledger row gets the serve rows and no caller row",
   prinRows(managed).sort().join("|") === [...serve.pub, ...serve.sub].sort().join("|"), prinRows(managed));
 const interactive = mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID);
 const webServe = epPrincipalServeGrantRows(SPACE, web);
-check("an interactive ledger row gets the serve rows, the four owner rows and the reply read",
-  prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
+check("an interactive ledger row gets the serve rows, the twelve owner rows and the reply read",
+  own.pub.length === 12 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
 check("an interactive row's owner rows cover its own actor as a target, so the command must refuse a self-answer (R4)",
   (interactive as { pub: { allow: string[] } }).pub.allow.includes(`${P}.ep.prin.agent.u_alice.*.*.*.prompt-answer.owner.u_alice.web.${CUID}.*`));
 check("a callout mint with no ledger kind (a chat session) gets none", prinRows(mint({ owner: "u_alice", actor: "chat" })).length === 0);
 throws("a static mint carries no ledger kind", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "interactive" }, UID, null), "static mint");
 throws("an unknown ledger kind is refused", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "admin" }, UID), "ledgerKind");
-check("a static agent mint gets none", prinRows(mint({ owner: "local", actor: "coder" }, {}, UID, null)).length === 0);
+
+// ── a static space: agents serve, only the person's agent-caller calls (SPEC 13.21) ──
+const localServe = epPrincipalServeGrantRows(SPACE, { owner: "local", actor: "coder", uid: UID });
+const staticAgent = mint({ owner: "local", actor: "coder" }, {}, UID, null);
+check("a static agent mint gets the serve rows and no caller row",
+  prinRows(staticAgent).sort().join("|") === [...localServe.pub, ...localServe.sub].sort().join("|"), prinRows(staticAgent));
+check("a static agent holding spawn, run and admin still gets no caller row: the rows follow the profile, never a capability",
+  prinRows(mint({ owner: "local", actor: "coder" }, { capabilities: ["spawn", "run", "admin"] }, UID, null)).sort().join("|") === [...localServe.pub, ...localServe.sub].sort().join("|"));
+const unserved = mint({ owner: "local", actor: "coder" }, { principalServe: false }, UID, null);
+const withoutPrin = (perms: Record<string, unknown>) => {
+  const p = perms as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
+  return { ...p, pub: { ...p.pub, allow: p.pub.allow.filter((r) => !r.includes(".ep.prin")) }, sub: { ...p.sub, allow: p.sub.allow.filter((r) => !r.includes(".ep.prin")) } };
+};
+check("principalServe: false mints the static agent ceiling without the serve rows, and nothing else changes",
+  prinRows(unserved).length === 0 && JSON.stringify(unserved) === JSON.stringify(withoutPrin(staticAgent)));
+throws("principalServe on a callout mint is refused: its rows come from the ledger kind", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "managed-agent", principalServe: false }, UID), "principalServe");
+throws("principalServe on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "local", actor: "obs", connId: callout.connId }, { principalServe: true }), "principalServe");
+
+// A renewal keeps the rows the issuance recorded (SPEC 13.15): the Manager reads the evidence's subscribe ceiling.
+const nkeyActor = "UPARENTACTOR0000000000000000000000000000000000000000000";
+const issuedCaller = { owner: "local", actor: nkeyActor, uid: UID, generation: mintGeneration(Math.floor(Date.now() / 1000) + 3600) } as IssuedCaller;
+const acceptedToken = mintAcceptedToken();
+const evidenceOf = (opts: Record<string, unknown>) => importNativeSubjectPermissions(permissionsFor("agent", SPACE,
+  { owner: "local", actor: nkeyActor, connId: nkeyActor, lifecycleUid: UID }, { ...opts, lifecycleUid: UID, issued: { generation: issuedCaller.generation, acceptedToken } }));
+const issuedServeRow = epPrincipalServeGrantRows(SPACE, issuedCaller).sub[0]!;
+const renewalOf = (recorded: ReturnType<typeof evidenceOf>) => evidenceOf({ principalServe: issuedPermitsPattern(recorded.subscribe, issuedServeRow) });
+const preChange = evidenceOf({ principalServe: false });
+const current = evidenceOf({});
+check("an issuance made before the rows existed renews byte-identical, with no serve row",
+  JSON.stringify(renewalOf(preChange)) === JSON.stringify(preChange) && !issuedPermitsPattern(preChange.subscribe, issuedServeRow));
+check("...where a renewal that added the rows would differ from the recorded ceiling, which the issuer refuses as a renewal",
+  JSON.stringify(current) !== JSON.stringify(preChange));
+check("an issuance that has the rows renews byte-identical with them", JSON.stringify(renewalOf(current)) === JSON.stringify(current));
+check("the delegation bound is unchanged: the serve rows are in the empty projection it subtracts",
+  grantOverreach(SPACE, issuedCaller, current, { allowSubscribe: ["review"] }).length === 1
+  && grantOverreach(SPACE, issuedCaller, evidenceOf({ allowSubscribe: ["review"] }), { allowSubscribe: ["review"] }).length === 0);
+
+const ownerCaller = (pr: Record<string, unknown>) => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, ...pr }, {}) as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
+const personCaller = ownerCaller({ lifecycleUid: CUID });
+const personOwn = epPrincipalOwnerGrantRows(SPACE, { owner: "local", actor: "acp", uid: CUID });
+check("an agent-caller holds the twelve owner rows over every agent under local, their reply read and its inbox, and nothing else",
+  personCaller.pub.allow.join("|") === personOwn.pub.join("|") && personCaller.sub.allow.join("|") === [`_INBOX_${callout.connId}.>`, ...personOwn.sub].join("|") && personCaller.pub.deny === undefined,
+  personCaller);
+check("an agent-caller holds no serve row", !personCaller.sub.allow.some((r) => r.startsWith(`${P}.ep.prin.`)) && !personCaller.pub.allow.some((r) => r.startsWith(`${P}.ep.prin-reply.`)));
+throws("the auth callout never mints an agent-caller", () => ownerCaller({ lifecycleUid: CUID, readerId: callout.readerId }), "static mint");
+throws("an agent-caller needs a lifecycle UID", () => ownerCaller({}), "lifecycleUid");
+throws("an agent-caller is never issued", () => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, lifecycleUid: CUID },
+  { issued: { generation: issuedCaller.generation, acceptedToken: mintAcceptedToken() } }), "issued");
 const profiles: [string, () => Record<string, unknown>][] = [
   ["observer", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, {})],
   ["admin", () => permissionsFor("admin", SPACE, { owner: "u_alice", actor: "console", connId: callout.connId, readerId: callout.readerId }, {})],
+  ["static observer", () => permissionsFor("observer", SPACE, { owner: "local", actor: "obs", connId: callout.connId }, {})],
+  ["static admin", () => permissionsFor("admin", SPACE, { owner: "local", actor: "console", connId: callout.connId }, {})],
+  ["control-caller-privileged", () => permissionsFor("control-caller-privileged", SPACE, { owner: "local", actor: "ctl", connId: callout.connId, lifecycleUid: CUID }, {})],
+  ["static manager-caller", () => permissionsFor("manager-caller", SPACE, { owner: "local", actor: "seat", connId: callout.connId, lifecycleUid: CUID }, { capabilities: ["spawn"], lifecycleUid: CUID, managerInstanceId: UID2 })],
   ["delivery", () => permissionsFor("delivery", SPACE, { owner: "local", actor: "delivery", connId: callout.connId }, {})],
   ["supervisor", () => permissionsFor("supervisor", SPACE, { owner: "local", actor: "sup", connId: callout.connId }, {})],
   ["operator", () => permissionsFor("operator", SPACE, { owner: "local", actor: "op", connId: callout.connId }, {})],
@@ -278,7 +419,43 @@ for (const [name, build] of profiles) {
   if (prinRows(perms).length > 0) holders.push(name);
 }
 check(`no view, infrastructure profile or service credential holds a principal-route row (${profiles.length} checked)`, holders.length === 0, holders);
-throws("ledgerKind on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, { ledgerKind: "interactive" }), "agent-profile");
+throws("ledgerKind on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, { ledgerKind: "interactive" }), "agent or manager-caller");
+
+// ── a person controls the agents under their own owner, keyed on the row kind (SPEC 13.21) ──
+const view = (kind?: "interactive" | "managed-agent", capabilities: string[] = ["spawn"], readerId: string | null = callout.readerId) =>
+  permissionsFor("manager-caller", SPACE, { owner: "u_alice", actor: "web", connId: callout.connId, lifecycleUid: CUID, ...(readerId !== null ? { readerId } : {}) },
+    { capabilities, lifecycleUid: CUID, managerInstanceId: UID2, ...(kind ? { ledgerKind: kind } : {}) }) as { pub: { allow: string[] } };
+const seatRows = (perms: { pub: { allow: string[] } }, cmd: string, mode = "owner") => perms.pub.allow.filter((r) => r.includes(`.manager.${UID2}.${cmd}.${mode}.`));
+const person = view("interactive");
+check("a person's manager view stops, attaches to, types into and interrupts their own agents, the owner pinned to their own",
+  ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd).length === 1 && seatRows(person, cmd)[0]!.includes(`.${cmd}.owner.u_alice.u_alice.web.`)),
+  person.pub.allow.filter((r) => r.includes(`.manager.${UID2}.`)));
+check("a person's manager view holds no any-mode seat row", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(person, cmd, "any").length === 0));
+check("a person holds these rows without the spawn capability", ["despawn", "attach", "input", "interrupt"].every((cmd) => seatRows(view("interactive", []), cmd).length === 1));
+const readRows = (perms: { pub: { allow: string[] } }, cmd: string) => perms.pub.allow.filter((r) => r.includes(`.manager.${UID2}.${cmd}.u_alice.web.`));
+check("a person's manager view carries inspect and ps on its instance whatever their scope",
+  ["inspect", "ps"].every((cmd) => readRows(view("interactive", []), cmd).length === 1), view("interactive", []).pub.allow.filter((r) => r.includes(`.manager.${UID2}.`)));
+check("an agent's manager view without spawn reads neither inspect nor ps",
+  ["inspect", "ps"].every((cmd) => readRows(view("managed-agent", []), cmd).length === 0 && readRows(view(undefined, []), cmd).length === 0));
+check("an agent's manager view gets no input or interrupt row: the rows key on the row kind, never on scope",
+  ["input", "interrupt"].every((cmd) => seatRows(view("managed-agent"), cmd).length === 0 && seatRows(view(undefined), cmd).length === 0));
+check("an agent keeps the owner-mode despawn and attach its spawn capability gives", ["despawn", "attach"].every((cmd) => seatRows(view("managed-agent"), cmd).length === 1));
+check("no row is minted twice when the spawn or admin set holds it too",
+  [person, view("interactive", ["spawn", "admin"])].every((perms) => new Set(perms.pub.allow).size === perms.pub.allow.length));
+throws("a static manager-caller mint carries no ledger kind", () => view("interactive", ["spawn"], null), "static mint");
+
+// ── a person reads the event channels of the agents under their own owner (SPEC 13.21) ──
+const allowOf = (perms: Record<string, unknown>) => perms as { pub: { allow: string[] }; sub: { allow: string[] } };
+const ownEvents = `${P}.chat.u_alice.*.events.u_alice.*`;
+const reads = (perms: Record<string, unknown>) => [...allowOf(perms).pub.allow, ...allowOf(perms).sub.allow].filter((r) => r.includes(".events."));
+const personAgent = allowOf(mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID));
+check("a person's sign-in subscribes the event channels of every agent under their own owner, sent by that owner's agents",
+  personAgent.sub.allow.includes(ownEvents));
+check("a person reads those channels' history through its own lifecycle's reader, and reads no other event channel",
+  reads(personAgent).length === 2 && personAgent.pub.allow.includes(`$JS.API.CONSUMER.CREATE.CHAT_${SPACE}.${chatHistDurable("u_alice", "web", CUID)}.${ownEvents}`)
+    && personAgent.pub.allow.includes(`$JS.API.CONSUMER.MSG.NEXT.CHAT_${SPACE}.${chatHistDurable("u_alice", "web", CUID)}`), reads(personAgent));
+check("an agent's credential and a chat session read no event channel they were not granted",
+  reads(mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "managed-agent" }, UID)).length === 0 && reads(mint({ owner: "u_alice", actor: "chat" })).length === 0);
 
 // ── the maximum-capability credential (SPEC 13.9 fixture) with the new rows ──
 // The fixture as SPEC 13.9 defines it: every baseline grant plus capabilities on 3 endpoints x 12
@@ -296,9 +473,10 @@ const account = createAccount();
 const jwtBytes = async (perms: Record<string, unknown>) => Buffer.byteLength(await encodeUser(ACTOR, createUser(), account, perms as never, { exp: Math.floor(Date.now() / 1000) + 600 }), "utf8");
 const without = await jwtBytes(fixture());
 const withRows = await jwtBytes(fixture("interactive"));
-console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the principal-route rows (mint bound ${MAX_MINTED_JWT_BYTES})`);
-check("the maximum-capability fixture with the principal-route rows stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
-check("the interactive rows add 2 serve rows, 4 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 7);
+console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the rows an interactive row adds (mint bound ${MAX_MINTED_JWT_BYTES})`);
+check("the maximum-capability fixture with the rows an interactive row adds stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
+check("the interactive rows add 2 serve rows, 12 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 15,
+  prinRows(fixture("interactive")).length - prinRows(fixture()).length);
 
 // ── the entry point: the package root serves the `agent` endpoint only ──
 check("the package root does not export the general principal serve: CotalEndpoint.servePrincipal serves agent with AGENT_CLUSTER",
@@ -310,5 +488,8 @@ const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../../../spec/cota
 const counts = schema.definitions.PresencePrompts?.properties;
 check("spec/cotal.schema.json gives prompts.open and prompts.seq as non-negative integers",
   ["open", "seq"].every((k) => counts?.[k]?.type === "integer" && counts[k].minimum === 0), counts);
+const served = schema.definitions.PresenceAgentEndpoint as { properties: Record<string, { type?: string }>; required?: string[] } | undefined;
+check("spec/cotal.schema.json gives the presence agentEndpoint field four required booleans",
+  ["interrupt", "turn", "images", "usage"].every((k) => served?.properties[k]?.type === "boolean" && served.required?.includes(k)) && Object.keys(served?.properties ?? {}).length === 4, served);
 
 finish();

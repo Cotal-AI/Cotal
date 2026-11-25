@@ -16,9 +16,11 @@ Use [Configure a space](setup.mdx) to prepare another project or change its defa
 
 `cotal up` starts these local components:
 
-- A NATS broker. Its log is `.cotal/nats.log`.
+- A NATS broker. In a prepared project, read its log with `cotal service logs stack-broker --space <space>`.
 - A delivery daemon in authenticated mode. It provides [durable delivery](delivery-daemon.mdx).
 - A manager. It handles detached agents and the `cotal_spawn` tool.
+
+Only the legacy launcher writes the broker log to `.cotal/nats.log`.
 
 The CLI starts manager, delivery, and user-auth daemons with `--max-semi-space-size=1`, which caps V8's young generation at 2 MB.
 Services launched by `service start` or `manager start`, and units written by `service install`, use the same flag.
@@ -28,6 +30,7 @@ The broker authenticates senders and checks each agent's permissions.
 The broker and local services bind to loopback, so other machines cannot connect through that listener.
 If the default broker address is occupied by another project, Cotal chooses a free local port.
 An explicit `--server` fails on a collision.
+In an unprepared project, the refusal names the local space and project folder registered at that address, if known.
 
 Cotal requires nats-server 2.12 or newer.
 Older spaces with a file-backed presence bucket need 2.14.5 or newer to avoid a known write failure.
@@ -67,6 +70,16 @@ Its Machine section identifies the running installation and version.
 Check the connector rows before launching an agent.
 
 The component check distinguishes absent processes, components that are not serving, and refused requests.
+If the project folder of a locally started static-auth stack is moved or deleted, checks that need its
+records report `refused` (exit 3), not `absent`. The broker row still notes when its registered address is reachable.
+From inside the moved project, the same refusal and listener observation apply without `--space`.
+For a moved open stack, the broker row reports `refused` and preserves reachability when known.
+An open mesh needs no delivery daemon, so its absence does not fail the check.
+An observed store write failure or full store makes the broker `not-serving` even when its listener answers.
+On a stopped local stack, `status` and `ps` report when the project's `.cotal` directory needs write and search access or the broker store is unwritable. They give the permission repair instead of recommending a restart.
+`status` also checks the stopped project in the current folder when it reports a different selected space.
+If the manager exits while a local controller stack's broker still runs, `status` and `ps` check `.cotal/channels.json` before recommending a restart.
+Fix or remove an invalid seed file while the broker is still running.
 Follow the report's next action if the stack is incomplete.
 The report also warns if the recorded broker store is missing or its directory was replaced.
 `status --space <name>` checks that local stack's root even from another folder. Coincident folder
@@ -75,6 +88,7 @@ restart can lose that retained history.
 `down`, its dry run and the next `up` repeat the warning. A stack journal that cannot be read is
 reported separately, with the permission repair when available. It does not select legacy process
 records or infer that the broker stopped. The owned-service observations remain visible.
+If the selected local space has no running registration and its journal cannot be read, `ps` reports the journal refusal and its recovery step. The component check reports `target refused` and exits `3` instead of treating the stack as absent.
 [Recover a mesh](recover-a-mesh.mdx) explains the project logs and recovery states.
 [Launch agents](launch-agents.mdx#check-connector-availability) explains how the manager checks installed connectors.
 
@@ -113,11 +127,12 @@ Stop an older manager's managed agents explicitly before whole-stack shutdown wh
 
 On POSIX, a foreground broker has its own session and process group.
 Ctrl-C reaches the CLI owner first, which uses the same stop procedure and report as bare `cotal down`.
+If you interrupt startup, the terminal waits for startup to settle and gives pending agent launches time to finish before stopping the stack.
 A refused stop leaves the stack running. Use `cotal down --with-agents` when you intend to stop its agents too.
 
 ## Watching [#watching]
 
-`cotal console` opens the terminal view. It prints a line stream when piped.
+`cotal console` opens the terminal view by default. It prints a passive line stream when piped or run with `--no-input` or `--plain`.
 The separately configured web service provides the browser dashboard.
 Both observe the mesh without starting dependencies.
 Follow [Watch a mesh](watch-a-mesh.mdx) for either view.

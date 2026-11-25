@@ -1,16 +1,13 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, openSync, closeSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
-import { join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { HarnessError, JcodeClient, launchInstance, type ApiEvent, type LaunchedInstance } from "@1jehuang/jcode-sdk";
-import { hardenPrivate, loadAgentFile, type PresenceCondition, type PresenceConditionCode } from "@cotal-ai/core";
+import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
+import { JcodeClient, launchInstance, type ApiEvent } from "@1jehuang/jcode-sdk";
+import { loadAgentFile, type PresenceCondition } from "@cotal-ai/core";
 import { mirrorJcodeCredentials, removeJcodeCredentials, shortSocketHome, type ShortSocketHome } from "./private-state.js";
 import { captureProcessIdentity, launchIdentityEnv, recordLaunch, recordOnceLaunch, stopOrphanedTree, stopPrivateTree, type ProcessIdentity } from "./private-lifecycle.js";
-import { connectSteerClient, softInterruptWithLateReply } from "./steer-replies.js";
+import { connectSteerClient } from "./steer-replies.js";
 import { chooseSessionToResume, type ResumeCandidate } from "./session-resume.js";
-import { forkJcodeSession, jcodeSeatHome, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
+import { forkJcodeSession, markJcodeForkBriefed, type JcodeFork } from "./session-fork.js";
 import { activeModelRoute, bareModelId, describeRoute, effectiveProvider } from "./route-identity.js";
 import {
   classifyReadinessFailure,
@@ -19,11 +16,9 @@ import {
   JcodeConnectorError,
   JcodeModelMismatch,
   JcodeCursorStateUnreadable,
-  JcodeProjectMcpConfig,
   JcodeSessionsEnumerationFailure,
   JcodeSessionsUnwritableFailure,
   jcodeEffortRefusal,
-  PROJECT_MCP_FILES,
   writeJcodeDiagnostic,
 } from "./startup-diagnostics.js";
 import {
@@ -34,378 +29,46 @@ import {
   storedSessionsPath,
   unwritableStoredSessions,
 } from "./stored-sessions.js";
-import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
-import {
-  FALLBACK_INITIAL_MS,
-  fallbackStillOwed,
-  nextFallbackAction,
-  attributionBlockedByOpenRun,
-  deferralExhausted,
-  exhaustedDeferralAction,
-  nextFallbackDelay,
-  type FallbackState,
-} from "./queue-fallback.js";
 import {
   MeshAgent,
-  AguiEmitter,
-  AguiEmitterHolder,
-  eventPlaneStopped,
-  EventWal,
-  FileSubjectFrontier,
-  briefing,
   configFromEnv,
   controlFromEnv,
   envFlag,
   eventPlaneArmed,
   fmtChannel,
   fmtFrom,
-  formatInjection,
-  parseToolArgs,
   registerOnceExit,
   scrubLaunchMaterial,
   startControlServer,
-  cotalToolSpecs,
-  ensureEventWalDir,
   resolveEventsStateRoot,
-  type AgentConfig,
+  type AgentTurn,
   type InboxItem,
-  type PrincipalLock,
-  type ToolResult,
 } from "@cotal-ai/connector-core";
-import { principalKey } from "@cotal-ai/core";
-import { createJcodeMapper, type JcodeMapper, type PositionedJcodeJournalRecord } from "./agui-map.js";
-import { initializeJcodeEventBoundary, JcodeJournalSource, jcodeJournalPath, positionedJcodeJournalSource } from "./agui-source.js";
-
-const MAX_RELAY_BYTES = 4 * 1024 * 1024;
-/** How often the relay checks that its socket path still exists. See the re-bind in `startRelay`. */
-const RELAY_REBIND_POLL_MS = 1_000;
-/** How long a run may hold the dispatch gate waiting for its own acknowledgement (#1233).
- *
- *  Matches the SDK's `acceptTimeoutMs` default, because that is the point past which `sendMessage`
- *  stops waiting anyway (jcode-sdk client.js:317), so a longer value here could only hold the gate
- *  after the thing it is waiting for has already given up. It is a CEILING, not a delay: the gate is
- *  released the moment the acknowledgement arrives, which is single-digit milliseconds on a healthy
- *  seat. A Harness that never acknowledges therefore costs one bounded wait, not a wedged gate. */
-const RUN_ACCEPT_WINDOW_MS = 10_000;
-/** One bridge recovery remains bounded, but it is bounded by time rather than one launch/attach
- *  outcome. A loaded host can lose a transient replacement race without turning that into a
- *  second provider close or an unbounded relaunch loop. The window opens at the close, so tearing
- *  down the broken tree spends it too. Exported so a test waiting on a recovery step allows the
- *  host the same window instead of a shorter guess. */
-export const BRIDGE_RECOVERY_WINDOW_MS = 60_000;
-
-function readinessTurnTimeoutMs(): number {
-  const raw = process.env.COTAL_JCODE_READINESS_TIMEOUT_MS?.trim();
-  if (!raw) return JCODE_READINESS_TIMEOUT_MS;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0)
-    throw new Error(`jcode connector: COTAL_JCODE_READINESS_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
-  return parsed;
-}
-
-/**
- * Override for the SDK's per-request reply timeout, which defaults to 30000ms.
- *
- * Exists so a fixture can make a soft-interrupt timeout happen in seconds instead of half a minute.
- * It is NOT a remedy for #1233 and must never be used as one: lengthening this bound only makes the
- * stall take longer to appear, and shortening it makes it appear sooner. What the fix changes is
- * what happens AFTER the timeout, which is why this knob is validated the same way as the readiness
- * bound and otherwise left alone.
- */
-function requestTimeoutOverrideMs(): number | undefined {
-  const raw = process.env.COTAL_JCODE_REQUEST_TIMEOUT_MS?.trim();
-  if (!raw) return undefined;
-  const parsed = Number(raw);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0)
-    throw new Error(`jcode connector: COTAL_JCODE_REQUEST_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive integer`);
-  return parsed;
-}
-
-export const PERMANENT_BRIDGE_RECOVERY_CODES = new Set([
-  "handshake_failed",
-  "invalid_instance_home",
-  "invalid_request",
-  "jcode_not_found",
-  "unknown_request",
-  "unknown_session",
-  "unsupported_version",
-]);
-export const PERMANENT_BRIDGE_CONNECT_CAUSE_CODES = new Set(["EACCES"]);
-
-/** Recovery retries availability races, not a refusal that another attempt cannot change. */
-export function permanentBridgeRecoveryFailure(error: unknown): error is HarnessError {
-  if (!(error instanceof HarnessError)) return false;
-  if (PERMANENT_BRIDGE_RECOVERY_CODES.has(error.code)) return true;
-  if (error.code === "connect_failed")
-    return PERMANENT_BRIDGE_CONNECT_CAUSE_CODES.has((error.cause as NodeJS.ErrnoException | undefined)?.code ?? "");
-  return false;
-}
-
-interface RelayEndpoint {
-  /** The owner-only directory that holds {@link path}. Empty on Windows, which uses a named pipe. */
-  dir: string;
-  path: string;
-  token: string;
-}
-
-const PRESENCE_CONDITION_CODES: ReadonlySet<string> = new Set<PresenceConditionCode>([
-  "rate_limit", "overloaded", "auth", "billing", "budget", "context", "model", "request", "server", "retrying", "approval", "input", "failed",
-]);
-
-/** A failed turn's condition, relayed from the Harness's own error code. Only a `HarnessError` is
- *  relayed: it is what the Harness reported. A code outside the closed set reads `failed`, with
- *  the native code kept as `source`. Without this the seat read `waiting` with the error only in
- *  its private log (#618). */
-function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
-  if (!(error instanceof HarnessError)) return undefined;
-  const source = String(error.code);
-  const code = (PRESENCE_CONDITION_CODES.has(source) ? source : "failed") as PresenceConditionCode;
-  return { code, source, message: error.message, since };
-}
-
-/** Jcode acknowledges a plain send with `message_accepted` before it checks whether this connection
- *  is still processing a message, and then refuses the send with this error. The acknowledgement is
- *  therefore no proof that the model received the text. */
-export function isJcodeBusyRefusal(error: unknown): boolean {
-  return error instanceof HarnessError && error.message.includes("Already processing a message");
-}
-
-function privateAgentHome(space: string, name: string): string {
-  const root = process.env.COTAL_JCODE_HOME?.trim();
-  if (!root) throw new Error("COTAL_JCODE_HOME is not set — the connector must pin the agent's Jcode home");
-  const managedRoot = join(root, ".cotal", "jcode");
-  const home = jcodeSeatHome(root, space, name);
-  if (!resolve(home).startsWith(resolve(managedRoot) + sep)) throw new Error(`jcode home ${home} escapes ${managedRoot} — refusing`);
-  for (const path of [join(root, ".cotal"), managedRoot, home]) {
-    try {
-      if (lstatSync(path).isSymbolicLink()) throw new Error(`refusing symlinked managed path: ${path}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  mkdirSync(home, { recursive: true, mode: 0o700 });
-  hardenPrivate(home, "dir");
-  return home;
-}
-
-function publicConfig(config: AgentConfig): AgentConfig {
-  // This object is handed to Jcode's MCP CHILD so it can render the exact tool schemas. It is not
-  // a second connection config: the host owns the MeshAgent. Do not put static creds, user-mode
-  // bearer material, join tokens, broker coordinates, feedback keys, or the launch-material
-  // pointer on the child rail.
-  return {
-    ...config,
-    // Keep the catalog's authenticated-mode gate without exposing either credential shape.
-    // Clearing both markers makes a user-mode child advertise tools its host refuses.
-    creds: config.creds || config.userAuth ? "managed" : undefined,
-    userAuth: undefined,
-    token: undefined,
-    user: undefined,
-    pass: undefined,
-    servers: "held by the Jcode host",
-    feedbackKey: undefined,
-  };
-}
-
-/** Jcode deliberately overlays project `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`
- * over its private home. A same-name project entry could replace the connector's cotal bridge, or
- * add a server the operator never opted to share. The Harness API has no isolation switch for this
- * source set, so refuse the whole launch instead of claiming our private home is sufficient. A home
- * directory counts too: its `.jcode/mcp.json` is Jcode's own global file, read here as a project's. */
-function assertNoProjectMcpConfig(cwd: string): void {
-  const found = PROJECT_MCP_FILES.filter((relative) => existsSync(join(cwd, relative)));
-  if (found.length) throw new JcodeProjectMcpConfig(found);
-}
-
-function mcpEntry(): { command: string; args: string[] } {
-  const built = import.meta.url.includes("/dist/");
-  if (built) return { command: process.execPath, args: [filePath("mcp.js")] };
-  return { command: filePath("../node_modules/.bin/tsx"), args: [filePath("mcp-main.ts")] };
-}
-
-function filePath(relative: string): string {
-  return fileURLToPath(new URL(relative, import.meta.url));
-}
-
-function writeMcpConfig(home: string, relay: RelayEndpoint, config: AgentConfig): void {
-  const { command, args } = mcpEntry();
-  const mcp = {
-    servers: {
-      cotal: {
-        command,
-        args,
-        env: {
-          COTAL_JCODE_MCP_SOCKET: relay.path,
-          COTAL_JCODE_MCP_TOKEN: relay.token,
-          COTAL_JCODE_MCP_CONFIG: JSON.stringify(publicConfig(config)),
-        },
-        // Pooled (Jcode's default): one bridge per daemon, reused across every session in the
-        // seat, so repeated subagent sessions cannot each leave a bridge process behind until
-        // teardown. Pooling never crosses seats — the pool lives in the daemon and this daemon is
-        // private to the seat (its own JCODE_HOME, socket, and relay token above).
-        shared: true,
-      },
-    },
-  };
-  const path = join(home, "mcp.json");
-  // `home` is a real, private managed directory as checked above. Unlinking does not follow a
-  // planted symlink; O_EXCL|O_NOFOLLOW closes the replacement race before the private MCP bearer
-  // lands on disk. A seat whose private config cannot be safely written cannot start.
-  rmSync(path, { force: true });
-  let fd: number;
-  try {
-    fd = openSync(path, "wx", 0o600);
-  } catch (error) {
-    throw new Error(`refusing to write Jcode MCP config at ${path}: ${(error as Error).message}`);
-  }
-  try {
-    writeFileSync(fd, JSON.stringify(mcp));
-  } finally {
-    closeSync(fd);
-  }
-  if (process.platform !== "win32") hardenPrivate(path, "file");
-}
-
-/**
- * Where this launch keeps its tool relay socket.
- *
- * The socket used to sit at the top level of the shared temp directory. Anything that empties that
- * directory — a distribution's periodic cleaner, or a self-test whose recursive cleanup escaped its
- * own root — unlinked the control path of every live seat at once. The host kept listening on the
- * now-nameless inode, so every `cotal_*` call failed with `connect ENOENT` and the only recovery was
- * a respawn, which discards the session's context (#1625). One private per-launch directory keeps
- * the socket out of a top-level sweep, and `startRelay` re-binds the path if it disappears anyway.
- */
-function relayEndpoint(space: string, name: string): RelayEndpoint {
-  const token = randomBytes(32).toString("base64url");
-  const id = createHash("sha256").update(`${space}\0${name}\0${process.pid}\0${token}`).digest("base64url").slice(0, 32);
-  if (process.platform === "win32") return { dir: "", path: `\\\\.\\pipe\\cotal-jcode-${id}`, token };
-  // `/tmp` rather than `tmpdir()`, as the SDK alias directory does: this path is AF_UNIX and an
-  // overridden TMPDIR can push it past sun_path.
-  const dir = join("/tmp", `cotal-jcode-${id}`);
-  return { dir, path: join(dir, "relay.sock"), token };
-}
-
-function ensureRelayDirectory(endpoint: RelayEndpoint): void {
-  if (process.platform === "win32") return;
-  mkdirSync(endpoint.dir, { recursive: true, mode: 0o700 });
-  hardenPrivate(endpoint.dir, "dir");
-}
-
-function instructions(config: AgentConfig, persona: string | undefined): string {
-  const mesh = briefing(config, "jcode");
-  return persona ? `${persona}\n\n${mesh}` : mesh;
-}
-
-function constantTokenMatches(presented: unknown, expected: string): boolean {
-  if (typeof presented !== "string") return false;
-  const actual = Buffer.from(presented);
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
-
-async function startRelay(agent: MeshAgent, config: AgentConfig, endpoint: RelayEndpoint): Promise<Server> {
-  const specs = new Map(cotalToolSpecs(config, "jcode").map((spec) => [spec.name, spec]));
-  ensureRelayDirectory(endpoint);
-  if (process.platform !== "win32" && existsSync(endpoint.path)) rmSync(endpoint.path, { force: true });
-  const server = createServer((socket) => {
-    let input = "";
-    let handled = false;
-    const deadline = setTimeout(() => socket.destroy(), 5_000);
-    deadline.unref?.();
-    socket.setEncoding("utf8");
-    socket.on("close", () => clearTimeout(deadline));
-    socket.on("data", (chunk: string) => {
-      if (handled) return;
-      input += chunk;
-      if (input.length > MAX_RELAY_BYTES) return socket.destroy();
-      const newline = input.indexOf("\n");
-      if (newline < 0) return;
-      handled = true;
-      clearTimeout(deadline);
-      void (async () => {
-        try {
-          const frame = JSON.parse(input.slice(0, newline)) as { token?: unknown; name?: unknown; args?: unknown };
-          if (!constantTokenMatches(frame.token, endpoint.token)) return socket.destroy();
-          if (typeof frame.name !== "string" || !specs.has(frame.name)) throw new Error("unknown cotal tool");
-          const spec = specs.get(frame.name)!;
-          const args = parseToolArgs(spec, frame.args);
-          // The Jcode host owns automatic inbox delivery, so this bridge pulls only its buffered
-          // ambient queue. Unlike the other host-owned variants, Jcode still exposes the shared
-          // `peek` control and must carry it through to the spec rather than replacing it.
-          const result: ToolResult = await spec.run(
-            agent,
-            config,
-            spec.name === "cotal_inbox" ? { ...args, scope: "pull-only" } : args,
-          );
-          socket.end(JSON.stringify({ result }) + "\n");
-        } catch (error) {
-          socket.end(JSON.stringify({ error: (error as Error).message }) + "\n");
-        }
-      })();
-    });
-    socket.on("error", () => {});
-  });
-  const listen = (): Promise<void> =>
-    new Promise<void>((resolvePromise, reject) => {
-      server.once("error", reject);
-      server.listen(endpoint.path, () => {
-        server.removeListener("error", reject);
-        resolvePromise();
-      });
-    });
-  await listen();
-  if (process.platform !== "win32") {
-    // A listener whose path was unlinked serves nobody: the bridge connects by name and gets
-    // ENOENT. Re-bind it so a deleted socket costs one poll interval instead of a respawn (#1625).
-    // `server.listening` is false once shutdown closes the server for good, which retires this.
-    let rebinding = false;
-    const watch = setInterval(() => {
-      if (rebinding || !server.listening || existsSync(endpoint.path)) return;
-      rebinding = true;
-      void (async () => {
-        try {
-          ensureRelayDirectory(endpoint);
-          await closeServer(server);
-          await listen();
-          writeJcodeDiagnostic(`[cotal-jcode] the tool relay socket was deleted; re-bound it at the same path\n`);
-        } catch (error) {
-          writeJcodeDiagnostic(`[cotal-jcode] the tool relay socket was deleted and could not be re-bound: ${(error as Error).message}\n`);
-        } finally {
-          rebinding = false;
-        }
-      })();
-    }, RELAY_REBIND_POLL_MS);
-    watch.unref?.();
-  }
-  return server;
-}
-
-function closeServer(server: Server | undefined): Promise<void> {
-  return new Promise((resolve) => server?.close(() => resolve()) ?? resolve());
-}
-
-/** Close the relay and take its private directory with it, so a retired launch leaves nothing. */
-async function retireRelay(server: Server | undefined, endpoint: RelayEndpoint): Promise<void> {
-  await closeServer(server);
-  if (process.platform !== "win32") rmSync(endpoint.dir, { recursive: true, force: true });
-}
-
-const SEAT_ATTRIBUTION_ENV: ReadonlySet<string> = new Set([
-  "COTAL_SPACE",
-  "COTAL_MANAGER_INSTANCE",
-  "COTAL_NAME",
-  "COTAL_ID",
-  "COTAL_LIFECYCLE_UID",
-  "COTAL_ACCEPTED_TOKEN",
-  "COTAL_HOME",
-]);
-
-function noCotalEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_")) env[key] = value;
-  return env;
-}
+import { jcodeJournalPath } from "./agui-source.js";
+import { createJcodeEventPlane } from "./event-plane.js";
+import {
+  TUI_STOP_GRACE_MS,
+  readinessTurnTimeoutMs,
+  requestTimeoutOverrideMs,
+  privateAgentHome,
+  assertNoProjectMcpConfig,
+  writeMcpConfig,
+  relayEndpoint,
+  instructions,
+  startRelay,
+  retireRelay,
+  SEAT_ATTRIBUTION_ENV,
+  noCotalEnv,
+} from "./host-support.js";
+import { createHostTurns, type HostTurnState } from "./host-turns.js";
+import { jcodeCommands } from "./commands.js";
+export {
+  BRIDGE_RECOVERY_WINDOW_MS,
+  PERMANENT_BRIDGE_RECOVERY_CODES,
+  PERMANENT_BRIDGE_CONNECT_CAUSE_CODES,
+  permanentBridgeRecoveryFailure,
+  isJcodeBusyRefusal,
+} from "./host-support.js";
 
 export async function runJcodeHost(): Promise<void> {
   const config = configFromEnv();
@@ -422,7 +85,8 @@ export async function runJcodeHost(): Promise<void> {
   // Startup owns the kickoff until the Harness request is invoked. Any return before that boundary
   // is provably unsent and safe to defer; after invocation acceptance is not knowable, so it is
   // consumed and never guessed back into the queue.
-  let pendingKickoff = bootPrompt;
+  const hostState = {} as HostTurnState;
+  hostState.pendingKickoff = bootPrompt;
   const readinessBudgetMs = readinessTurnTimeoutMs();
   // Read BEFORE the COTAL_ scrub below, for the same reason the readiness bound is: the endpoint is
   // the sole reader of Cotal material and every COTAL_ key is deleted from the environment before
@@ -470,6 +134,9 @@ export async function runJcodeHost(): Promise<void> {
     // wedged seat from a broken connector (#1211).
     throw new JcodeConnectorError("private_state", "jcode connector: the seat's private Jcode state could not be prepared", { cause: error });
   }
+  // Jcode gets its home by real path: from 1.1 a shell command loads the project's saved environment
+  // through JCODE_HOME and fails if any part of that path is a symlink. The alias names only sockets.
+  const jcodeHome = realpathSync(home);
   /** Only after a verified stop: nothing of this lifecycle can read the seat's credential copies any
    *  more, and the next launch mirrors them afresh (#5641). The home itself stays for its resume record. */
   const removeCredentials = (): void => {
@@ -491,152 +158,58 @@ export async function runJcodeHost(): Promise<void> {
     if (key.startsWith("COTAL_")) delete process.env[key];
   }
 
-  // The card is built from the process environment. That environment no longer has COTAL_EVENTS,
-  // so the decision read above is what the card reports.
-  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot });
+  // The card reports the captured event-plane decision because COTAL_EVENTS is stripped above.
+  let runOwnerTurn: ((turn: AgentTurn) => Promise<void>) | undefined;
+  const agent = new MeshAgent(config, undefined, { eventsArmed, eventsWorkspaceRoot, commands: jcodeCommands(hostState, (turn) => runOwnerTurn!(turn)) });
   const relayServer = await startRelay(agent, config, relay);
   writeMcpConfig(home, relay, config);
 
-  let eventLock: PrincipalLock | undefined;
-  let mapper: JcodeMapper | undefined;
-  /** Aborted by `shutdown()`, so an event step waiting out a rebuild window cannot hold a stop. */
-  const eventWaitStop = new AbortController();
-  const events = eventsArmed
-    ? new AguiEmitterHolder<PositionedJcodeJournalRecord>(
-        async (journalPath: string) => {
-          const workspaceRoot = eventsWorkspaceRoot!;
-          if (!sessionId) throw new Error("jcode connector: cannot start AG-UI without a Harness session id");
-          const threadId = sessionId;
-          const expectedPath = jcodeJournalPath(socketHome.jcodeHome, threadId);
-          if (resolve(journalPath) !== resolve(expectedPath))
-            throw new Error(`jcode connector: event source ${journalPath} does not belong to session ${threadId}`);
-          const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-          const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
-          eventLock = lock;
-          const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
-          const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-          // Persist the pre-public boundary before start returns. drive() waits for this factory, so
-          // no requested turn can append past an unacknowledged boundary. On restart an existing WAL
-          // wins over the current journal end and replays everything appended after that cursor.
-          await initializeJcodeEventBoundary(journalPath, wal);
-          const resumeBrackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
-          mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
-          return AguiEmitter.start<PositionedJcodeJournalRecord>({
-            endpoint: agent.ep,
-            withholdPayloads: config.eventPayloadsWithheld,
-            wal,
-            subjectFrontier,
-            source: positionedJcodeJournalSource(new JcodeJournalSource(journalPath)),
-            map: mapper.map,
-            onUnreadable: (gap) =>
-              writeJcodeDiagnostic(`[cotal-jcode] AG-UI source: skipped an unreadable journal record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}\n`),
-          });
-        },
-        {
-          onError: eventPlaneStopped({ log: (line) => writeJcodeDiagnostic(`[cotal-jcode] ${line}\n`) }),
-          sourceEnd: (journalPath: string) => new JcodeJournalSource(journalPath).end(),
-          onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
-          // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
-          // that was not there and killed the seat. The holder now rides the window out on this
-          // wait instead. TWO edges are required, and the difference is measured rather than
-          // assumed: `connection` covers the Cotal bind (initial start, manual reconnect, the
-          // endpoint's own background rebuild), while `transport` covers the window INSIDE nats.js's
-          // own reconnect, where `this.nc` still exists but its `info` is already cleared, so
-          // `maxPayload` throws while every Cotal-side flag still says live. Waiting on
-          // `connection` alone resolves immediately in exactly that window (measured: the
-          // reproduced death kept `agent.connected === true`). Both getters are re-checked after
-          // the listeners are attached, so a bind landing between check and listen cannot be missed.
-          // No time bound: the endpoint's re-establish loop owns retry and backoff, and a bound here
-          // would reintroduce the terminal death under a standing outage, just slower. The one
-          // other exit is the seat stopping: `shutdown()` aborts `eventWaitStop`, and the wait
-          // rejects into the holder's terminal path so a stop during an outage is not held open.
-          // The step stays queued meanwhile — no event is dropped, reordered or duplicated, because
-          // the WAL's cursor has not moved and the chain serializes everything behind this await.
-          waitLive: () =>
-            new Promise<void>((resolve, reject) => {
-              const live = (): boolean => agent.connected && agent.transportConnected;
-              const release = (): void => {
-                agent.off("connection", onConnection);
-                agent.off("transport", onTransport);
-                eventWaitStop.signal.removeEventListener("abort", onStop);
-              };
-              const finish = (): void => {
-                release();
-                resolve();
-              };
-              const onStop = (): void => {
-                release();
-                reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the journal"));
-              };
-              const onConnection = (e: { connected: boolean }): void => {
-                if (e.connected && agent.transportConnected) finish();
-              };
-              const onTransport = (e: { connected: boolean }): void => {
-                if (e.connected && agent.connected) finish();
-              };
-              agent.on("connection", onConnection);
-              agent.on("transport", onTransport);
-              eventWaitStop.signal.addEventListener("abort", onStop);
-              if (live()) finish();
-              else if (eventWaitStop.signal.aborted) onStop();
-            }),
-        },
-      )
-    : undefined;
-  let eventJournal: string | undefined;
+  const { events, deltaStream, eventWaitStop, releaseEventFiles } = createJcodeEventPlane({ agent, config, hostState, socketHome, eventsArmed, eventsWorkspaceRoot });
+  hostState.eventJournal = undefined;
 
   const closeEventRun = (error?: Error): void => {
-    if (!events?.running || !eventJournal) return;
-    events.flush(eventJournal);
+    deltaStream.turnEnded();
+    if (!events?.running || !hostState.eventJournal) return;
+    events.flush(hostState.eventJournal);
     events.closeRun(Date.now(), error ? { message: error.message, code: error.name } : undefined);
   };
 
   const ensureEventsBound = async (): Promise<void> => {
-    if (!events || !eventJournal || events.running) return;
-    events.adopt(eventJournal);
+    if (!events || !hostState.eventJournal || events.running) return;
+    events.adopt(hostState.eventJournal);
     await events.settled();
   };
 
-  const releaseEventLock = async (): Promise<void> => {
-    const lock = eventLock;
-    eventLock = undefined;
-    if (!lock) return;
-    try {
-      await lock.release();
-    } catch (error) {
-      writeJcodeDiagnostic(`[cotal-jcode] event WAL lock release failed: ${(error as Error).message}\n`);
-    }
-  };
-
-  let instance: LaunchedInstance | undefined;
+  hostState.instance = undefined;
   let launchIdentity: ProcessIdentity | undefined;
   let launchIdentityValue: string | undefined;
-  let client: JcodeClient | undefined;
+  hostState.client = undefined;
   let bridgeStderr = "";
-  let tui: ChildProcess | undefined;
-  let stopping = false;
-  let reconnecting = false;
-  let bridgeRecoveryUsed = false;
-  let sessionId: string | undefined;
-  let driving = false;
-  let turnActive = false;
-  let briefed = false;
-  let initialized = false;
-  let wakeQueued = false;
+  hostState.tui = undefined;
+  hostState.stopping = false;
+  hostState.reconnecting = false;
+  hostState.bridgeRecoveryUsed = false;
+  hostState.sessionId = undefined;
+  hostState.driving = false;
+  hostState.hostRun = false;
+  hostState.turnActive = false;
+  hostState.briefed = false;
+  hostState.initialized = false;
+  hostState.wakeQueued = false;
   // Focus mentions have no automatic inbox item. Keep their wake-only hint until a turn succeeds.
-  let pendingMentionWake: { hint: string } | undefined;
+  hostState.pendingMentionWake = undefined;
   /** Exact Cotal deliveries the active Harness turn has accepted, either in its initial prompt or
    *  through Jcode's session-owned soft-interrupt queue. They commit only when that containing turn
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
-  let surfacedIds: string[] = [];
+  hostState.surfacedIds = [];
   /** Plain sends written on the host's connection. Jcode reports a busy refusal as a session error
    *  with no request id, and that error also ends the run already in flight. A run can attribute
    *  the refusal to its own send only when no later plain send was written. */
-  let plainSends = 0;
+  hostState.plainSends = 0;
   // A client-only recovery leaves accepted work owned by the same native session.
   // In particular an old run() rejecting on client close must not discard that ledger.
-  let nativeTreePreserved = false;
+  hostState.nativeTreePreserved = false;
   const unansweredSteers = new Set<() => void>();
   const releaseUnansweredSteers = (): void => {
     for (const release of unansweredSteers) release();
@@ -689,7 +262,7 @@ export async function runJcodeHost(): Promise<void> {
    * never ran. The first is late delivery, the second is loss, and this issue exists because they
    * were treated as interchangeable.
    */
-  let unsettledLapsedDispatches = 0;
+  hostState.unsettledLapsedDispatches = 0;
   /** Note a dispatch that is leaving the gate unacknowledged, and clear the debt when it settles.
    *
    *  Only pass a promise whose settlement PROVES the Harness is finished with the request. A turn's
@@ -697,10 +270,10 @@ export async function runJcodeHost(): Promise<void> {
    *  resolves it on its own accept timeout while the request is still live at the Harness and can
    *  still emit; that case uses `suspectUntilBridgeReplaced` below. */
   const oweAcceptanceDebt = (settledWhenHarnessDone: Promise<unknown>): void => {
-    unsettledLapsedDispatches += 1;
+    hostState.unsettledLapsedDispatches += 1;
     void settledWhenHarnessDone.then(
-      () => { unsettledLapsedDispatches -= 1; },
-      () => { unsettledLapsedDispatches -= 1; },
+      () => { hostState.unsettledLapsedDispatches -= 1; },
+      () => { hostState.unsettledLapsedDispatches -= 1; },
     );
   };
   /**
@@ -718,18 +291,18 @@ export async function runJcodeHost(): Promise<void> {
    * event that might belong to the lapsed send. Cleared when the bridge is replaced, which is the
    * same path that redrives the durable batch, so delivery still happens: it is late, not lost.
    */
-  let acceptanceSuspectUntilBridgeReplaced = false;
+  hostState.acceptanceSuspectUntilBridgeReplaced = false;
   /** When the current run-debt deferral began, so it can be bounded. Cleared whenever no run debt is
    *  outstanding, so an ordinary sequence of turns never accumulates a deferral age across them. */
-  let deferralStartedAt: number | undefined;
+  hostState.deferralStartedAt = undefined;
   /** Announce a deferral episode once, not once per level-triggered tick. Cleared with the clock. */
-  let deferralAnnounced = false;
+  hostState.deferralAnnounced = false;
   /** The queued-turn tier has stopped attempting: an unsettleable run with no recovery left. Latched
    *  so the terminal diagnostic is written once rather than on every fallback tick. Cleared on bridge
    *  replacement, where attribution and the recovery budget are both restored. */
-  let queuedTurnTierStopped = false;
+  hostState.queuedTurnTierStopped = false;
   /** One boundary request per suspicion, so a lapsing Harness cannot become a reconnect loop. */
-  let bridgeReplacementRequestedForSuspicion = false;
+  hostState.bridgeReplacementRequestedForSuspicion = false;
   const withExclusiveDispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
     const previous = sessionDispatch;
     let release!: () => void;
@@ -792,7 +365,7 @@ export async function runJcodeHost(): Promise<void> {
    * re-deriving this set from them, which keeps a stale key from leaking (the leak would look
    * exactly like the stall this PR repairs) without stranding a live one.
    */
-  let reservedIds = new Set<string>();
+  hostState.reservedIds = new Set<string>();
   /** Outstanding handovers, each owning the keys it reserved. The identity of the set is what makes
    *  "still in flight" answerable at a reset point, rather than assumed from the current turn. */
   const heldReservations = new Set<Set<string>>();
@@ -801,7 +374,7 @@ export async function runJcodeHost(): Promise<void> {
   const releaseUnheldReservations = (): void => {
     const held = new Set<string>();
     for (const batch of heldReservations) for (const key of batch) held.add(key);
-    reservedIds = held;
+    hostState.reservedIds = held;
   };
   /** Promote accepted keys into the acked ledger WITHOUT ever recording one twice.
    *
@@ -811,8 +384,8 @@ export async function runJcodeHost(): Promise<void> {
    *  duplicate key is a duplicate ack of one delivery. The reservation fix stops the two paths from
    *  both owning an item, and this makes the ledger unable to represent the error regardless. */
   const promoteToSurfaced = (keys: string[]): void => {
-    const known = new Set(surfacedIds);
-    for (const key of keys) if (!known.has(key)) surfacedIds.push(key);
+    const known = new Set(hostState.surfacedIds);
+    for (const key of keys) if (!known.has(key)) hostState.surfacedIds.push(key);
   };
   /** Reserve a batch for the duration of one handover, returning its release. Idempotent per key:
    *  a key already reserved by another path is not selected, so double reservation cannot arise. */
@@ -822,7 +395,7 @@ export async function runJcodeHost(): Promise<void> {
     if (!agent.holdInFlight(keys)) return undefined;
     const batch = new Set(keys);
     heldReservations.add(batch);
-    for (const key of keys) reservedIds.add(key);
+    for (const key of keys) hostState.reservedIds.add(key);
     let released = false;
     return () => {
       if (released) return;
@@ -831,25 +404,25 @@ export async function runJcodeHost(): Promise<void> {
       if (!heldReservations.delete(batch)) return;
       // Accepted keys transfer this hold to the containing turn's ledger. A failed handover
       // releases its keys without acknowledging them, so the broker can redeliver.
-      agent.releaseInFlight([...batch].filter((key) => !surfacedIds.includes(key)));
+      agent.releaseInFlight([...batch].filter((key) => !hostState.surfacedIds.includes(key)));
       // Delete only what no OTHER live handover also holds, so releasing one batch cannot unreserve
       // a key another in-flight handover is still relying on.
       const stillHeld = new Set<string>();
       for (const other of heldReservations) for (const key of other) stillHeld.add(key);
-      for (const key of keys) if (!stillHeld.has(key)) reservedIds.delete(key);
+      for (const key of keys) if (!stillHeld.has(key)) hostState.reservedIds.delete(key);
     };
   };
-  let steering = false;
+  hostState.steering = false;
   /** A `soft_interrupt` has failed since the last accepted handoff (#1233).
    *
    *  The measured failure is the SDK's 30s request timeout, but this is deliberately set for ANY
    *  rejection: the connector cannot tell a timeout from a refusal it has not seen before, and the
    *  consequence is an unacknowledged handover, not proof the native session rejected it. Cleared on the
    *  next accepted handoff, so a seat that recovers goes back to the cheap mid-turn path. */
-  let softInterruptFailed = false;
+  hostState.softInterruptFailed = false;
   /** The last in-flight steer request. `drive()` waits for it before deciding which ids the clean
    *  boundary owns, so a soft_interrupt reply racing turn_done can never be recorded after the ack. */
-  let steerSettled: Promise<unknown> = Promise.resolve();
+  hostState.steerSettled = Promise.resolve();
   const receivedAt = new Map<string, number>();
 
   // The SDK trusts mutable servers.json PIDs and can signal a stale foreign process. Remove its
@@ -857,9 +430,9 @@ export async function runJcodeHost(): Promise<void> {
   // against the immutable bridge identity captured at spawn, then the scan stays quiescent after
   // bridge exit so a late daemon record cannot land behind a single empty pass.
   const stopPrivateJcode = async (opts?: { skipClientClose?: boolean }): Promise<void> => {
-    if (!opts?.skipClientClose) await client?.close().catch(() => {});
-    else void client?.close().catch(() => {});
-    client = undefined;
+    if (!opts?.skipClientClose) await hostState.client?.close().catch(() => {});
+    else void hostState.client?.close().catch(() => {});
+    hostState.client = undefined;
     if (launchIdentity && launchIdentityValue)
       await stopPrivateTree({ jcodeHome: socketHome.jcodeHome, launch: launchIdentity, identityValue: launchIdentityValue });
   };
@@ -877,7 +450,7 @@ export async function runJcodeHost(): Promise<void> {
     // created. The next launch of this home reads it to tell an orphan from a live seat (#1211).
     recordLaunch(home, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
     if (onceUid) recordOnceLaunch(home, onceUid, { identity: launchBound.value, host: captureProcessIdentity(process.pid) });
-    instance = await launchInstance({
+    hostState.instance = await launchInstance({
       binary,
       jcodeHome: socketHome.jcodeHome,
       workingDir: cwd,
@@ -894,6 +467,7 @@ export async function runJcodeHost(): Promise<void> {
       // agent.
       env: {
         ...seatEnv,
+        JCODE_HOME: jcodeHome,
         JCODE_DISABLE_CLAUDE_MCP: "1",
         JCODE_NO_AUTO_UPDATE: "1",
         [launchBound.key]: launchBound.value,
@@ -904,54 +478,74 @@ export async function runJcodeHost(): Promise<void> {
     for (const listener of sdkExitListeners) process.removeListener("exit", listener);
     if (sdkExitListeners.length !== 1)
       throw new Error(`jcode connector: expected one SDK instance exit hook, found ${sdkExitListeners.length} — refusing unsafe lifecycle ownership`);
-    launchIdentity = captureProcessIdentity(instance.process.pid!);
+    launchIdentity = captureProcessIdentity(hostState.instance.process.pid!);
     bridgeStderr = "";
-    instance.process.stderr?.on("data", (chunk: Buffer | string) => {
+    hostState.instance.process.stderr?.on("data", (chunk: Buffer | string) => {
       bridgeStderr += String(chunk);
       if (bridgeStderr.length > 16_384) bridgeStderr = bridgeStderr.slice(-8000);
     });
     // The recovery deadline still wins when one is set: it bounds the whole replacement window, and
     // a fixture knob must not be able to extend it past that.
     const perRequestMs = remaining() ?? requestTimeoutMs;
-    return connectSteerClient(instance.socketPath, perRequestMs);
+    return connectSteerClient(hostState.instance.socketPath, perRequestMs);
   };
 
+  const onTuiExit = (code: number | null): void => void shutdown(code ?? 0);
   const launchTui = (): void => {
     const runtime = join(socketHome.jcodeHome, "run");
-    tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId!], {
+    hostState.tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", hostState.sessionId!], {
       cwd,
-      env: { ...noCotalEnv(), ...seatEnv, JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+      // From Jcode 1.0 a TUI starts a detached desktop companion that opens URLs and terminals and
+      // listens for global push-to-talk. It outlives the seat, and a managed seat has no use for it.
+      env: {
+        ...noCotalEnv(),
+        ...seatEnv,
+        JCODE_HOME: jcodeHome,
+        JCODE_RUNTIME_DIR: runtime,
+        JCODE_SOCKET: join(runtime, "jcode.sock"),
+        JCODE_COMPANION_AUTOSTART: "0",
+      },
       stdio: "inherit",
     });
-    tui.once("exit", (code) => void shutdown(code ?? 0));
+    hostState.tui.once("exit", onTuiExit);
+  };
+
+  /** Stop the TUI and wait for it to exit before stopping the private tree. A TUI that loses its
+   *  server can start a replacement on the seat's socket and block the next launch. */
+  const stopTui = async (): Promise<void> => {
+    const viewer = hostState.tui;
+    if (!viewer || viewer.exitCode !== null || viewer.signalCode !== null) return;
+    viewer.off("exit", onTuiExit);
+    const exited = new Promise<boolean>((resolve) => viewer.once("exit", () => resolve(true)));
+    const grace = (): Promise<boolean> => new Promise((resolve) => setTimeout(() => resolve(false), TUI_STOP_GRACE_MS).unref());
+    viewer.kill("SIGTERM");
+    if (await Promise.race([exited, grace()])) return;
+    viewer.kill("SIGKILL");
+    await Promise.race([exited, grace()]);
   };
 
   const shutdown = async (code = 0, signal?: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> => {
-    if (stopping) return;
-    stopping = true;
-    // The private tree goes first for every seat. A runtime stop SIGTERMs the seat and SIGKILLs it
-    // after a short grace, and the event drain or the broker close can use that whole grace. What
-    // this misses, its manager's retireAfterExit finds.
+    if (hostState.stopping) return;
+    hostState.stopping = true;
+    // The private tree goes first for every seat, right after the TUI that would restart it. A
+    // runtime stop SIGTERMs the seat and SIGKILLs it after a short grace, and the event drain or the
+    // broker close can use that whole grace. What this misses, its manager's retireAfterExit finds.
     let exit = code;
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: true });
     } catch (error) {
       writeJcodeDiagnostic(`[cotal-jcode] ${(error as Error).message}\n`);
       exit = 1;
     }
-    agent.releaseInFlight(surfacedIds);
-    surfacedIds = [];
+    agent.releaseInFlight(hostState.surfacedIds);
+    hostState.surfacedIds = [];
     for (const batch of heldReservations) agent.releaseInFlight([...batch]);
     heldReservations.clear();
     eventWaitStop.abort();
-    if (fallbackTimer !== undefined) {
-      clearTimeout(fallbackTimer);
-      fallbackTimer = undefined;
-    }
-    try {
-      tui?.kill("SIGTERM");
-    } catch {
-      /* already gone */
+    if (hostState.fallbackTimer !== undefined) {
+      clearTimeout(hostState.fallbackTimer);
+      hostState.fallbackTimer = undefined;
     }
     await retireRelay(relayServer, relay);
     try {
@@ -962,7 +556,7 @@ export async function runJcodeHost(): Promise<void> {
       writeJcodeDiagnostic(`[cotal-jcode] AG-UI shutdown failed: ${(error as Error).message}\n`);
       exit = 1;
     }
-    await releaseEventLock();
+    await releaseEventFiles();
     try {
       await stopPrivateJcode();
       removeCredentials();
@@ -986,22 +580,22 @@ export async function runJcodeHost(): Promise<void> {
   /** After this many consecutive failures the seat stops re-driving and stays visibly degraded,
    *  rather than burning tokens forever against a provider that is not answering. */
   const ERROR_RETRY_GIVE_UP = 8;
-  let errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  hostState.errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
-  let consecutiveFailures = 0;
+  hostState.consecutiveFailures = 0;
   /** Whether this host published a failed-turn condition that the next turn has to clear. */
-  let turnConditionPublished = false;
+  hostState.turnConditionPublished = false;
   /** The Harness error the last failed turn reported, kept until a turn succeeds, whether this host or
    *  the TUI owns it. The manager's `seat reaped:` line carries only the seat's last connector line,
    *  so a line that ends the seat names this error rather than leave it on an earlier `turn failed`
    *  line alone (#785). */
-  let lastTurnError: string | undefined;
+  hostState.lastTurnError = undefined;
   /** Relay a failed turn's Harness error as the presence condition, or clear a relayed one. The next
    *  turn clears it when it starts, whether this host or the TUI owns that turn. */
   const relayTurnCondition = (condition: PresenceCondition | null): void => {
-    if (condition) lastTurnError = condition.message;
-    if (!condition && !turnConditionPublished) return;
-    turnConditionPublished = condition !== null;
+    if (condition) hostState.lastTurnError = condition.message;
+    if (!condition && !hostState.turnConditionPublished) return;
+    hostState.turnConditionPublished = condition !== null;
     void agent.setCondition(condition).catch(() => {});
   };
   const BRIDGE_RECOVERY_RETRY_MS = 1_000;
@@ -1009,31 +603,31 @@ export async function runJcodeHost(): Promise<void> {
   // pendingKickoff implies consecutiveFailures === 0: it is cleared before the only run() that can
   // increment failures and is never re-armed. The error-retry timer therefore never owns kickoff
   // liveness; idle and bridge recovery below are the reachable pre-dispatch triggers.
-  const hasDriveWork = (): boolean => pendingKickoff !== undefined || pendingMentionWake !== undefined || agent.pendingWake() > 0 || wakeQueued;
+  const hasDriveWork = (): boolean => hostState.pendingKickoff !== undefined || hostState.pendingMentionWake !== undefined || agent.pendingWake() > 0 || hostState.wakeQueued || agent.queuedCommands > 0;
 
   /** Re-drive after a growing delay, at most one timer in flight, never while shutting down. */
   const scheduleErrorRetry = (): void => {
-    if (stopping || errorRetryTimer) return;
-    if (consecutiveFailures >= ERROR_RETRY_GIVE_UP) {
+    if (hostState.stopping || errorRetryTimer) return;
+    if (hostState.consecutiveFailures >= ERROR_RETRY_GIVE_UP) {
       writeJcodeDiagnostic(
-        `[cotal-jcode] giving up after ${consecutiveFailures} consecutive failed turns - the batch stays ` +
+        `[cotal-jcode] giving up after ${hostState.consecutiveFailures} consecutive failed turns - the batch stays ` +
           `un-acked and will redeliver; the seat stays degraded until a new wake arrives\n`,
       );
       return;
     }
-    if (agent.pendingWake() === 0 && !wakeQueued && !pendingMentionWake) return;
-    const delay = errorRetryMs;
-    errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
+    if (agent.pendingWake() === 0 && !hostState.wakeQueued && !hostState.pendingMentionWake) return;
+    const delay = hostState.errorRetryMs;
+    hostState.errorRetryMs = Math.min(hostState.errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
-      if (stopping || driving || turnActive) return;
+      if (hostState.stopping || hostState.driving || hostState.turnActive) return;
       if (hasDriveWork()) void drive();
     }, delay);
     // Never hold the process open on a pending retry.
     errorRetryTimer.unref?.();
   };
 
-  const sessionBusy = (): boolean => driving || turnActive;
+  const sessionBusy = (): boolean => hostState.driving || hostState.turnActive;
 
   const publishInboundHealth = (): void => {
     // Keys only: a health line shows no body, so it must not ask for a role request's take.
@@ -1059,917 +653,76 @@ export async function runJcodeHost(): Promise<void> {
   /** Commit ids the live session already accepted when the host does not own `run()`. A Cotal-owned
    *  `drive()` still commits only in its own try path, so a TUI-owned turn cannot ack that batch. */
   const commitSteeredIfHostIdle = async (): Promise<void> => {
-    if (driving) return;
-    await steerSettled;
-    if (driving || !surfacedIds.length) return;
-    const committed = surfacedIds;
-    surfacedIds = [];
+    if (hostState.driving) return;
+    await hostState.steerSettled;
+    if (hostState.driving || !hostState.surfacedIds.length) return;
+    const committed = hostState.surfacedIds;
+    hostState.surfacedIds = [];
     agent.drainInboxDeliveries(committed);
     agent.releaseInFlight(committed);
     publishInboundHealth();
   };
 
   const finishHostIdleTurn = async (): Promise<void> => {
-    await steerSettled;
+    await hostState.steerSettled;
     if (!sessionBusy()) releaseUnansweredSteers();
     await commitSteeredIfHostIdle();
-    if (!sessionBusy() && !reconnecting && hasDriveWork()) void drive();
+    if (!sessionBusy() && !hostState.reconnecting && hasDriveWork()) void drive();
   };
 
-  const drive = async (): Promise<void> => {
-    if (stopping || reconnecting || !initialized || driving || turnActive || !client || !sessionId) return;
-    if (events) {
-      await ensureEventsBound();
-      await events.settled();
-      if (stopping) return;
-    }
-    driving = true;
-    if (pendingKickoff !== undefined && steering)
-      writeJcodeDiagnostic("[cotal-jcode] startup kickoff waiting for in-flight steering\n");
-    await steerSettled;
-    // A role request is shown only once its take is recorded (SPEC §8.1). This turn carries every
-    // unreserved automatic message, so it takes every held one here, before the session checks
-    // below, which then cover this await too.
-    if (pendingKickoff === undefined)
-      await agent.takeChosen("automatic", (preview) => preview.filter((item) => !reservedIds.has(item.recvKey)));
-    if (stopping || reconnecting || turnActive || !client || !sessionId) {
-      driving = false;
-      writeJcodeDiagnostic("[cotal-jcode] deferred turn after steering: native session unavailable\n");
-      return;
-    }
-    releaseUnansweredSteers();
-    if (surfacedIds.length) {
-      const committed = surfacedIds;
-      surfacedIds = [];
-      agent.drainInboxDeliveries(committed);
-      agent.releaseInFlight(committed);
-    }
-    // Kickoff excludes the automatic inbox. Preserve that deferred work even when ordinary
-    // dnd traffic contributes nothing to pendingWake(). Pull-only traffic stays excluded.
-    wakeQueued = pendingKickoff !== undefined && agent.peekInbox("automatic").length > 0;
-    const parts: string[] = [];
-    let ids: string[] = [];
-    let turnIds: string[] = [];
-    const mentionWake = pendingKickoff === undefined ? pendingMentionWake : undefined;
-    // Run turns ride the same composed injection; their ids commit as surfaced once the Harness
-    // verifiably accepted it (two-phase — an unaccepted send re-surfaces them, never a lie).
-    const turnPeek = agent.peekPendingTurns();
-    if (pendingKickoff !== undefined) parts.push(pendingKickoff);
-    else {
-      // Excludes reserved keys for the same reason the steer and fallback readers do: an item whose
-      // handover is in flight is already being delivered, and selecting it here delivers it twice.
-      // This reader was the one that still selected them, which is how the reproduced duplicate got
-      // its second copy even though every other reader was correct.
-      const inbox = agent.peekInbox("automatic").filter((item) => !reservedIds.has(item.recvKey));
-      const injection = formatInjection(inbox);
-      if (!injection && !turnPeek && !mentionWake) {
-        driving = false;
-        return;
-      }
-      if (injection) {
-        ids = inbox.map((item) => item.recvKey);
-        parts.push(injection);
-      }
-    }
-    if (mentionWake) parts.push(mentionWake.hint);
-    if (turnPeek) {
-      turnIds = turnPeek.goalIds;
-      parts.push(turnPeek.text);
-    }
-    if (!briefed) {
-      briefed = true;
-      const briefing = agent.channelBriefing();
-      if (briefing) parts.unshift(briefing);
-    }
-    // The prompt is not dispatched unless every selected delivery can remain owned until its
-    // containing turn settles. MeshAgent renews these holds with JetStream in-progress acks.
-    if (!agent.holdInFlight(ids)) {
-      driving = false;
-      return;
-    }
-    turnActive = true;
-    surfacedIds = [...ids];
-    // A new turn re-derives ownership from its own prompt, so no STALE reservation may survive into
-    // it. But a reservation whose handover is still in flight is not stale, and clearing those here
-    // is the duplicate a reviewer reproduced: the fallback reserves a batch, the old turn goes idle
-    // inside the acceptance await, this boundary wipes the reservation, the selection above re-reads
-    // the same item, and both deliveries land. Drop only what no live handover holds.
-    releaseUnheldReservations();
-    relayTurnCondition(null);
-    publishInboundHealth();
-    let turnClient: JcodeClient | undefined;
-    let ownSend = 0;
-    try {
-      turnClient = client;
-      // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
-      // run() is invoked, a close or timeout cannot prove the model rejected it, so never retry it.
-      pendingKickoff = undefined;
-      // The RUN's own acceptance window is gated, but not the run itself, and the distinction is
-      // load-bearing in both directions.
-      //
-      // It must be gated at all because `run()` calls `sendMessage()` internally, which waits on the
-      // same session-scoped `message_accepted` (jcode-sdk client.js:317). A run dispatched while a
-      // handover awaits its acknowledgement adds a second listener, making one event ambiguous.
-      //
-      // It must NOT hold the gate for the whole turn, because `run()` does not return until the turn
-      // is over, and a gate held that long would block every mid-turn soft interrupt, which is the
-      // #910 delivery this connector exists to provide. So the gate is released as soon as the send
-      // has been acknowledged, while the turn keeps streaming outside it.
-      //
-      // THE HANDLE IS WRAPPED IN AN OBJECT AND THAT IS LOAD-BEARING, NOT STYLE. Returning the run
-      // promise bare from an async callback assimilates it: `return await operation()` would adopt
-      // it and wait for the TURN, silently extending this gate from one acceptance round trip to the
-      // entire run. A reviewer measured exactly that on the bare form, observing no fallback send for
-      // 95 seconds while a swallowed run stayed open, which recreates the starvation #1233 is about.
-      // An object is not a thenable, so it crosses both async boundaries as a value and the turn is
-      // awaited below, outside the gate.
-      const { dispatched: runTurn } = await withExclusiveDispatch(async () => {
-        // Read before this send exists: while a lapsed send is still open, an acknowledgement may
-        // be that send's, and it cannot prove the Harness took these run turns.
-        const attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
-        // The turns' permit, after the gate's wait and right before the send: a once task its
-        // manager settled meanwhile, or a seat that began stopping, sends nothing.
-        if (stopping || !agent.claimTurns(turnIds))
-          throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
-        ownSend = ++plainSends;
-        const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
-        // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
-        // raced below; the handle returned from this gate is what actually reports it.
-        dispatched.catch(() => {});
-        // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
-        // turn, and yieldTurn refuses a turn that is not surfaced yet. Heard until the turn settles,
-        // not only inside the window below: while this run is open with its acceptance lapsed, the
-        // queue fallback defers and nothing else sends this session a message it could acknowledge,
-        // so a late acceptance is still this send's.
-        if (attributable && turnIds.length) {
-          const surface = (event: ApiEvent): void => {
-            if (!("session_id" in event && event.session_id === sessionId)) return;
-            stopSurfacing();
-            agent.commitSurfacedTurns(turnIds);
-          };
-          const stopSurfacing = (): void => { turnClient!.off("message_accepted", surface); };
-          turnClient!.on("message_accepted", surface);
-          void dispatched.then(stopSurfacing, stopSurfacing);
-        }
-        // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
-        // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
-        // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
-        let acknowledgedHere = false;
-        const noteAccepted = (event: ApiEvent): void => {
-          if ("session_id" in event && event.session_id === sessionId) acknowledgedHere = true;
-        };
-        turnClient!.on("message_accepted", noteAccepted);
-        try {
-          await Promise.race([
-            dispatched.then(() => undefined, () => undefined),
-            onceAccepted(turnClient!, sessionId!, RUN_ACCEPT_WINDOW_MS),
-          ]);
-        } finally {
-          turnClient!.off("message_accepted", noteAccepted);
-        }
-        // A once task this send cannot show the Harness took is never offered again: it is sealed
-        // and reported, and a late acceptance confirms nothing.
-        if (!attributable || !acknowledgedHere) agent.releaseTurns(turnIds);
-        // LEAVING THE GATE UNACKNOWLEDGED IS A DEBT, NOT A CLEAN EXIT. This send is still open and
-        // can still emit its acceptance after the next dispatch has begun, which is precisely how a
-        // reviewer produced an acknowledgement for a send that never received one. Releasing the
-        // gate is still right, because a silent Harness must not be able to starve the queue, but
-        // the NEXT send must know that an unattributable event is possible until this one settles.
-        //
-        // `dispatched` is the TURN, and its settling does prove the Harness is finished with this
-        // request, so the debt clears itself on the ordinary path. It is not a timeout standing in
-        // for a proof.
-        if (!acknowledgedHere) oweAcceptanceDebt(dispatched);
-        return { dispatched };
-      });
-      await runTurn;
-      closeEventRun();
-      await events?.settled();
-      // The SDK's event iterator returns normally when its socket closes. That is not a successful
-      // turn: the model may never have received the injection, so preserving the inbox batch is the
-      // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
-      if (reconnecting || client !== turnClient)
-        throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
-      // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
-      // active. Wait for that request to settle before reading the exact containing-turn ledger.
-      await steerSettled;
-      const committed = surfacedIds;
-      surfacedIds = [];
-      if (committed.length) agent.drainInboxDeliveries(committed);
-      agent.releaseInFlight(committed);
-      publishInboundHealth();
-      // A turn that SUCCEEDS clears the backoff: the next failure starts from the short delay again
-      // rather than inheriting a penalty the seat has already recovered from.
-      errorRetryMs = ERROR_RETRY_INITIAL_MS;
-      consecutiveFailures = 0;
-      lastTurnError = undefined;
-      if (mentionWake && pendingMentionWake === mentionWake) pendingMentionWake = undefined;
-    } catch (error) {
-      closeEventRun(error as Error);
-      await events?.settled();
-      // Jcode acknowledged this send before refusing it, so the acceptance marked its run turns
-      // surfaced although the model never saw them. Offer them again; left surfaced, they would end
-      // on a `done` for work nobody did, or wait out their deadline (#5918).
-      if (isJcodeBusyRefusal(error) && ownSend === plainSends) agent.unsurfaceTurns(turnIds);
-      if (!nativeTreePreserved || (!reconnecting && client === turnClient)) {
-        agent.releaseInFlight(surfacedIds);
-        surfacedIds = [];
-      }
-      consecutiveFailures++;
-      const condition = jcodeTurnCondition(error);
-      if (condition) relayTurnCondition(condition);
-      writeJcodeDiagnostic(
-        `[cotal-jcode] turn failed (${consecutiveFailures} in a row): ${(error as Error).message}\n`,
-      );
-    } finally {
-      turnActive = false;
-      // Keep dispatch owned until the terminal presence write has selected this turn's yields.
-      // Otherwise the next message can be accepted before that queued idle settles its goals.
-      // The recovering client owns the one post-close redrive. An old turn that finishes after
-      // replacement must not race it and make the recovery look successful while its own work is
-      // merely retried — or re-paced — by a stale finally block.
-      if (!reconnecting && client === turnClient) {
-        // The ack lives inside the try, so a failed turn leaves its batch UN-acked and pendingWake()
-        // stays positive. Re-driving immediately therefore re-sends the same batch to the same
-        // provider with no delay and no limit - one deterministic failure became a hot loop that
-        // re-paid the full injection in tokens on every pass (#790, measured at 62 resends).
-        //
-        // The codex host already solved this with scheduleErrorRetry; this is the same shape.
-        if (consecutiveFailures > 0) {
-          // "waiting", not "idle": PresenceStatus has no degraded state, and idle is a lie here - the
-          // seat is not ready for work, it is holding an un-acked batch and pacing a retry. An idle
-          // label is exactly what made a hot-looping seat look healthy in the roster.
-          await agent.setStatus("waiting").catch(() => {});
-          driving = false;
-          scheduleErrorRetry();
-        } else {
-          await agent.setStatus("idle").catch(() => {});
-          driving = false;
-          if (hasDriveWork()) void drive();
-        }
-        // Both branches, and after both, because a turn that ended with work still owed is the
-        // other way this queue is left unserved: `scheduleErrorRetry` gives up after eight failures
-        // (#790) and `hasDriveWork()` reads false for automatic items the previous turn already
-        // accepted but never committed. The server re-checks the ledger itself.
-        armQueueFallback();
-      } else {
-        driving = false;
-      }
-    }
-  };
-
-  /** The automatic deliveries among `items` the live session has not accepted yet. `surfacedIds` is
-   *  the accepted ledger, so subtracting it is what makes "unserved" mean unserved rather than
-   *  merely queued. */
-  const unserved = (items: readonly InboxItem[]): InboxItem[] => {
-    const surfaced = new Set(surfacedIds);
-    return items.filter((item) => !surfaced.has(item.recvKey) && !reservedIds.has(item.recvKey));
-  };
-
-  /** Queue directed automatic traffic in Jcode's live session while a turn owns the provider. Jcode
-   *  incorporates soft interrupts at its documented safe points (after provider streaming / tools),
-   *  including a persisted fallback across a private bridge replacement. Ambient channel chatter
-   *  stays buffered for the next turn. Exact-id accounting makes the accepted set independent of
-   *  physical inbox order, and the containing turn's clean completion remains the only commit. */
-  const steerPending = async (): Promise<void> => {
-    if (steering || !sessionBusy() || !client || !sessionId) return;
-    steering = true;
-    try {
-      for (;;) {
-        const items = await agent.takeChosen("automatic", (preview) =>
-          unserved(preview).filter((item) => item.kind !== "channel" || item.mentionsMe));
-        if (!items.length || !sessionBusy()) return;
-        const injection = formatInjection(items);
-        if (!injection) return;
-        const current: JcodeClient = client;
-        // Reserve BEFORE the write, and reserve in the RESERVATION set rather than the accepted
-        // ledger. `surfacedIds` is what the turn boundary acks. Resolving `sendMessage`/`softInterrupt`
-        // does not by itself prove the session took the text (the SDK's acceptance wait RESOLVES on
-        // timeout). Reserving here makes the batch unselectable by concurrent paths without claiming
-        // acceptance.
-        const keys = items.map((item) => item.recvKey);
-        const releaseReservation = reserveForHandover(keys);
-        if (!releaseReservation) return;
-        let dispose = (): void => {};
-        const release = (): void => {
-          dispose();
-          unansweredSteers.delete(release);
-          releaseReservation();
-        };
-        // NOT gated, and this is a correctness point rather than an optimisation. The soft interrupt
-        // goes out via the SDK's `requestOk`, whose reply is matched by `reply_to` against the
-        // request's own id, so its acceptance is ALREADY correlated and cannot be satisfied by
-        // another send's event. Only the uncorrelated `message_accepted` path needs exclusivity.
-        //
-        // A run can hold the dispatch gate for its acceptance window. Gating a steer behind it
-        // would delay mid-turn delivery, so this already-correlated path must remain ungated.
-        const pending = softInterruptWithLateReply(current, sessionId, injection, (accepted) => {
-          // The SDK emits a correlated reply as an event after its waiter times out. Only this
-          // still-owned request's positive reply promotes it; the normal turn boundary still acks.
-          if (!unansweredSteers.has(release) || client !== current) return;
-          if (accepted) promoteToSurfaced(keys);
-          release();
-        });
-        dispose = pending.dispose;
-        const request = pending.request;
-        steerSettled = request.catch(() => {});
-        try {
-          await request;
-        } catch (error) {
-          // A request timeout drops only the SDK waiter. The same native session can apply the
-          // interrupt later, so do not hand these keys over again during this busy turn.
-          // A boundary or connection replacement releases the hold without claiming acceptance.
-          if (client === current && sessionBusy()
-            && error instanceof HarnessError && error.code === "timeout") {
-            unansweredSteers.add(release);
-          } else release();
-          throw error;
-        }
-        // The live session took it. Whatever made a previous handoff fail is over, so the fallback
-        // tier stands down and the next batch uses the cheap mid-turn path again.
-        softInterruptFailed = false;
-        // If the turn closed or the client was replaced while acceptance was in flight, retain the
-        // inbox copy. Jcode may also have queued it, so this deliberately chooses at-least-once.
-        if (!sessionBusy() || client !== current) {
-          release();
-          return;
-        }
-        // Accepted by the live session: promote the reservation into the accepted ledger, which the
-        // containing turn's clean boundary will ack. Promotion and release are exclusive.
-        promoteToSurfaced(keys);
-        release();
-      }
-    } catch (error) {
-      // #1233. This catch used to be the whole story: it logged, `steering` was cleared below, and
-      // nothing ever looked at this queue again unless a NEW message arrived while the session was
-      // still busy, or the session went idle. Neither is guaranteed, and on the measured seat
-      // neither happened for 13.8 hours. Recording the failure and arming the level-triggered
-      // server is what makes the queue served by something other than luck.
-      softInterruptFailed = true;
-      writeJcodeDiagnostic(`[cotal-jcode] soft interrupt failed: ${(error as Error).message}\n`);
-    } finally {
-      steering = false;
-      // In the `finally`, so it also arms after a `return` from the loop's own guards: any exit that
-      // leaves items unserved must leave the server armed, or the guard becomes the new stall.
-      armQueueFallback();
-    }
-  };
-
-  /** What is still owed, counting the held role requests that may be taken now. */
-  const unservedAutomatic = (): InboxItem[] => unserved(agent.inboxPreview("automatic"));
-
-  const fallbackState = (): FallbackState => ({
-    stopping,
-    queuedTurnTierStopped,
-    reconnecting,
-    initialized,
-    hasSession: Boolean(client) && Boolean(sessionId),
-    sessionBusy: sessionBusy(),
-    steering,
-    softInterruptFailed,
-    unserved: unservedAutomatic().length,
-    driveWork: hasDriveWork(),
-    consecutiveFailures,
-    giveUpAfter: ERROR_RETRY_GIVE_UP,
+  const { drive, runOwnerTurn: ownerTurn, steerPending, armQueueFallback, watchClient } = createHostTurns(hostState, {
+    agent,
+    events,
+    deltaStream,
+    closeEventRun,
+    ensureEventsBound,
+    unansweredSteers,
+    releaseUnansweredSteers,
+    oweAcceptanceDebt,
+    withExclusiveDispatch,
+    onceAccepted,
+    heldReservations,
+    releaseUnheldReservations,
+    promoteToSurfaced,
+    reserveForHandover,
+    stopPrivateJcode,
+    launchPrivateJcode,
+    shutdown,
+    ERROR_RETRY_INITIAL_MS,
+    ERROR_RETRY_GIVE_UP,
+    relayTurnCondition,
+    BRIDGE_RECOVERY_RETRY_MS,
+    sleep,
+    hasDriveWork,
+    scheduleErrorRetry,
+    sessionBusy,
+    publishInboundHealth,
+    finishHostIdleTurn,
   });
-
-  /**
-   * The fallback delivery itself: hand the unserved batch to the Harness as an ordinary message.
-   *
-   * This is the path that does not depend on a `soft_interrupt` reply. The Harness accepts a plain
-   * `send_message` while the agent is busy, acknowledges it with `message_accepted`, and runs it as
-   * its own turn when the current one ends — measured against jcode 0.81.5, which is also why the
-   * no-reply (context_message) form is NOT used here: that one is refused outright while busy.
-   *
-   * Acceptance is recorded in the same ledger the soft-interrupt path uses, so the containing turn's
-   * clean boundary remains the sole ack site and a message delivered this way is committed exactly
-   * once. If this send itself fails, nothing is recorded and nothing is dropped: the loop re-arms
-   * and the delivery is attempted again.
-   */
-  const queueTurnFallback = async (): Promise<void> => {
-    const owed = unservedAutomatic();
-    if (!owed.length) return;
-    // A LAPSED SEND HAS POISONED ACCEPTANCE ON THIS CONNECTION, and the two obvious responses are
-    // both unsafe.
-    //
-    // Keep re-delivering and every attempt is accepted and EXECUTED by a healthy Harness, so the
-    // same non-idempotent instruction runs once a minute forever; a reviewer measured three
-    // executions of one batch. Stand down entirely and an unacknowledged send is never retried at
-    // all, which breaks the guarantee this tier exists for: late delivery beats loss, but silence
-    // is not late delivery.
-    //
-    // So the response is neither. Re-delivery continues, because the batch is genuinely owed, and
-    // what changes is that the connection is REPLACED first: the replacement attaches the same
-    // session, the batch is still unacked, and it is redriven once on a connection where an
-    // acknowledgement is attributable again. Recovery is requested at most once here, and the
-    // existing one-shot guard governs it, so this cannot become a reconnect loop.
-    if (acceptanceSuspectUntilBridgeReplaced && !bridgeReplacementRequestedForSuspicion) {
-      bridgeReplacementRequestedForSuspicion = true;
-      // A missing acknowledgement poisons this API connection, not the live native session.
-      // Reconnect to the same owned bridge instead of killing a TUI-owned tool and its server.
-      if (tui && sessionBusy()) {
-        const suspect = client;
-        writeJcodeDiagnostic(
-          `[cotal-jcode] a queued turn lapsed without acknowledgement while the session is busy; ` +
-            `replacing only the Harness API connection; preserving the private Jcode tree if ` +
-            `the same bridge reconnects and attaches within ${BRIDGE_RECOVERY_WINDOW_MS}ms; ` +
-            `otherwise ending the seat and stopping its tree\n`,
-        );
-        if (suspect) void recoverBridge(suspect, true);
-        return;
-      }
-      const suspect = client;
-      writeJcodeDiagnostic(
-        `[cotal-jcode] a queued turn lapsed with no acknowledgement, so acceptance on this ` +
-          `connection can no longer be attributed; replacing the Harness connection before ` +
-          `re-delivering ${owed.length} queued automatic message(s)\n`,
-      );
-      if (suspect) void recoverBridge(suspect);
-    }
-    // Do not write into a connection that is being replaced. The send would fail on the closing
-    // socket and burn an attempt without reaching the seat, which is how the first version of this
-    // produced a `disconnected: harness connection closed` in place of a delivery. The batch stays
-    // owed and the level-triggered loop re-arms, so the next tick delivers it on the replacement
-    // where acceptance is attributable again: this defers one attempt rather than dropping it.
-    if (acceptanceSuspectUntilBridgeReplaced || reconnecting) return;
-    // DO NOT WRITE A FRAME THAT CANNOT BE ATTRIBUTED. While a run's acceptance window has lapsed,
-    // any `message_accepted` may belong to that run, so a send issued now is refused on arrival no
-    // matter how healthy it is, stays owed, and is re-sent every tick -- while the Harness accepts
-    // and EXECUTES every copy. A reviewer measured 4 executions from 4 send frames that way.
-    //
-    // Deferring costs one turn of latency: the run's promise settles when the turn ends, and the
-    // next tick sends ONCE and can attribute the answer. The batch stays owed and unacked, so this
-    // defers delivery rather than dropping it.
-    //
-    // AND THE DEFERRAL IS BOUNDED, because a second reviewer showed that waiting on a run is waiting
-    // on an edge that may never come: a turn that missed its acceptance and never completes settles
-    // nothing, and an unbounded deferral would starve the queue exactly as the original stall did.
-    // Past the bound the run is unsettleable rather than slow, which is the lapsed-send case, so it
-    // takes that answer and the boundary is forced below.
-    if (unsettledLapsedDispatches > 0) {
-      if (deferralStartedAt === undefined) deferralStartedAt = Date.now();
-      const blockedForMs = Date.now() - deferralStartedAt;
-      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {
-        // Say it ONCE per episode. A silent return is why an operator cannot tell this deferral
-        // from the stall it replaces, and why a test could not witness that it engaged at all.
-        // Once per episode rather than per tick: the fallback is level-triggered and would
-        // otherwise print this every second for the life of the run.
-        if (!deferralAnnounced) {
-          deferralAnnounced = true;
-          writeJcodeDiagnostic(
-            `[cotal-jcode] a run has not acknowledged within its window; deferring ${owed.length} ` +
-              `queued automatic message(s) until it settles, so delivery cannot be misattributed\n`,
-          );
-        }
-        return;
-      }
-      if (deferralExhausted(unsettledLapsedDispatches, blockedForMs)) {
-        // The run is unsettleable, so the connection boundary is the answer -- BUT ONLY IF THERE IS
-        // ONE LEFT TO TAKE. `recoverBridge` is one-shot: once spent it does not replace anything, it
-        // calls `shutdown(1)` and the seat exits. Forcing the boundary here on a spent recovery
-        // would kill the seat rather than restore delivery. When no recovery remains, the branch
-        // below stops the queued-turn tier and leaves the batch unacked for redelivery elsewhere.
-        if (exhaustedDeferralAction(!bridgeRecoveryUsed) === "replace-bridge") {
-          acceptanceSuspectUntilBridgeReplaced = true;
-          writeJcodeDiagnostic(
-            `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
-              `without settling, so it is treated as unsettleable; replacing the Harness connection ` +
-              `before re-delivering ${owed.length} queued automatic message(s)\n`,
-          );
-          return;
-        }
-        // NO RECOVERY LEFT, AND NEITHER OBVIOUS ANSWER IS SAFE. Forcing the boundary calls into a
-        // spent `recoverBridge`, which does not replace anything: it calls `shutdown(1)` and the
-        // seat exits, answering a starvation report by killing the seat. Continuing to WRITE is no
-        // better: the send is refused as unattributable, the batch stays owed, and the level-triggered
-        // loop re-sends once a minute for as long as the run stays open, while the Harness accepts and
-        // RUNS each copy. Nothing caps that at two. It is the measured 4-executions defect reached
-        // through the last remaining door.
-        //
-        // So this takes the #790 give-up's answer, which is the precedent already in this module for
-        // "cannot serve, must not pretend, must not discard": STOP ATTEMPTING, and leave the batch
-        // OWED AND UN-ACKED. No frame is written, so the instruction cannot execute again. Nothing
-        // is acked, so the durable copy survives and redelivers to a replacement seat. And the
-        // connection state stops reporting `ready`, so a seat in this condition is visible as stalled
-        // rather than silently healthy, which is the whole point of #1233's status work.
-        //
-        // This is a terminal state for the SEAT, not for the MESSAGE. That distinction is the one
-        // the reviewer asked for: seat liveness is preserved (the process stays up, DMs still land,
-        // the steer and drive tiers are untouched) while the queue's ownership passes on rather than
-        // being executed repeatedly here.
-        if (!queuedTurnTierStopped) {
-          queuedTurnTierStopped = true;
-          writeJcodeDiagnostic(
-            `[cotal-jcode] a run held acceptance unattributable for ${Math.round(blockedForMs / 1000)}s ` +
-              `and the one bridge recovery is already spent, so the queued-turn tier stops attempting; ` +
-              `${owed.length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
-          );
-          // AND SAY SO WHERE AN OPERATOR LOOKS, not only in a log nobody tails. A reviewer accepted
-          // that terminalization is not itself a `stalled` state (that verdict belongs to the queue's
-          // own no-progress clock) ON THE CONDITION that queued depth and age stay visible meanwhile.
-          // This is the one path that stops serving the queue without an ack, so it is exactly where
-          // a silent roster row would misrepresent the seat: the depth is real, it is not moving, and
-          // the seat must carry that in its presence rather than in a diagnostic.
-          publishInboundHealth();
-        }
-        return;
-      }
-    } else { deferralStartedAt = undefined; deferralAnnounced = false; }
-    // A role request is shown only once its take is recorded (SPEC §8.1), so the batch is taken here,
-    // past every reason above to send nothing.
-    const items = await agent.takeChosen("automatic", unserved);
-    const injection = formatInjection(items);
-    if (!injection) return;
-    const current = client;
-    const session = sessionId;
-    if (!current || !session) return;
-    const keys = items.map((item) => item.recvKey);
-    // Reserve BEFORE the write, in the RESERVATION set rather than the accepted ledger.
-    //
-    // Found in review. `sendMessage` resolves on the Harness's `message_accepted`, so everything
-    // after this await happens in a window the rest of the host can observe — and a newly arriving
-    // directed message calls `steerPending()` straight from the `incoming` handler. When ownership was
-    // recorded only after the await, that path recomputed "unserved" from a ledger this batch was not
-    // in yet and offered the SAME items again as a soft interrupt. Reproduced in the fixture log: the
-    // marker's accepted `send_message`, then the same marker in a following `soft_interrupt`.
-    //
-    // It is the reservation and not the accepted ledger because the SDK's acceptance wait RESOLVES on
-    // timeout rather than rejecting, so a resolved send is not proof the session took the text.
-    // Reserving makes the batch unselectable; only verified acceptance promotes it to the ledger the
-    // turn boundary acks. Any other outcome releases, leaving the delivery owed and un-acked.
-    const release = reserveForHandover(keys);
-    if (!release) return;
-    // Observe `message_accepted` OURSELVES rather than inferring acceptance from the await.
-    //
-    // Found in review, and it is the difference between a late delivery and a lost one. The SDK's
-    // acceptance wait RESOLVES on its own timeout rather than rejecting ("the stream is the source of
-    // truth", jcode-sdk client.js), so `await sendMessage(...)` returning proves only that the frame
-    // was written and that we waited. A busy Harness that takes the frame and never acknowledges it
-    // therefore looked, to the old code, exactly like a successful delivery: the batch was recorded
-    // as accepted and the next clean turn boundary ACKED it, so a peer message the session never
-    // accepted and never ran was dropped from the durable inbox. Measured by a reviewer as
-    // swallowedSends=1, acceptedSends=0, turnsRunCarryingA=0, LOST=true.
-    //
-    // So acceptance is proved by the acknowledgement, not by the resolve. Without it the reservation
-    // is released and the batch stays un-acked, which keeps it owed: the level-triggered loop will
-    // re-attempt, and late delivery beats loss.
-    // ...AND the acknowledgement is only attributable while this send is the ONLY one outstanding
-    // for the session, which is what the dispatch gate below establishes. `message_accepted` carries
-    // a session id and nothing more, so without exclusivity an unrelated send's ordinary
-    // acknowledgement flips this flag and a swallowed delivery is recorded as accepted. A reviewer
-    // measured exactly that: swallowedSends 1, aRuns 0, unrelatedRuns 1, A acked and never retried.
-    //
-    // The listener is attached and removed INSIDE the gate, so the window in which an acceptance can
-    // be attributed to this send is exactly the window in which no other send can produce one.
-    let acknowledged = false;
-    // Captured INSIDE the gate, below, at the moment this send begins: if any earlier dispatch is
-    // still open having never acknowledged, then an event arriving now may belong to it, and this
-    // send's acceptance is not attributable no matter how exclusive the gate is.
-    let attributable = false;
-    try {
-      await withExclusiveDispatch(async () => {
-        attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
-        // The deferral above was read before the wait for this gate, and a run can lapse during it.
-        // A frame written now could only be refused while the Harness still runs it, and its
-        // acceptance would surface that run's turns, so nothing is written.
-        if (!attributable) return;
-        const onAccepted = (event: ApiEvent): void => {
-          if ("session_id" in event && event.session_id === session) acknowledged = true;
-        };
-        current.on("message_accepted", onAccepted);
-        try {
-          writeJcodeDiagnostic(
-            `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
-              `message(s) as a queued Harness turn instead\n`,
-          );
-          plainSends++;
-          await current.sendMessage(session, injection);
-        } finally {
-          current.off("message_accepted", onAccepted);
-        }
-      });
-      // The client can be replaced while the send is in flight. A replacement redrives the durable
-      // batch itself, so holding ownership would suppress a delivery the new session never saw —
-      // release and let the redrive own it, the same at-least-once stance the steer path takes.
-      if (client !== current) {
-        release();
-        return;
-      }
-      // Deferred, not refused: nothing was written, and the next tick defers on the run's debt.
-      if (!attributable) {
-        release();
-        return;
-      }
-      if (!acknowledged) {
-        // Written but never acknowledged. Recording it as accepted is what turned a stall into LOSS,
-        // so it is refused: released, un-acked, still owed, retried by the loop.
-        //
-        // AND THIS SEND IS NOW ITSELF A LAPSED ONE. The SDK resolved
-        // our `sendMessage` on its own accept wait, which proves only that we stopped listening: the
-        // request is still live at the Harness and may emit its session-only acceptance at any
-        // later point, when some other batch is the one waiting. Nothing settles that promise in a
-        // way that proves otherwise, so the debt cannot be discharged by waiting.
-        //
-        // SO SUSPICION MUST FORCE THE BOUNDARY RATHER THAN WAIT FOR ONE. A reviewer measured what
-        // happens if it merely waits: on a healthy bridge that never closes, nothing ever clears it,
-        // the batch stays owed forever, and the level-triggered loop re-delivers it about once a
-        // minute. Every one of those is ACCEPTED by the live Harness, so the same instruction
-        // EXECUTES repeatedly, which is worse than the loss this refusal prevents. Non-idempotent
-        // peer instructions run again and again, and the durable inbox cannot help because a
-        // redelivery only refreshes the same pending entry.
-        //
-        // Replacing the bridge is the boundary, and it is a real repair rather than a reset: the
-        // replacement attaches the SAME session, the batch is still owed and unacked, and the
-        // redrive delivers it once on a connection where acceptance means something again. The
-        // existing one-shot guard still governs how many times this may happen, and if recovery is
-        // already spent the seat stops rather than pretending it can serve the queue.
-        //
-        // The request itself is made by the fallback's next tick rather than here, so it happens on
-        // the retry path where the batch is still owed and can be redriven, instead of inside a
-        // handover that is already unwinding.
-        acceptanceSuspectUntilBridgeReplaced = true;
-        release();
-        writeJcodeDiagnostic(
-          `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
-            `automatic message(s) remain queued for redelivery\n`,
-        );
-        return;
-      }
-      promoteToSurfaced(keys);
-      release();
-      publishInboundHealth();
-    } catch (error) {
-      release();
-      writeJcodeDiagnostic(`[cotal-jcode] queued-turn fallback failed: ${(error as Error).message}\n`);
-    }
-  };
-
-  /** Pacing for the level-triggered server. Reset whenever a delivery is accepted, so a seat that
-   *  recovers does not inherit a minute-long delay from the stall it just left. */
-  let fallbackDelayMs = FALLBACK_INITIAL_MS;
-  let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
-  let fallbackRunning = false;
-
-  /**
-   * Arm the level-triggered server for the automatic queue (#1233).
-   *
-   * Every OTHER path that serves this queue is edge-triggered — an arriving message, an idle
-   * transition — and the defect is that both edges can be absent forever while work is owed. This
-   * one is armed by the state of the queue rather than by an event, so the question it answers is
-   * "is anything still owed", which cannot be missed the way an edge can.
-   *
-   * At most one timer, never while stopping, and unref'd so it can never hold the process open.
-   */
-  const armQueueFallback = (): void => {
-    if (stopping || fallbackTimer !== undefined) return;
-    if (!fallbackStillOwed(fallbackState())) return;
-    const delay = fallbackDelayMs;
-    fallbackDelayMs = nextFallbackDelay(fallbackDelayMs);
-    fallbackTimer = setTimeout(() => {
-      fallbackTimer = undefined;
-      void serveQueueFallback();
-    }, delay);
-    fallbackTimer.unref?.();
-  };
-
-  const serveQueueFallback = async (): Promise<void> => {
-    if (fallbackRunning) return;
-    fallbackRunning = true;
-    try {
-      const before = fallbackState();
-      const decision = nextFallbackAction(before);
-      if (decision.action === "stop") return;
-      if (decision.action === "drive") await drive();
-      else if (decision.action === "steer") await steerPending();
-      else if (decision.action === "queue-turn") await queueTurnFallback();
-      // A tick that delivered something resets the pacing; one that could not keeps backing off.
-      // Measured on the ledger, not on the action taken: an attempt that returned without accepting
-      // anything has not served the queue, and treating the call itself as progress is how a
-      // retry loop keeps a fast cadence forever against a session that is taking nothing.
-      if (unservedAutomatic().length < before.unserved) fallbackDelayMs = FALLBACK_INITIAL_MS;
-    } finally {
-      fallbackRunning = false;
-      armQueueFallback();
-    }
-  };
-
-  /** A connector line that ends the seat, naming the last turn error while no turn has succeeded
-   *  since it. The manager's `seat reaped:` line keeps only the first 240 characters of this line, so
-   *  that error goes ahead of the recovery error, whose length the Harness decides. */
-  const endingLine = (reason: string, recoveryError?: string): string =>
-    lastTurnError === undefined
-      ? `[cotal-jcode] ${reason}${recoveryError === undefined ? "" : `: ${recoveryError}`}\n`
-      : `[cotal-jcode] ${reason}; last turn error: ${lastTurnError}` +
-        `${recoveryError === undefined ? "" : `; recovery error: ${recoveryError}`}\n`;
-
-  /**
-   * A provider stall can take down Jcode's bridge while leaving the private session and its inbox
-   * batch intact. Give that owned instance one clean replacement: the failed turn remains unacked,
-   * we attach the exact session rather than creating a blank one, and only then let the normal
-   * inbox driver see the pending work again. A second close is terminal — retry pacing belongs to
-   * the turn policy, not an unbounded connector relaunch loop.
-   */
-  const recoverBridge = async (lost: JcodeClient, preserveInstance = false): Promise<void> => {
-    if (stopping || lost !== client || reconnecting) return;
-    if (bridgeRecoveryUsed) {
-      if (preserveInstance) {
-        queuedTurnTierStopped = true;
-        writeJcodeDiagnostic(
-          `[cotal-jcode] queued-turn acknowledgement remains ambiguous after its one connection recovery; ` +
-            `preserving the private Jcode tree and stopping queued-turn attempts; ` +
-            `${unservedAutomatic().length} automatic message(s) stay queued and UN-ACKED for redelivery\n`,
-        );
-        publishInboundHealth();
-        return;
-      }
-      writeJcodeDiagnostic(endingLine("private Harness connection closed after its one recovery attempt"));
-      await shutdown(1);
-      return;
-    }
-    bridgeRecoveryUsed = true;
-    reconnecting = true;
-    turnActive = false;
-    driving = false;
-    nativeTreePreserved = preserveInstance;
-    releaseUnansweredSteers();
-    if (!preserveInstance) {
-      agent.releaseInFlight(surfacedIds);
-      surfacedIds = []; // a new tree redrives the durable batch, unlike a client-only replacement
-    }
-    // Same reasoning: the replacement redrives the durable batch, so reservations held against the
-    // lost bridge must not keep those items unselectable on the new one.
-    //
-    // This one IS a true wholesale wipe, unlike the new-turn boundary, and the difference is the
-    // point. Here the bridge itself is gone, so every outstanding handover is dead by definition:
-    // each one's own release checks `client !== current` and returns without promoting, so nothing
-    // is in flight that could still land. At the new-turn boundary the bridge is alive and the
-    // handover may still be awaiting acceptance, which is why that site re-derives instead.
-    for (const batch of heldReservations) agent.releaseInFlight([...batch]);
-    heldReservations.clear();
-    reservedIds = new Set();
-    void agent.setStatus("waiting").catch(() => {});
-    let lastError: unknown;
-    const deadline = Date.now() + BRIDGE_RECOVERY_WINDOW_MS;
-    try {
-      // The connector owns the private instance. Stop the whole broken tree before replacing it:
-      // a surviving daemon still holds the private home's registry and socket, so a replacement
-      // cannot own the same home until it is gone. The lost client's close listener is ignored
-      // because reconnecting is already true, and the relaunch goes through the same
-      // identity-capturing path as startup so teardown targets the replacement tree, not the corpse.
-      if (preserveInstance) {
-        // A connected client does not own the SDK instance. Closing it retires only this
-        // connection's ambiguous replies, while the TUI keeps the native turn alive.
-        await lost.close();
-        client = undefined;
-      } else await stopPrivateJcode();
-      if (!sessionId) throw new Error("jcode connector: Harness connection closed before a session was established");
-      for (;;) {
-        let replacement: JcodeClient | undefined;
-        try {
-          replacement = preserveInstance
-            ? await connectSteerClient(instance!.socketPath, Math.max(1, deadline - Date.now()))
-            : await launchPrivateJcode(deadline);
-          const attachRemaining = Math.max(1, deadline - Date.now());
-          let attachDeadline: ReturnType<typeof setTimeout> | undefined;
-          let attached: Awaited<ReturnType<JcodeClient["attachSession"]>>;
-          try {
-            attached = await Promise.race([
-              replacement.attachSession(sessionId),
-              new Promise<never>((_, reject) => {
-                attachDeadline = setTimeout(() => reject(new Error("jcode connector: recovery attach exceeded its bounded window")), attachRemaining);
-              }),
-            ]);
-          } finally {
-            if (attachDeadline !== undefined) clearTimeout(attachDeadline);
-          }
-          client = replacement;
-          // A new connection cannot deliver an event for a request made on the old one, so whatever
-          // lapsed sends were still outstanding there can no longer emit into this session's
-          // listeners. That is the only boundary in this protocol that genuinely restores
-          // attributability, and crossing it is what lets acceptance be trusted again.
-          acceptanceSuspectUntilBridgeReplaced = false;
-          bridgeReplacementRequestedForSuspicion = false;
-          unsettledLapsedDispatches = 0;
-          // The deferral clock belongs to the connection whose run held attribution open. That
-          // connection is gone, so a stale age must not make the replacement's first deferral look
-          // already exhausted and force a second boundary on arrival.
-          deferralStartedAt = undefined;
-          deferralAnnounced = false;
-          queuedTurnTierStopped = false;
-          watchClient(replacement);
-          // The initial native state event can arrive before watchClient is installed.
-          // Do not redrive into a TUI turn that is still running.
-          if (preserveInstance) turnActive = attached.status !== "idle";
-          writeJcodeDiagnostic(`[cotal-jcode] recovered private Harness connection for session ${sessionId}\n`);
-          void agent.setStatus(turnActive ? "working" : "idle").catch(() => {});
-          break;
-        } catch (error) {
-          lastError = error;
-          await replacement?.close().catch(() => {});
-          if (!preserveInstance) await stopPrivateJcode();
-          if (stopping) return;
-          if (permanentBridgeRecoveryFailure(error)) throw error;
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) throw error;
-          writeJcodeDiagnostic(
-            `[cotal-jcode] private Harness replacement not ready yet; retrying inside its one recovery window: ${(error as Error).message}\n`,
-          );
-          await sleep(Math.min(BRIDGE_RECOVERY_RETRY_MS, remaining));
-        }
-      }
-    } catch (error) {
-      const failure = lastError ?? error;
-      const reason = preserveInstance
-        ? `same-bridge recovery ${permanentBridgeRecoveryFailure(failure)
-          ? "permanently refused"
-          : Date.now() >= deadline
-            ? `window expired after ${BRIDGE_RECOVERY_WINDOW_MS}ms`
-            : "failed"}; ending seat and stopping private Jcode tree`
-        : "private Harness connection closed and recovery failed";
-      writeJcodeDiagnostic(
-        endingLine(reason, (failure as Error).message),
-      );
-      await shutdown(1);
-    } finally {
-      reconnecting = false;
-      if (!stopping && hasDriveWork()) void drive();
-    }
-  };
-
-  const watchClient = (connected: JcodeClient): void => {
-    connected.on("close", () => void recoverBridge(connected));
-    const flushNativeEvent = (event: ApiEvent): void => {
-      if (!("session_id" in event) || event.session_id !== sessionId) return;
-      // Every work event of this seat's session, host- or TUI-owned, is progress the Harness reported:
-      // presence `activeAt`, so a turn that stopped advancing shows its age beside a live heartbeat (#618).
-      agent.noteActivity();
-      if (!events?.running || !eventJournal) return;
-      events?.flush(eventJournal);
-    };
-    // The live API is only a wake signal. The holder serializes every flush and the source rereads
-    // the append-only journal from its durable cursor, so several deltas may enqueue redundant
-    // empty reads but can neither reorder nor duplicate a record.
-    for (const kind of [
-      "text_delta",
-      "reasoning_delta",
-      "reasoning_done",
-      "tool_start",
-      "tool_input_delta",
-      "tool_exec",
-      "tool_done",
-      "token_usage",
-    ] as const)
-      connected.on(kind, flushNativeEvent);
-    connected.on("session_status", (event: ApiEvent) => {
-      if (!("session_id" in event) || event.session_id !== sessionId || event.ev !== "session_status") return;
-      // Advisory idle between tool rounds does not mean the Cotal-owned run() has ended.
-      // steerPending keys off sessionBusy() (driving || turnActive) so that pulse cannot drop a DM.
-      const started = !turnActive && event.status !== "idle";
-      turnActive = event.status !== "idle";
-      if (started && !driving) relayTurnCondition(null);
-      if (!turnActive) void finishHostIdleTurn();
-      else publishInboundHealth();
-    });
-    // A turn the TUI owns fails only as an unsolicited error frame: no run() of this host is there to
-    // throw it. A host-owned turn reports the same frame through drive()'s catch. Scoped like the
-    // SDK's own run(): a frame naming another session is not this seat's.
-    connected.on("harness_error", (event: ApiEvent) => {
-      if (driving || event.ev !== "error" || ("session_id" in event && event.session_id !== sessionId)) return;
-      agent.releaseInFlight(surfacedIds);
-      surfacedIds = [];
-      const condition = jcodeTurnCondition(new HarnessError(String(event.code ?? "internal"), String(event.message ?? "harness error")));
-      if (condition) relayTurnCondition(condition);
-    });
-    connected.on("turn_done", (event: ApiEvent) => {
-      if ("session_id" in event && event.session_id === sessionId) {
-        // The SDK's run() takes turn_done as a turn's success. drive() clears the kept error for a
-        // host-owned turn; a TUI-owned turn clears it here unless it relayed an error of its own.
-        if (!driving && !turnConditionPublished) lastTurnError = undefined;
-        closeEventRun();
-        turnActive = false;
-        void finishHostIdleTurn();
-      }
-    });
-  };
+  runOwnerTurn = ownerTurn;
 
   // A run turn arriving on a quiet seat has no "incoming" item to ride — the intake poll asks
   // for a wake instead. drive()'s own head guards re-entry and a busy session.
   agent.on("wake", () => {
-    if (!sessionBusy() && !reconnecting && !stopping) void drive();
+    if (!sessionBusy() && !hostState.reconnecting && !hostState.stopping) void drive();
+  });
+  // An agent-endpoint command waits for the next idle drive, which runs it before the inbox turn.
+  agent.on("command", () => {
+    if (!sessionBusy() && !hostState.reconnecting && !hostState.stopping) void drive();
   });
 
   // Focus ack-drops a channel mention before "incoming". Wake with attribution only, never its body.
   agent.on("mention-wake", (item: InboxItem) => {
-    pendingMentionWake = {
+    hostState.pendingMentionWake = {
       hint: `You were mentioned by ${fmtFrom(item)} on #${fmtChannel(item.channel)}. Pull it with cotal_inbox.`,
     };
-    if (!sessionBusy() && !reconnecting && !stopping) void drive();
+    if (!sessionBusy() && !hostState.reconnecting && !hostState.stopping) void drive();
   });
 
   agent.on("incoming", (item: InboxItem) => {
     const automatic = agent.inboxScope(item.recvKey) === "automatic";
     if (!automatic) return;
-    wakeQueued = true;
+    hostState.wakeQueued = true;
     if (!receivedAt.has(item.recvKey)) receivedAt.set(item.recvKey, Date.now());
     const directed = item.kind !== "channel" || item.mentionsMe;
     if (sessionBusy()) {
@@ -2001,7 +754,7 @@ export async function runJcodeHost(): Promise<void> {
   registerOnceExit(() => void shutdown(1));
 
   try {
-    client = await launchPrivateJcode();
+    hostState.client = await launchPrivateJcode();
     // A restart must come back to the session it left. Calling createSession unconditionally forked
     // a blank session and orphaned the real transcript, so a restarted seat reported for duty looking
     // healthy while remembering nothing - and the TUI, spawned with --resume below, showed a human the
@@ -2034,7 +787,7 @@ export async function runJcodeHost(): Promise<void> {
           `[cotal-jcode] stored sessions directory could not be read (${stored.path}: ${stored.code}); asking the harness anyway\n`,
         );
       try {
-        prior = chooseSessionToResume(await client.listSessions(), cwd);
+        prior = chooseSessionToResume(await hostState.client.listSessions(), cwd);
       } catch (error) {
         listingFailed = true;
         const panic =
@@ -2045,7 +798,7 @@ export async function runJcodeHost(): Promise<void> {
           `[cotal-jcode] could not list prior sessions at ${sessionsPath}: ${cause}; starting fresh on a new harness\n`,
         );
         await stopPrivateJcode();
-        client = await launchPrivateJcode();
+        hostState.client = await launchPrivateJcode();
       }
     }
     // The harness accepts create_session on a sessions/ it cannot write and dies only while
@@ -2059,14 +812,14 @@ export async function runJcodeHost(): Promise<void> {
     let session;
     try {
       if (prior) {
-        session = await client.attachSession(prior.session_id);
+        session = await hostState.client.attachSession(prior.session_id);
         writeJcodeDiagnostic(
           fork
             ? `[cotal-jcode] ${fork.created ? "forked" : "continued its fork of"} session ${resumeSource}${fork.title ? ` ${JSON.stringify(fork.title)}` : ""} (transcript sha256:${fork.transcriptSha256}) as ${prior.session_id}\n`
             : `[cotal-jcode] resumed session ${prior.session_id} (${prior.transcript_bytes} bytes of transcript)\n`,
         );
       } else {
-        session = await client.createSession(cwd);
+        session = await hostState.client.createSession(cwd);
         writeJcodeDiagnostic(`[cotal-jcode] started a fresh session (no resumable prior session in this home)\n`);
       }
     } catch (error) {
@@ -2085,10 +838,10 @@ export async function runJcodeHost(): Promise<void> {
     // A fork carries the source's history but not this seat's briefing until a launch has sent it.
     // That is tracked on its own, because a first launch can fork and then fail before briefing.
     const resumed = prior !== undefined && (fork ? fork.briefed : true);
-    sessionId = session.session_id;
-    agent.setContextId(sessionId);
+    hostState.sessionId = session.session_id;
+    agent.setContextId(hostState.sessionId);
     if (events) {
-      eventJournal = jcodeJournalPath(socketHome.jcodeHome, sessionId);
+      hostState.eventJournal = jcodeJournalPath(socketHome.jcodeHome, hostState.sessionId);
     }
     // A `provider/model` specifier was forwarded verbatim to an endpoint that wants a bare id, and
     // the refusal came back as `model_not_found` naming neither the connector nor the prefix as the
@@ -2103,7 +856,7 @@ export async function runJcodeHost(): Promise<void> {
     }
     if (config.model) {
       try {
-        await client.setModel(sessionId, config.model);
+        await hostState.client.setModel(hostState.sessionId, config.model);
       } catch (error) {
         throw new JcodeConnectorError("model_refused", "Jcode refused the requested model", { cause: error });
       }
@@ -2113,7 +866,7 @@ export async function runJcodeHost(): Promise<void> {
     // identified by that pin plus its active route. Variant-only launches still use RuntimeInfo.model.
     // Verify the route before applying a variant, not after a provider-backed readiness turn. A
     // duplicated model id can appear on several routes, so the active provider disambiguates it.
-    const runtime = config.model || config.variant ? await client.getRuntimeInfo(sessionId) : undefined;
+    const runtime = config.model || config.variant ? await hostState.client.getRuntimeInfo(hostState.sessionId) : undefined;
     const effectiveModel = config.model ?? runtime?.model;
     const route = effectiveModel ? activeModelRoute(runtime, effectiveModel) : undefined;
     if (config.variant && (!effectiveModel || !route || !route.provider))
@@ -2128,7 +881,7 @@ export async function runJcodeHost(): Promise<void> {
     // Jcode owns the provider/model ladder and validates the requested tier at this API boundary.
     if (config.variant) {
       try {
-        await client.setReasoningEffort(sessionId, config.variant);
+        await hostState.client.setReasoningEffort(hostState.sessionId, config.variant);
       } catch (error) {
         throw jcodeEffortRefusal(error, config.variant, {
           model: effectiveModel!,
@@ -2140,7 +893,7 @@ export async function runJcodeHost(): Promise<void> {
     // On a resume the persona/instructions are already the first thing in this transcript. Re-sending
     // them would replay the whole briefing on every restart and grow the context without adding to it.
     if (!resumed) {
-      await client.sendMessage(sessionId, instructions(config, def?.persona || undefined), { noReply: true });
+      await hostState.client.sendMessage(hostState.sessionId, instructions(config, def?.persona || undefined), { noReply: true });
       if (fork) markJcodeForkBriefed(home, resumeSource!);
     }
     const useTui = tuiOverride ?? Boolean(process.stdout.isTTY);
@@ -2154,15 +907,19 @@ export async function runJcodeHost(): Promise<void> {
     // seat that already called the tool and then kept working (#1440).
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
     type ToolCall = Awaited<ReturnType<JcodeClient["run"]>>["toolCalls"][number];
-    // Jcode's deferred MCP surface reaches orientation through `mcp_call`, whose tool_done names
-    // only the wrapper. Its arguments are the call's streamed input, which the Harness API sends
-    // with no call id between that call's tool_start and tool_exec.
+    // Jcode's deferred MCP surface reaches orientation through a wrapper whose tool_done names only
+    // the wrapper: `mcp_call` up to Jcode 0.99.0, and `mcp` with action "call" from 0.99.1, where
+    // `mcp_call` no longer exists. Its arguments are the call's streamed input, which the Harness
+    // API sends with no call id between that call's tool_start and tool_exec.
     const deferredOrientationCalls = new Set<string>();
     let streamingCall: { callId: string; input: string } | undefined;
-    const isDeferredOrientation = (input: string): boolean => {
+    const isDeferredWrapper = (name: string): boolean => name === "mcp_call" || name === "mcp";
+    const isDeferredOrientation = (wrapper: string, input: string): boolean => {
       try {
         const args: unknown = JSON.parse(input);
-        return typeof args === "object" && args !== null && "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
+        return typeof args === "object" && args !== null &&
+          (wrapper === "mcp_call" || ("action" in args && args.action === "call")) &&
+          "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
       } catch {
         return false;
       }
@@ -2171,13 +928,13 @@ export async function runJcodeHost(): Promise<void> {
     const isOrientationCall = (call: ToolCall) =>
       call.error === undefined &&
       !call.output.startsWith("Error: ") &&
-      (/(?:^|__)cotal_orientation$/.test(call.name) || (call.name === "mcp_call" && deferredOrientationCalls.has(call.callId)));
+      (/(?:^|__)cotal_orientation$/.test(call.name) || (isDeferredWrapper(call.name) && deferredOrientationCalls.has(call.callId)));
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) => run.toolCalls.some(isOrientationCall);
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
     );
-    const readinessClient = client;
-    const readinessSessionId = sessionId;
+    const readinessClient = hostState.client;
+    const readinessSessionId = hostState.sessionId;
     if (!readinessClient || !readinessSessionId)
       throw new Error("jcode connector: readiness proof reached without a live Harness session");
     let readiness: Awaited<ReturnType<JcodeClient["run"]>> | undefined;
@@ -2196,7 +953,7 @@ export async function runJcodeHost(): Promise<void> {
       }
       if (event.ev === "tool_input_delta" && streamingCall) streamingCall.input += event.delta;
       if (event.ev === "tool_exec") {
-        if (event.name === "mcp_call" && streamingCall?.callId === event.call_id && isDeferredOrientation(streamingCall.input))
+        if (isDeferredWrapper(event.name) && streamingCall?.callId === event.call_id && isDeferredOrientation(event.name, streamingCall.input))
           deferredOrientationCalls.add(event.call_id);
         streamingCall = undefined;
       }
@@ -2302,8 +1059,8 @@ export async function runJcodeHost(): Promise<void> {
     // The proof may have returned on tool_done while run() is still awaiting turn_done. Keep that
     // Harness turn marked busy so a later drive() cannot steal the same event stream. A completed
     // proof turn must look idle, or the first mesh DM never drives.
-    watchClient(client);
-    turnActive = readinessTurnOpen;
+    watchClient(hostState.client);
+    hostState.turnActive = readinessTurnOpen;
     await agent.start();
     // A readiness proof may join on tool_done while its native turn is still open. Binding there
     // would publish the pre-join orientation tool records and merge the next requested turn into the
@@ -2311,7 +1068,7 @@ export async function runJcodeHost(): Promise<void> {
     if (!readinessTurnOpen) await ensureEventsBound();
     // A space that requires events has already stopped a seat whose event plane failed to bind, and
     // that shutdown owns the exit.
-    if (stopping) return;
+    if (hostState.stopping) return;
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).
@@ -2324,10 +1081,10 @@ export async function runJcodeHost(): Promise<void> {
     // not just a busy agent, because the thrown code is `internal` for every one of them.
     // drive() is gated on initialized. Leave that false until this notice has been attempted so a
     // turn_done from the still-open proof cannot dispatch the spawn kickoff first (#1440).
-    const joinNotice = `You are now connected to the Cotal mesh as "${config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
+    const joinNotice = `You are now connected to the Cotal mesh as "${config.displayName ?? config.name}". The earlier cotal_orientation result was captured before this join; use cotal_orientation again for live context.`;
     if (bootPrompt) {
       try {
-        await client.sendMessage(sessionId, joinNotice, { noReply: true });
+        await hostState.client.sendMessage(hostState.sessionId, joinNotice, { noReply: true });
       } catch (notice) {
         writeJcodeDiagnostic(`[cotal-jcode] post-join notice not delivered: ${(notice as Error).message}\n`);
       }
@@ -2340,9 +1097,9 @@ export async function runJcodeHost(): Promise<void> {
       // retried on an ambiguous error) and the same initialized gate and steering rules. A resumed
       // session that is legitimately busy at this moment fails this turn the same way any other
       // turn fails (drive()'s own catch logs it and schedules a retry) rather than killing the seat.
-      pendingKickoff = joinNotice;
+      hostState.pendingKickoff = joinNotice;
     }
-    initialized = true;
+    hostState.initialized = true;
     // The startup kickoff is the first requested turn after the pre-join readiness boundary. Bind
     // its durable journal before dispatch so its first output opens an AG-UI run rather than being
     // adopted as retained history. A still-open readiness turn remains excluded above.
@@ -2354,11 +1111,13 @@ export async function runJcodeHost(): Promise<void> {
     // A shutdown requested mid-startup closes the client and rejects whatever startup step was in
     // flight. That is the shutdown completing, not a startup failure: let its teardown own the
     // process exit code instead of racing it to process.exit with a failure report.
-    if (stopping) return;
+    if (hostState.stopping) return;
     startControl?.close();
     await retireRelay(relayServer, relay);
     // The refusal is only safe once the launch it abandons is provably dead: returning non-zero
-    // hands the manager a retired seat while an unverified daemon would keep running (#839).
+    // hands the manager a retired seat while an unverified daemon would keep running (#839). The
+    // TUI started before readiness goes first, so it cannot start a replacement server.
+    await stopTui();
     try {
       await stopPrivateJcode({ skipClientClose: error instanceof JcodeConnectorError && error.code === "readiness_timeout" });
       removeCredentials();

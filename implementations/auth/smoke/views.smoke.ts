@@ -40,18 +40,9 @@ import {
   type UserTokenView,
   type ValidatedUserToken,
 } from "../src/index.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0,
-  fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 async function rejects(name: string, fn: () => Promise<unknown> | unknown, needle?: string) {
   try {
     await fn();
@@ -451,5 +442,6 @@ console.log("E. connect-boundary lifecycle equality for views (real ledger dir)"
   }
 }
 
-console.log(`\nviews smoke: ${pass} passed, ${fail} failed`);
-if (fail) process.exit(1);
+console.log(`\nviews smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+if (failed()) process.exit(1);

@@ -12,7 +12,7 @@
     {
       "name": "R2 the once-per-TTL rate limit is dropped, so a rebind the broker refuses is retried on every sweep tick (consumer-create churn against a missing or denied stream)",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "    if (this.presenceRebind || now - this.presenceRebindAt < this.ttlMs) return;\n",
+      "find": "    if (this.presenceRebind || now - this.presenceRebindAt < this.identity.ttlMs) return;\n",
       "replace": "    if (this.presenceRebind) return;\n",
       "expectRed": "5.2 a refused rebind is retried at most once per TTL, not once per sweep tick",
       "cell": "5.2 a refused rebind is retried at most once per TTL, not once per sweep tick"
@@ -28,15 +28,15 @@
     {
       "name": "R4 the per-peer age-out ignores whether the watch delivered after the peer's heartbeat, so the observer's own deafness emits one offline verdict per peer on the tick before the whole-bucket gate trips",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "      if (p.status !== \"offline\" && now - p.ts > this.ttlMs && this.lastPresenceWatchAt - p.ts > this.ttlMs) {\n",
-      "replace": "      if (p.status !== \"offline\" && now - p.ts > this.ttlMs) {\n",
+      "find": "      if (p.status !== \"offline\" && now - p.ts > this.identity.ttlMs && this.lastPresenceWatchAt - p.ts > this.identity.ttlMs) {\n",
+      "replace": "      if (p.status !== \"offline\" && now - p.ts > this.identity.ttlMs) {\n",
       "expectRed": "2.6 no per-peer offline verdict was emitted for the observer's own deafness",
       "cell": "2.6 no per-peer offline verdict was emitted for the observer's own deafness"
     },
     {
       "name": "R5 the epoch fence in startPresenceWatch is dropped, so a bind that completes after stop() installs a watch on the stopped endpoint (reviewer BLOCK on c67c0bb9)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (epoch !== this.presenceEpoch) {\n      try { iter.stop(); } catch { /* its connection may already be gone */ }\n      hydrated();\n      return undefined;\n    }\n",
+      "find": "    if (epoch !== this.lifecycle.presenceEpoch) {\n      try { iter.stop(); } catch { /* its connection may already be gone */ }\n      hydrated();\n      return undefined;\n    }\n",
       "replace": "",
       "expectRed": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)",
       "cell": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)"
@@ -44,16 +44,16 @@
     {
       "name": "R6 stop() no longer moves the epoch, so only a rebuild retires an in-flight bind and a stop-time bind still lands",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.activeGoalFollowers.clear();\n    this.presenceEpoch++;\n    this.presence.cancelRebind();\n",
-      "replace": "    this.activeGoalFollowers.clear();\n",
+      "find": "    this.delivery.activeGoalFollowers.clear();\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
+      "replace": "    this.delivery.activeGoalFollowers.clear();\n",
       "expectRed": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)",
       "cell": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)"
     },
     {
       "name": "R7 clearConnectionScoped no longer moves the epoch, so an old epoch's late bind overwrites the fresh epoch's watch after a reconnect",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    this.streamMsgs.length = 0;\n    this.presenceEpoch++;\n    this.presence.cancelRebind();\n",
-      "replace": "    this.streamMsgs.length = 0;\n",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "    this.delivery.streamMsgs.length = 0;\n    this.lifecycle.presenceEpoch++;\n    this.presence.cancelRebind();\n",
+      "replace": "    this.delivery.streamMsgs.length = 0;\n",
       "expectRed": "7.3 the old epoch's late bind does not overwrite the fresh watch",
       "cell": "7.3 the old epoch's late bind does not overwrite the fresh watch"
     },
@@ -92,7 +92,7 @@
     {
       "name": "S1 the TTL gate is removed, so two immediate refused writes are called permanently stuck before the roster has lost one liveness window",
       "file": "packages/core/src/endpoint-presence.ts",
-      "find": "      Date.now() - this.presenceWriteFailingSince < this.ttlMs\n",
+      "find": "      Date.now() - this.presenceWriteFailingSince < this.identity.ttlMs\n",
       "replace": "      false\n",
       "expectRed": "4.4 two immediate refused writes do not escalate before one full TTL",
       "cell": "4.4 two immediate refused writes do not escalate before one full TTL"
@@ -107,8 +107,8 @@
     },
     {
       "name": "F1 the SPEC §13.12 broker-floor gate is dropped from the dial, so a below-floor bind is never refused",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    requireBrokerFloor(this.nc);\n",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "    requireBrokerFloor(this.conn.nc);\n",
       "replace": "",
       "expectRed": "4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",
       "cell": "4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence"

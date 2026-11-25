@@ -1,0 +1,3 @@
+# Codex's approval requests and questions open prompts on the agent's prompt desk, and each answer
+# goes back to the app-server in the request's own shape.
+smoke:codex-prompts

@@ -1,5 +1,202 @@
 # @cotal-ai/connector-claude-code
 
+## 0.179.0
+
+### Minor Changes
+
+- 3b5bde1: T3 Code and other ACP clients now get from every Cotal agent what that harness's own provider shows: replies streamed as they are written, tool calls with their arguments, results and diffs, plans, approvals, questions, the agent's own commands, cancel, later prompts with images, context usage, reasoning, and the model and effort pickers.
+  
+  - Core: the `agent` endpoint is at revision 5, with `turn` (the owner's next prompt, with images) and `usage` (context and cost). Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, which says what a process serves now, so a caller picks one path per agent before it sends anything. `ModelCatalogOpts.envAllow` gives a model catalog read the `spawn.env` names a launch receives.
+  - Manager: cluster revision 56. `spawn` takes the opt-in `askPermissions` (ask before tool use) and `reasoningEvents` (publish the model's reasoning), and every `status.connectors` row says whether its connector takes them. Update Managers and their callers together. `@cotal-ai/workspace` carries the two fields in a managed launch and in the cached connector rows.
+  - connector-core: a delta journal beside each thread's journal streams harness text and reasoning before the harness saves it, merged into the durable source, and a connector may journal records of its own there. `JsonlFileSource.holdsSync` tells whether a cursor is on the file at the path now. A tool result marker may leave out `isError`, and `web` reads one without it.
+  - Claude Code: reply text streams while the command mod runs; the owner's turns take images as files the model reads; usage, both launch fields, `AskUserQuestion` as a question form, and the model list read with the launch's `spawn.env` names. Reply text that Claude Code does not show, such as "No response requested.", is not published. The release plugin tree now ships `hooks/stream.js`. The to-do tools stay off as Claude Code's terminal has them for current models; an operator turns them on with `CLAUDE_CODE_ENABLE_TODO_TOOLS` through `spawn.env`.
+  - Codex: replies and reasoning summaries stream; turns with images and usage; approval requests, questions, permissions requests and MCP elicitations go to the prompt desk; `askPermissions` launches in the approval-required mode; a code-mode script's calls and plan show as their own tool calls while they run. Codex now publishes reasoning only for a launch with `reasoningEvents`, where before it published every summary it recorded.
+  - Hermes: turns, interrupt, usage and the gateway's slash commands on the agent endpoint; streamed replies; reasoning with `reasoningEvents`; `askPermissions` for the commands Hermes stops; `clarify` questions on the prompt desk; the models of the provider a launch's environment selects, with Hermes's reasoning efforts as variants; tools run in the seat's folder; and a run shared by several messages ends with the outcome of the message that ends it.
+  - Jcode: native session commands, interrupt, turns with images, usage and streamed text and reasoning; a failed turn closes its run with the error; the seat's real home, so the shell tool runs on Jcode 1.1; and streaming keeps going across a journal fold that reuses the file's inode.
+  - OpenCode: agent commands and interrupt on 1.x; turns with images and usage, permission asks and questions on the agent endpoint, both launch fields, streamed replies and running tool calls on 2.x and 1.x. On 1.x, usage reads the newest step, and a command whose turn never starts frees the seat after 5 seconds. Before launch, `harness-commands` lists a 1.x install's commands and skills too, from a private server it starts and stops. The 2.x model list read stops its private server's whole process group, reports OpenCode's own error when that server fails to start, and gives up after 10 seconds in all.
+  - Pi: tool arguments and results on the payload rail, turns and usage, `askPermissions`, streamed replies, thinking with `reasoningEvents`, and the model catalog read with the launch's `spawn.env` names.
+  - `cotal acp`: picks each agent's cancel, prompt, image and usage path from its presence; sends a turn's usage before the prompt answers; gives each model's reasoning choices in the session's model state, so T3 shows the effort picker before a thread runs; launches with the two fields where the connector takes them; shows tool details, plans, Codex's change approvals as diffs, and the agent's own commands; asks an agent's approvals and questions, also ones it opens between the thread's turns, and asks a prompt again when its first read fails; keeps a prompt queued behind the agent's other work open until the agent runs it, and a cancel takes it out of the queue; never defaults a thread to another computer's manager; offers a short persona and channel select plus `/persona` and `/join` where the lists are too long for a select; and says what it cannot replay when an agent's tool details cannot be read.
+  - `cli`: the Hermes model remedy no longer suggests `--no-events`.
+- 0413abe: A new agent can now label itself from the first message it gets, using its own session's model, while it keeps its launch name as the name people mention and message. The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, which reaches the seat as `COTAL_AUTO_NAME=1` (`LaunchOpts.autoName`) and is refused on a `once` spawn and on a delegated runtime. The seat's connector makes one tool-less request to its own model, outside its conversation, about the launch prompt or else the first live direct message or mention from the seat's own owner, and shows the cleaned reply as the card's `meta["ai.cotal.label"]` (`AGENT_LABEL_META_KEY`), at most 40 code points. `card.name` never changes, so mentions, direct messages and name lookups keep resolving the launch name, and readers show `meta["ai.cotal.label"] ?? name`. The card carries `meta["ai.cotal.naming"] = "pending"` until naming settles, whatever the outcome, and the label and the key's removal reach presence in one record. An owner `set-name` still changes the name, ends naming when it is out, and drops the label in the record that carries the new name. A failed naming shows no label. Claude Code, Codex and OpenCode 2.x seats have the request; Hermes, Jcode, pi and OpenCode 1.x seats show no label and never show the key. A relaunch never labels the seat again, `COTAL_DISPLAY_NAME` turns naming off, and an agent file cannot set either key. `CotalEndpoint.setCardMeta` sets or removes card meta keys in one presence record, and `setCardName` takes meta changes for the record that carries the new name.
+- c7f487b: Agents on static spaces and open meshes now answer their owner's prompts, commands, turns, interrupts, usage reads and renames, as they do where people sign in. A static `agent` credential now carries the serve rows for the `agent` endpoint and no caller row. A renewal keeps the rows its first issuance recorded, so an agent an older release started keeps running without the endpoint until it is respawned, and its connector says so. Core adds the static `agent-caller` profile: the owner's calls to the agents under its own owner, their replies and its inbox, never minted by the auth callout. `openAgentCaller` in `@cotal-ai/workspace` opens it. `CotalEndpoint.servePrincipal` and `MeshAgent` serve on every mesh mode. On an open mesh any client may call, outside the security claims. The Manager's `status.connectors[].prompts` is the connector's declaration on every mesh mode, with the same schema and cluster revision. Codex accepts an asking `approval_policy` on every space. `cotal acp` calls agents through an in-memory `agent-caller` on a static space and through its observer elsewhere, so questions, the agent's commands, images and `/name` work in a thread on every space. The Manager now accepts a spawn's `firstCommand` on static spaces and open meshes too, and the agent runs it there as its first turn.
+
+### Patch Changes
+
+- 2a51ab9: In ACP clients such as T3 Code, a Claude Code tool call now shows while the tool runs, and the model list no longer offers an application it cannot start.
+  
+  - Claude Code: a tool call shows within about a second of its start while the tool runs.
+  - `cotal acp`: lists an application's default model once when its catalog also has a model named `default`, with that model's name and reasoning choices.
+  - `cotal acp`: refuses an application whose models the manager could not read, with the manager's reason, in place of offering its default alone. Loading or opening a thread on a running agent of that application still works.
+  - Claude Code, OpenCode 2.x and pi: a model catalog read that fails, or that lists no model a seat could run, such as a logged-out Claude Code or a pi without provider credentials, now fails. `cotal models` reports that catalog as unreadable, exiting 4, or 5 with `--harness`, and `cotal acp` leaves the application out with the reason.
+
+## 0.178.0
+
+### Minor Changes
+
+- 59d8306: Claude Code agents can now be launched at a chosen effort level, and the Claude model list tells its aliases apart. `--variant <level>` renders Claude's `--effort` flag, an unknown level is refused before launch, and `cotal models --harness claude` lists each model's effort levels as variants and names an alias with the model it resolves to, such as `Opus 5.5 (claude-opus-5-5)`.
+
+### Patch Changes
+
+- 5935d73: Status names the owning Cotal home and its choices when the shared Claude profile's marketplace belongs to another home, instead of recommending `cotal setup --skills`, and no longer prints equal skills versions as a mismatch.
+
+## 0.177.0
+
+### Minor Changes
+
+- 0bb3186: A launcher can now list the commands and skills a harness offers in a directory before any agent starts, and start an agent with one of them as its first turn. The Manager's new `harness-commands` read (`{ agent, cwd }`) asks Claude Code, Codex, pi or OpenCode 2.x in that directory and answers the entries a seat's `command` takes, or `supported: false` with a reason for a harness whose seats run no commands; it starts no seat and is granted where `list-dir` is. `spawn` takes `firstCommand: { target, name, args? }` and its acceptance names `firstCommand.id`. The agent queues the command under that id before any other and runs it as its first turn through its own command lane once the harness runs commands, and `command-state` reports a refusal. The Manager cluster advances to revision 54.
+
+### Patch Changes
+
+- aefcd66: Self-update keeps the new CLI version when it skips a Claude integration owned by another Cotal home.
+
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+No changes in this release.
+
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Minor Changes
+
+- d4f8140: Claude Code agents on a signed-in space now list, run and interrupt their own `/` commands for their owner, as OpenCode, pi and Codex agents do.
+  
+  `@cotal-ai/connector-claude-code` ships a command mod, `hooks/commands.js`, which needs Claude Code 2.1.330 or later with mods on. The seat's MCP server, and a plain session's, serves a private command socket for its Claude Code process, and the mod's reader connects to it with its connector and Claude versions; the server refuses another connector version or an older Claude. The `agent` endpoint's `commands` lists Claude's own `/` list as `command` entries, without what Claude hides and what cannot run remotely. A command that a person, a plugin or an MCP server added runs, and of Claude's built-ins only `/context`, `/compact`, `/init`, `/security-review`, `/code-review`, `/simplify` and `/verify` do: one that opens a panel or writes settings, such as `/usage` or `/model`, ends `refused` with its reason, and a name Claude does not list, an alias such as `/cost` included, ends `not-found`. A queued command starts only while the seat runs no turn, and one Claude has not started within 30 s, such as one a panel holds, ends `unknown`. After a local Stop a command ends `refused` with "waiting for local input". `interrupt` stops the turn and every tool the stop moved to the background, and the seat then reads idle. While no mod serves the session, `commands` answers `supported: false` and `command` and `interrupt` are `unimplemented` with the cause. `serveClaudeSession` takes `claudePid` to serve one session's command socket. `@cotal-ai/connector-core` adds an optional `unsupported()` to `CommandDispatcher` for that cause, and exports the release version on the `@cotal-ai/connector-core/version` subpath.
+
+## 0.175.3
+
+### Patch Changes
+
+- 450ccb6: Explain when retrying `cotal_spawn` would start a duplicate helper and point callers to `cotal_invoke` to inspect a helper whose model pin could not be audited.
+
+## 0.175.2
+
+No changes in this release.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+### Minor Changes
+
+- e91ed5b: T3 Code, Zed and other Agent Client Protocol clients can now spawn and drive Cotal agents through the new `@cotal-ai/acp` extension and its `cotal acp` command.
+  
+  `cotal acp` serves ACP v1 on standard input and output. A client thread is one managed agent: its first prompt spawns the agent through the space's manager in the thread's folder, with the model, reasoning variant, persona, channel and machine the thread chose, and the agent keeps running when the client closes. The thread follows the agent's event channel, so an application without an event plane is not offered. Session list shows the managed agents in a folder, loading one replays what its event channel still holds, deleting one hides that run, and `/despawn`, `/roster` and `/channels` answer in the thread. A later prompt is typed into the agent's terminal through the manager's `input` command, so it arrives as the user's own words, and its turn ends once the agent has started working and stopped again. An agent whose runtime owns no terminal input, such as tmux, refuses it, and the prompt fails with the manager's reason. A client that runs terminals is offered a sign-in that runs `cotal login` or, with no space recorded, `cotal setup`. Stopping a turn interrupts the agent through the manager's new `interrupt` command, and the turn ends as cancelled, also when the agent cannot be stopped. Forwarding an agent's questions is not available yet. `@cotal-ai/cli` names the package when `cotal acp` runs before the extension is added, and `@cotal-ai/workspace` records `acp` as a Cotal home entry and offers the `input` and `interrupt` control calls.
+  
+  The manager serves a new targeted `interrupt` command, contract revision 53. It writes the key a seat's connector declares in the new `Connector.interruptKey` into the seat's terminal, and it is granted as `input` is. The Claude Code and Pi connectors declare Escape.
+  
+  On a space where people sign in, a person now controls every agent under their own owner without the `admin` scope. Their manager view carries `inspect` and `ps` and owner-mode `input`, `interrupt`, `despawn` and `attach`, whatever their scope, and their sign-in reads those agents' event channels live and through its own history reader. These rights come from the ledger row being a person's, never from a scope token, so no agent credential holds them. They ride the person's sign-in, so a program running as that person where they are signed in can use them. `cotal acp` reads through that sign-in, takes your managers from the auth service's `/manager-instances` list, reads your agents from every live one, sends each agent's commands to the manager that holds it, and names each agent `acp_<id>`, a valid actor name there. A thread loaded without a grant that may spawn offers only the agent's own model and cannot start another, and `cotal acp` stops, sending nothing, when the machine's sign-in is granted again or changes account. `@cotal-ai/core` adds a `publisher` filter to `channelHistoryPage` and an optional `AuthProvider.listManagerInstances`, which `@cotal-ai/auth` implements. `@cotal-ai/workspace` adds `ownManagerInstances`, `userSignInAuth`, `signInChange`, an observer `lifecycleUid` option, and a `gone` list on the `ps` reply for registrations whose host is gone. A control call whose own chosen run was replaced is now reported as refused before submission, with `preSubmitRefusal` and `selectedSeatChanged`, so a picker `cotal attach` exits as a refusal (`TARGET_NOT_FOUND`) and `cotal team agent remove` reports refused where they reported a failure or an unknown outcome; nothing was ever sent in that case.
+
+## 0.174.4
+
+No changes in this release.
+
+## 0.174.3
+
+No changes in this release.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+### Minor Changes
+
+- 5053a5e: An agent's owner can now rename the agent, and every client in the space sees the new name while the agent keeps its identity. The `agent` endpoint advances to revision 4 with `set-name` `{ name }`, which only the owner's interactive session may call. The agent checks the name with the shared name rule, refuses the name of another live agent compared lowercased, changes its card's display name and republishes presence at once; refusals are typed with the `ai.cotal.agent.name-refused` detail (`name-invalid` or `name-taken`), and the current name again changes nothing. Messages sent afterwards carry the new `from.name`, and stored history keeps the old one. `CotalEndpoint.setCardName` makes the change, and an endpoint that watches presence reports a changed display name as a `presence` update and a `roster` event. A manager keeps a seat's last shown name apart from its alias and passes it as `COTAL_DISPLAY_NAME` (`LaunchOpts.displayName`) when it starts the seat again after a crash or a preserved resume, so the seat comes back under the same alias and actor with its last name. `ps`, resume commit and name allocation find a renamed seat by its principal, and in user mode a new spawn does not take a renamed agent's actor.
+
+### Patch Changes
+
+- 0b133a3: Cotal can update without changing a read-only Claude profile or plugin directory.
+
+## 0.173.0
+
+No changes in this release.
+
+## 0.172.2
+
+No changes in this release.
+
+## 0.172.1
+
+No changes in this release.
+
+## 0.172.0
+
+### Minor Changes
+
+- de93c7e: A Claude Code seat that Cotal launches on a signed-in space now lets its owner answer Claude's tool permissions from another session, while Claude's own dialog stays open.
+  
+  The plugin registers `PermissionRequest` and `SubagentStop`. The hook relay holds a `PermissionRequest` past its 2-second deadline once a proven connector has it, and the control server passes each handler a signal that aborts when the hook's connection closes. The connector opens each permission as a prompt on the agent's own `agent` endpoint, offered for 7 days, and hands Claude the remote allow or deny. It settles a prompt from what Claude reports later: a closed hook connection, a batch that ran a call with the same scope, tool and input, or the end of that scope's turn. A call the remote deny refused is listed in Claude's batch with the deny's message as its result, and it does not count as a call that ran. `AskUserQuestion` and `ExitPlanMode` stay with Claude's dialog. On Windows the hook answers each permission itself with no decision and the connector warns once. `MeshAgent.prompts` exposes the agent's prompt desk to a connector. A connector can declare `prompts`, and every Manager `status.connectors` row now carries `prompts`, true when the connector declares it and the mesh is user-auth. The Manager cluster advances to revision 52, whose closed status schema a revision-51 reader rejects. `HookHandle` takes a third argument, the hook's connection context, so code that calls a handler typed as `HookHandle` passes one.
+
+### Patch Changes
+
+- 2df89cb: Keep verified Cotal updates installed when a Codex or Claude configuration file is read-only, refresh the connector files that can be updated, and report any remaining configuration work.
+
+## 0.171.5
+
+### Patch Changes
+
+- 8708701: A session on a websocket mesh now reconnects after its connection dies without a reset, such as during a laptop sleep, and `cotal_disconnect` no longer hangs while the mesh is unreachable. When the ping check finds such a connection stale, the client stops waiting for the unanswered closing handshake after 5 seconds and reconnects. A failed websocket dial now names the URL it dialed, whether the socket had opened, how long it had been trying or open, and any reason given, where it used to say only `ConnectionError`. A Claude Code disconnect waits at most 3 seconds for the event plane before it stops the connection, so `cotal_connect` can connect the conversation again. A failed `cotal_reconnect` now advises calling it again, where it used to name `/reconnect`, a command Claude Code does not have.
+
+## 0.171.4
+
+No changes in this release.
+
+## 0.171.3
+
+### Patch Changes
+
+- 14ee1ad: A Claude Code seat whose connector started more than two seconds after the session no longer publishes nothing on the event plane for its whole session. The `SessionStart` hook at launch now keeps dialing the connector's control socket for up to 30 seconds, the time Claude gives an MCP server to connect, instead of giving up at two seconds and losing the only event that says where the transcript starts. A clear or a compaction keeps the two-second budget, and later hooks still fail open at once.
+
+## 0.171.2
+
+### Patch Changes
+
+- 19cc4d2: Fix the CLI setup smoke tests so their Codex stand-ins report the plugin version they installed.
+- da8cb2b: Claude Code and Pi seats return to `idle` after their user interrupts a turn, and the run ends as an interrupt on the event plane. Claude Code fires no hook on an interrupt, so the connector now watches the open turn's transcript for the interrupt record Claude Code writes. That record sets presence to `idle`, clears any approval or input condition, and closes the run with `RUN_FINISHED` carrying an `interrupt` outcome. A Pi turn without a Cotal batch now publishes `idle` when it ends after an abort or an error. An aborted Pi turn, including one stopped during a tool call, ends with an `interrupt` outcome instead of `RUN_ERROR`.
+- a55bdb0: Refuse invalid spawn arguments and inaccessible working directories before provisioning credentials, reject pi resume flags, and remove Hermes launch credentials, sockets and disposable profiles after stopping.
+
+## 0.171.1
+
+### Patch Changes
+
+- c5d830a: Publish Claude Code's final assistant reply before closing its activity run when the transcript write arrives after the Stop hook.
+
+## 0.171.0
+
+No changes in this release.
+
+## 0.170.0
+
+### Patch Changes
+
+- 7e7f28a: Daemon-hosted Managers register the Claude Code wake channel before offering Claude Code installed after startup.
+
 ## 0.169.0
 
 ### Minor Changes

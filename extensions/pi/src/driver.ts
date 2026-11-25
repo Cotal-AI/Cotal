@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { boundedValue, oneLine } from "@cotal-ai/core";
+import { boundedValue, oneLine, type PresenceCondition } from "@cotal-ai/core";
 import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
 import { fmtChannel, fmtFrom, formatInjection } from "@cotal-ai/connector-core";
 import { InboxTurn } from "./inbox-turn.js";
@@ -15,6 +15,8 @@ const CONTINUATION_BACKOFF_MS = 50;
 // The most characters of Pi's error a held reason repeats, so a provider's long error body does not
 // fill the presence line.
 const ERROR_EXCERPT_LIMIT = 300;
+// How often a due command checks again whether Pi settled after its last turn.
+const SETTLE_POLL_MS = 10;
 
 type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
 
@@ -30,6 +32,7 @@ export interface PiContextLike {
   hasUI: boolean;
   ui: { notify(message: string, level?: "info" | "warning" | "error"): void };
   shutdown(): void;
+  abort(): void;
 }
 
 export interface PiHost {
@@ -97,6 +100,12 @@ export class PiDriver {
   private taking = false;
   /** A pump forced while a batch was being taken, so the take's own pump is forced too. */
   private forcedDuringTake = false;
+  /** A queued command is being handed to Pi; nothing else is sent until Pi took it. */
+  private commandTaking = false;
+  /** The last thing this driver started was a command, so waiting messages go before the next one. */
+  private lastWasCommand = false;
+  private readonly startWaiters = new Set<() => void>();
+  private readonly endWaiters = new Set<() => void>();
 
   constructor(
     private readonly mesh: MeshAgent,
@@ -139,6 +148,10 @@ export class PiDriver {
     this.pump();
   }
 
+  onCommand(): void {
+    this.pump();
+  }
+
   onMentionWake(item: InboxItem): void {
     if (this._state === "shuttingDown") return;
     // The sender and channel go through the shared frame helpers: a peer writes its own name and
@@ -152,6 +165,7 @@ export class PiDriver {
   }
 
   onAgentStart(context: PiContextLike): void {
+    for (const notify of [...this.startWaiters]) notify();
     this.context = context;
     if (this._state === "shuttingDown") {
       context.shutdown();
@@ -247,7 +261,12 @@ export class PiDriver {
   }
 
   onAgentEnd(messages: readonly unknown[], context: PiContextLike): void {
+    for (const notify of [...this.endWaiters]) notify();
     if (this._state === "shuttingDown") return;
+    // Pi builds a new context for every event. The idle publish below waits on the context it is
+    // handed and stands down once a later event replaced `this.context`, so the end's own context
+    // must be the current one, or a turn ending without a Cotal batch never published idle.
+    this.context = context;
     this.running = false;
     const lastAssistant = [...messages]
       .reverse()
@@ -264,6 +283,17 @@ export class PiDriver {
         lastAssistant?.stopReason === "toolUse" ||
         (lastAssistant?.stopReason === "length" && (lastAssistant.usage?.output ?? 0) > 0));
 
+    // Pi's own error names the cause, such as a missing model provider. It is relayed as the
+    // presence condition, the field observers read for a failed turn, and also carried in the held
+    // reason below. `failed` is the only code pi's signal supports: its stop reason says the turn
+    // failed, and its error is free text this connector does not classify.
+    const error =
+      typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
+    const excerpt = error ? oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT)) : "";
+    if (!aborted && lastAssistant?.stopReason === "error") {
+      this.enqueueCondition({ code: "failed", source: "error", ...(excerpt ? { message: excerpt } : {}), since: Date.now() });
+    }
+
     if (!terminal) {
       this.terminalEvidenceBatchIds.clear();
       if (this.batches.length === 0) {
@@ -278,14 +308,8 @@ export class PiDriver {
         this.hold("Pi turn was aborted; Cotal delivery is retained until a proven clean continuation completes");
         return;
       }
-      // Pi's own error names the cause, such as a missing model provider, so the held reason carries
-      // it: without it the presence line said only "ended with error" and pointed at a retry that
-      // could not help.
-      const error =
-        typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
       const reasonLabel =
-        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` +
-        (error ? ` (${oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT))})` : "");
+        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` + (excerpt ? ` (${excerpt})` : "");
       if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {
         this.continuationAttempts++;
         this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);
@@ -331,10 +355,66 @@ export class PiDriver {
     await this.presence.catch(() => {});
   }
 
+  /** Resolves true at Pi's next agent start, false when none came within `ms`. */
+  nextTurnStart(ms: number): Promise<boolean> {
+    return this.waitFor(this.startWaiters, ms);
+  }
+
+  /** Abort the turn Pi is running and wait for its end. Pi's agent end then holds or settles the
+   *  delivery as it does for a turn its user stopped. */
+  async interruptTurn(endMs: number): Promise<"interrupted" | "idle"> {
+    if (!this.running || !this.context) return "idle";
+    const ended = this.waitFor(this.endWaiters, endMs);
+    this.context.abort();
+    if (!(await ended)) throw new Error(`Pi did not end its turn within ${endMs / 1000} s of the abort`);
+    return "interrupted";
+  }
+
+  private waitFor(waiters: Set<() => void>, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const settle = (hit: boolean): void => {
+        clearTimeout(timer);
+        waiters.delete(notify);
+        resolve(hit);
+      };
+      const notify = (): void => settle(true);
+      const timer = setTimeout(() => settle(false), ms);
+      timer.unref?.();
+      waiters.add(notify);
+    });
+  }
+
+  /** A queued command starts only while no turn runs and nothing of this driver's is in flight. A
+   *  held delivery waits for a new turn, and a command may start one. Right after a command, waiting
+   *  messages go first, so a stream of commands cannot hold the inbox back. */
+  private commandDue(available: readonly InboxItem[]): boolean {
+    if (this.mesh.queuedCommands === 0 || this.running || this.taking) return false;
+    if (this._state === "held") return true;
+    if (this._state !== "idle" || this.batches.length > 0) return false;
+    return !this.lastWasCommand ||
+      (this.nudges.length === 0 && !this.mesh.peekPendingTurns() && !available.some((item) => wakeable(this.mesh, item)));
+  }
+
+  private startCommand(context: PiContextLike): void {
+    // Pi refuses a prompt while it settles after its last turn, which outlasts the agent end.
+    if (!context.isIdle()) {
+      setTimeout(() => this.pump(), SETTLE_POLL_MS).unref?.();
+      return;
+    }
+    this.commandTaking = true;
+    void this.mesh.dispatchNextCommand().then((outcome) => {
+      this.commandTaking = false;
+      if (outcome === "dispatched") this.lastWasCommand = true;
+      this.pump();
+    });
+  }
+
   /** Dispatch the next batch. `taken` is a batch whose role requests were just taken for it, which
    *  goes out ahead of anything else so nothing taken waits behind a later choice. */
   private pump(force = false, taken?: InboxItem[]): void {
-    if (!this.host || !this.context || this._state === "held" || this._state === "shuttingDown") return;
+    if (!this.host || !this.context || this._state === "shuttingDown" || this.commandTaking) return;
+    if (this.mesh.queuedCommands > 0 && this.commandDue(this.inbox.preview())) return this.startCommand(this.context);
+    if (this._state === "held") return;
     if (this.batches.some((batch) => !batch.confirmed)) return;
     if (this.taking && !taken) {
       if (force) this.forcedDuringTake = true;
@@ -394,6 +474,7 @@ export class PiDriver {
     if (!content) return;
 
     const batch: Batch = { id: randomUUID(), ids, content, started: false, confirmed: false, ...(turns ? { turnIds: turns.goalIds } : {}) };
+    this.lastWasCommand = false;
     this.batches.push(batch);
     this._state = "dispatching";
     this.dispatch(batch);
@@ -487,6 +568,8 @@ export class PiDriver {
     for (const batch of this.batches) if (!batch.confirmed && batch.turnIds) this.mesh.releaseTurns(batch.turnIds);
     this.enqueuePresence("waiting", reason);
     if (this.context?.hasUI) this.context.ui.notify(`Cotal delivery held: ${reason}`, "warning");
+    // A command queued behind the turn that ended here, such as one its owner interrupted, starts now.
+    if (this.mesh.queuedCommands > 0) queueMicrotask(() => this.pump());
   }
 
   private publishIdleWhenSettled(context: PiContextLike): void {
@@ -505,6 +588,14 @@ export class PiDriver {
   private enqueuePresence(status: "idle" | "working" | "waiting", activity?: string): void {
     this.presence = this.presence
       .then(() => this.mesh.setStatus(status, activity))
+      .catch(() => {});
+  }
+
+  /** Ordered behind every status write, so a later turn's `working` (which clears it) cannot land
+   *  before it. */
+  private enqueueCondition(condition: PresenceCondition): void {
+    this.presence = this.presence
+      .then(() => this.mesh.setCondition(condition))
       .catch(() => {});
   }
 

@@ -15,13 +15,14 @@
  *     start of another space there names that one, and the next plain `up` starts it.
  *  4. Open legacy root started with `up --open --space`. After `down` its plain `up` starts it again
  *     as that space, at its own address, and starts no `main`, and so does a restart that names that
- *     address with `--server`, which says the mode it started in.
+ *     address with `--server`, which says the mode it started in. The named reset previews that
+ *     cannot select the stopped root point to the matching cleanup previews, not deletion.
  *
- * Sandboxes COTAL_HOME and both project roots. Run: pnpm smoke:legacy-root-upgrade:live
+ * Sandboxes COTAL_HOME and the project roots. Run: pnpm smoke:legacy-root-upgrade:live
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -44,7 +45,7 @@ const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const roots: string[] = [];
 
-type Envelope = { outcome: string; error?: { code: string; message: string; remedy?: string } };
+type Envelope = { outcome: string; target?: { space?: string; root?: string }; error?: { code: string; message: string; remedy?: string }; result?: Record<string, unknown> };
 type Run = { status: number | null; stdout: string; stderr: string; env?: Envelope };
 const cli = (cwd: string, ...args: string[]): Run => {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
@@ -60,6 +61,8 @@ const accountFiles = (root: string) => readdirSync(join(root, ".cotal", "auth"))
 // Project roots sit beside COTAL_HOME, never inside it.
 const folder = (name: string) => {
   const root = mkdtempSync(join(tmpdir(), `cotal-legacy-root-${name}-`));
+  // An empty marker keeps root discovery inside the fixture without preparing a space.
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
   roots.push(root);
   return root;
 };
@@ -166,6 +169,25 @@ try {
     check("an unprepared folder starts an open space on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
     const stopped = cli(root, "down", "--yes");
     check("down stops it and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
+    const store = join(root, ".cotal", "nats", "jetstream");
+    for (const [kind, target] of [["store", "store"], ["space", "all"]] as const) {
+      const preview = cli(root, "reset", kind, space, "--dry-run", "--plain");
+      const command = `cotal clean ${target} --dry-run`;
+      const text = preview.stdout + preview.stderr;
+      const suggested = /run `([^`]+)` from that root/.exec(text)?.[1];
+      check(`reset ${kind} preview refuses and names ${command} from the legacy root`,
+        preview.status === 2 && text.includes("TARGET_NOT_FOUND") && suggested === command
+          && text.includes("adding --store-dir <dir> if it used a custom store") && !text.includes("--force") && existsSync(store), shown(preview));
+      if (suggested === command) {
+        const clean = cli(root, ...suggested.split(" ").slice(1));
+        check(`${command} lists the store and leaves it intact`,
+          clean.status === 0 && /would remove \.cotal\/nats \(JetStream store: .*\bjetstream\b/.test(clean.stdout) && existsSync(store), shown(clean));
+      }
+      const apply = cli(root, "reset", kind, space, "--yes", "--json");
+      check(`reset ${kind} apply still refuses with the force cleanup for the legacy root`,
+        apply.status === 2 && apply.env?.error?.code === "TARGET_NOT_FOUND"
+          && Boolean(apply.env.error.remedy?.includes(`run \`cotal clean ${target} --force\` from that root`)) && existsSync(store), shown(apply));
+    }
     const again = cli(root, "up", "--no-manager");
     check("plain up starts that space again, open, at its own address, and starts no main",
       again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
@@ -179,6 +201,44 @@ try {
       pinned.status === 0 && findMesh(space)?.mode === "open" && pinned.stdout.includes("starting this folder's stopped stack in the mode it last ran: open"), shown(pinned));
     const last = cli(root, "down", "--yes");
     check("down stops the restarted open root", last.status === 0, shown(last));
+  }
+  // A folder-named open space keeps its registration after a clean down.
+  {
+    const parent = folder("retained");
+    const space = "gamma";
+    const root = join(parent, space);
+    mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+    roots.push(root);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    anchor(root);
+    const started = cli(root, "up", "--detach", "--open", "--space", space, "--server", server);
+    check("the folder-named open space starts", started.status === 0, shown(started));
+    const stopped = cli(root, "down", "--yes");
+    check("down leaves the folder-named registration", stopped.status === 0 && findMesh(space)?.root === root, shown(stopped));
+    for (const args of [[space, "--plain"], ["--plain"]]) {
+      const selected = cli(parent, "use", ...args);
+      check(`use ${args.join(" ")} shows the completed stop and restart root`, selected.status === 0 && selected.stdout.includes("stopped; its last operation, `cotal down`, completed") && selected.stdout.includes(`start it again with \`cotal up\` in ${root}`), shown(selected));
+    }
+    const selection = cli(parent, "use", "--json");
+    check("use JSON reports both the retained registration and the completed stop", selection.status === 0 && selection.env?.result?.currentRecorded === true && selection.env.result.preparedRoot === root && selection.env.result.preparedState === "stopped" && selection.env.result.lastOperation === "`cotal down`, completed", shown(selection));
+    for (const address of [server, `${server}/`]) {
+      const who = cli(parent, "who", "--server", address, "--json");
+      check(`who retains the stopped registration for ${address}`, who.status === 2 && who.env?.target?.space === space && who.env.target.root === root && who.env.error?.code === "TARGET_UNAVAILABLE" && who.env.error.message.includes(`recorded at ${root} but not running`) && who.env.error.remedy === "run `cotal up` there to restart", shown(who));
+    }
+    const restart = cli(root, "up", "--detach");
+    const running = cli(parent, "use", "--json");
+    check("up restarts the recorded space and clears the completed stop", restart.status === 0 && running.status === 0 && running.env?.result?.currentRecorded === true && running.env.result.preparedState === null, { restart: shown(restart), running: shown(running) });
+    const sent = cli(root, "send", "-c", "audit", "retained-history");
+    check("the open space stores history before down", sent.status === 0, shown(sent));
+    const stoppedAgain = cli(root, "down", "--yes");
+    check("down stops the restarted folder-named space", stoppedAgain.status === 0, shown(stoppedAgain));
+    if (process.platform === "linux") {
+      const store = join(root, ".cotal", "nats", "jetstream");
+      const preview = cli(root, "reset", "space", space, "--dry-run", "--json");
+      check("reset space previews the stopped open space without removing its store or registration", preview.status === 0 && preview.env?.result?.applyVerdict !== undefined && existsSync(store) && findMesh(space) !== undefined, shown(preview));
+      const applied = cli(root, "reset", "space", space, "--yes", "--json");
+      check("named reset removes the stopped open store and registration", applied.status === 0 && applied.env?.result?.localIdentityRemoved === true && applied.env.result.registrationRemoved === true && !existsSync(store) && findMesh(space) === undefined, shown(applied));
+    }
   }
 } finally {
   for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down", "--yes");

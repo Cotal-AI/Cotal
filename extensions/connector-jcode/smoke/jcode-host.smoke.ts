@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -400,13 +400,27 @@ try {
       argv.env?.COTAL_HOME === join(root, "cotal-home"),
     argv.env,
   );
-  check("private JCODE_HOME is passed to the harness", Boolean(argv.env?.JCODE_HOME?.includes("/tmp/jc-") && argv.env?.JCODE_HOME?.endsWith("/home")), argv.env);
+  // From Jcode 1.1 a shell command loads the project's saved environment through JCODE_HOME and
+  // fails when any part of that path is a symlink, so the harness gets the seat's real home.
+  const peerHome = managedHome("jcodehost", "jcodepeer");
+  check(
+    "the harness gets the seat's own home as JCODE_HOME, with no symlink on the path",
+    argv.env?.JCODE_HOME === peerHome && realpathSync(peerHome) === peerHome,
+    { env: argv.env, peerHome },
+  );
+  const runtimeDir = argv.env?.JCODE_RUNTIME_DIR ?? "";
+  check(
+    "the harness's runtime directory and API socket stay under the short private alias",
+    /^\/tmp\/jc-[0-9a-f]{12}\/home\/run$/.test(runtimeDir) &&
+      argv.argv?.[2] === join(runtimeDir, "jcode-api.sock") &&
+      argv.env?.JCODE_SOCKET === join(runtimeDir, "jcode.sock"),
+    { argv: argv.argv, env: argv.env },
+  );
   check("host disables SDK symlinked credential inheritance", argv.env?.JCODE_HOME !== undefined && !Object.keys(argv.env ?? {}).some((key) => key === "COTAL_JCODE_HOME"), argv.env);
   // A seat that updates its own binary restarts its process tree, which drops the only connection
   // the Jcode server counts as a client; nothing re-attaches, and the server's idle reaper kills
   // the seat mid-turn five minutes later. The seat's version is fixed at spawn time.
   check("host pins the seat binary against background self-update", argv.env?.JCODE_NO_AUTO_UPDATE === "1", argv.env);
-  const peerHome = managedHome("jcodehost", "jcodepeer");
   const peerLog = connectorLog(peerHome);
   check(
     "a successful join with no spawn --prompt names that outcome",
@@ -1262,6 +1276,51 @@ try {
   check("a permanently absent cotal tool ends the launch", absentCode !== null && absentCode !== 0, { code: absentCode, stderr: absentErr });
   check("a permanently absent cotal tool never reaches the roster", !announced.has("absentpeer"), [...announced]);
 
+  // A model on Jcode's deferred MCP surface calls orientation through a wrapper: `mcp_call` up to
+  // Jcode 0.99.0, `mcp` with action "call" from 0.99.1. Either proves readiness on its first turn.
+  // An `mcp` call with another action names the tool without calling it, so it proves nothing.
+  const deferredLaunch = (name: string, via: string) => {
+    const log = join(root, `readiness-${name}.jsonl`);
+    const proc = spawnHost({
+      cwd: root,
+      env: {
+        ...env,
+        PATH: `${shimDir}:${env.PATH ?? ""}`,
+        FAKE_JCODE_LOG: log,
+        FAKE_JCODE_ORIENTATION_VIA: via,
+        JCODE_HOME: inheritedJcodeHome,
+        COTAL_SPACE: "jcodehost",
+        COTAL_NAME: name,
+        COTAL_ID: name,
+        COTAL_SERVERS: servers,
+        COTAL_SUBSCRIBE: "team",
+        COTAL_ALLOW_SUBSCRIBE: "team",
+        COTAL_ALLOW_PUBLISH: "team",
+        COTAL_JCODE_HOME: root,
+        COTAL_JCODE_TUI: "0",
+        COTAL_CONTROL_SOCKET: controlSock(`${name}-control.sock`),
+        COTAL_CONTROL_KEY: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+    const turns = () => readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(log)
+      .filter((entry) => entry.ev === "request" && entry.frame?.req === "send_message" && !entry.frame?.no_reply && String(entry.frame?.content).includes("Call the cotal_orientation tool exactly once"));
+    return { proc, turns, stderr: () => stderr };
+  };
+  for (const [name, via] of [["mcpcallpeer", "mcp_call"], ["mcppeer", "mcp"]] as const) {
+    const launch = deferredLaunch(name, via);
+    await Promise.race([waitFor(`${via} readiness join`, () => (announced.has(name) ? true : undefined)), once(launch.proc, "exit")]).catch(() => {});
+    check(`a cotal_orientation call through Jcode's ${via} wrapper proves readiness on the first turn`, announced.has(name) && launch.turns().length === 1, { code: launch.proc.exitCode, turns: launch.turns(), stderr: launch.stderr() });
+    await stopHostTree(launch.proc, "SIGTERM");
+  }
+  const searchLaunch = deferredLaunch("mcpsearchpeer", "mcp-search");
+  await Promise.race([once(searchLaunch.proc, "exit"), sleep(20_000)]);
+  const searchCode = searchLaunch.proc.exitCode;
+  await stopHostTree(searchLaunch.proc, "SIGKILL");
+  check("an mcp call with an action other than call never proves readiness", searchCode !== null && searchCode !== 0 && searchLaunch.turns().length === 2 && !announced.has("mcpsearchpeer"), { code: searchCode, turns: searchLaunch.turns(), stderr: searchLaunch.stderr() });
+
   // A structured downstream effort rejection is untrusted. Before the repair, this exact canary
   // reached the external observer/UI because host-main rendered the host-composed refusal verbatim.
   const effortCanary = "JCODE-REFUSAL-CANARY-3c5e9d77-DO-NOT-PRINT";
@@ -1433,7 +1492,7 @@ try {
     const failedCode = failed.exitCode;
     await stopHostTree(failed, "SIGKILL");
     const logPath = connectorLogPath(managedHome("jcodehost", modelCase.name));
-    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${relative(root, logPath)}\n`;
+    const expected = `[cotal-jcode] fatal: Jcode startup failed (${modelCase.code}); workspace log: ${logPath}\n`;
     const persisted = readFileSync(logPath, "utf8");
     check(`${modelCase.code} names the connector-owned refusal and its private log`, failedCode === 1 && failedErr.includes(expected), { failedCode, failedErr });
     check(`${modelCase.code} fatal is persisted in the seat connector log`, persisted.includes(expected), persisted);
@@ -1510,6 +1569,7 @@ try {
       PATH: `${shimDir}:${env.PATH ?? ""}`,
       FAKE_JCODE_LOG: tuiLog,
       FAKE_JCODE_TURN_DELAY_MS: "1000",
+      FAKE_JCODE_TUI_RESPAWN: "1",
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
       COTAL_NAME: "tuipeer",
@@ -1528,12 +1588,77 @@ try {
   let foregroundErr = "";
   foreground.stderr?.on("data", (chunk: Buffer) => (foregroundErr += chunk.toString()));
   await waitFor("foreground readiness proof", () => existsSync(tuiLog) && readFileSync(tuiLog, "utf8").includes('"ev":"orientation_done"') ? true : undefined);
-  const tuiEntries = readJsonLines<{ ev: string; frame?: { req?: string; content?: string; no_reply?: boolean } }>(tuiLog);
+  const tuiEntries = readJsonLines<{
+    ev: string;
+    argv?: string[];
+    companionAutostart?: string | null;
+    jcodeHome?: string | null;
+    runtimeDir?: string | null;
+    frame?: { req?: string; content?: string; no_reply?: boolean };
+  }>(tuiLog);
   const tuiAt = tuiEntries.findIndex((entry) => entry.ev === "tui");
   const readinessDoneAt = tuiEntries.findIndex((entry) => entry.ev === "orientation_done");
   check("foreground TUI starts before its readiness turn finishes", tuiAt >= 0 && tuiAt < readinessDoneAt, { tuiAt, readinessDoneAt, entries: tuiEntries });
   await stopHostTree(foreground, "SIGTERM");
   check("the early foreground TUI launch exits cleanly", foreground.exitCode === 0, { code: foreground.exitCode, stderr: foregroundErr });
+  check("the foreground TUI starts with Jcode's companion autostart off", tuiEntries.find((entry) => entry.ev === "tui")?.companionAutostart === "0", tuiEntries.filter((entry) => entry.ev === "tui"));
+  const tui = tuiEntries.find((entry) => entry.ev === "tui");
+  const tuiHome = managedHome("jcodehost", "tuipeer");
+  check(
+    "the TUI gets the seat's own home as JCODE_HOME and its socket under the short private alias",
+    tui?.jcodeHome === tuiHome &&
+      realpathSync(tuiHome) === tuiHome &&
+      /^\/tmp\/jc-[0-9a-f]{12}\/home\/run$/.test(tui?.runtimeDir ?? "") &&
+      tui?.argv?.[0] === "--socket" &&
+      tui?.argv?.[1] === join(tui?.runtimeDir ?? "", "jcode.sock"),
+    { tui, tuiHome },
+  );
+
+  // #7950: from Jcode 0.99.1 a TUI that outlives its server starts a new one on the seat's socket,
+  // which blocks the next launch of the same name. A stop, and a failed launch, must end the TUI
+  // before the server it is watching.
+  const respawnedServers = (log: string): number[] => {
+    const pids = readJsonLines<{ ev: string; pid?: number }>(log).filter((entry) => entry.ev === "respawned_server").map((entry) => entry.pid!);
+    for (const pid of pids) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    return pids;
+  };
+  await sleep(500);
+  const stoppedTui = readJsonLines<{ ev: string }>(tuiLog).filter((entry) => ["tui", "tui_watching", "respawned_server"].includes(entry.ev));
+  check("a stopped seat's TUI was watching its server and starts no replacement", stoppedTui.some((entry) => entry.ev === "tui_watching") && respawnedServers(tuiLog).length === 0, stoppedTui);
+  const tuiFailLog = join(root, "tui-failed-launch.jsonl");
+  const tuiFail = spawnHost({
+    cwd: root,
+    env: {
+      ...env,
+      PATH: `${shimDir}:${env.PATH ?? ""}`,
+      FAKE_JCODE_LOG: tuiFailLog,
+      // Slow turns give the TUI time to start and connect before the launch fails.
+      FAKE_JCODE_TURN_DELAY_MS: "1000",
+      FAKE_JCODE_NEVER_ORIENTATION: "1",
+      FAKE_JCODE_TUI_RESPAWN: "1",
+      JCODE_HOME: inheritedJcodeHome,
+      COTAL_SPACE: "jcodehost",
+      COTAL_NAME: "tuifailpeer",
+      COTAL_ID: "tuifailpeer",
+      COTAL_SERVERS: servers,
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: root,
+      COTAL_JCODE_TUI: "1",
+      COTAL_CONTROL_SOCKET: controlSock("tuifail-control.sock"),
+      COTAL_CONTROL_KEY: "tuifail-control-token", COTAL_CONTROL_VERSION: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let tuiFailErr = "";
+  tuiFail.stderr?.on("data", (chunk: Buffer) => (tuiFailErr += chunk.toString()));
+  await Promise.race([once(tuiFail, "exit"), sleep(20_000)]);
+  const tuiFailCode = tuiFail.exitCode;
+  await stopHostTree(tuiFail, "SIGKILL");
+  await sleep(500);
+  const tuiFailEntries = readJsonLines<{ ev: string }>(tuiFailLog);
+  check("a failed launch's TUI was watching its server and starts no replacement", tuiFailCode !== null && tuiFailCode !== 0 && tuiFailEntries.some((entry) => entry.ev === "tui_watching") && respawnedServers(tuiFailLog).length === 0, { code: tuiFailCode, entries: tuiFailEntries.filter((entry) => ["tui", "tui_watching", "respawned_server"].includes(entry.ev)), stderr: tuiFailErr });
 
   // Deliberate failing case: project MCP files would override Jcode's private cotal config, so the
   // host must refuse before it starts an API bridge rather than silently loading another server.

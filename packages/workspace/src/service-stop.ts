@@ -98,7 +98,9 @@ export function publishServiceStopReceipt(context: StopContext, value: NativeSer
 /** Read all present phases without replacing an unknown with mere process disappearance. */
 export function readServiceStopReceipts(context: StopContext, expected: NativeServiceStopRequest): NativeServiceStopReceipt[] {
   const checked = request(expected, context), receipts: NativeServiceStopReceipt[] = [];
-  for (const phase of ["accepted", "refused", "completed", "failed"] as const) {
+  // The child publishes accepted before completed or failed. Read it last so a terminal
+  // receipt cannot be observed after a stale miss of its prerequisite.
+  for (const phase of ["refused", "completed", "failed", "accepted"] as const) {
     const bytes = readLocalRecordSource(receiptPath(context, checked.requestId, phase), 8192, true);
     if (bytes === undefined) continue;
     const row = decodeLocalJson(bytes);
@@ -107,7 +109,9 @@ export function readServiceStopReceipts(context: StopContext, expected: NativeSe
     if (!object(row) || Object.keys(row).length !== keys.length + 3 || Object.keys(row).some((key) => ![...keys, "phase", "observedAt", "cleanup"].includes(key)) || row.phase !== phase || row.cleanup !== "not-checked" || typeof row.observedAt !== "string" || row.observedAt.length > 100 || !Number.isFinite(Date.parse(row.observedAt)) || Date.parse(row.observedAt) > Date.now() + 1000) return invalid();
     const base = Object.fromEntries(keys.map((key) => [key, row[key]]));
     if (!sameRequest(request(base, context), checked)) return invalid();
-    receipts.push({ ...checked, phase, observedAt: row.observedAt, cleanup: "not-checked" });
+    const receipt = { ...checked, phase, observedAt: row.observedAt, cleanup: "not-checked" } as const;
+    if (phase === "accepted") receipts.unshift(receipt);
+    else receipts.push(receipt);
   }
   if (receipts.filter((row) => row.phase !== "accepted").length > 1 || receipts.some((row) => row.phase === "refused") && receipts.some((row) => row.phase === "accepted")) return invalid();
   const accepted = receipts.find((row) => row.phase === "accepted");

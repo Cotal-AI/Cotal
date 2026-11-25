@@ -1,0 +1,1 @@
+smoke:status-no-manager-stopped

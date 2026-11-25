@@ -90,7 +90,10 @@ It waits out a broker that is temporarily unavailable.
 
 ## Publish the credential exchange [#split-host-bind]
 
-For user authentication, put an operator-owned HTTPS reverse proxy in front of the public exchange listener:
+Put an operator-owned HTTPS reverse proxy in front of the public exchange listener.
+These `up` flags are for legacy user-auth startup only. For a new space, run the command from an
+unprepared project folder with an unused space name. Do not run `cotal space create` first.
+A controller-owned root refuses the flags.
 
 ```bash
 cotal up --user-auth --idp https://idp.example/api/auth \

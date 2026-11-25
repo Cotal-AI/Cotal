@@ -1,0 +1,1992 @@
+{
+  "provider": "fakeprov",
+  "selected_model": "fake-alpha",
+  "models": [
+    "gpt-5.6-pro[web]",
+    "minimax-m2.7",
+    "kimi-k2.5",
+    "glm-4.7",
+    "glm-5",
+    "claude-haiku-4-5",
+    "gpt-5.1-codex-max",
+    "glm-5.1",
+    "deepseek-v4-flash",
+    "qwen3.5-plus",
+    "glm-4.5",
+    "glm-4.7-flash",
+    "glm-4.7-flashx",
+    "kimi-for-coding",
+    "kimi-k2.6",
+    "kimi-k2-thinking",
+    "kimi-k2-thinking-turbo",
+    "gpt-oss-120b",
+    "zai-glm-4.7",
+    "auto",
+    "qwen3-coder-plus",
+    "qwen3-max-2026-01-23",
+    "qwen3-coder-next",
+    "MiniMax-M2.5",
+    "qwen3-235b-a22b-instruct-2507",
+    "MiniMax-M2",
+    "kimi-k2-0905-preview",
+    "zai-org/GLM-4.7",
+    "zai-org/GLM-5",
+    "openai/gpt-oss-120b",
+    "moonshotai/Kimi-K2.6",
+    "moonshotai/Kimi-K2.5",
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "claude-fable-5",
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gemini-3.1-pro",
+    "gemini-3.1-pro-preview",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3-flash-preview",
+    "grok-4.6",
+    "grok-4.5",
+    "grok-4.3",
+    "kimi-k3",
+    "kimi-k3-together",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.7-code-nebius",
+    "kimi-k2.6-fireworks",
+    "deepseek-v4-pro",
+    "deepseek-v4-pro-together",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4-flash-deepinfra",
+    "deepseek-v4-flash-0731-deepinfra",
+    "deepseek-v3.2",
+    "deepseek-v3.1-sambanova",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "glm-5.2",
+    "glm-5.2-deepinfra",
+    "glm-5.2-sail",
+    "glm-4.7-deepinfra",
+    "qwen3.8-max",
+    "qwen3.8-2.4t",
+    "qwen3.8-27b",
+    "qwen3.8-flash",
+    "qwen3.7-max",
+    "qwen3-max-thinking",
+    "qwen3-coder-480b",
+    "qwen3-vl-235b",
+    "qwen3-next-80b",
+    "minimax-m3",
+    "minimax-m3-novita",
+    "minimax-m3-deepinfra",
+    "minimax-m3-gmicloud",
+    "mimo-v2.5-pro",
+    "mimo-v2.5-pro-xiaomi",
+    "mimo-v2.5-pro-novita",
+    "mimo-v2.5",
+    "mimo-v2.5-xiaomi",
+    "mimo-v2.5-novita",
+    "seed-2.0-pro",
+    "seed-2.0-code",
+    "seed-2.0-mini",
+    "step-3.7-flash",
+    "step-3.7-flash-novita",
+    "hy3",
+    "hy3-tencent",
+    "hy3-novita",
+    "ling-3.0-flash",
+    "inkling",
+    "inkling-small",
+    "nemotron-3-ultra",
+    "nemotron-3-super-120b",
+    "nemotron-3.5-lightning",
+    "mistral-large-latest",
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "command-a-cohere",
+    "llama-4-maverick",
+    "llama-4-scout",
+    "llama-3.3-70b",
+    "gpt-oss-120b-cerebras",
+    "gpt-oss-120b-deepinfra",
+    "gpt-oss-20b",
+    "gemma-4-31b",
+    "gemma-3-27b",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "qwen35-122b",
+    "glm-51-nvfp4",
+    "GLM-5.1",
+    "GLM-4.7",
+    "Llama-3.3-70B-Instruct",
+    "zai-glm-5-1",
+    "grok-code-fast-1",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+    "Qwen/Qwen3-Coder-Next",
+    "zai-org/GLM-5.1",
+    "deepseek-ai/DeepSeek-V3.2",
+    "kimi-k2-turbo-preview",
+    "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "Qwen/Qwen3.5-397B-A17B",
+    "meta-llama/Llama-3.3-70B-Instruct",
+    "NousResearch/Hermes-4-70B",
+    "qwen3-coder-30b-a3b-instruct",
+    "qwen3.5-397b-a17b",
+    "mistral-small-3.2-24b-instruct-2506",
+    "llama-3.3-70b-instruct",
+    "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8",
+    "cortecs/Llama-3.3-70B-Instruct-FP8-Dynamic",
+    "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8",
+    "google/gemma-3-27b-it",
+    "llama-3.1-8b-instant",
+    "devstral-medium-2507",
+    "sonar",
+    "sonar-pro",
+    "sonar-reasoning-pro",
+    "sonar-deep-research",
+    "moonshotai/Kimi-K2-Instruct",
+    "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+    "meta-llama/Llama-3.1-70B-Instruct",
+    "accounts/fireworks/routers/kimi-k2p5-turbo",
+    "accounts/fireworks/models/kimi-k2p5",
+    "accounts/fireworks/models/kimi-k2p6",
+    "accounts/fireworks/models/glm-4p7",
+    "accounts/fireworks/models/glm-5p1",
+    "accounts/fireworks/models/deepseek-v3p2",
+    "zai-org/glm-5.3",
+    "zai-org/glm-5.3-flash",
+    "moonshotai/kimi-k3",
+    "deepseek/deepseek-v4-pro-0813",
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    "mimo-v2-pro",
+    "mimo-v2-flash",
+    "mimo-v2-omni",
+    "muse-spark-1.2",
+    "muse-spark-1.1",
+    "celeris-1",
+    "yolo",
+    "fake-gamma",
+    "fake-alpha",
+    "fake-beta",
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-opus-4-6",
+    "claude-opus-4-6[1m]",
+    "claude-sonnet-4-6[1m]",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-20250514",
+    "gpt-6.1-sol",
+    "gpt-6-astra",
+    "gpt-5.6-pro",
+    "gpt-5.6",
+    "gpt-5.5-pro",
+    "gpt-5.4-pro",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-chat-latest",
+    "gpt-5.2-codex",
+    "gpt-5.2-pro",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.1-chat-latest",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5-chat-latest",
+    "gpt-5-codex",
+    "gpt-5-codex-mini",
+    "gpt-5-pro",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5"
+  ],
+  "routes": [
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-5-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-fable-5-1",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-fable-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-8",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-6",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-6[1m]",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-6",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-6[1m]",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-haiku-4-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-5",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-20250514",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-5-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-fable-5-1",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-fable-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-8",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-6",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-6[1m]",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-6",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-6[1m]",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-haiku-4-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-opus-4-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "Anthropic",
+      "model": "claude-sonnet-4-20250514",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-6.1-sol",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-6-astra",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-sol",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-pro",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-pro[web]",
+      "method": "chatgpt-web",
+      "available": true
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-terra",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.6-luna",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.5-pro",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.4",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.4-pro",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.3-codex",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.3-codex-spark",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.2-chat-latest",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.2-codex",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.2-pro",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.1-codex-mini",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.1-codex-max",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.2",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.1-chat-latest",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.1",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5.1-codex",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5-chat-latest",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5-codex",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5-codex-mini",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5-pro",
+      "method": "api key",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5-mini",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5-nano",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenAI",
+      "model": "gpt-5",
+      "method": "oauth",
+      "available": false
+    },
+    {
+      "provider": "OpenCode Zen",
+      "model": "minimax-m2.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Zen",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Zen",
+      "model": "glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Zen",
+      "model": "glm-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Zen",
+      "model": "claude-haiku-4-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Zen",
+      "model": "gpt-5.1-codex-max",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Go",
+      "model": "minimax-m2.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Go",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Go",
+      "model": "glm-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Go",
+      "model": "glm-5.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Go",
+      "model": "deepseek-v4-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "OpenCode Go",
+      "model": "qwen3.5-plus",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Z.AI",
+      "model": "glm-4.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Z.AI",
+      "model": "glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Z.AI",
+      "model": "glm-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Z.AI",
+      "model": "glm-5.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Z.AI",
+      "model": "glm-4.7-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Z.AI",
+      "model": "glm-4.7-flashx",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Kimi Code",
+      "model": "kimi-for-coding",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Kimi Code",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Kimi Code",
+      "model": "kimi-k2.6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Kimi Code",
+      "model": "kimi-k2-thinking",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Kimi Code",
+      "model": "kimi-k2-thinking-turbo",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cerebras",
+      "model": "gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cerebras",
+      "model": "zai-glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Belvedir",
+      "model": "auto",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "qwen3-coder-plus",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "qwen3.5-plus",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "qwen3-max-2026-01-23",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "qwen3-coder-next",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "glm-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Alibaba Cloud Coding Plan",
+      "model": "MiniMax-M2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "302.AI",
+      "model": "qwen3-235b-a22b-instruct-2507",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "302.AI",
+      "model": "glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "302.AI",
+      "model": "glm-5.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "302.AI",
+      "model": "MiniMax-M2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "302.AI",
+      "model": "kimi-k2-0905-preview",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "302.AI",
+      "model": "claude-haiku-4-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Baseten",
+      "model": "zai-org/GLM-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Baseten",
+      "model": "zai-org/GLM-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Baseten",
+      "model": "openai/gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Baseten",
+      "model": "moonshotai/Kimi-K2.6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Baseten",
+      "model": "moonshotai/Kimi-K2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Baseten",
+      "model": "deepseek-ai/DeepSeek-V4-Pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "claude-fable-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "claude-opus-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "claude-opus-4-8",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "claude-sonnet-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "claude-sonnet-4-6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "claude-haiku-4-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.6-sol",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.6-terra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.6-luna",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.4",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.4-mini",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-5.4-nano",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.1-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.1-pro-preview",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.7-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.6-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.5-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.5-flash-lite",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3.1-flash-lite",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemini-3-flash-preview",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "grok-4.6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "grok-4.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "grok-4.3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k3-together",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k2.7-code",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k2.7-code-highspeed",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k2.7-code-nebius",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k2.6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "kimi-k2.6-fireworks",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v4-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v4-pro-together",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v4-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v4-flash-0731",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v4-flash-deepinfra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v4-flash-0731-deepinfra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v3.2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "deepseek-v3.1-sambanova",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-5.3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-5.3-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-5.2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-5.2-deepinfra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-5.2-sail",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-4.7-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "glm-4.7-deepinfra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3.8-max",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3.8-2.4t",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3.8-27b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3.8-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3.7-max",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3-max-thinking",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3-coder-480b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3-vl-235b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "qwen3-next-80b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "minimax-m3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "minimax-m3-novita",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "minimax-m3-deepinfra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "minimax-m3-gmicloud",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "minimax-m2.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mimo-v2.5-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mimo-v2.5-pro-xiaomi",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mimo-v2.5-pro-novita",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mimo-v2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mimo-v2.5-xiaomi",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mimo-v2.5-novita",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "seed-2.0-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "seed-2.0-code",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "seed-2.0-mini",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "step-3.7-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "step-3.7-flash-novita",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "hy3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "hy3-tencent",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "hy3-novita",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "ling-3.0-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "inkling",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "inkling-small",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "nemotron-3-ultra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "nemotron-3-super-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "nemotron-3.5-lightning",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mistral-large-latest",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mistral-medium-latest",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "mistral-small-latest",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "command-a-cohere",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "llama-4-maverick",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "llama-4-scout",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "llama-3.3-70b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-oss-120b-cerebras",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-oss-120b-deepinfra",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gpt-oss-20b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemma-4-31b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Conifer",
+      "model": "gemma-3-27b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cortecs",
+      "model": "minimax-m2.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cortecs",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cortecs",
+      "model": "glm-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cortecs",
+      "model": "glm-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cortecs",
+      "model": "claude-haiku-4-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Cortecs",
+      "model": "qwen3-235b-a22b-instruct-2507",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Gemini API",
+      "model": "gemini-2.5-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Gemini API",
+      "model": "gemini-2.5-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Gemini API",
+      "model": "gemini-2.0-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Gemini API",
+      "model": "gemini-2.0-flash-lite",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "DeepSeek",
+      "model": "deepseek-v4-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "DeepSeek",
+      "model": "deepseek-v4-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Comtegra GPU Cloud",
+      "model": "gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Comtegra GPU Cloud",
+      "model": "qwen35-122b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Comtegra GPU Cloud",
+      "model": "glm-51-nvfp4",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "FPT AI Marketplace",
+      "model": "GLM-5.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "FPT AI Marketplace",
+      "model": "GLM-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "FPT AI Marketplace",
+      "model": "Llama-3.3-70B-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Firmware",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Firmware",
+      "model": "zai-glm-5-1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Firmware",
+      "model": "claude-haiku-4-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Firmware",
+      "model": "claude-sonnet-4-6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Firmware",
+      "model": "grok-code-fast-1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Firmware",
+      "model": "gemini-2.5-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Hugging Face",
+      "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Hugging Face",
+      "model": "Qwen/Qwen3-Coder-Next",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Hugging Face",
+      "model": "zai-org/GLM-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Hugging Face",
+      "model": "zai-org/GLM-5.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Hugging Face",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Hugging Face",
+      "model": "openai/gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Moonshot AI",
+      "model": "kimi-k2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Moonshot AI",
+      "model": "kimi-k2.6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Moonshot AI",
+      "model": "kimi-k2-thinking",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Moonshot AI",
+      "model": "kimi-k2-thinking-turbo",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Moonshot AI",
+      "model": "kimi-k2-turbo-preview",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Nebius Token Factory",
+      "model": "openai/gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Nebius Token Factory",
+      "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Nebius Token Factory",
+      "model": "Qwen/Qwen3.5-397B-A17B",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Nebius Token Factory",
+      "model": "zai-org/GLM-5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Nebius Token Factory",
+      "model": "meta-llama/Llama-3.3-70B-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Nebius Token Factory",
+      "model": "NousResearch/Hermes-4-70B",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Scaleway",
+      "model": "qwen3-coder-30b-a3b-instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Scaleway",
+      "model": "qwen3-235b-a22b-instruct-2507",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Scaleway",
+      "model": "qwen3.5-397b-a17b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Scaleway",
+      "model": "gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Scaleway",
+      "model": "mistral-small-3.2-24b-instruct-2506",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Scaleway",
+      "model": "llama-3.3-70b-instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "STACKIT",
+      "model": "openai/gpt-oss-120b",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "STACKIT",
+      "model": "Qwen/Qwen3-VL-235B-A22B-Instruct-FP8",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "STACKIT",
+      "model": "cortecs/Llama-3.3-70B-Instruct-FP8-Dynamic",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "STACKIT",
+      "model": "neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "STACKIT",
+      "model": "google/gemma-3-27b-it",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Groq",
+      "model": "llama-3.1-8b-instant",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Mistral",
+      "model": "devstral-medium-2507",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Perplexity",
+      "model": "sonar",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Perplexity",
+      "model": "sonar-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Perplexity",
+      "model": "sonar-reasoning-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Perplexity",
+      "model": "sonar-deep-research",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Together AI",
+      "model": "moonshotai/Kimi-K2-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Deep Infra",
+      "model": "moonshotai/Kimi-K2-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Deep Infra",
+      "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Deep Infra",
+      "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct-Turbo",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Deep Infra",
+      "model": "zai-org/GLM-4.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Deep Infra",
+      "model": "zai-org/GLM-5.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Deep Infra",
+      "model": "meta-llama/Llama-3.1-70B-Instruct",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Fireworks",
+      "model": "accounts/fireworks/routers/kimi-k2p5-turbo",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Fireworks",
+      "model": "accounts/fireworks/models/kimi-k2p5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Fireworks",
+      "model": "accounts/fireworks/models/kimi-k2p6",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Fireworks",
+      "model": "accounts/fireworks/models/glm-4p7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Fireworks",
+      "model": "accounts/fireworks/models/glm-5p1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Fireworks",
+      "model": "accounts/fireworks/models/deepseek-v3p2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Novita AI",
+      "model": "zai-org/glm-5.3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Novita AI",
+      "model": "zai-org/glm-5.3-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Novita AI",
+      "model": "moonshotai/kimi-k3",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Novita AI",
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2.7",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2.7-highspeed",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2.5-highspeed",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2.1-highspeed",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "MiniMax",
+      "model": "MiniMax-M2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "xAI",
+      "model": "grok-code-fast-1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "NVIDIA NIM",
+      "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Xiaomi MiMo",
+      "model": "mimo-v2.5",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Xiaomi MiMo",
+      "model": "mimo-v2.5-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Xiaomi MiMo",
+      "model": "mimo-v2-pro",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Xiaomi MiMo",
+      "model": "mimo-v2-flash",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Xiaomi MiMo",
+      "model": "mimo-v2-omni",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Meta Model API",
+      "model": "muse-spark-1.2",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Meta Model API",
+      "model": "muse-spark-1.1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Celeris",
+      "model": "celeris-1",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "Yolo-Auto",
+      "model": "yolo",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "fakeprov2",
+      "model": "fake-gamma",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "fakeprov",
+      "model": "fake-alpha",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "fakeprov",
+      "model": "fake-beta",
+      "method": "api key",
+      "available": true
+    },
+    {
+      "provider": "fakeprov",
+      "model": "gpt-5.4",
+      "method": "api key",
+      "available": true
+    }
+  ]
+}

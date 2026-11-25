@@ -14,7 +14,7 @@
  * differ from 1.x's (`{data:...}` wrapping, no `prompt_async`).
  */
 import { randomUUID } from "node:crypto";
-import { loadAgentFile, principalKey, type PresenceStatus } from "@cotal-ai/core";
+import { loadAgentFile, principalKey, type PresenceCondition, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
   eventPlaneArmed,
@@ -28,17 +28,29 @@ import {
   AguiEmitterHolder,
   eventPlaneStopped,
   BoundStartSource,
+  DeltaMergedSource,
+  streamSeed,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
   resolveEventsStateRoot,
+  type InboxItem,
+  type Merged,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, SurfacedBatch, settleWithin } from "./plugin.js";
 import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { OpenCode2SessionSource, type OpenCode2MessagePage, type OpenCode2Record } from "./agui-source2.js";
-import { createOpenCode2Mapper } from "./agui-map2.js";
+import { createOpenCode2Mapper, type OpenCode2Mapper } from "./agui-map2.js";
+import { OpenCode2DeltaStream } from "./stream2.js";
 import { buildCotalTools2 } from "./tools.js";
+import { ReplyCheck } from "./reply-check.js";
+import { opencode2FailureCondition } from "./failure-condition.js";
+import { opencode2Asks, type Send } from "./prompt-asks.js";
+import { opencode2Commands } from "./commands2.js";
+import { OpenCodeHttpError, type OpenCodeApi } from "./opencode2-http.js";
+import { opencode2Naming } from "./naming2.js";
+import { readSettledModels } from "./settled-models.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -53,9 +65,9 @@ const guard = globalThis as { __cotalOpencodeSetup?: SetupState };
 
 /** 2.x model check: `GET /api/model` lists the configured model directly (no `/provider.all`
  *  nesting to walk, unlike 1.x's `verifyServerModel`). Same refusal sentence shape, different
- *  route and body. An empty listing during location boot is polled every 200 ms until the
- *  provider appears rather than refused on the first read. The wait is bounded: a server that
- *  never lists anything within the deadline is a real refusal, not a hang. */
+ *  route and body. The check runs while the server is still loading its plugins, so it judges only
+ *  the settled list (settled-models.ts). The wait is bounded: a server whose plugins never finish
+ *  loading within the deadline is a real refusal, not a hang. */
 const MODEL_LIST_SETTLE_MS = 10_000;
 
 /** The bare nudge a focus @mention wake submits; the mention itself is read with cotal_inbox. */
@@ -70,25 +82,22 @@ async function verifyServerModel2(
   const slash = selectedModel.indexOf("/");
   const provider = selectedModel.slice(0, slash);
   const model = selectedModel.slice(slash + 1);
-  const deadline = Date.now() + settleMs;
-  for (;;) {
-    const response = await fetch(`${serverUrl}/api/model`, {
-      headers: { authorization: serverAuth },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok)
-      throw new Error(`opencode connector: server /api/model returned HTTP ${response.status} while checking model ${selectedModel}`);
-    const listing = (await response.json()) as { data?: Array<{ providerID?: string; modelID?: string }> };
-    if (slash < 1 || !model) throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
-    const data = listing.data ?? [];
-    if (data.some((m) => m.providerID === provider && m.modelID === model)) return;
-    if (data.some((m) => m.providerID === provider))
-      throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
-    if (Date.now() >= deadline)
-      throw new Error(modelRefusalSentence(selectedModel, `GET /api/model listed no provider within ${settleMs / 1000} s`));
-    await new Promise((r) => setTimeout(r, 200));
+  let data: unknown[];
+  try {
+    data = await readSettledModels(serverUrl, serverAuth, settleMs);
+  } catch (error) {
+    throw new Error(modelRefusalSentence(selectedModel, (error as Error).message));
   }
+  const listed = data.some((m) => {
+    const { providerID, modelID } = (m ?? {}) as Record<string, unknown>;
+    return providerID === provider && modelID === model;
+  });
+  if (slash < 1 || !model || !listed) throw new Error(modelRefusalSentence(selectedModel, "GET /api/model does not list it"));
 }
+
+/** How long a command OpenCode accepted has to start its turn. 2.2.5 accepts some commands, such as
+ *  `goal clear`, without starting one, and then no execution event frees the session. */
+const COMMAND_TURN_START_MS = 5_000;
 
 /** How long the detached event loop's in-flight iteration may be waited on at teardown before it
  *  is abandoned out loud — the same bounded-settle shape `plugin.ts`'s `quiesce` uses, via its
@@ -121,6 +130,25 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   }
 }
 
+/** OpenCode answers a reply to an ask it does not hold with a 404, or for a form already
+ *  answered with `FormAlreadySettledError`. */
+function askSender(opencodeApi: OpenCodeApi): Send {
+  return (path, init) => opencodeApi(path, init).then(() => true, (e: unknown) => {
+    if (e instanceof OpenCodeHttpError && (e.status === 404 || e.tag === "FormAlreadySettledError")) return false;
+    throw e;
+  });
+}
+
+/** Close the open run at a turn end the session's list does not record. The flush goes first, so the
+ *  turn's last records land in the run before it closes. The promise resolves once the source
+ *  position the terminal is placed at has been read; a next turn admitted before that would take
+ *  the terminal (see `turnEnded` in plugin.ts). */
+function closeRunOutOfBand(events: AguiEmitterHolder<Merged<OpenCode2Record>> | undefined): Promise<void> | undefined {
+  if (events?.path === undefined) return undefined;
+  events.flush(events.path);
+  return events.closeRun(Date.now());
+}
+
 /** Validate and register one session before queuing its agent start. */
 async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>> {
   const config = configFromEnv();
@@ -143,8 +171,19 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     await verifyServerModel2(serverUrl, serverAuth, selectedModel, settleMs);
   })();
 
-  const agent = new MeshAgent(config);
   const controller = new AbortController(); // aborted when teardown begins
+  const commands = opencode2Commands({
+    api: <T>(path: string, init?: RequestInit, timeoutMs?: number) => opencodeApi<T>(path, init, timeoutMs),
+    ensureSession: () => ensureSession(),
+    session: () => sessionID,
+    firstTurnSystem: () => firstTurnSystem(),
+    primed: () => { primed = true; },
+    signal: controller.signal,
+  });
+  const agent = new MeshAgent(config, undefined, {
+    commands: commands.dispatcher,
+    naming: opencode2Naming({ api: opencodeApi, session: () => sessionReady, log, launchPrompt: process.env.COTAL_OPENCODE_PROMPT }),
+  });
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -152,10 +191,11 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
       headers: { authorization: serverAuth, "content-type": "application/json", ...(init?.headers ?? {}) },
     });
-    if (!res.ok) throw new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`);
+    if (!res.ok) throw await OpenCodeHttpError.from(res, path);
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
+  const asks = opencode2Asks({ desk: () => agent.prompts, warn: log, send: askSender(opencodeApi), session: () => sessionID });
 
   /** A session's message list, newest first, 200 messages a page (measured: the server refuses
    *  more). A later page is named by its cursor alone, which carries the order. */
@@ -176,18 +216,22 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   /**
    * Publishes the session's activity as AG-UI events on `events.<owner>.<actor>`. It is bound to the
    * one session this adapter creates, and reads that session from its first record: the session is
-   * new, so everything in it is this seat's to publish. Turn ends are records in the list, so no run
-   * is closed out of band and `sourceEnd` is never asked. The emitter starts on the first adopt and
-   * the holder starts it again after a failure, from the same source.
+   * new, so everything in it is this seat's to publish. Turn ends are records in the list, except
+   * an interrupted execution's, which {@link completeTurn} closes out of band. The emitter starts on
+   * the first adopt and the holder starts it again after a failure, from the same source.
    */
-  function eventHolder(): AguiEmitterHolder<OpenCode2Record> {
-    let bound: BoundStartSource<OpenCode2Record> | undefined;
-    return new AguiEmitterHolder<OpenCode2Record>(
+  function eventHolder(): { holder: AguiEmitterHolder<Merged<OpenCode2Record>>; stream: OpenCode2DeltaStream } {
+    let harness: OpenCode2SessionSource | undefined;
+    let merged: DeltaMergedSource<OpenCode2Record> | undefined;
+    let bound: BoundStartSource<Merged<OpenCode2Record>> | undefined;
+    let mapper: OpenCode2Mapper | undefined;
+    const stream = new OpenCode2DeltaStream(config.reasoningEvents === true);
+    const holder = new AguiEmitterHolder<Merged<OpenCode2Record>>(
       async (id: string) => {
-        bound ??= new BoundStartSource(sessionSource(id), "");
+        const session = (harness ??= sessionSource(id));
         await agent.whenConnected(20_000);
         const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-        const { walPath, subjectPath, lock } = await ensureEventWalDir({
+        const { walPath, subjectPath, deltaJournalPath, lock } = await ensureEventWalDir({
           workspaceRoot: resolveEventsStateRoot(process.env),
           space: config.space,
           principal,
@@ -196,21 +240,48 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         eventLock = lock;
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId: id, principal, subjectMayExist: false });
+        if (!bound) {
+          stream.open(id, session, {
+            path: deltaJournalPath,
+            onWrite: () => holder.flush(id),
+            onError: (e) => log(`AG-UI: streamed text could not be journaled, the saved element carries it: ${e.message}`),
+          });
+          merged = new DeltaMergedSource(session, deltaJournalPath);
+          bound = new BoundStartSource(merged, merged.start(""));
+        }
         // A re-established plane starts with the log's run open, so the mapper continues it.
-        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        return AguiEmitter.start<OpenCode2Record>({
+        const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+        const seed = await streamSeed(deltaJournalPath, wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor, brackets);
+        mapper = createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId: brackets?.run, reasoning: config.reasoningEvents, seed });
+        return AguiEmitter.start<Merged<OpenCode2Record>>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
           source: bound,
-          map: createOpenCode2Mapper({ threadId: id, mintRunId: () => randomUUID(), resumeRunId }),
+          map: mapper.mapMerged,
+          onUnreadable: (gap) =>
+            log(`AG-UI source: skipped an unreadable ${gap.file ? "delta journal line" : "session record"} at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
         });
       },
-      { onError: eventPlaneStopped({ log }), sourceEnd: (id) => sessionSource(id).end() },
+      {
+        onError: eventPlaneStopped({ log }),
+        // Before the first start opens the journal nothing is journaled, so the session's end is the
+        // whole position: the merged source reads a session cursor alone as that position.
+        sourceEnd: async (id) => {
+          const end = await sessionSource(id).end();
+          if (!merged) return end;
+          // The streams no saved element will close end here, before the run does.
+          stream.turnEnded(end);
+          return merged.start(end);
+        },
+        onRunClosed: (runId) => mapper?.forgetOpenRun(runId),
+      },
     );
+    return { holder, stream };
   }
-  const events = eventsArmed ? eventHolder() : undefined;
+  const plane = eventsArmed ? eventHolder() : undefined;
+  const events = plane?.holder;
 
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const persona = def?.persona || undefined;
@@ -227,7 +298,11 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // turns): our prompt waiting for its execution to start, or a started execution. Only the end of a
   // started execution settles the batch; an end seen before it started belongs to an earlier one.
   let execution: "submitted" | "running" | undefined;
+  let submission = 0; // numbers our submissions, so the bound set for one command can never free a later one
+  let turnStartBound: NodeJS.Timeout | undefined;
   let primed = false; // persona goes out as `system` on the first connector-submitted turn, once
+  /** The persona and briefing as `system`, on the first turn this adapter submits, whether a message or a command. */
+  const firstTurnSystem = (): string | undefined => (!primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined);
   let briefed = false; // channel briefing goes out once, same rule as 1.x
   const batch = new SurfacedBatch(agent); // the batch the current turn carries, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
@@ -238,6 +313,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // ingest, so this is all that carries it until a turn end delivers it (#3859).
   let pendingMention = false;
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
+  let lastTurnWasCommand = false;
+  const replyCheck = new ReplyCheck();
+  let turnEnd: Promise<void> | undefined; // the last out-of-band close, whose position read must answer before a next turn
 
   async function ensureSession(): Promise<string | undefined> {
     return sessionID ?? (await sessionReady);
@@ -250,6 +328,13 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       /* presence is best-effort — never throw into opencode, same rule as plugin.ts's safeStatus */
     }
   };
+  const safeCondition = async (condition: PresenceCondition): Promise<void> => {
+    try {
+      if (agent.connected) await agent.setCondition(condition);
+    } catch {
+      /* best-effort, as safeStatus */
+    }
+  };
 
   /** Drive a turn carrying the current inbox batch into the owned session, via
    *  `POST /api/session/:id/prompt` (2.x has no `prompt_async` — measured 404). Never prompts into
@@ -260,15 +345,26 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     if (execution || submitting || controller.signal.aborted) return;
     const id = await ensureSession();
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
+    await turnEnd;
     if (execution || submitting || controller.signal.aborted) return; // rechecked after the await, same reason as plugin.ts's `drive`
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
     // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).
     const boot = bootPending() ? bootPrompt : undefined;
     const override = pendingMention ? MENTION_NUDGE : undefined;
     if (bootPrompt !== undefined && boot === undefined) return;
+    // A command takes an idle turn of its own. Right after a command turn, waiting messages go first,
+    // so a stream of commands cannot hold the inbox back; when they have nothing to send, it runs.
+    const messagesFirst = lastTurnWasCommand && (override !== undefined || agent.pendingWake() > 0);
+    if (boot === undefined && agent.queuedCommands > 0 && !messagesFirst) return driveCommand();
+    const nothingToSend = (): Promise<void> | undefined => {
+      if (boot !== undefined || agent.queuedCommands === 0) return undefined;
+      lastTurnWasCommand = false;
+      return driveCommand();
+    };
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
+    let carried: InboxItem[] = [];
     const turnPeek = agent.peekPendingTurns();
     if (boot !== undefined) {
       parts.push(boot);
@@ -283,8 +379,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       const openBefore = batch.open;
       const items = await agent.takeChosen("automatic", (preview) => preview);
       if (execution || submitting || (!openBefore && batch.open) || controller.signal.aborted) return;
-      if (items.length === 0 && !turnPeek) return;
+      if (items.length === 0 && !turnPeek && !replyCheck.pending) return nothingToSend();
       if (items.length > 0) {
+        carried = items;
         ids = items.map((i) => i.recvKey);
         const inj = formatInjection(items);
         if (inj) parts.push(inj);
@@ -292,8 +389,8 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     }
     const brief = briefed ? undefined : agent.channelBriefing();
     if (brief) parts.unshift(brief);
-    if (parts.length === 0 && !turnPeek) return;
-    const system = !primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined;
+    if (parts.length === 0 && !turnPeek && !replyCheck.pending) return nothingToSend();
+    const system = firstTurnSystem();
     if (!batch.surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     // The turns' permit, after the last gate and right before the send with no await between: a
     // once task another dispatch already took is left out, and a submission left with nothing to
@@ -302,9 +399,14 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
       turnIds = turnPeek.goalIds;
       parts.push(turnPeek.text);
     }
-    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0) { batch.abandon(); return; }
+    const check = boot === undefined ? replyCheck.take() : undefined;
+    if (check) parts.unshift(check.text);
+    if (boot === undefined && override === undefined && ids.length === 0 && turnIds.length === 0 && !check) { batch.abandon(); return nothingToSend(); }
     const text = parts.join("\n\n");
+    replyCheck.submitted(carried);
     execution = "submitted";
+    submission++;
+    lastTurnWasCommand = false;
     briefed = true;
     const endAtSend = ended;
     const unorderedAtSend = unorderedEnds;
@@ -334,12 +436,45 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // An execution that started meanwhile still holds the session: only our submission is released.
         if (execution === "submitted") execution = undefined;
         batch.abandon();
+        check?.restore();
         log(`drive failed: ${(e as Error).message}`);
       } finally {
         submitting = undefined;
       }
     })();
     await submitting;
+  }
+
+  /** The batch opens empty, so neither the inbox nor the prompt hook's prefix rides the command's
+   *  turn. A command the harness did not take leaves the session free, and whatever waits behind it
+   *  drives at once. So does a command OpenCode took whose turn has not started
+   *  {@link COMMAND_TURN_START_MS} after the answer. */
+  async function driveCommand(): Promise<void> {
+    if (!batch.surface([])) return;
+    execution = "submitted";
+    replyCheck.submitted([]);
+    const mine = ++submission;
+    submitting = (async () => {
+      try {
+        if ((await agent.dispatchNextCommand()) === "dispatched") {
+          lastTurnWasCommand = true;
+          clearTimeout(turnStartBound);
+          turnStartBound = setTimeout(() => {
+            if (execution !== "submitted" || submission !== mine) return;
+            execution = undefined;
+            batch.abandon();
+            void drive();
+          }, COMMAND_TURN_START_MS);
+          return;
+        }
+        if (execution === "submitted") execution = undefined;
+        batch.abandon();
+      } finally {
+        submitting = undefined;
+      }
+    })();
+    await submitting;
+    if (!execution) void drive();
   }
 
   /** Whether an execution event is a replay: at or before `mark`, by default the last turn's end, in
@@ -370,7 +505,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
    *  batch driven below before its turn ran. The latter's position is still recorded, so a replay of
    *  it closes nothing either once an execution is running. An end at or before the running
    *  execution's start belongs to an earlier one, so it is not recorded and closes nothing. */
-  async function completeTurn(ev: OpenCode2Event, settle: () => void): Promise<void> {
+  async function completeTurn(ev: OpenCode2Event, settle: () => void, succeeded: boolean, failure?: PresenceCondition): Promise<void> {
     // An end with no log position closes nothing, but a submission in flight cannot order itself
     // against it, so it counts as a turn end for that submission's once task.
     if (!positioned(ev)) unorderedEnds += 1;
@@ -378,15 +513,23 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
     ended = ev.durable;
     if (execution !== "running") return;
     execution = undefined;
+    asks.turnEnded();
+    // OpenCode records no `idle` for an execution a rejected permission or a dismissed question
+    // interrupted (measured on 2.0.24), so its run closes here, after a flush maps its last records.
+    if (ev.type === "session.execution.interrupted") turnEnd = closeRunOutOfBand(events);
     const carried = new Set(batch.keys);
     settle();
+    replyCheck.ended(succeeded);
+    // A failed turn says why before it reads idle, so no observer sees a bare idle for it. The
+    // next turn's `working` clears it (connector-core).
+    if (failure) await safeCondition(failure);
     await safeStatus("idle");
     // Not awaited: the event loop must keep consuming while the POST is unanswered, so a turn that
     // starts meanwhile sets `execution` and `drive` declines instead of submitting into it.
     void (async () => {
       await submitting;
       if (ended !== ev.durable) return; // a later turn ended during the wait: only its task leaves out the batch that turn failed
-      if (bootPending() || pendingMention || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+      if (bootPending() || pendingMention || replyCheck.pending || agent.queuedCommands > 0 || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
     })();
   }
 
@@ -406,6 +549,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   agent.on("wake", () => {
     if (!execution) void drive();
   });
+  agent.on("command", () => {
+    if (!execution) void drive();
+  });
 
   // `e.prompt` is `DeepMutable` (measured) — mutate the text part directly, as 1.x's
   // `injectIntoPrompt` does, through the shared batch so the two callers can't drift. A role request
@@ -413,6 +559,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // requests it will carry first; OpenCode 2.x awaits this hook before it stores the prompt (measured).
   await ctx.session.hook("prompt", async (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
+    await turnEnd;
     if (!batch.open) await agent.takeChosen("automatic", (preview) => preview);
     const prefix = batch.inject();
     if (prefix !== undefined) e.prompt.text = `${prefix}\n\n${e.prompt.text}`;
@@ -428,6 +575,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
 
   // Surface the running tool as presence activity — parity with 1.x's `tool.execute.before`.
   await ctx.tool.hook("execute.before", (e) => {
+    asks.toolStarted(e.id, { name: e.tool, input: () => e.input }); // a subagent's call too: its asks are served
     if (sessionID && e.sessionID !== sessionID) return;
     agent.noteActivity();
     void safeStatus("working", e.tool);
@@ -436,7 +584,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // Register the shared cotal_* tools, rendered by `buildCotalTools2` from the SAME specs
   // `buildCotalTools` renders for 1.x (`./tools.ts`).
   await ctx.tool.transform((ed) => {
-    for (const t of buildCotalTools2(agent, config)) ed.add(t);
+    for (const t of buildCotalTools2(agent, config, (tool) => replyCheck.toolSucceeded(tool))) ed.add(t);
   });
 
   // Queued only now, after the last step that can throw: a setup the host refuses returns no
@@ -487,9 +635,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   });
 
   // The event stream — a detached loop, never awaited here (setup must return). Maps
-  // `session.execution.*`, `permission.asked` and session lifecycle events to presence and
-  // turn-end/ack the same way plugin.ts's own event switch does, trimmed to this adapter's
-  // single-session scope (no swap, no `/new` reset), and wakes the event plane.
+  // `session.execution.*`, `permission.asked`, `form.created`, their replies and session lifecycle
+  // events to presence and turn-end/ack the same way plugin.ts's own event switch does, trimmed to
+  // this adapter's single-session scope (no swap, no `/new` reset), and wakes the event plane.
   const eventLoop = (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
@@ -497,6 +645,9 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
         // Only a durable event of the session changes its message list, and the list already holds
         // the change when the event arrives (measured), so each one is the wake to read it again.
         if (events?.path !== undefined && ev.durable?.aggregateID === events.path) events.flush(events.path);
+        commands.event(ev.type);
+        plane?.stream.event(ev);
+        asks.event(ev.type, data);
         switch (ev.type) {
           case "session.created": {
             // Adopt the first session id we see if none is set yet (mirrors `ours()` in plugin.ts);
@@ -532,22 +683,29 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
           }
           case "session.execution.succeeded": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.ack()); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
+            await completeTurn(ev, () => batch.ack(), true); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.abandon()); // leave the inbox unacked so the batch can retry on a later safe turn
+            await completeTurn(ev, () => batch.abandon(), false, opencode2FailureCondition(data)); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
             if (data.sessionID !== sessionID) break;
-            await completeTurn(ev, () => batch.ack()); // explicit user Stop: treat the surfaced batch as dismissed, not failed
+            await completeTurn(ev, () => batch.ack(), false); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
-          case "permission.asked": {
-            const p = data as { sessionID?: string; title?: string };
-            if (!p.sessionID || !sessionID || p.sessionID === sessionID) await safeStatus("waiting", p.title);
+          case "permission.asked":
+          case "form.created": { // a form, such as the question tool's, waits on a person as an ask does
+            const p = (ev.type === "form.created" ? data.form : data) as { sessionID?: string; title?: string } | undefined;
+            if (p && (!p.sessionID || !sessionID || p.sessionID === sessionID)) await safeStatus("waiting", p.title);
+            break;
+          }
+          case "permission.replied":
+          case "form.replied":
+          case "form.cancelled": { // an answered ask leaves its turn running until the execution ends
+            if (data.sessionID === sessionID && execution === "running") await safeStatus("working");
             break;
           }
           case "session.deleted": {
@@ -581,9 +739,11 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
 
   const teardown = async (): Promise<void> => {
     controller.abort();
+    clearTimeout(turnStartBound);
     await settleWithin(eventLoop, EVENT_QUIESCE_MS, "opencode 2.x event loop at teardown");
     // The reads already queued still publish while the endpoint is up; the lock goes back after them.
     await settleWithin(events?.close(), EVENT_QUIESCE_MS, "event holder at teardown");
+    plane?.stream.close();
     await eventLock?.release().catch((e: Error) => log(`event WAL lock release failed: ${e.message}`));
     await agent.stop();
   };

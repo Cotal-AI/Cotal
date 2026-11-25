@@ -180,8 +180,10 @@ and before the product default.
 variables override a saved value. `cotal config` shows the winning value and the values it overrides.
 
 `harness` is checked against the official connectors and the ones installed extensions provide.
-`persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
-with no control characters. When the catalog of the space a command here uses (`--space`, else the
+`persona` accepts a catalog name or a path to a persona file with no control characters. A direct
+launch or preview checks the catalog first for a bare name ending in `.md`, such as `review.md`.
+Use a path such as `./review.md` to select a file relative to the mesh root. When the catalog of
+the space a command here uses (`--space`, else the
 space `spawn` resolves from this folder, which is a running space registered here even when another
 space is selected) does not hold it, the value is still saved, since the file may be created later,
 with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
@@ -205,6 +207,8 @@ A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not pr
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
 Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
+With `--json`, `watch`, `history --follow` and `channel members --follow` write an `error` record
+with the fix and an `end` record with reason `setup-failed`, without a snapshot.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.
 
@@ -229,6 +233,8 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 |---|---|---|---|
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
+| `COTAL_DISPLAY_NAME` | connector session | The display name the card starts with when it differs from `COTAL_NAME`. A manager sets it when it relaunches a seat that `set-name` renamed; `COTAL_NAME`, and in user mode the actor, stay the launch name. An invalid name is refused when the session starts | `COTAL_NAME` |
+| `COTAL_AUTO_NAME` | connector session | `1` labels the seat from its first message: its launch prompt, else its first live direct message or mention from its own owner. The label is `meta["ai.cotal.label"]`, and the seat keeps its launch name. A manager sets it for a `spawn` with `autoName: true`, and never on a relaunch. Ignored when `COTAL_DISPLAY_NAME` is set, and on a connector that cannot ask its model for a label | off |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
 | `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below). A URL with a user name or password is refused when the session starts; pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or `COTAL_LINK` | the default local broker (or the link's) |
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
@@ -258,7 +264,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_FEEDBACK_URL` | `feedback`, connector | Intake URL override (self-hosted) | keyed / public intake |
 | `COTAL_TELEMETRY` | any `cotal` command | The [usage telemetry](telemetry.mdx) level (`off`, `minimal`, `regular`), above the settings file; any other value refuses | the file's level, `regular` at first |
 | `COTAL_TELEMETRY_DISABLED` / `DO_NOT_TRACK` | any `cotal` command | Force usage telemetry off (`1` or `true`) | off |
-| `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted), an `http` or `https` URL; any other value refuses | `https://cotal.ai/v1/telemetry` |
+| `COTAL_TELEMETRY_URL` | any `cotal` command | Usage telemetry intake override (self-hosted), an `http` or `https` URL. See [when Cotal validates the URL](telemetry.mdx#delivery). | `https://cotal.ai/v1/telemetry` |
 | `COTAL_SKIP_ASSIST` | `setup` | Disable the connector debug handoff on a failed step (`1`; for CI) | off |
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors and warnings to stderr (`1`). The shell stubs discard stderr, so run `cotal __complete <words>` by hand to see them. Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
@@ -367,8 +373,12 @@ Model discovery uses a different environment. The `codex` and `opencode` catalog
 They do not read `spawn.env`. The binary resolves from the operator pin (`COTAL_CODEX_BIN` or `COTAL_OPENCODE_BIN`),
 then the absolute path recorded at manager boot, then the bare name. The seat allow-list does not apply to these short-lived reads.
 The `claude` and `pi` catalog reads receive a launch's environment: the seat allow-list and the
-connector's provider keys, without `spawn.env`. Their binary is the absolute path recorded at
-manager boot, then the bare name.
+connector's provider keys. The `pi` read also receives the `spawn.env` names, as a Pi launch does,
+so it reads the agent directory and keys a seat reads. The `claude` read does not. Their binary is
+the absolute path recorded at manager boot, then the bare name. The `hermes` catalog read receives
+the same environment with the `spawn.env` names, as a Hermes launch does, and runs `uv` from the
+same places. The manager hands every catalog read the `spawn.env` names from
+the config a spawn would read at that moment, and each connector decides whether its read uses them.
 
 ### Launch material
 
@@ -531,6 +541,8 @@ Machine state lets `cotal spawn` find a mesh from another directory. It lives in
 POSIX or `%LOCALAPPDATA%\Cotal` on Windows. `COTAL_HOME` overrides this location.
 
 `COTAL_HOME` must be absolute and name a directory. A relative path refuses `USAGE_INVALID`.
+With `--json`, `watch`, `history --follow` and `channel members --follow` write an `error` record
+with the remedy and an `end` record with reason `setup-failed` before exiting 1 without connecting.
 A file at that path or an ancestor refuses `SCHEMA_INVALID`, except for help and shell completion.
 
 On POSIX, home writes refuse `PERMISSION_DENIED` when another account can write or replace that home or an ancestor.
@@ -538,7 +550,10 @@ The refusal names the paths and corrective `chmod`. A home others can only read 
 Service reads from a non-private home are refused with the same remedy.
 
 Controller stack records belong to the home that started the stack. Another `COTAL_HOME` cannot see those members.
-While its manager or delivery runs, `status` names the home in use. `up`, `down`, and `space create` refuse `TARGET_UNAVAILABLE`.
+While its manager or delivery runs, `status` names the recorded launching home. If the journal
+does not name that home and the member records are missing from the current home, `status` warns
+with `FOLDER_BROKER_UNAVAILABLE` and exits 4 (`OPERATION_PARTIAL`), even if the current home has
+prepared a space in that folder. `up`, `down`, and `space create` refuse `TARGET_UNAVAILABLE`.
 Run with the original `COTAL_HOME` before trying again.
 
 <Callout type="warn" title="COTAL_HOME does not relocate project state">
@@ -586,6 +601,7 @@ On Linux and macOS, an installed CLI keeps `extensions/` and `seed/` under
 `installs/<sha256>/sets/<version>/cotal/` in the configuration directory above. The hash identifies
 the logical CLI entry path. Spaces and projects using that installation share its stores.
 `cotal ext root` prints the extension prefix, including before its first seed, without creating it.
+The first `cotal ext seed` keeps extensions already installed in that prefix.
 A new version reads its retained predecessor until reconciliation copies and selects a new set.
 An existing legacy `extensions/` or `seed/` directly under the configuration directory remains
 readable until that migration. Windows, desktop runtimes and source checkouts use the direct paths.

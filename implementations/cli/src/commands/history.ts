@@ -1,10 +1,14 @@
-import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { PermissionViolationError } from "@nats-io/transport-node";
 import {
   brokerAddressForDisplay,
   CommandFailure,
   connectOrThrow,
   endpointAuth,
   exitCode,
+  isCommandFailure,
+  isConnectRefusal,
+  isMeshRegistryError,
   jsonFlag,
   oneLine,
   plainFlag,
@@ -25,8 +29,10 @@ import {
   concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { spaceChoiceRemedy } from "../lib/choose-target.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { historySetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -34,9 +40,12 @@ import { listDeclaredChannels } from "../lib/personas.js";
 import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
+import { registryFailure } from "../lib/registry-errors.js";
+import { displayRemedy, hasMovedStackRemedy } from "../lib/self-exec.js";
+import { recordTelemetryFailure } from "../telemetry.js";
 
-const dmsFlag = { name: "dms", type: "boolean", description: "also read DM history (needs a DM read grant); with clear, also clear DMs" } as const;
-const forceFlag = { name: "force", type: "boolean", description: "removed spelling; use history clear --yes" } as const;
+const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
+const forceFlag = { name: "force", type: "boolean", description: "removed flag. Omit it from reads and previews" } as const;
 const yesFlag = { name: "yes", short: "y", type: "boolean", description: "clear and limit: confirm without prompting" } as const;
 const dryRunFlag = { name: "dry-run", type: "boolean", description: "clear: show the selected target and streams without connecting; purge nothing. A space that is prepared but not started is refused" } as const;
 const sinceFlag = { name: "since", type: "string", value: "<time|seq>", description: "only messages after a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence" } as const;
@@ -99,8 +108,8 @@ export interface HistoryItem {
 
 /** What `cotal history` read: the newest `limit` retained messages of its selection, oldest first,
  *  then filtered by `--since`, `--from` and `--grep`. It never claims complete history: `olderRetained`
- *  says whether retained messages older than the window exist, `reachesSince` whether the window goes
- *  back to `--since`, and `retention` names the limits that remove messages and each sender whose
+ *  says whether retained messages older than the window exist, `reachesSince` whether the window covers
+ *  the `--since` range, and `retention` names the limits that remove messages and each sender whose
  *  older messages a channel has lost to them. */
 export interface HistoryResult {
   readonly kind: "history";
@@ -249,19 +258,23 @@ const channelOf = (name: string): string => name.replace(/^#/, "");
 export function validateHistoryArguments(args: ParsedArgs): void {
   const values = args.values as FlagValues<typeof historyFlags>;
   presentationOf(values);
-  if (values.force !== undefined) throw usage("--force is no longer a history flag; use `cotal history clear --yes`");
+  const omitForce = "--force is not supported. Omit --force and keep the other arguments.";
+  const replaceForce = "--force is not supported. Replace --force with --yes and keep the other arguments.";
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
     if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
+    if (values.force !== undefined) throw usage(values["dry-run"] || values.yes !== undefined ? omitForce : replaceForce);
     return;
   }
   if (args.positionals[0] === "limit") {
     if (args.positionals.length !== 1) throw usage("history limit takes no channel; one limit holds for every channel in the space");
     if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only its limit flags, --yes, --space and an output flag; it reaches the broker from the space root");
-    historyLimitRequest(values);
+    const request = historyLimitRequest(values);
+    if (values.force !== undefined) throw usage(request.size > 0 && values.yes === undefined ? replaceForce : omitForce);
     return;
   }
+  if (values.force !== undefined) throw usage(omitForce);
   if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
   if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes belongs to history clear and history limit, and --dry-run to history clear");
   if (args.positionals.length > 1) throw usage("history reads one channel at a time");
@@ -286,7 +299,6 @@ export async function history(args: ParsedArgs): Promise<void> {
   if (first === "limit") return historyLimit(v);
   const presentation = presentationOf(v);
   if (rest.length) throw usage(`history reads one channel at a time; got ${args.positionals.length} names`);
-  if (v.force) throw usage("--force applies to `history clear` only");
   const channel = first === undefined ? undefined : channelOf(first);
   if (channel !== undefined && v.dms) throw usage("name a channel or pass --dms, not both: --dms adds DMs to the history of every channel");
   const now = Date.now();
@@ -294,6 +306,24 @@ export async function history(args: ParsedArgs): Promise<void> {
   const since = parseSince(v.since, now);
   if (since?.kind === "seq" && v.dms) throw usage("a sequence is a position in the chat stream, and DMs are another stream; give --since a time");
 
+  let snapshotWritten = false;
+  try {
+    await readHistory(v, channel, limit, since, presentation, () => { snapshotWritten = true; });
+  } catch (error) {
+    if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
+    // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
+    const spaceRemedy = isConnectRefusal(error) ? spaceChoiceRemedy(error.cause, "history", args, args.raw) : undefined;
+    const failure = isCommandFailure(error) ? error
+      : isConnectRefusal(error) ? error.failure(spaceRemedy !== undefined ? () => spaceRemedy : hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
+      : isMeshRegistryError(error) ? registryFailure(error)
+      : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
+    recordTelemetryFailure(failure.outcome, failure.code, error);
+    for (const record of historySetupFailureRecords(args, failure)) writeStreamRecord(record);
+    process.exitCode = exitCode(failure.outcome, failure.code);
+  }
+}
+
+async function readHistory(v: FlagValues<typeof historyFlags>, channel: string | undefined, limit: number, since: Since | undefined, presentation: ReturnType<typeof presentationOf>, markSnapshot: () => void): Promise<void> {
   const conn = await connectOrThrow(v, v.dms ? "admin" : "observer");
   const target = { space: conn.space, channel: channel ?? null, dms: Boolean(v.dms) };
   recordOperationSpace(conn.space);
@@ -322,7 +352,7 @@ export async function history(args: ParsedArgs): Promise<void> {
   try {
     // A follow taps before it reads, so nothing sent between the read and the tap is lost; the
     // snapshot and the live feed are reconciled by message id.
-    const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms)) : undefined;
+    const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms), reader?.channels, target) : undefined;
     const { result, warnings } = await readWindow(ep, conn, { channel, dms: Boolean(v.dms), limit, since, from: v.from, grep: v.grep, target }).catch((e: unknown) => {
       if (e instanceof CommandFailure) throw e;
       throw new CommandFailure("failed", "OPERATION_FAILED", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });
@@ -339,17 +369,19 @@ export async function history(args: ParsedArgs): Promise<void> {
       : undefined;
     const completeness = partial ? "partial" : "complete";
     if (v.dms) await ep.waitForPresenceSnapshot(ROSTER_MS);
+    live?.checkTap();
     const names = new Map(ep.getRoster().filter((p) => p.card.name.trim()).map((p) => [p.card.id, p.card.name] as const));
     for (const item of result.items) if (item.from.name.trim()) names.set(item.from.id, item.from.name);
     if (live && presentation === "json") {
       // A follow's snapshot is its first record, and the exit says what `writeResult` would have.
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
+      markSnapshot();
       process.exitCode = partial ? exitCode("partial", "OPERATION_PARTIAL") : exitCode("ok");
     } else {
       writeResult(presentation, { command: "history", target, result, completeness, warnings, ...(partial ? { partial } : {}) }, (r) => historyView(r, conn.space, names, since, live !== undefined));
     }
     if (!live) return;
-    await live.follow(result.items, (item) => keep(item, undefined, v.from, v.grep), presentation, target, names, () => stopping);
+    await live.follow(result.items, (item) => keep(item, since?.kind === "time" ? since : undefined, v.from, v.grep), presentation, target, names, () => stopping);
   } finally {
     stopping = true;
     await ep.stop().catch(() => {});
@@ -384,7 +416,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // failure there is a part not read; reading every channel needs it to know what to read.
   let listed: { channel: string; messages: number }[] | undefined;
   try {
-    listed = (await ep.listChannels()).filter((row) => !isEventChannel(row.channel));
+    listed = await ep.listChannels();
   } catch (e) {
     if (req.channel === undefined) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not list the channels of ${conn.space}: ${(e as Error).message}`, { target: req.target });
@@ -396,24 +428,37 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
 
   let read: HistoryItem[] = [];
   let olderRetained: boolean | null = null;
+  let previousSeq: number | undefined;
   const denied: string[] = [];
   if (!user && !reader) {
     let rows: { channel: string; seq: number; msg: CotalMessage }[];
     try {
-      rows = await ep.multiChannelHistory(channels, { limit: req.limit });
+      // One extra matching post locates the boundary even when other channels interleave.
+      const limit = req.since?.kind === "seq" ? Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER) : req.limit;
+      rows = await ep.multiChannelHistory(channels, { limit });
     } catch (e) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read ${req.channel ? `#${req.channel}` : "channel history"} in ${conn.space}: ${(e as Error).message}`, { target: req.target });
       if (/wildcard|not a valid channel|channel name/i.test((e as Error).message)) throw usage((e as Error).message);
       throw e;
     }
+    if (rows.length > req.limit) previousSeq = rows.shift()?.seq;
     read = rows.map((row) => itemOf(row.msg, { seq: row.seq, channel: row.channel }));
     const retained = listed ? listed.filter((row) => channels.includes(row.channel)).reduce((sum, row) => sum + row.messages, 0) : undefined;
-    olderRetained = retained === undefined ? null : retained > read.length;
+    olderRetained = previousSeq !== undefined ? true : retained === undefined ? null : retained > read.length;
     if (req.dms) {
-      const dms = (await ep.dmHistory({ limit: req.limit })).map((msg) => itemOf(msg, {}));
-      const merged = [...read, ...dms].sort((a, b) => a.ts.localeCompare(b.ts));
-      if (dms.length === req.limit || merged.length > req.limit) olderRetained = true;
-      read = merged.slice(-req.limit);
+      const dmLimit = Math.min(req.limit + 1, Number.MAX_SAFE_INTEGER);
+      const dms = await ep.dmHistory({ limit: dmLimit });
+      const direct = dms.slice(-req.limit).map((msg) => itemOf(msg, {})).sort((a, b) => a.ts.localeCompare(b.ts));
+      if (dms.length > req.limit || read.length + direct.length > req.limit) olderRetained = true;
+      // Channel rows arrive in broker sequence order. Compare timestamps only to choose between
+      // the two streams, taking from the end so the window keeps the newest channel posts first.
+      const merged: HistoryItem[] = [];
+      while (merged.length < req.limit && (read.length || direct.length)) {
+        const chat = read.at(-1);
+        const dm = direct.at(-1);
+        merged.push(!dm || (chat && chat.ts.localeCompare(dm.ts) > 0) ? read.pop()! : direct.pop()!);
+      }
+      read = merged.reverse();
       // An absent stream reads as no messages. That is a missing read, not an empty history.
       try {
         if (!(await ep.dmStreamPresent()))
@@ -489,9 +534,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       message: `the chat stream of ${conn.space} is not on its broker, so channel history is not shown. Direct messages that are still stored are included`,
     });
   }
-  // A bare number past the newest sequence names no message; it is most often a year.
-  if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
-    throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
+  // A sequence need not exist to be a cutoff. A likely mistyped calendar year still gets its hint.
+  if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq && yearShaped(req.since.input))
+    throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${req.since.input}-01-01` });
 
   // Each channel's replay policy, read from the registry: the endpoint's watch cache may not have
   // caught up this soon after start.
@@ -514,11 +559,13 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   }
   const replay: HistoryResult["replay"] = absent ? [] : policies.map(({ channel, replay, window }) => ({ channel, replay, window }));
 
-  // Whether the window goes back to `--since`: it does when nothing older is retained, or when its
-  // oldest message is at or before the point asked for. Otherwise messages in between may be missing.
   const oldest = read[0];
-  const before = (since: Since, item: HistoryItem) => (since.kind === "seq" ? item.seq !== null && item.seq <= since.seq + 1 : Date.parse(item.ts) <= since.ms);
-  const reachesSince = req.since === undefined ? null : olderRetained === false || (oldest !== undefined && before(req.since, oldest)) ? true : olderRetained === null ? null : false;
+  const since = req.since;
+  const atOrPastEnd = since?.kind === "seq" && lastSeq !== undefined && since.seq >= lastSeq;
+  // Only sequence order bounds unread rows. Sender timestamps can disagree with broker order.
+  const reached = since?.kind === "seq"
+    && ((previousSeq !== undefined && previousSeq <= since.seq) || (oldest?.seq != null && oldest.seq <= since.seq + 1));
+  const reachesSince = since === undefined ? null : atOrPastEnd || olderRetained === false || reached ? true : olderRetained === null ? null : false;
   return {
     warnings,
     result: {
@@ -534,10 +581,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   };
 }
 
-/** The live half of `--follow`: taps the selection's subjects, re-taps after the connection is
- *  re-established (a rebuild drops the old subscriptions), and records that gap. A dropped
- *  connection whose credential can no longer connect ends it with that credential's refusal. */
-function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean) {
+/** The live half of `--follow`: taps the selection's subjects and records connection gaps.
+ *  A dropped connection whose credential can no longer connect ends it with that credential's refusal. */
+function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefined, dms: boolean, granted: readonly string[] | undefined, target: unknown) {
   const queue: { item?: HistoryItem; gap?: string; error?: string; lost?: true }[] = [];
   let wake: (() => void) | undefined;
   const push = (entry: { item?: HistoryItem; gap?: string; error?: string; lost?: true }) => {
@@ -545,31 +591,51 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
     wake?.();
   };
   const prefix = spacePrefix(conn.space);
-  const tapAll = () => {
-    ep.tap((subject, msg) => {
-      if (!msg) return;
-      const p = parseSubject(subject);
-      if (p?.kind === "chat") push({ item: itemOf(msg, { channel: p.rest }) });
-      else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });
-    }, { subject: channel !== undefined ? chatSubject(conn.space, "*", "*", channel) : `${prefix}.chat.>` });
-    if (dms) ep.tap((subject, msg) => { if (msg && parseSubject(subject)?.kind === "inst") push({ item: itemOf(msg, {}) }); }, { subject: `${prefix}.inst.>` });
-  };
+  const chatSubjects = new Set(channel !== undefined ? [chatSubject(conn.space, "*", "*", channel)]
+    : granted === undefined ? [`${prefix}.chat.>`] : granted.map((ch) => chatSubject(conn.space, "*", "*", ch)));
+  if (chatSubjects.size === 0)
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential may not follow channel history in ${conn.space}: its history grant is no channel`, { target, remedy: "use a credential that grants read access to the channel you want to follow" });
   let down = false;
-  ep.on("connection", ({ connected }: { connected: boolean }) => {
+  const edge = (connected: boolean) => {
     if (!connected) {
+      if (down) return;
       down = true;
       push({ lost: true });
       return;
     }
     if (!down) return;
     down = false;
-    tapAll();
     push({ gap: "the connection was re-established; messages sent while it was down are not shown" });
+  };
+  // NATS restores taps on a transport reconnect. A replacement socket reports transport up before
+  // the endpoint rebinds its taps, so wait for the endpoint's bind in that case.
+  let rebinding = false;
+  ep.on("transport", ({ connected }: { connected: boolean }) => {
+    if (!connected || !rebinding) edge(connected);
   });
-  ep.on("error", (e: Error) => push({ error: e.message }));
-  tapAll();
+  ep.on("connection", ({ connected }: { connected: boolean }) => {
+    rebinding = !connected;
+    edge(connected);
+  });
+  let tapRefusal: CommandFailure | undefined;
+  ep.on("error", (e: Error) => {
+    const permission = e instanceof PermissionViolationError ? e : e.cause;
+    if (channel === undefined && permission instanceof PermissionViolationError && permission.operation === "subscription" && chatSubjects.has(permission.subject)) {
+      tapRefusal ??= new CommandFailure("refused", "PERMISSION_DENIED", `this credential could not open the live channel feed in ${conn.space}: ${permission.message}`, { target, remedy: "name a channel this credential can read when following history" });
+      wake?.();
+    } else push({ error: e.message });
+  });
+  const receive = (subject: string, msg: CotalMessage | undefined) => {
+    if (!msg) return;
+    const p = parseSubject(subject);
+    if (p?.kind === "chat") push({ item: itemOf(msg, { channel: p.rest }) });
+    else if (p?.kind === "inst") push({ item: itemOf(msg, {}) });
+  };
+  for (const subject of chatSubjects) ep.tap(receive, { subject });
+  if (dms) ep.tap((subject, msg) => { if (msg && parseSubject(subject)?.kind === "inst") push({ item: itemOf(msg, {}) }); }, { subject: `${prefix}.inst.>` });
 
   return {
+    checkTap() { if (tapRefusal) throw tapRefusal; },
     async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, names: Map<string, string>, stopped: () => boolean): Promise<void> {
       const seen = new Set(snapshot.map((item) => item.id).filter((id) => id !== ""));
       const remember = (id: string) => {
@@ -624,18 +690,18 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
             else process.stderr.write(`${c.red(oneLine(`[${conn.space}] ! ${entry.error}`))}\n`);
           }
         }
-        if (refusal || ended || stopped()) break;
+        if (refusal || tapRefusal || ended || stopped()) break;
         await new Promise<void>((resolve) => (wake = resolve));
         wake = undefined;
       }
-      if (refusal && presentation !== "json") throw refusal.failure();
-      if (refusal) {
-        const failure = refusal.failure();
+      const failure = refusal?.failure() ?? tapRefusal;
+      if (failure && presentation !== "json") throw failure;
+      if (failure) {
         writeStreamRecord(streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
         process.exitCode = exitCode(failure.outcome, failure.code);
       }
-      if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: refusal ? "refused" : ended ?? "stopped" }));
-      if (!refusal && ended) process.exitCode = ended === "interrupted" ? 130 : 143;
+      if (presentation === "json") writeStreamRecord(streamRecord("history", "end", target, { reason: failure ? "refused" : ended ?? "stopped" }));
+      if (!failure && ended) process.exitCode = ended === "interrupted" ? 130 : 143;
     },
   };
 }
@@ -670,7 +736,9 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   const filters = [r.window.from !== null ? `--from ${r.window.from}` : null, r.window.grep !== null ? `--grep ${r.window.grep}` : null].filter((flag) => flag !== null);
   if (filters.length && r.window.olderRetained !== false) notes.push({ text: `${filters.join(" and ")} searched only the ${r.window.read} read; older retained messages were not searched`, tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
-  if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
+  if (r.window.reachesSince === false) notes.push({ text: since?.kind === "time"
+    ? `the window may omit retained messages after --since ${r.window.since}; sender timestamps can differ from storage order`
+    : `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
   if (r.retention) {
     const limits = [r.retention.perSender !== null ? `${r.retention.perSender} per sender on each channel` : null, r.retention.maxAgeMs !== null ? `posts older than ${formatChatAge(r.retention.maxAgeMs)} expire` : null].filter(Boolean);
     notes.push({ text: `retention: ${limits.length ? limits.join(", ") : "no limit set"}; history is what remains, not every message sent`, tone: "hint" });

@@ -70,7 +70,7 @@
     },
     {
       "name": "renewal no longer records its credential id or active ledger row",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/broker-transport.ts",
       "find": "      finalize: async (credentialId) => {\n        await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {\n          await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);\n          await appendStaticCredentialRow(t, { lifecycleUid: a.lifecycleUid, credentialId, holderPrincipal: principalKey(DEV_OWNER, a.id).key, exp });\n        });\n      },",
       "replace": "      finalize: async (credentialId) => {\n        void credentialId;\n      },",
       "expectRed": "renewal records exactly one new credential id",
@@ -78,7 +78,7 @@
     },
     {
       "name": "the production renewal sweep no longer enters managed-static renewal",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/credential-renewal.ts",
       "find": "            await this.renewManagedStaticCred(a);",
       "replace": "            void a;",
       "expectRed": "racer_exit: renewal records exactly one new credential id",
@@ -87,7 +87,7 @@
     {
       "name": "static retirement leaves the hosted secret-store credential key intact",
       "file": "implementations/manager/src/managed-static-lifecycle.ts",
-      "find": "        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.deps.space())));\n",
+      "find": "        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.config.space)));\n",
       "replace": "",
       "expectRed": "the secret-store credential key is deleted",
       "cell": "the secret-store credential key is deleted"

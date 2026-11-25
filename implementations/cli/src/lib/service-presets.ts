@@ -1,11 +1,42 @@
-import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { brokerUrlHasUserinfo, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { cacheServicePreset, CommandFailure, extensionProvides, findMesh, hasUserAuthState, isCommandFailure, loadExtensionsManifest, oneLine, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
+import { assertManagerName, brokerUrlCredentialRefusal, cacheServicePreset, codeSpan, CommandFailure, extensionProvides, findMesh, hasUserAuthState, installedExtensionPackage, isCommandFailure, loadExtensionsManifest, loadRoster, oneLine, recordOperationWarning, resolveNativeServiceTarget, runtimeInstallHint, segmentedKey, serviceMetadataDigest, spaceMaterialKey, validateServiceAdapterOptions, validateServiceAdapterPaths, verifiedExtensionServicePresets, WEB_SERVICE_ADAPTER, type ServiceDefinitionInput, type ServicePreset, type ServicePresetDefault } from "@cotal-ai/workspace";
 import { installedExtensionsEnabled } from "../ext-loader.js";
 import { metadataPositionals } from "./command-path.js";
+import { shellWord } from "./endpoint-errors.js";
 import { resolveServiceAdapter } from "./service-adapters.js";
+import { STACK_ADAPTER } from "./stack-journal.js";
 import { cliVersion } from "./version.js";
+
+/** Check the manager's launch coordinates, name and runtime metadata without importing a provider. */
+export function assertManagerStartOptions(space: string, options: Record<string, unknown>): void {
+  const server = options.server as string | undefined;
+  if (server !== undefined && brokerUrlHasUserinfo(server)) throw brokerUrlCredentialRefusal("--server");
+  if (server !== undefined || findMesh(space)) resolveNativeServiceTarget(String(options.root), space, server);
+  if (options.name !== undefined) assertManagerName(String(options.name));
+
+  const runtime = String(options.runtime);
+  if (runtime === "pty" || registry.has("runtime", runtime)) return;
+  const extension = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.find((row) => extensionProvides(row).some((ref) => ref.kind === "runtime" && ref.name === runtime)) : undefined;
+  const target = { space, runtime };
+  if (!extension) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", runtimeInstallHint(runtime), { target });
+  if (installedExtensionPackage(extension.pkg)?.version !== extension.version || extension.pkg.startsWith("@cotal-ai/") && extension.version !== cliVersion())
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the installed package for runtime ${JSON.stringify(runtime)} is missing or does not match the required version`, { target, remedy: `check it with \`cotal runtimes\`` });
+}
+
+/** Check the contents of a roster whose path the adapter has already validated. */
+export function checkManagerStartRoster(roster: unknown, target: { space: string; name: string }, preview: boolean): boolean {
+  if (typeof roster !== "string") return true;
+  try { loadRoster(roster); }
+  catch (error) {
+    const message = `the manager roster was not loaded: ${(error as Error).message}`;
+    if (!preview) throw new CommandFailure("failed", "OPERATION_FAILED", message, { target, remedy: "correct the roster and rerun the command" });
+    recordOperationWarning({ code: "SCHEMA_INVALID", target, message: `the real start would fail: ${message}` });
+    return false;
+  }
+  return true;
+}
 
 const reserved = new Set(["help", "no-color", "no-input", "space", "json", "plain", "file", "preset", "exec", "cwd", "yes", "instance", "new-instance", "foreground", "no-open", "with-agents", "dry-run", "tail", "follow"]);
 
@@ -45,8 +76,8 @@ export function resolveServicePreset(name: string): ServicePreset {
   return row.preset;
 }
 
-function optionProperties(preset: ServicePreset) {
-  const adapter = resolveServiceAdapter(preset.adapter, {}, false);
+function optionProperties(preset: ServicePreset, registeredOnly = false) {
+  const adapter = resolveServiceAdapter(preset.adapter, {}, false, undefined, registeredOnly);
   return { adapter, properties: adapter.declaration.optionsSchema.properties as Record<string, Record<string, unknown>>, required: new Set((adapter.declaration.optionsSchema.required ?? []) as string[]) };
 }
 
@@ -71,8 +102,8 @@ function placeholder(kind: string | undefined, type: unknown): string {
 
 /** One source for parsing, help, completion and option collection. Complex options use bounded
  *  JSON strings; scalar fields are parsed according to their declared type, without coercion. */
-export function servicePresetFlags(preset: ServicePreset): FlagSpec[] {
-  const { adapter, properties, required } = optionProperties(preset);
+export function servicePresetFlags(preset: ServicePreset, registeredOnly = false): FlagSpec[] {
+  const { adapter, properties, required } = optionProperties(preset, registeredOnly);
   const flags: FlagSpec[] = [], names = new Set(Object.keys(properties).map(presetFlagName));
   if (names.size !== Object.keys(properties).length) throw new CommandFailure("refused", "UNSUPPORTED", "the preset option names cannot be represented without shadowing CLI flags; use a validated --file definition instead");
   for (const [option, schema] of Object.entries(properties)) {
@@ -132,6 +163,12 @@ export function presetUnfilledDefaults(preset: ServicePreset, space: string, roo
     else if (!existsSync(presetMaterialPath(fallback.kind, space, root, false))) unfilled.push({ name, value: "<file>", reason: `space ${oneLine(space)} keeps no ${fallback.kind} yet` });
   }
   return unfilled;
+}
+
+/** The flag forms a new preset definition needs in this space, with value placeholders. */
+export function presetRequiredInputs(preset: ServicePreset, space: string, root: string): string[] {
+  const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
+  return [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
 }
 
 /** The option values a preset's defaults supply in `space`, for the options the person did not give.
@@ -208,17 +245,37 @@ export function servicePresetDefinition(preset: ServicePreset, space: string, gi
   const flags = servicePresetFlags(preset);
   const missing = presetMissingOptions(preset, given);
   const line = verb === "start" ? `cotal service start ${preset.name}` : `cotal service ${verb} --preset ${preset.name}`;
-  // The line also names each default this space cannot fill, so it works the first time it is run.
+  // Keep the caller's flags (including preview and output mode) without echoing option values.
+  const fromCommand = verb === "start" || given.preset !== undefined;
+  const retryWith = (additions: string) => `rerun the original command with ${codeSpan(additions)}, keeping all other arguments and flags unchanged`;
   if (missing.length) {
     const unfilled = presetUnfilledDefaults(preset, space, root, given);
-    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: `${line} ${[...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ")}`, selfContained: true, remedyIsCommand: true });
+    const additions = [...missing.map((name) => `--${name} ${flags.find((flag) => flag.name === name)?.value ?? ""}`.trimEnd()), ...unfilled.map((row) => `--${row.name} ${row.value}`)].join(" ");
+    const onSpace = given.space === undefined ? "" : ` --space ${shellWord(space)}`;
+    const showCommand = !fromCommand || Object.keys(given).every((name) => name === "space" || name === "preset");
+    throw new CommandFailure("refused", "USAGE_INVALID", `the ${preset.name} preset needs ${missing.map((name) => `--${name}`).join(", ")}, which ${missing.length === 1 ? "has" : "have"} no default${unfilled.map((row) => `, and --${row.name}, since ${row.reason}`).join("")}; nothing was saved or started`, { remedy: showCommand ? `${line} ${additions}${onSpace}` : retryWith(additions), selfContained: true, ...(showCommand ? { remedyIsCommand: true } : {}) });
   }
   const values: ParsedArgs["values"] = { ...presetDefaultOptions(preset, space, root, given, migrate), ...given };
   const options = parsedPresetOptions(preset, values);
+  // Check the manager launch flag pair before checking whether its file exists.
+  if (preset.adapter === STACK_ADAPTER.manager && (options.launch === undefined) !== (options["launch-sha256"] === undefined)) {
+    const supplied = options.launch === undefined ? "--launch-sha256" : "--launch";
+    const needed = options.launch === undefined ? "--launch <file>" : "--launch-sha256 <digest>";
+    throw new CommandFailure("refused", "USAGE_INVALID", `${supplied} requires ${needed}: a manager launch needs both its private native spec and its full SHA-256; nothing was saved or started`, { remedy: fromCommand ? retryWith(needed) : `${line} --launch <file> --launch-sha256 <digest>`, selfContained: true, ...(fromCommand ? {} : { remedyIsCommand: true }) });
+  }
   // A refused option value is named by the flag the person typed, and the preset's help says what each takes.
   try { resolveServiceAdapter(preset.adapter, options, true, (option) => `--${presetFlagName(option)}`); }
   catch (error) {
-    if (!isCommandFailure(error) || error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
+    if (!isCommandFailure(error)) throw error;
+    const launch = options.launch;
+    if (preset.adapter === STACK_ADAPTER.manager && typeof launch === "string" && error.code === "TARGET_NOT_FOUND" && (error.target as { path?: string } | null)?.path === launch) {
+      throw new CommandFailure(error.outcome, error.code, `the --launch specification ${launch} does not exist; nothing was saved or started`, {
+        target: error.target,
+        remedy: `rerun the original command with the absolute path to an existing resolved manager launch specification in ${codeSpan("--launch")} and its matching SHA-256 in ${codeSpan("--launch-sha256")}, keeping all other arguments and flags unchanged`,
+        selfContained: true,
+      });
+    }
+    if (error.code !== "SCHEMA_INVALID" || error.remedy !== undefined) throw error;
     throw new CommandFailure(error.outcome, error.code, error.message, { target: error.target, remedy: `see what each option takes with \`${line} --help\`` });
   }
   // The dashboard posts only with a separate posting credential, so each posting flag needs the other.

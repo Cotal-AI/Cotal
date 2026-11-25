@@ -54,7 +54,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 25;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -74,7 +74,7 @@ assert.ok(python, "no python3/python on PATH: the Hermes adapter contract cannot
  * read off the class with `inspect`, not off the source text.
  */
 const script = String.raw`
-import inspect, sys, types
+import asyncio, inspect, json, os, sys, types
 
 # --- stub ONLY the upstream imports, never the code under test -------------------------------
 base = types.ModuleType("gateway.platforms.base")
@@ -82,8 +82,10 @@ class BasePlatformAdapter:
     def __init__(self, config=None, platform=None): pass
     def _mark_connected(self): pass
     def _mark_disconnected(self): pass
+    def build_source(self, **kw): return kw
+    async def handle_message(self, event): self.source = event.source
 class MessageEvent:
-    def __init__(self, **kw): pass
+    def __init__(self, **kw): self.source = kw["source"]
 class MessageType:
     TEXT = "text"
 class SendResult:
@@ -92,6 +94,10 @@ base.BasePlatformAdapter = BasePlatformAdapter
 base.MessageEvent = MessageEvent
 base.MessageType = MessageType
 base.SendResult = SendResult
+base.cache_image_from_bytes = lambda data, ext=".jpg": ""
+
+session = types.ModuleType("gateway.session")
+session.build_session_key = lambda source, **kw: ""
 
 cfg = types.ModuleType("gateway.config")
 class Platform:
@@ -104,7 +110,7 @@ platforms = types.ModuleType("gateway.platforms")
 gateway = types.ModuleType("gateway")
 sys.modules.update({
     "gateway": gateway, "gateway.platforms": platforms,
-    "gateway.platforms.base": base, "gateway.config": cfg,
+    "gateway.platforms.base": base, "gateway.config": cfg, "gateway.session": session,
 })
 
 sys.path.insert(0, PLUGIN_PARENT)
@@ -161,6 +167,45 @@ print("CONTROL_REFUSE_KWARG", rbinds(is_reconnect=True))
 # The reconnect path calls BridgeClient.reopen, so the method the adapter depends on must exist.
 from cotal.bridge_client import BridgeClient
 print("HAS_REOPEN", callable(getattr(BridgeClient, "reopen", None)))
+
+from cotal import replies, tools
+
+async def session_routes():
+    os.environ.update(COTAL_BRIDGE_SOCKET="/nonexistent/cotal-adapter-contract.sock",
+                      COTAL_CONTROL_KEY="adapter-contract-probe-token", COTAL_CONTROL_VERSION="1")
+    adapter = CotalAdapter(PlatformConfig())
+
+    async def inject(**msg):
+        await adapter._inject(msg)
+        return adapter.source
+
+    first = await inject(kind="channel", channel="project", fromId="alpha", fromName="Alpha")
+    second = await inject(kind="channel", channel="project", fromId="beta", fromName="Beta")
+    other = await inject(kind="channel", channel="other", fromId="alpha", fromName="Alpha")
+    dm_a = await inject(kind="dm", fromId="alpha", fromName="Alpha")
+    dm_b = await inject(kind="dm", fromId="beta", fromName="Beta")
+
+    # Hermes exposes the sender and chat context to tools, but not the alternate participant id.
+    context = types.ModuleType("gateway.session_context")
+    env = {"HERMES_SESSION_PLATFORM": "cotal",
+           **{"HERMES_SESSION_" + key.upper(): first[key] for key in ("chat_id", "chat_name", "user_id", "user_name")}}
+    context.get_session_env = env.get
+    sys.modules[context.__name__] = context
+    answer = await inject(kind="dm", fromId="beta", answersQuestion=True,
+                          contextId=replies.issue(tools._calling_session()))
+
+    # Hermes groups by chat and the alternate participant (or real sender if it is omitted).
+    def route(source):
+        chat_type, chat = source["chat_type"], source["chat_id"]
+        return (chat_type, chat, (source.get("user_id_alt") or source["user_id"]) if chat_type == "group" else None)
+
+    print("SESSION_ROUTES", json.dumps({
+        "shared_channel": route(first) == route(second) == route(answer),
+        "distinct_chats": len({route(first), route(other), route(dm_a), route(dm_b)}) == 4,
+        "senders": [first["user_id"], second["user_id"]],
+    }))
+
+asyncio.run(session_routes())
 `;
 
 const res = spawnSync(python!, ["-c", `PLUGIN_PARENT = ${JSON.stringify(pkgDir + "plugin")}\n${script}`], {
@@ -185,7 +230,7 @@ const out = Object.fromEntries(
 for (const key of [
   "SIGNATURE", "BIND_BARE", "BIND_KWARG", "BIND_KWARG_TRUE", "KEYWORD_ONLY", "DEFAULTS_FALSE",
   "CONTROL_ACCEPT_BARE", "CONTROL_ACCEPT_KWARG", "CONTROL_REFUSE_BARE", "CONTROL_REFUSE_KWARG",
-  "HAS_REOPEN",
+  "HAS_REOPEN", "SESSION_ROUTES",
 ])
   assert.ok(key in out, `the adapter probe did not report ${key}, so its silence is not a result:\n${res.stdout}`);
 
@@ -202,6 +247,9 @@ assert.equal(out.BIND_BARE, "True", "a bare connect() must still bind: the timeo
 assert.equal(out.KEYWORD_ONLY, "True", "upstream declares is_reconnect after '*', so it must be keyword-only here too");
 assert.equal(out.DEFAULTS_FALSE, "True", "a cold connect is not a reconnect, so the default must be False");
 assert.equal(out.HAS_REOPEN, "True", "the reconnect path restarts a closed bridge through BridgeClient.reopen");
+assert.deepEqual(JSON.parse(out.SESSION_ROUTES), {
+  shared_channel: true, distinct_chats: true, senders: ["alpha", "beta"],
+}, "channel senders and correlated answers share one Hermes route without losing sender or DM identity");
 
 console.log(`adapter contract: ${out.SIGNATURE}`);
 console.log(

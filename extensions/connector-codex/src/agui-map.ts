@@ -27,12 +27,17 @@ import {
   toolCallArgs,
   toolCallEnd,
   toolCallResult,
+  toolResultMarker,
   reasoningMessageStart,
   reasoningMessageContent,
   reasoningMessageEnd,
+  StreamedParts,
   type AguiEvent,
+  type Merged,
+  type StreamSeed,
 } from "@cotal-ai/connector-core";
 import type { PresenceCondition, PresenceConditionCode } from "@cotal-ai/core";
+import { createCodeMode, type NestedCall, type StartedCall } from "./agui-nested.js";
 
 /** One rollout line. `payload` is `unknown` on purpose: it crosses in from a file this process did
  *  not write, so every field is checked at the point it is read rather than trusted by its type. */
@@ -42,8 +47,12 @@ export interface CodexRecord {
   payload?: unknown;
 }
 
+type Mapped = { runId: string; events: AguiEvent[] } | null;
+
 export interface CodexMapper {
-  map: (record: CodexRecord) => { runId: string; events: AguiEvent[] } | null;
+  map: (record: CodexRecord) => Mapped;
+  /** {@link map} over the rollout read with the thread's delta journal. */
+  mapMerged: (record: Merged<CodexRecord>) => Mapped;
   /** Drop a run the record stream never closed, when a turn terminal says it ended. Keyed on the
    *  id so a newer run opened in between is left alone. */
   forgetOpenRun: (runId: string) => void;
@@ -127,6 +136,124 @@ function outputText(payload: Record<string, unknown>): string {
 }
 
 /**
+ * Whether a tool's end record says the call failed, or `undefined` when the record is not an end
+ * record or does not say. A `function_call_output` carries no error flag, so these records are the
+ * only source. An MCP result without `isError` succeeded, as the MCP schema defines it.
+ */
+function endFailed(inner: string | undefined, payload: Record<string, unknown>): boolean | undefined {
+  if (inner === "exec_command_end") return typeof payload.exit_code === "number" ? payload.exit_code !== 0 : undefined;
+  if (inner === "patch_apply_end") return typeof payload.success === "boolean" ? !payload.success : undefined;
+  if (inner !== "mcp_tool_call_end") return undefined;
+  const result = asRecord(payload.result);
+  if (result === undefined) return undefined;
+  if ("Err" in result) return true;
+  const ok = asRecord(result.Ok);
+  return ok === undefined ? undefined : ok.isError === true;
+}
+
+/** What the open run's end records said about each call, until its output is mapped. An end record
+ *  that comes after its output, as for a command still running when its output is written, stays
+ *  until the run closes. */
+function createFailedCalls() {
+  const failedCalls = new Map<string, boolean>();
+  return {
+    clear: (): void => failedCalls.clear(),
+    /** Notes what an `event_msg` record says about its call, when it is an end record that says. */
+    note(inner: string | undefined, payload: Record<string, unknown>): void {
+      const failed = endFailed(inner, payload);
+      const callId = asString(payload.call_id);
+      if (failed !== undefined && callId !== undefined) failedCalls.set(callId, failed);
+    },
+    /** What the end records said about `toolCallId`, read once. */
+    take(toolCallId: string): boolean | undefined {
+      const isError = failedCalls.get(toolCallId);
+      failedCalls.delete(toolCallId);
+      return isError;
+    },
+  };
+}
+
+/**
+ * A tool output's result unit. The marker rides in the same unit as the result. The fence keeps the
+ * result off the public channel, and a read that starts with this record then still has a public
+ * unit for the payload rail to follow. Without it the emitter refuses the read, and re-reads it
+ * forever.
+ */
+function resultEvents(toolCallId: string, payload: Record<string, unknown>, isError: boolean | undefined, ts: number): AguiEvent[] {
+  // The `messageId` every connector owes on a tool result. Codex has no message id for one:
+  // the record's own `id`, present on 2 437 of 6 733, is the response item's id and not a
+  // message's. Synthesized from the call id so it is STABLE across a replay of the same
+  // record, which a mint would not be.
+  const messageId = `res:${toolCallId}`;
+  return [
+    toolCallResult({ messageId, toolCallId, content: outputText(payload), timestamp: ts, ...(isError === undefined ? {} : { cotal: { isError } }) }),
+    toolResultMarker({ toolCallId, ...(isError === undefined ? {} : { isError }), timestamp: ts }),
+  ];
+}
+
+/** A call code mode's script made, as its start: its name and its arguments, whole. */
+function startEvents(call: StartedCall, ts: number): AguiEvent[] {
+  return [
+    toolCallStart({ toolCallId: call.id, toolCallName: call.name, timestamp: ts }),
+    toolCallArgs({ toolCallId: call.id, delta: JSON.stringify(call.args), timestamp: ts }),
+    toolCallEnd({ toolCallId: call.id, timestamp: ts }),
+  ];
+}
+
+/** A call code mode's script made that has ended: its start unless that was published, then its
+ *  result. */
+function nestedEvents(call: NestedCall, opened: boolean, ts: number): AguiEvent[] {
+  return [...(opened ? [] : startEvents(call, ts)), ...resultEvents(call.id, { output: call.output }, call.isError, ts)];
+}
+
+/** The delta journal's key for the agent message or reasoning summary Codex streams as item `itemId`.
+ *  The item id is the saved record's `id`, which a part mapped whole publishes under, so the key adds
+ *  a prefix. */
+export function codexStreamKey(itemId: string): string {
+  return `stream:${itemId}`;
+}
+
+/** A saved assistant message or reasoning summary. One that streamed sends the rest of its text and
+ *  its END under the stream key. Any other is published whole, after the END of a stream whose text
+ *  it does not continue. */
+function savedPart(streams: StreamedParts, kind: "text" | "reasoning", messageId: string, text: string, ts: number): AguiEvent[] {
+  const closed = streams.saved(codexStreamKey(messageId), text, ts);
+  if (!closed.mapAsNew) return closed.events;
+  const whole = kind === "text"
+    ? [textMessageStart({ messageId, timestamp: ts, role: "assistant" }), textMessageContent({ messageId, delta: text, timestamp: ts })]
+    : [reasoningMessageStart({ messageId, timestamp: ts }), reasoningMessageContent({ messageId, delta: text, timestamp: ts })];
+  return [...closed.events, ...whole, kind === "text" ? textMessageEnd({ messageId, timestamp: ts }) : reasoningMessageEnd({ messageId, timestamp: ts })];
+}
+
+/**
+ * A delta journal line. Read inside a run, it streams its parts and ends the ones it names. Read
+ * with no run open, it publishes nothing, and its keys are closed, so a later line cannot open a
+ * message partway through its text.
+ */
+function lineEvents(streams: StreamedParts, runId: string | null, line: Extract<Merged<CodexRecord>, { deltas: unknown }>): Mapped {
+  const keys = [...line.deltas.map((d) => d.key), ...(line.ends ?? [])];
+  if (runId === null) {
+    streams.end(keys, line.timestamp);
+    return null;
+  }
+  const events = [...line.deltas.flatMap((d) => streams.delta(d, line.timestamp)), ...streams.end(line.ends ?? [], line.timestamp)];
+  return events.length > 0 ? { runId, events } : null;
+}
+
+/** A journal line read inside a run: its streamed parts, then the calls its records stand for, a
+ *  plan as the whole update_plan call and a started call as its start. */
+function mergedLine(streams: StreamedParts, codeMode: ReturnType<typeof createCodeMode>, runId: string | null, line: Extract<Merged<CodexRecord>, { deltas: unknown }>): Mapped {
+  const streamed = lineEvents(streams, runId, line);
+  if (runId === null) return streamed;
+  const calls = (line.records ?? []).flatMap((r) => {
+    const j = codeMode.journaled(r);
+    if (j === undefined) return [];
+    return j.ended ? nestedEvents(j.call, false, line.timestamp) : startEvents(j.call, line.timestamp);
+  });
+  return calls.length === 0 ? streamed : { runId, events: [...(streamed?.events ?? []), ...calls] };
+}
+
+/**
  * @param threadId The native thread id, which is `session_meta.payload.id` and the rollout
  *  filename key. Passed in rather than read from the file: the caller resolved the path FROM this
  *  id, so reading it back would make the two independently derivable and let them disagree.
@@ -136,16 +263,22 @@ function outputText(payload: Record<string, unknown>): string {
  *  source cursor is ordered, so the next native task terminal closes this run before another task
  *  can start. Without this handoff, the terminal is dropped and the next RUN_STARTED collides with
  *  the WAL bracket that correctly survived the outage.
+ * @param seed The stream state {@link streamSeed} rebuilt for a restarted emitter.
+ * @param reasoning Whether the launch asked for reasoning events. Off by default: reasoning is the
+ *  model's private working, so a reasoning record publishes nothing without it.
  */
-export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string }): CodexMapper {
+export function createCodexMapper(opts: { threadId: string; mintRunId: () => string; resumeRunId?: string; seed?: StreamSeed; reasoning?: boolean }): CodexMapper {
   const { threadId, mintRunId, resumeRunId } = opts;
+  const streams = new StreamedParts(opts.seed);
   let open: string | null = resumeRunId ?? null;
   /** The turn this run was opened for, so an abort or a completion for a DIFFERENT turn cannot
    *  close it. Codex retries a failed turn with a fresh turn id, and each retry is its own run. */
   let openTurn: string | undefined;
   let last = 0;
+  const failedCalls = createFailedCalls();
+  const codeMode = createCodeMode();
 
-  const map = (record: CodexRecord): { runId: string; events: AguiEvent[] } | null => {
+  const map = (record: CodexRecord): Mapped => {
     // A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW, and the difference is the whole plane.
     // `JsonlFileSource` hands over `JSON.parse(line)` unchecked, so a line reading `null` arrives
     // here as `null` and every field read below would throw. A throw from a mapper does not lose
@@ -170,6 +303,8 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       const runId = mintRunId();
       open = runId;
       openTurn = asString(payload.turn_id);
+      failedCalls.clear();
+      codeMode.clear();
       return { runId, events: [runStarted({ threadId, runId, timestamp: ts })] };
     }
 
@@ -197,9 +332,9 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       if (failed) {
         const message = asString(errRecord?.message) ?? errText ?? "codex turn failed";
         const code = asString(errRecord?.codex_error_info);
-        return { runId, events: [runError({ message, timestamp: ts, ...(code ? { code } : {}) })] };
+        return { runId, events: [...streams.endAll(ts), runError({ message, timestamp: ts, ...(code ? { code } : {}) })] };
       }
-      return { runId, events: [runFinished({ threadId, runId, timestamp: ts, outcome: { type: "success" } })] };
+      return { runId, events: [...streams.endAll(ts), runFinished({ threadId, runId, timestamp: ts, outcome: { type: "success" } })] };
     }
 
     if (envelope === "event_msg" && inner === "turn_aborted") {
@@ -216,7 +351,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       const reason = asString(payload.reason) ?? "aborted";
       return {
         runId,
-        events: [runFinished({ threadId, runId, timestamp: ts, outcome: { type: "interrupt", interrupts: [{ id, reason }] } })],
+        events: [...streams.endAll(ts), runFinished({ threadId, runId, timestamp: ts, outcome: { type: "interrupt", interrupts: [{ id, reason }] } })],
       };
     }
 
@@ -225,6 +360,15 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     // ahead of the first `task_started`, and all five are withheld anyway.
     if (open === null) return null;
     const runId = open;
+
+    if (envelope === "event_msg") failedCalls.note(inner, payload);
+
+    // ---- code mode (agui-nested.ts) -------------------------------------------------------
+    if (envelope === "response_item" && codeMode.hides(inner, payload)) return null;
+    if (envelope === "event_msg" && inner === "item_completed") {
+      const n = codeMode.nested(payload);
+      return n === undefined ? null : { runId, events: nestedEvents(n.call, n.opened, ts) };
+    }
 
     // ---- assistant text -----------------------------------------------------------------
     if (envelope === "response_item" && inner === "message") {
@@ -236,15 +380,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       if (role !== "assistant") return null;
       const text = contentText(payload);
       if (text.length === 0) return null;
-      const messageId = asString(payload.id) ?? `msg:${runId}:${ts}`;
-      return {
-        runId,
-        events: [
-          textMessageStart({ messageId, timestamp: ts, role: "assistant" }),
-          textMessageContent({ messageId, delta: text, timestamp: ts }),
-          textMessageEnd({ messageId, timestamp: ts }),
-        ],
-      };
+      return { runId, events: savedPart(streams, "text", asString(payload.id) ?? `msg:${runId}:${ts}`, text, ts) };
     }
 
     // The `event_msg` mirror of the same assistant turn. Dropped, or every reply publishes twice.
@@ -256,7 +392,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     // ---- reasoning ----------------------------------------------------------------------
     if (envelope === "response_item" && inner === "reasoning") {
       const summary = payload.summary;
-      if (!Array.isArray(summary)) return null;
+      if (opts.reasoning !== true || !Array.isArray(summary)) return null;
       let text = "";
       for (const p of summary) {
         const r = asRecord(p);
@@ -267,15 +403,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       // opaque to this plane and publishing it would put bytes on the subject that no renderer
       // can read. A record whose summary is empty therefore carries nothing to emit.
       if (text.length === 0) return null;
-      const messageId = asString(payload.id) ?? `rsn:${runId}:${ts}`;
-      return {
-        runId,
-        events: [
-          reasoningMessageStart({ messageId, timestamp: ts }),
-          reasoningMessageContent({ messageId, delta: text, timestamp: ts }),
-          reasoningMessageEnd({ messageId, timestamp: ts }),
-        ],
-      };
+      return { runId, events: savedPart(streams, "reasoning", asString(payload.id) ?? `rsn:${runId}:${ts}`, text, ts) };
     }
 
     // ---- tool calls ---------------------------------------------------------------------
@@ -300,23 +428,20 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     if (envelope === "response_item" && (inner === "function_call_output" || inner === "custom_tool_call_output")) {
       const toolCallId = asString(payload.call_id);
       if (toolCallId === undefined) return null;
-      // The `messageId` every connector owes on a tool result. Codex has no message id for one:
-      // the record's own `id`, present on 2 437 of 6 733, is the response item's id and not a
-      // message's. Synthesized from the call id so it is STABLE across a replay of the same
-      // record, which a mint would not be.
-      const messageId = `res:${toolCallId}`;
-      return { runId, events: [toolCallResult({ messageId, toolCallId, content: outputText(payload), timestamp: ts })] };
+      return { runId, events: resultEvents(toolCallId, payload, failedCalls.take(toolCallId), ts) };
     }
 
     // Unmapped in v1, and stated rather than dropped silently: `world_state`, `turn_context`,
     // `session_meta`, `token_count`, `thread_settings_applied`, `sub_agent_activity`,
-    // `compacted`, `context_compacted`, the exec/patch/mcp/web-search `event_msg` families, and
-    // the `_end`-only tool families that have no begin record to bracket against.
+    // `compacted`, `context_compacted`, the exec/patch/mcp/web-search `event_msg` families (their
+    // end records only set a result's `isError`), and the `_end`-only tool families that have no
+    // begin record to bracket against.
     return null;
   };
 
   return {
     map,
+    mapMerged: (record) => ("deltas" in record ? mergedLine(streams, codeMode, open, record) : map(record.harness)),
     forgetOpenRun: (runId: string): void => {
       if (open === runId) {
         open = null;

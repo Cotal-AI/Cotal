@@ -20,7 +20,7 @@
   "mutations": [
     {
       "name": "an unparseable show returns its raw parser diagnostic before authorization",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "    } catch {\n      return { ok: false, error: `no persona \"${name}\"` };\n    }\n    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona \"${name}\"` };",
       "replace": "    } catch (error) {\n      return { ok: true, data: { name, error: (error as Error).message } };\n    }\n    if (!this.canReadPersona(def.owner, caller, admin)) return { ok: false, error: `no persona \"${name}\"` };",
       "expectRed": "a foreign caller showing an ownerless broken persona gets not-found, never parser diagnostics",

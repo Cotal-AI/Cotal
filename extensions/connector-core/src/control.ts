@@ -22,8 +22,15 @@ export interface HookEvent {
   [k: string]: unknown;
 }
 
+/** What a handler knows about the hook's connection. */
+export interface HookContext {
+  /** Aborts when the hook's connection closes while the handler runs: the runtime ended the hook, so
+   *  nothing the handler writes can reach it. It does not change once the handler returned. */
+  readonly signal: AbortSignal;
+}
+
 /** Maps one hook event to the JSON reply the runtime applies. */
-export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<string, unknown>>;
+export type HookHandle = (agent: MeshAgent, ev: HookEvent, ctx: HookContext) => Promise<Record<string, unknown>>;
 
 /** The request a client MACs in the control exchange (one per connection): a hook event the
  *  runtime delivered, or one of the manager's ops. Nothing in it is read until the client has proved
@@ -262,7 +269,16 @@ export function startControlServer(
     }
     const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
     const awaitHandoff = (frame as { handoff?: unknown }).handoff === true;
-    const reply = await handle(agent, ev);
+    const closed = new AbortController();
+    const abort = (): void => closed.abort();
+    sock.once("close", abort);
+    if (sock.destroyed) abort();
+    let reply: Record<string, unknown>;
+    try {
+      reply = await handle(agent, ev, { signal: closed.signal });
+    } finally {
+      sock.off("close", abort);
+    }
     // Write FIRST, then report. `opts.onReply?.(ev, await writeReply(...))` short-circuits the
     // whole call expression when `onReply` is absent — arguments included — so the reply was never
     // written at all for the callers that do not observe delivery (opencode, hermes, pi, codex).

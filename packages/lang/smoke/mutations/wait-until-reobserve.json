@@ -10,7 +10,7 @@
   "mutations": [
     {
       "name": "a non-terminal observation SETTLES the entry, which is exactly the defect #1459 reports",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "    await host.journal.observe(key, observation, at);\n    frame.clock.advance(at);\n    attempt += 1;",
       "replace": "    await host.journal.observe(key, observation, at);\n    await host.journal.settle(key, { status: \"ok\", result: deepFreeze(observation) }, at);\n    frame.clock.advance(at);\n    return observation;",
       "expectRed": "the wait's entry is PENDING with its non-terminal observations recorded, and NO result",
@@ -18,7 +18,7 @@
     },
     {
       "name": "the pending verdict replays instead of re-entering the live path, so a resumed wait never looks again",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  const startedAt = host.journal.get(key)?.startedAt ?? host.options.handler.now();\n",
       "replace": "  if (pending !== undefined) return (pending.observations ?? []).at(-1)?.value;\n  const startedAt = host.journal.get(key)?.startedAt ?? host.options.handler.now();\n",
       "expectRed": "THE PROPERTY: the resumed wait OBSERVES THE WORLD AGAIN rather than replaying what it last saw",
@@ -26,7 +26,7 @@
     },
     {
       "name": "every observation shares one key namespace, so the resumed probe replays the first look's answer",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "    const observing = frame.branch(\"waitUntil\", name, key.occurrence, String(attempt));",
       "replace": "    const observing = frame.branch(\"waitUntil\", name, key.occurrence, \"0\");",
       "expectRed": "each observation's probe is journalled in ITS OWN namespace, so no later look can replay an earlier look's answer",
@@ -34,7 +34,7 @@
     },
     {
       "name": "the deadline is recomputed from the current clock, so every crash buys the wait a fresh deadline",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  const startedAt = host.journal.get(key)?.startedAt ?? host.options.handler.now();",
       "replace": "  const startedAt = host.options.handler.now();",
       "expectRed": "and it gives up WITHOUT LOOKING AGAIN, because the deadline it was measured against had already passed while the host was down",
@@ -42,7 +42,7 @@
     },
     {
       "name": "the terminal predicate's answer is read as truthy rather than as a boolean",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "    if (typeof decided !== \"boolean\") {",
       "replace": "    if (false) {",
       "expectRed": "a terminal predicate answering a truthy non-boolean is L4024, so a predicate that accidentally returns a record does not end every wait on its first look",
@@ -66,7 +66,7 @@
     },
     {
       "name": "a zero cadence is accepted at the call, so a wait can busy-poll a resource it does not own",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "      if (everyMs <= 0) {",
       "replace": "      if (false) {",
       "expectRed": "and a zero cadence the validator CANNOT read, because it is computed rather than a literal, is refused at the CALL by the interpreter",
@@ -74,7 +74,7 @@
     },
     {
       "name": "the static validator stops refusing a zero cadence, leaving only the runtime check",
-      "file": "packages/lang/src/grammar.ts",
+      "file": "packages/lang/src/grammar-resolve.ts",
       "find": "  if (e !== undefined && isDuration(e) && parseDuration(e) <= 0) {",
       "replace": "  if (false) {",
       "expectRed": "a ZERO cadence is refused, and it is not caught by the ordering test: `every: 0` is not greater than any deadline",

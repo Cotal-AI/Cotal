@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import type { MeshLaunchSpec, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertManagerName, assertRecordIdentity, canonicalLocalProcessPath,
-  consumeManagerShutdownIntent, localRecordAccess, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
+  consumeManagerShutdownIntent, loadRoster, localRecordAccess, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
   publishServiceStopReceipt, readLocalRecordSource, readServiceIdentity,
   readServiceStopReceipts, readServiceStopRequest, resolveNativeServiceTarget,
   serviceMetadataDigest, serviceOperationId, serviceStopRequestPath, stopReservationPath,
@@ -12,7 +12,6 @@ import {
 } from "@cotal-ai/workspace";
 import type { Manager, ManagerOptions, ManagerServiceObservation, StartAgentOpts } from "./manager.js";
 import { parseLaunchSpec } from "./launch.js";
-import { loadRoster } from "./roster.js";
 
 export interface ManagerServiceChild {
   readonly root: string;

@@ -28,8 +28,7 @@ import { shellWord } from "./endpoint-errors.js";
  */
 export type PersonaEntry = PersonaCatalogEntry;
 
-/** The refusal for a catalog folder `dir` that exists but is no folder, such as a file or a link that
- *  loops, which holds no personas. Undefined for a folder, or when nothing is there. */
+/** The refusal when the catalog path is a file or a link that does not resolve to a folder. */
 export function catalogFolderProblem(dir: string): CommandFailure | undefined {
   let what: string;
   try {
@@ -37,11 +36,18 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
     const own = lstatSync(dir);
     what = own.isSymbolicLink() ? "a link to something that is not a folder" : own.isFile() ? "a file, not a folder" : "not a folder";
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ELOOP") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      const target = linkTarget(dir);
+      return target === undefined ? undefined : new CommandFailure("refused", "CONFLICT", `${dir} is a link to the missing target ${target}`, {
+        remedy: "restore the link's target or move the broken link aside",
+      });
+    }
+    if (code !== "ELOOP") return undefined;
     what = "a link that loops back on itself";
   }
   return new CommandFailure("refused", "CONFLICT", `${dir} is ${what}, so it holds no personas`, {
-    remedy: `move ${dir} out of the way; \`cotal persona create <name>\` then makes the folder`,
+    remedy: `move ${dir} out of the way. To use existing definitions, restore their catalog folder there. To create a persona, retry the original create command with its source and target options`,
   });
 }
 
@@ -50,6 +56,8 @@ export function catalogFolderProblem(dir: string): CommandFailure | undefined {
  *  above it that this account cannot enter, or a folder another account owns, is named without one,
  *  and any other error is refused without a step. */
 export function catalogReadRefusal(dir: string, error: unknown): CommandFailure {
+  const folder = catalogFolderProblem(dir);
+  if (folder) return folder;
   const refusal = (remedy?: string) => new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona catalog: ${dir}`, remedy ? { remedy } : {});
   const code = (error as NodeJS.ErrnoException).code;
   if ((code !== "EACCES" && code !== "EPERM") || process.getuid === undefined) return refusal();
@@ -80,11 +88,15 @@ export function readPersonas(root: string): PersonaEntry[] {
   return readPersonaCatalog(root);
 }
 
+export function hasBlankPersonaSelector(entry: Pick<PersonaEntry, "name">): boolean {
+  return !entry.name.trim();
+}
+
 /** Just the persona names: the completion source for `cotal spawn`, `persona show` and `personas
  *  show/rm`. Only an absent folder is an empty catalog. One that cannot be read throws an error that
  *  names it, so the completion offers nothing and COTAL_COMPLETE_DEBUG says why. */
 export function listPersonaNames(root: string): string[] {
-  return completionPersonas(root).map((p) => p.name);
+  return completionPersonas(root).filter((p) => !hasBlankPersonaSelector(p)).map((p) => p.name);
 }
 
 /** {@link readPersonas} for a completion: a catalog folder that cannot be read throws an error that

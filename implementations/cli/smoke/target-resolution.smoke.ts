@@ -30,22 +30,25 @@
  * Run: pnpm smoke:target-resolution
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { findMesh, getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { execWords } = await import("../src/lib/exec-words.js");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR" && key !== "NO_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: join(home, ".config"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
+const launcher = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
 const COTAL = join(repoRoot, "bin", "cotal.ts");
 const TSX = join(repoRoot, "node_modules", ".bin", process.platform === "win32" ? "tsx.cmd" : "tsx");
 
@@ -56,16 +59,16 @@ process.on("exit", () => {
   for (const p of ptys) p.kill();
   rmSync(home, { recursive: true, force: true });
 });
-async function broker(): Promise<string> {
+async function broker(jetstream = true): Promise<string> {
   const port = await freePort();
-  const b = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+  const b = spawn("nats-server", [...(jetstream ? ["-js"] : []), "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
   teardownOnSignal(b);
   brokers.push(b);
   return `nats://127.0.0.1:${port}`;
 }
 const A = await broker();
 const B = await broker();
-const { isReachable } = await import("@cotal-ai/core");
+const { chatStream, dialerFor, isReachable } = await import("@cotal-ai/core");
 for (let i = 0; i < 50 && !((await isReachable(A)) && (await isReachable(B))); i++) await wait(100);
 
 // A working folder that is no project, so neither the folder nor a selection names the target.
@@ -113,13 +116,140 @@ const QUESTION = "Which one?";
   const env1 = envelope(script);
   check("a script with an ambiguous target is TARGET_AMBIGUOUS, exit 2", script.status === 2 && env1?.error?.code === "TARGET_AMBIGUOUS", shown(script));
   check("its message names the running spaces and its remedy says how to pick one",
-    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && /--space <name>/.test(env1?.error?.remedy ?? "") && !/--space <name>/.test(env1?.error?.message ?? ""), env1?.error);
+    /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && !/--space/.test(env1?.error?.message ?? "") &&
+      ["alpha", "beta"].every((space) => env1?.error?.remedy?.includes(` who --json --space ${space}\``)), env1?.error);
   const identity = run(["whoami", "--json"]);
   const env2 = envelope(identity);
   check("a command that resolves its own target refuses the same way, its remedy apart from its message",
-    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space <name>/.test(env2?.error?.remedy ?? "") && !/--space <name>/.test(env2?.error?.message ?? ""), env2?.error);
+    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space alpha.*--space beta/.test(env2?.error?.remedy ?? "") && !/--space/.test(env2?.error?.message ?? ""), env2?.error);
   const human = run(["who"]);
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
+}
+
+// A folder can hold several registrations without having a single default space to inspect.
+{
+  const root = join(home, "beta");
+  recordMesh({ space: "gamma", server: B, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  try {
+    const who = run(["who", "--plain"], root);
+    const next = who.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check("who in a shared folder refuses before opening the roster and names both exact reads",
+      who.status === 2 && /Code:\s+TARGET_AMBIGUOUS/.test(who.stderr) && /this folder has 2 registered spaces: beta, gamma/.test(who.stderr) &&
+        commands.length === 2 && commands[0]?.endsWith(" who --plain --space beta") && commands[1]?.endsWith(" who --plain --space gamma"), shown(who));
+    for (const flags of [["--plain"], ["list", "--live", "-j"]]) {
+      const inventory = run(["endpoint", ...flags], root);
+      const error = envelope(inventory)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : inventory.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check("ambiguous endpoint inventory names its spaces and preserves the requested inventory options",
+        inventory.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? inventory.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? inventory.stderr) &&
+          retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint ${flags.join(" ")} --space ${space}`)), shown(inventory));
+      if (flags[0] === "--plain" && process.platform !== "win32") for (const [i, space] of ["beta", "gamma"].entries()) {
+        const retry = spawnSync("sh", ["-c", retries[i] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check(`the printed inventory retry reads the saved references for ${space} without selecting it`,
+          retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint references") && getCurrent() === undefined, shown(retry));
+      }
+    }
+    // The same shared folder hides a saved reference's space the same way: `show` refuses with
+    // both names and the exact retry for each, preserving the reference name and output format.
+    writeFileSync(join(home, "beta-ref.json"), JSON.stringify({ schemaVersion: 1, space: "beta", endpoint: "example.beta" }));
+    writeFileSync(join(home, "gamma-ref.json"), JSON.stringify({ schemaVersion: 1, space: "gamma", endpoint: "example.gamma" }));
+    for (const space of ["beta", "gamma"]) {
+      const added = run(["endpoint", "add", "probe", "--space", space, "--file", join(home, `${space}-ref.json`), "--plain"], root);
+      check(`saving probe in ${space} succeeds`, added.status === 0, shown(added));
+    }
+    for (const format of ["--plain", "--json"]) {
+      const missing = run(["endpoint", "show", "prob", "--space", "beta", format], root);
+      const receipt = envelope(missing);
+      const guidance = receipt?.error?.remedy ?? missing.stderr.split("\nNext\n")[1] ?? "";
+      const command = /`([^`]+)`/.exec(guidance)?.[1];
+      check(`missing endpoint show ${format} offers the exact inventory command for beta`, missing.status === 2 &&
+        (format === "--json" ? receipt?.error?.code === "TARGET_NOT_FOUND" && receipt.target?.space === "beta" && receipt.target?.name === "prob"
+          : /Code:\s+TARGET_NOT_FOUND/.test(missing.stderr)) && command === `cotal endpoint --space beta ${format}`, shown(missing));
+      if (command === `cotal endpoint --space beta ${format}`) {
+        const inventory = run(command.split(" ").slice(1), root);
+        check(`the suggested ${format} inventory finds beta's saved reference without live reads`, inventory.status === 0 &&
+          inventory.stdout.includes("example.beta") && !inventory.stdout.includes("example.gamma") && inventory.stdout.includes("not-checked"), shown(inventory));
+      }
+    }
+    const betaRef = join(home, "beta-ref.json");
+    const alphaRef = join(home, "alpha-ref.json");
+    writeFileSync(alphaRef, JSON.stringify({ schemaVersion: 1, space: "alpha", endpoint: "example.alpha" }));
+    const imported = run(["endpoint", "add", "from-file", "--file", betaRef, "--plain"], root);
+    const saved = run(["endpoint", "show", "from-file", "--space", "beta", "--json"], root);
+    check("an ambiguous folder imports into the matching space pinned by the file without selecting it",
+      imported.status === 0 && imported.stdout.startsWith("Mesh: beta\n") && envelope(saved)?.result?.reference?.endpoint === "example.beta" && getCurrent() === undefined, shown(imported));
+    const unrelated = run(["endpoint", "add", "elsewhere", "--file", alphaRef, "--json"], root);
+    check("an import cannot choose a registration outside the ambiguous candidates",
+      unrelated.status === 2 && envelope(unrelated)?.error?.code === "TARGET_AMBIGUOUS" &&
+        run(["endpoint", "show", "elsewhere", "--space", "alpha", "--json"], root).status === 2, shown(unrelated));
+    const explicit = run(["endpoint", "add", "wrong-space", "--file", betaRef, "--space", "gamma", "--json"], root);
+    setCurrent("gamma");
+    try {
+      const selected = run(["endpoint", "add", "wrong-selection", "--file", betaRef, "--json"], work);
+      check("an import still refuses to override an explicit or resolved selection",
+        explicit.status === 1 && envelope(explicit)?.error?.code === "SCHEMA_INVALID" &&
+        selected.status === 1 && envelope(selected)?.error?.code === "SCHEMA_INVALID", { explicit: shown(explicit), selected: shown(selected) });
+    } finally { clearCurrent(); }
+    for (const flags of [["--plain"], ["--json"]]) {
+      const show = run(["endpoint", "show", "probe", ...flags], root);
+      const error = envelope(show)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : show.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check("ambiguous endpoint show names its spaces and preserves the reference name and output format",
+        show.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? show.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? show.stderr) &&
+          retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint show probe ${flags.join(" ")} --space ${space}`)), shown(show));
+      if (flags[0] === "--plain" && process.platform !== "win32") for (const [i, space] of ["beta", "gamma"].entries()) {
+        const retry = spawnSync("sh", ["-c", retries[i] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check(`the printed show retry reads the saved reference for ${space} without selecting it`,
+          retry.status === 0 && retry.stdout?.startsWith(`Mesh: ${space}\n`) && retry.stdout.includes("Saved endpoint reference") && retry.stdout.includes(`example.${space}`) && getCurrent() === undefined, shown(retry));
+      }
+    }
+    for (const [verb, selector, flags, format] of [
+      ["remove", "probe", ["--plain"], "--plain"],
+      ["remove", "probe", ["-y", "-j"], "--json"],
+      ["describe", "manager", ["--plain"], "--plain"],
+      ["describe", "manager", ["--json"], "--json"],
+    ] as const) {
+      const refused = run(["endpoint", verb, selector, ...flags], root);
+      const error = envelope(refused)?.error;
+      const remedy: unknown = error?.remedy;
+      const guidance = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
+      const retries = Array.from(guidance.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+      check(`ambiguous endpoint ${verb} ${format} names both spaces and prints unconfirmed retries`,
+        refused.status === 2 && /TARGET_AMBIGUOUS/.test(error?.code ?? refused.stderr) && /registered spaces: beta, gamma/.test(error?.message ?? refused.stderr) &&
+        retries.length === 2 && ["beta", "gamma"].every((space, i) => retries[i]?.endsWith(` endpoint ${verb} ${selector} ${format} --space ${space}`)), shown(refused));
+      if (verb === "remove" && format === "--plain" && process.platform !== "win32") {
+        const retry = spawnSync("sh", ["-c", retries[0] ?? ""], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+        check("the printed remove retry still requires confirmation and keeps the reference",
+          retry.status === 1 && retry.stderr.includes("--yes") && run(["endpoint", "show", "probe", "--space", "beta"], root).status === 0, shown(retry));
+      }
+    }
+    const typo = run(["endpoint", "describe", "manager", "--space", "space-typo", "--json"], root);
+    const typoError = envelope(typo)?.error;
+    check("endpoint describe names an unknown explicit space and points to the space list",
+      typo.status === 2 && typoError?.code === "TARGET_NOT_FOUND" && typoError.message.includes('"space-typo"') && typoError.remedy?.includes("`cotal space`"), shown(typo));
+    for (const space of ["beta", "gamma"]) {
+      const picked = run(["who", "--plain", "--space", space], root);
+      check(`the exact roster read for ${space} succeeds without choosing a default`, picked.status === 0 && picked.stdout.startsWith(`Mesh: ${space}\n`) && getCurrent() === undefined, shown(picked));
+      const show = run(["space", "show", space, "--json"], root);
+      check(`space show ${space} still reads the named space`, show.status === 0 && envelope(show)?.target?.space === space, shown(show));
+    }
+    for (const selected of [undefined, "alpha"]) {
+      if (selected !== undefined) setAdoptedCurrent(selected);
+      const show = run(["space", "show", "--json"], root);
+      const error = envelope(show)?.error;
+      check(`bare space show refuses a shared folder with ${selected === undefined ? "no" : "an unrelated adopted"} selection`,
+        show.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /registered spaces: beta, gamma/.test(error.message) &&
+          ["beta", "gamma"].every((space) => error.remedy?.includes(` space show ${space} --json\``)) && !error.remedy.includes("space show alpha") && getCurrent() === selected, shown(show));
+    }
+  } finally {
+    clearCurrent();
+    removeMesh("gamma");
+  }
 }
 
 // Equivalent URLs keep identity and unchecked registrations keep their caveat.
@@ -133,9 +263,170 @@ const QUESTION = "Which one?";
   recordMesh({ space: "shared", server: A, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString(), unchecked: true });
   const ambiguous = run(["whoami", "--server", A, "--json"]);
   check("explicit broker ambiguity names recorded spaces and explains removing --server after use", ambiguous.status === 2 && /multiple spaces recorded/.test(envelope(ambiguous)?.error?.message ?? "") && /remove --server/.test(envelope(ambiguous)?.error?.remedy ?? ""), shown(ambiguous));
+  for (const [serverFlags, format] of [[["--server", A], "--plain"], [[`--server=${A}/`], "-j"]] as const) {
+    const args = ["who", ...serverFlags, format, "--all"];
+    const refused = run(args);
+    const error = envelope(refused)?.error;
+    const remedy: unknown = error?.remedy;
+    const next = typeof remedy === "string" ? remedy : refused.stderr.split("\nNext\n")[1] ?? "";
+    const commands = Array.from(next.matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    const expected = format === "-j" ? `who '--server=${A}/' -j --all` : `who --server ${A} --plain --all`;
+    check(`who ${format} on a shared broker refuses and keeps the broker and flags in each exact choice`,
+      refused.status === 2 && (format === "-j" ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      commands.length === 2 && ["alpha", "shared"].every((space, index) => commands[index]?.endsWith(` ${expected} --space ${space}`)), shown(refused));
+    for (const space of ["alpha", "shared"]) {
+      const picked = run([...args, "--space", space]);
+      check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
+        (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
+  for (const [args, beforeSpace, afterSpace] of [
+    [["history", "fleet-test", "--server", A, "--plain"], `history fleet-test --server ${A} --plain`, ""],
+    [["history", "--server", A, "--json", "--grep", "two words", "--", "fleet-test"], `history --server ${A} --json --grep 'two words'`, " -- fleet-test"],
+    [["history", "fleet-test", "--server", A, "--follow", "--json"], `history fleet-test --server ${A} --follow --json`, ""],
+    [["ps", "--server", A, "--plain", "--wide"], `ps --server ${A} --plain --wide`, ""],
+  ] as const) {
+    const refused = run([...args]);
+    const follow = args.some((arg) => arg === "--follow");
+    const json = args.some((arg) => arg === "--json");
+    const records = follow ? refused.stdout.trim().split("\n").map((line) => JSON.parse(line)) : [];
+    const error = follow ? records[0]?.data : envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${beforeSpace} refuses and offers both exact reads`, refused.status === 2 &&
+      (json ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      (!follow || records.length === 2 && records[0]?.type === "error" && records[1]?.type === "end") &&
+      retries.length === 2 && ["alpha", "shared"].every((space, index) =>
+        retries[index]?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)), shown(refused));
+    if (follow) continue;
+    for (const [index, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[index];
+      if (!retry?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)) continue;
+      const picked = run(execWords(retry).slice(-args.length - 2));
+      check(`the printed ${args[0]} retry reaches ${space} without selecting a default`, getCurrent() === undefined &&
+        (args[0] === "ps" ? picked.stderr.startsWith(`Mesh: ${space}\n`) && !picked.stderr.includes("TARGET_AMBIGUOUS")
+          : picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.target?.channel === "fleet-test"
+            : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes(`#fleet-test of ${space}`))), shown(picked));
+    }
+  }
   const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
   check("equivalent URL does not turn unchecked mode into checked", unchecked.status === 4 && envelope(unchecked)?.result?.modeChecked === false, shown(unchecked));
   removeMesh("shared");
+}
+
+// A reachable open broker can answer for names that have no streams there.
+{
+  const root = join(home, "upcoming");
+  mkdirSync(root);
+  const nc = await dialerFor(A)({ servers: A });
+  try {
+    const streams = (await jetstreamManager(nc)).streams;
+    await streams.add({ name: chatStream("alpha"), subjects: ["inventory.alpha"] });
+    removeMesh("beta");
+    const add = ["space", "add", "upcoming", "--server", A, "--root", root];
+    const checked = run([...add, "--yes", "--json"]);
+    check("checked registration refuses a space absent from the broker inventory", checked.status === 2 && envelope(checked)?.error?.code === "TARGET_NOT_FOUND", shown(checked));
+    const forced = run([...add, "--force", "--json"]);
+    check("force records the upcoming space unchecked", forced.status === 0 && findMesh("upcoming")?.unchecked === true, shown(forced));
+
+    const automatic = run(["who", "--json"]);
+    check("automatic selection targets the only served candidate", automatic.status === 0 && envelope(automatic)?.target?.space === "alpha", shown(automatic));
+    const tty = terminal(["who"]);
+    check("the terminal reads the sole served candidate without asking", await until(() => tty.s.code !== undefined, 15_000) && tty.s.code === 0 && /\bin alpha\b/.test(tty.s.text()) && !tty.s.text().includes(QUESTION), tty.s.text().slice(-600));
+    check("automatic selection keeps the unchecked record and leaves the default clear", findMesh("upcoming")?.unchecked === true && getCurrent() === undefined);
+    const explicit = run(["who", "--server", A, "--json"]);
+    check("explicit server still needs a name when several spaces are recorded there", explicit.status === 2 && /multiple spaces recorded/.test(envelope(explicit)?.error?.message ?? ""), shown(explicit));
+    setCurrent("upcoming");
+    const selected = run(["who", "--json"]);
+    check("an explicit selection still targets the unchecked record", selected.status === 0 && envelope(selected)?.target?.space === "upcoming", shown(selected));
+    clearCurrent();
+
+    await streams.add({ name: chatStream("upcoming"), subjects: ["inventory.upcoming"] });
+    const two = run(["who", "--json"]);
+    check("an unchecked registration with a live stream stays a candidate", two.status === 2 && /multiple meshes running/.test(envelope(two)?.error?.message ?? "") && /upcoming/.test(envelope(two)?.error?.message ?? ""), shown(two));
+
+    const unavailable = await broker(false);
+    for (let i = 0; i < 30 && !(await isReachable(unavailable)); i++) await wait(50);
+    check("the broker without inventory still answers", await isReachable(unavailable), unavailable);
+    recordMesh({ ...findMesh("upcoming")!, server: unavailable });
+    const unknown = run(["who", "--json"]);
+    const error = envelope(unknown)?.error;
+    check("unreadable inventory is not called running or mistaken for absence", unknown.status === 2 && error?.code === "TARGET_AMBIGUOUS" && /upcoming.*not verified running/.test(error.message) && /--space alpha/.test(error.remedy) && /--space upcoming/.test(error.remedy), shown(unknown));
+  } finally {
+    clearCurrent();
+    removeMesh("upcoming");
+    recordMesh({ space: "beta", server: B, root: join(home, "beta"), mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+    await nc.close();
+  }
+}
+
+// A damaged selection refuses even with exactly one live fallback.
+{
+  const beta = findMesh("beta")!;
+  const prepared = join(home, "prepared-selection");
+  const pointer = join(env.COTAL_HOME!, "current-mesh");
+  removeMesh("beta");
+  mkdirSync(prepared);
+  recordPreparedSpace({ space: "planned", root: prepared, ts: new Date(0).toISOString() });
+  try {
+    const selected = run(["use", "planned", "--plain"]);
+    const stopped = run(["who", "--json"]);
+    check("an intact selection names the prepared space and refuses instead of reading the running one",
+      selected.status === 0 && stopped.status === 2 && envelope(stopped)?.error?.code === "TARGET_UNAVAILABLE" && envelope(stopped)?.target?.space === "planned", shown(stopped));
+
+    writeFileSync(pointer, "");
+    const use = run(["use", "--plain"]), who = run(["who", "--plain"]);
+    check("bare who and use give the same refusal for an empty selection, without a roster",
+      use.status === 1 && who.status === 1 && who.stdout === "" && who.stderr === use.stderr &&
+      who.stderr.includes(`${pointer} is empty`) && who.stderr.includes("SCHEMA_INVALID") && who.stderr.includes("`cotal use --clear`"), shown(who));
+    const show = run(["space", "show", "--plain"]);
+    check("bare space show outside a project gives the same refusal as use for an empty selection",
+      show.status === 1 && show.stdout === "" && show.stderr === use.stderr, shown(show));
+    const inventory = run(["space", "--json"]), spaces = envelope(inventory);
+    check("space still lists prepared spaces and flags the unreadable selection",
+      inventory.status === 0 && spaces?.result?.current === null && spaces.result.currentRecorded === false &&
+      spaces.result.prepared.some((p: { space: string }) => p.space === "planned") &&
+      spaces.warnings.some((w: { code: string; target?: { file: string }; message: string }) => w.code === "MESH_REGISTRY_UNREADABLE" &&
+        w.target?.file === pointer && w.message.includes(`${pointer} is empty`) && w.message.includes("`cotal use --clear`")), shown(inventory));
+    const named = run(["space", "show", "planned", "--json"]);
+    check("named space show does not need the damaged selection",
+      named.status === 0 && envelope(named)?.target?.space === "planned", shown(named));
+    const local = run(["who", "--json"], join(home, "alpha"));
+    check("an empty selection does not fall back to the running project either",
+      local.status === 1 && envelope(local)?.error?.code === "SCHEMA_INVALID" && envelope(local)?.target?.file === pointer && envelope(local)?.target?.space === undefined, shown(local));
+    for (const flags of [["--space", "alpha"], ["--server", A]]) {
+      const explicit = run(["who", ...flags, "--json"]);
+      check(`${flags[0]} still targets the named mesh with an empty saved selection`,
+        explicit.status === 0 && envelope(explicit)?.target?.space === "alpha", shown(explicit));
+    }
+
+    run(["use", "planned"]);
+    const marker = `${pointer}.adopted`;
+    mkdirSync(marker);
+    writeFileSync(join(marker, "keep"), "");
+    const unreadable = run(["who", "--json"]);
+    check("an unreadable selection marker is named and does not permit fallback",
+      unreadable.status === 1 && envelope(unreadable)?.error?.code === "SCHEMA_INVALID" && envelope(unreadable)?.target?.file === marker, shown(unreadable));
+    const showUnreadable = run(["space", "show", "--json"]);
+    check("bare space show also names the unreadable selection marker",
+      showUnreadable.status === 1 && envelope(showUnreadable)?.error?.code === "SCHEMA_INVALID" && envelope(showUnreadable)?.target?.file === marker, shown(showUnreadable));
+    const reselected = run(["use", "planned", "--json"]);
+    check("selecting again repairs an unreadable marker without losing its directory contents",
+      reselected.status === 0 && getCurrent() === "planned" && !existsSync(marker) &&
+      readdirSync(env.COTAL_HOME!).some(name => name.startsWith("current-mesh.adopted.corrupt.") && existsSync(join(env.COTAL_HOME!, name, "keep"))), shown(reselected));
+    mkdirSync(marker);
+    const clearedMarker = run(["use", "--clear", "--plain"]);
+    check("clearing an unreadable marker clears the saved selection", clearedMarker.status === 0 && !existsSync(pointer) && !existsSync(marker), shown(clearedMarker));
+
+    writeFileSync(pointer, "");
+    const cleared = run(["use", "--clear", "--plain"]), fallback = run(["who", "--json"]);
+    check("deliberately clearing the damaged selection restores the single-space fallback",
+      cleared.status === 0 && fallback.status === 0 && envelope(fallback)?.target?.space === "alpha", shown(fallback));
+  } finally {
+    clearCurrent();
+    removePreparedSpace("planned");
+    recordMesh(beta);
+  }
 }
 
 // ── A terminal chooses, for this run only ───────────────────────────────────────────────────────────
@@ -182,6 +473,11 @@ const QUESTION = "Which one?";
   }
   const explicitNote = run(["who"], join(home, "beta"));
   check("explicit selection explains its target under Mesh once", /Mesh: alpha/.test(explicitNote.stdout + explicitNote.stderr) && /selected space applies here/.test(explicitNote.stdout + explicitNote.stderr), shown(explicitNote));
+  const explicitShow = run(["space", "show", "--plain"], join(home, "beta"));
+  check("space show still inspects the running folder and explains how to target it instead of the explicit selection",
+    explicitShow.status === 0 && /^Mesh: beta$/m.test(explicitShow.stdout) && /^ +broker: +reachable$/m.test(explicitShow.stdout) &&
+      explicitShow.stdout.includes('the selected space "alpha" applies here to commands such as `cotal who`') &&
+      explicitShow.stdout.includes('--space beta or `cotal use --clear`') && !explicitShow.stdout.includes("applies outside"), shown(explicitShow));
   const explicitWrite = run(["history", "clear", "--dry-run", "--json"], join(home, "beta"));
   check("a write preview names the explicit selected space, not the folder", envelope(explicitWrite)?.target?.space === "alpha", shown(explicitWrite));
   const selectedSpawnTerminal = terminal(["spawn", "--dry-run"]);
@@ -254,13 +550,14 @@ const QUESTION = "Which one?";
   check("chat --stdio there names the selection it joins and that note; away from any project it names neither",
     deltaChat.status === 0 && deltaChat.stderr.includes(`cotal chat: this session joins the selected space "alpha"; ${HELD}\n`) &&
       awayChat.status === 0 && !/this session joins|this folder holds/.test(awayChat.stderr), { here: shown(deltaChat), away: shown(awayChat) });
-  // The listing and `use` name no folder space there, because none is the target; `space show`, which
-  // is about the folder, still shows what it holds and says the selection applies until it runs.
+  // The listing marks no folder target. `use` names the selection and the folder separately, while
+  // `space show` inspects the prepared folder and says the selection applies until it runs.
   const listed = run(["space", "--json"], delta), listedText = run(["space"], delta), shownSpace = run(["space", "show"], delta), used = run(["use", "--json"], delta), usedText = run(["use"], delta);
-  check("in that folder the listing and use name no folder space, and space show names what it holds",
+  check("the listing marks no folder target, while use and space show identify the prepared folder",
     envelope(listed)?.result?.folder === null && !/^ {2}delta \(this folder's\) /m.test(listedText.stdout) &&
       /^Mesh: delta\n {2}this folder's prepared space; commands here target the selected space "alpha" until it runs$/m.test(shownSpace.stdout) && /^space: +delta$/m.test(shownSpace.stdout) &&
-      envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === null && !usedText.stdout.includes(`commands in this folder target its space "delta"`),
+      used.status === 0 && envelope(used)?.target?.space === "alpha" && envelope(used)?.result?.current === "alpha" && envelope(used)?.result?.folder === "delta" &&
+      usedText.status === 0 && usedText.stdout.includes(`commands here target this folder's space "delta" while it runs`),
     { listed: shown(listed), listedText: shown(listedText), shownSpace: shown(shownSpace), used: shown(used), usedText: shown(usedText) });
   // status reports the selection there, with what this folder holds and its `up` under the heading.
   const statusHere = run(["status", "--json"], delta), statusHereText = run(["status"], delta);
@@ -284,7 +581,7 @@ const QUESTION = "Which one?";
   const entry = run([], delta), entryHelp = run(["help"], delta), entryAway = run([]);
   check("in that folder bare cotal and help lead with the selection, name what the folder holds, and offer its up",
     [entry, entryHelp].every((r) => r.status === 0 && /^alpha · /m.test(r.stdout) && r.stdout.includes(`this folder holds the prepared space "delta"`) &&
-      /^Start here\n {2}cotal up +Start this folder's space$/m.test(r.stdout) && !/^delta · /m.test(r.stdout)),
+      /^Start here\n {2}(?:pnpm )?cotal up +Start this folder's space$/m.test(r.stdout) && !/^delta · /m.test(r.stdout)),
     [entry, entryHelp].map(shown));
   check("control: away from any project bare cotal leads with the selection, with no note",
     entryAway.status === 0 && entryAway.stdout.startsWith("alpha · ") && !entryAway.stdout.includes("this folder's space"), shown(entryAway));
@@ -312,7 +609,7 @@ const QUESTION = "Which one?";
   // zeta's root holds no broker pidfile, as the retained launcher's `down` leaves it, so its own
   // records show the stack stopped and the entry screen names the selection, as a prepared folder's does.
   const leadsWithSelection = (r: ReturnType<typeof run>) => r.status === 0 && /^alpha · /m.test(r.stdout) && r.stdout.includes(`this folder holds the stopped space "zeta"`) &&
-    /^Start here\n {2}cotal up +Start this folder's space$/m.test(r.stdout) && !/^zeta · /m.test(r.stdout);
+    /^Start here\n {2}(?:pnpm )?cotal up +Start this folder's space$/m.test(r.stdout) && !/^zeta · /m.test(r.stdout);
   const appliesWhileItRuns = (r: ReturnType<typeof run>) => r.status === 0 && /^zeta · /m.test(r.stdout) &&
     r.stdout.includes(`this folder's space while it runs; the selected space "alpha" applies outside it and while it is stopped`);
   check("bare cotal there, whose records hold no broker pidfile, leads with the selection, names the stopped space and offers its up",
@@ -328,12 +625,12 @@ const QUESTION = "Which one?";
   const refusedPs = run(["ps"], zetaRoot), refusedPsJson = run(["ps", "--json"], zetaRoot), refusedSend = run(["send", "-c", "general", "hi"], zetaRoot);
   setAdoptedCurrent("alpha");
   removePreparedSpace("eta");
-  const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && r.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
+  const startsEta = (r: ReturnType<typeof run>) => r.status === 0 && /^eta · prepared · /m.test(r.stdout) && /\nStart here\n {2}(?:pnpm )?cotal up --root /.test(r.stdout) && r.stdout.includes(`--root ${eta}  Start this space\n`) && !r.stdout.includes("cotal spawn");
   check("with a prepared selection, bare cotal there names the selection's up as this space's start and offers no spawn, as away from any project",
     startsEta(entryPrepared) && entryPrepared.stdout.includes(`this folder holds the stopped space "zeta"`) && startsEta(entryPreparedAway), { here: shown(entryPrepared), away: shown(entryPreparedAway) });
-  const wholeNote = (r: ReturnType<typeof run>) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`cotal up\` in ${eta}`);
+  const wholeNote = (r: ReturnType<typeof run>, cmd: string) => r.status === 2 && new RegExp(`^Mesh: eta\n {2}${STOPPED}$`, "m").test(r.stdout + r.stderr) && (r.stdout + r.stderr).includes(`\nNext\n  start it with \`${cmd} up\` in ${eta}`);
   check("ps and send there refuse for the prepared selection, naming its up under Next and zeta's whole note under the heading, as ps --json's warning does",
-    wholeNote(refusedPs) && wholeNote(refusedSend) && envelope(refusedPsJson)?.error?.code === "TARGET_UNAVAILABLE" &&
+    wholeNote(refusedPs, launcher) && wholeNote(refusedSend, "cotal") && envelope(refusedPsJson)?.error?.code === "TARGET_UNAVAILABLE" &&
       envelope(refusedPsJson)?.warnings?.some((w: { code: string; message: string }) => w.code === "FOLDER_SPACE_NOT_RUNNING" && w.message === STOPPED) === true,
     { ps: shown(refusedPs), send: shown(refusedSend), json: shown(refusedPsJson) });
   // A stopped stack may retain a tiny file-store cap from an earlier release. It no longer changes
@@ -352,11 +649,11 @@ const QUESTION = "Which one?";
   rmSync(join(zetaRoot, ".cotal", "stack-controller.json"));
   check("bare cotal ignores the old tiny cap in its folder note, command heading and start row",
     entryCapped.status === 0 && /^alpha · /m.test(entryCapped.stdout) && entryCapped.stdout.includes(`\n${CAPPED}\n`) &&
-      /^Start here\n {2}cotal up +Start this folder's space\n {2}cotal spawn /m.test(entryCapped.stdout) &&
+      /^Start here\n {2}(?:pnpm )?cotal up +Start this folder's space\n {2}(?:pnpm )?cotal spawn /m.test(entryCapped.stdout) &&
       new RegExp(`^Mesh: alpha\n {2}${CAPPED}$`, "m").test(headingCapped.stdout + headingCapped.stderr), { entry: shown(entryCapped), heading: shown(headingCapped) });
   check("with a selection whose stopped stack recorded that cap, bare cotal still names bare up in both folders",
-    entryEtaHere.status === 0 && /^eta · prepared here · /m.test(entryEtaHere.stdout) && /^Start here\n {2}cotal up +Start this space$/m.test(entryEtaHere.stdout) &&
-      entryEtaThere.stdout.includes(`\nStart here\n  cotal up --root ${eta}  Start this space\n`) && entryEtaThere.stdout.includes(`\n${CAPPED}\n`),
+    entryEtaHere.status === 0 && /^eta · prepared here · /m.test(entryEtaHere.stdout) && /^Start here\n {2}(?:pnpm )?cotal up +Start this space$/m.test(entryEtaHere.stdout) &&
+      startsEta(entryEtaThere) && entryEtaThere.stdout.includes(`\n${CAPPED}\n`),
     { here: shown(entryEtaHere), there: shown(entryEtaThere) });
   // A pidfile naming a live process does not show it stopped, and help reads no broker, so it says when
   // the folder's space applies; one naming a process that is gone does.
@@ -564,6 +861,18 @@ const QUESTION = "Which one?";
   const forgot = run(["space", "forget", "gone"], forgotten);
   check("control: a space prepared in a folder and then forgotten", prepared.status === 0 && forgot.status === 0 && existsSync(join(forgotten, ".cotal")), { prepared: shown(prepared), forgot: shown(forgot) });
   const root = realpathSync(forgotten);
+  const file = join(root, "reference.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "beta", endpoint: "example.offline" }));
+  const add = ["endpoint", "add", "offline", "--file", file, "--json"];
+  const refused = run(add, root);
+  const error = envelope(refused)?.error;
+  check("an import with no local space explains how to use the reference file's space",
+    refused.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy?.includes("--space <space>") &&
+      error.remedy.includes("cotal space create <space> --root <project-directory>"), shown(refused));
+  const retry = run([...add, "--space", "beta"], root);
+  const saved = run(["endpoint", "show", "offline", "--space", "beta", "--json"], root);
+  check("the scoped retry saves the same reference without changing the selection",
+    retry.status === 0 && envelope(saved)?.result?.reference?.endpoint === "example.offline" && getCurrent() === undefined, shown(retry));
   for (const command of [["whoami"], ["spawn", "--dry-run"]]) {
     const json = run([...command, "--json"], forgotten);
     const body = json.status === 2 ? JSON.parse(json.stdout) as { target?: Record<string, unknown> | null; error?: { code?: string; message?: string } } : undefined;
@@ -573,6 +882,45 @@ const QUESTION = "Which one?";
     const plain = run([...command, "--plain"], forgotten);
     check(`${command.join(" ")} there names no Mesh and says no space is registered here`,
       plain.status === 2 && !/^Mesh: /m.test(plain.stdout + plain.stderr) && (plain.stdout + plain.stderr).includes(`no space is registered or prepared here for ${root}`), shown(plain));
+  }
+}
+
+{
+  const root = realpathSync(mkdtempSync(join(home, "open-stack-")));
+  const space = "open-roster";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const registration = join(env.COTAL_HOME!, "meshes", `space.${Buffer.from(space).toString("hex")}.json`);
+  const saved = join(root, "registration.saved");
+  const roster = (address: string) => run(["who", "--server", address, "--json"], root);
+  const complete = (read: ReturnType<typeof run>, name: string) => {
+    const data = envelope(read);
+    return read.status === 0 && data?.target?.space === name && data.outcome === "ok" && data.completeness === "complete" && data.warnings?.length === 0;
+  };
+  const prepared = run(["space", "create", space], root);
+  anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+  try {
+    const started = run(["up", "--no-manager", "--open", "--server", server], root);
+    const cleared = run(["use", "--clear", "--json"], root);
+    const registered = roster(server);
+    check("a registered open stack answers the roster at its explicit address", prepared.status === 0 && started.status === 0 && cleared.status === 0 && complete(registered, space), { started: shown(started), roster: shown(registered) });
+    renameSync(registration, saved);
+    for (const address of [server, `${server}/`]) {
+      const read = roster(address);
+      check(`the running open stack still answers as ${space} without its registration at ${address}`, complete(read, space) && !existsSync(registration), shown(read));
+    }
+    const bare = run(["who", "--json"], root);
+    check("bare who still requires the open stack registration", bare.status === 2 && envelope(bare)?.error?.code === "TARGET_UNAVAILABLE", shown(bare));
+    const raw = await broker();
+    for (let i = 0; i < 30 && !(await isReachable(raw)); i++) await wait(50);
+    const unrelated = roster(raw);
+    check("another unregistered broker still answers as main from the open project", complete(unrelated, "main"), shown(unrelated));
+    renameSync(saved, registration);
+    const restored = roster(server);
+    check("restoring the registration preserves the same live target", complete(restored, space), shown(restored));
+  } finally {
+    if (existsSync(saved)) renameSync(saved, registration);
+    const down = run(["down", "--yes", "--json"], root);
+    check("the live open roster fixture stops cleanly", down.status === 0, shown(down));
   }
 }
 

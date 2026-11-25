@@ -1,0 +1,3 @@
+# A Pi seat launched with askPermissions asks the prompt desk before each tool call that is not
+# read-only, and blocks the call with the cause when the desk cannot hold the prompt.
+smoke:pi-approvals

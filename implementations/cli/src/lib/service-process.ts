@@ -5,6 +5,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { CommandFailure, assertRecordIdentity, shellPath, canonicalRoot, commandIsCotalSupervisor, homeCotalDir, isCommandFailure, maintenanceAdmitsStackWork, readMaintenanceJournal, readProcessCommand, readServiceStopRequest, resolveNativeServiceTarget, loopbackListeners, processGroupMembers, processGroupOf, serviceAdapterReadiness, serviceMetadataDigest, spaceKey, serviceAdapterKernelStopPlan, serviceAdapterKernelStopResult, serviceAdapterStopPlan, serviceAdapterStopAbandonment, serviceAdapterStopRefusal, serviceAdapterStopResult, type ServiceAdapterStopAbandonment, type ServiceAdapterAttempt, type ServiceAdapterKernelStopPlan, type ServiceAdapterPreservedStop, type ServiceAdapterStopPlan, type ServiceAdapterContext, type ServiceDefinitionInput, type ControllerStackView, type OutputWarning, isWorkspaceTargetError, oneLine, targetErrorCode, workspaceErrorParts, type MeshTargetError, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import { openPrivateAppend } from "@cotal-ai/core";
+import type { SeatCap } from "@cotal-ai/workspace";
 import { refuseRecordedSupervisor } from "./service-supervision.js";
 import { serviceInstallIntents } from "./service-install-intent.js";
 import { serviceUninstallIntents } from "./service-uninstall-intent.js";
@@ -17,6 +18,7 @@ import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./sta
 import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, privateLog } from "./private-log.js";
+import { targetWords } from "./confirmation-required.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -212,10 +214,13 @@ export function settleExitedInstances(definition: ServiceDefinitionSnapshot): vo
   finally { hold.release(); }
 }
 
-export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
+export function selectServiceInstance(rows: ServiceInstanceSnapshot[], target: { space: string; name: string; requested?: string }, id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
   if (id !== undefined) {
     const found = rows.find((row) => row.name === id);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space");
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", {
+      target: { ...target, instanceId: id },
+      remedy: `cotal service${targetWords({ space: target.space })} --json`, remedyIsCommand: true,
+    });
     return found;
   }
   if (!rows.length) { if (allowMissing) return undefined; throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition"); }
@@ -385,13 +390,13 @@ function ownedMetadata<T>(value: T): T {
   return copy;
 }
 
-function adapterContext(definition: ServiceDefinitionSnapshot, instance: ServiceInstance, cliInvocation?: readonly string[], attempt?: ServiceAdapterAttempt, stack?: ControllerStackView): ServiceAdapterContext {
+function adapterContext(definition: ServiceDefinitionSnapshot, instance: ServiceInstance, cliInvocation?: readonly string[], attempt?: ServiceAdapterAttempt, stack?: ControllerStackView, managerSeatCap?: SeatCap): ServiceAdapterContext {
   const value = definition.record.value;
   if (value.launch.type !== "adapter") throw new CommandFailure("refused", "UNSUPPORTED", "a process definition has no adapter context");
   const options = ownedMetadata(value.launch.options);
   const stateDirectory = serviceInstanceStore(value.space).directory();
   if (!stateDirectory) throw new CommandFailure("refused", "CONFLICT", "the reserved service state directory disappeared");
-  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}) });
+  return Object.freeze({ space: value.space, definition: definition.name, definitionRevision: definition.record.revision, instanceId: instance.instanceId, launchRequestId: instance.launchRequestId, stateDirectory, ...(cliInvocation ? { cliInvocation: Object.freeze([...cliInvocation]) } : {}), options, ...(value.credentialRef ? { credentialRef: Object.freeze({ ...value.credentialRef }) } : {}), ...(value.envRefs ? { envRefs: ownedMetadata(value.envRefs) } : {}), ...(attempt ? { attempt: ownedMetadata(attempt) } : {}), ...(stack ? { stack: ownedMetadata(stack) } : {}), ...(managerSeatCap !== undefined ? { managerSeatCap } : {}) });
 }
 
 /** A deadline bounds our observation, not the provider's work. No timed-out hook is retried. */
@@ -569,7 +574,7 @@ function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: 
 }
 
 type DefinitionHold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string } }, held?: DefinitionHold) {
+export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap }, held?: DefinitionHold) {
   const value = definition.record.value;
   if (options.attempt && (value.launch.type !== "adapter" || options.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "a maintenance attempt reaches only an adapter launch in the background; no launch was allocated");
   // Only the broker and manager adapters read an attempt; every other adapter refuses it.
@@ -594,7 +599,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (rows.some((row) => row.record.value.state !== "stopped" || !row.record.value.kernelStop || !gone(observeServiceProcess(row.record.value)))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another record of this broker definition is not a stopped one with its own kernel-exit receipt; no new broker instance was allocated");
     }
     if (options.replacement && rows.length) throw new CommandFailure("refused", "CONFLICT", "the definition already has an instance record; the journaled replacement was not launched beside it", { target: { space: value.space, definition: definition.name, candidates: rows.map((row) => row.name) } });
-    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, options.instance, true);
+    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, { space: value.space, name: definition.name }, options.instance, true);
     // A retained native stop is decided only by its own receipt, so no start probes, reuses or
     // replaces it, and its record is not written.
     const retained = chosen && retainedStopRequest(chosen.record.value);
@@ -661,7 +666,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       else {
         // The manager adapter reads no stack journal, so its launch carries the facts it admits a settled restore against.
         const stack = value.launch.adapter === "manager-service" && typeof value.launch.options.root === "string" ? maintenanceStackView(value.launch.options.root, value.space) : undefined;
-        const context = adapterContext(definition, instance, cliInvocation, options.attempt, stack);
+        const context = adapterContext(definition, instance, cliInvocation, options.attempt, stack, options.managerSeatCap);
         const provider = await loadServiceAdapter(declaredAdapter!, value.launch.options);
         hold.check();
         const plan = await adapterCall(() => provider.build(context), Math.min(10000, value.readiness.timeoutMs));
@@ -780,7 +785,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
       const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
       // A foreground child wrote to this terminal, so its log holds nothing from this launch.
-      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "its log records the cause";
+      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "no log line was available from this start";
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` }) });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
@@ -1133,10 +1138,10 @@ export function removeStoppedInstanceRecords(space: string, name: string): strin
 const LOG_TAIL_BYTES = LOG_ROTATE_BYTES;
 
 /** Read only bounded regular-file bytes; log data is not promised to be secret-redacted. */
-export function readServiceLog(space: string, id: string, tail: number) {
+export function readServiceLog(space: string, id: string, tail: number, requireFile = false) {
   const path = serviceLogPath(space, id);
   if (!path) return { lines: [] as string[], omittedBytes: 0, path: null };
-  return readOwnedLogTail(path, tail);
+  return readOwnedLogTail(path, tail, requireFile);
 }
 
 /** The refusal for a log this account cannot open, with the step that gives its owner read and write back. */
@@ -1146,12 +1151,15 @@ function unreadableLog(path: string, code: string) {
 
 /** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
  *  account cannot read is refused with the step that gives its owner read and write back. */
-export function readOwnedLogTail(path: string, tail: number) {
+export function readOwnedLogTail(path: string, tail: number, requireFile = false) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path };
+    if (code === "ENOENT") {
+      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path } });
+      return { lines: [] as string[], omittedBytes: 0, path };
+    }
     if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);
     throw error;
   }

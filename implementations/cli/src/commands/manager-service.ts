@@ -1,4 +1,5 @@
 import { findSubcommand, registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
+import { CommandFailure, type ServicePreset } from "@cotal-ai/workspace";
 import { metadataPositionals } from "../lib/command-path.js";
 import { findServicePreset, servicePresetCommand, servicePresetFlags } from "../lib/service-presets.js";
 import { service } from "./service-registry.js";
@@ -18,23 +19,38 @@ const withName = (args: ParsedArgs): ParsedArgs => ({ ...args, positionals: [arg
  *  usage and examples, as the manager group declares them, with the options that parser takes; both
  *  `manager <verb> --help` and `help manager <verb>` print it. Undefined for the group's other words,
  *  which the manager group answers itself. */
-export function managerServiceCommand(manager: Command, argv: readonly string[]): { cmd: Command; argv: string[] } | undefined {
+export function managerServiceCommand(manager: Command, argv: readonly string[], forRefusal = false): { cmd: Command; argv: string[] } | undefined {
   if (manager.name !== "manager") return undefined;
   const base = registry.resolve<Command>("command", "service");
-  const preset = findServicePreset("manager");
-  const flags = [...(base.flags ?? []), ...(manager.flags ?? []), ...(preset ? servicePresetFlags(preset) : [])];
+  const preset = forRefusal && registry.has("service-preset", "manager")
+    ? registry.resolve<ServicePreset>("service-preset", "manager") : findServicePreset("manager");
+  const presetFlags = preset ? servicePresetFlags(preset, forRefusal) : [];
+  const flags = [...(base.flags ?? []), ...(manager.flags ?? []), ...presetFlags];
   const at = verbAt(flags, argv);
   const verb = at < 0 ? undefined : argv[at] as (typeof MANAGER_LIFECYCLE)[number];
   if (!verb || !(MANAGER_LIFECYCLE as readonly string[]).includes(verb)) return undefined;
   const declared = findSubcommand(manager, verb);
   if (!declared) throw new Error(`the manager group does not declare ${verb}`);
   const rest = argv.filter((_, index) => index !== at);
-  const augmented = servicePresetCommand({ ...base, run: (args) => service(args, "manager") }, [verb, "manager", ...rest]);
+  // The built-in metadata identifies the verb even if the installed preset inventory is unreadable.
+  const augmented = forRefusal && verb === "start" && preset
+    ? { ...base, flags: [...(base.flags ?? []), ...presetFlags], subcommands: base.subcommands?.map((sub) => sub.name === verb ? { ...sub, flagNames: [...(sub.flagNames ?? []), ...presetFlags.map((flag) => flag.name)] } : sub) }
+    : servicePresetCommand({ ...base, run: (args) => service(args, "manager") }, [verb, "manager", ...rest]);
   const cmd: Command = {
     ...augmented, name: "manager", aliases: manager.aliases, group: manager.group, summary: manager.summary,
     usage: declared.usage, positionals: "<start | stop | restart | status | logs | install | uninstall>",
-    subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({ ...sub, summary: declared.summary, usage: declared.usage, examples: declared.examples, flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance") })),
-    validate: (args) => augmented.validate?.(withName(args)),
+    subcommands: augmented.subcommands?.filter((sub) => sub.name === verb).map((sub) => ({
+      ...sub, summary: declared.summary, usage: declared.usage, examples: declared.examples,
+      flagNames: sub.flagNames?.filter((flag) => flag !== "file" && flag !== "preset" && flag !== "new-instance" && flag !== "no-open"
+        && !(verb === "install" && flag === "dry-run")),
+    })),
+    validate: (args) => {
+      const extra = args.positionals[1];
+      if (extra !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", `unexpected argument ${JSON.stringify(extra)} for \`cotal manager ${verb}\``, {
+        remedy: "remove the extra argument, or select the manager with --space <space> or --instance <full-id>",
+      });
+      augmented.validate?.(withName(args));
+    },
     run: (args) => augmented.run(withName(args)),
   };
   return { cmd, argv: [verb, ...rest] };

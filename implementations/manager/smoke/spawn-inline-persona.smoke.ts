@@ -806,9 +806,11 @@ try {
     check("a user-auth definition naming endpoints is refused and writes nothing", refused(epDefine, userEp) && !existsSync(join(root, ".cotal", "agents", "ep_user_def.md")), epDefine);
     const epDefineEmpty = await U.M.opDefinePersona({ name: "ep_user_empty", persona: "x", subscribe: [], endpoints: [] }, spawner, false);
     check("so is one naming an empty list", refused(epDefineEmpty, userEp) && !existsSync(join(root, ".cotal", "agents", "ep_user_empty.md")), epDefineEmpty);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = {};
+    // Fakes a hosted manager on a manager built without one, through the config cast.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = {};
     const epHosted = await U.M.opDefinePersona({ name: "ep_hosted", persona: "x", subscribe: [], endpoints: [] }, spawner, false);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = undefined;
+    // Restores the config of the manager built without a hosting authority.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = undefined;
     check("and so is a hosted manager's", refused(epHosted, userEp), epHosted);
     // define-persona reads the same row: the definer puts only capabilities its scope carries.
     const defineAs = (who: string, name: string, capabilities: string[]) => U.M.opDefinePersona({ name, persona: "x", capabilities }, who, false);
@@ -822,9 +824,11 @@ try {
     grantActor(ledger, { owner, actor: "boss", scope: ["admin"], allowSubscribe: [], allowPublish: [], label: "smoke operator" });
     const exempt = await defineAs(principalKey(owner, "boss").key, "trusted", ["run"]);
     check("a user-auth definer whose row holds admin is exempt", exempt.ok && JSON.stringify(loadAgentFile(definedPath("trusted")).capabilities) === JSON.stringify(["run"]), exempt);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = {};
+    // Fakes a hosted manager on a manager built without one, through the config cast.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = {};
     const hostedDefine = await defineAs(spawner, "hosted_def", ["spawn"]);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = undefined;
+    // Restores the config of the manager built without a hosting authority.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = undefined;
     check("a hosted manager reads no ledger, so its definer puts no capability into a persona", refused(hostedDefine, /user authority is hosted/) && !existsSync(definedPath("hosted_def")), hostedDefine);
     // The bound reads the persona as it will be written. A redefine that omits `capabilities` keeps
     // the saved list, so the saved list is checked against the definer as it holds now.

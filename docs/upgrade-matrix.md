@@ -68,6 +68,10 @@ product coordinates:
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 | POSIX target-owned updater stopped at its real snapshot, then killed, followed by an unassisted self-update to the synthetic next version | 2 |
 
+The Linux hosted stop-consent cell also puts a Claude Code executable fixture on the service's
+PATH. It checks that the hosted Manager resolves the official Claude Code connector before and after
+the update. It does not launch a Claude Code seat.
+
 The killed-updater cells use the installed target's public updater and native service. They hold the
 snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.
 The public `ps` command must recover and the hosted Manager must answer without a repair command.
@@ -104,7 +108,7 @@ scheduled check finishes a pending extension reconciliation at the second synthe
 `cotal update --self` completes, requiring everything at the second synthetic version. The manual npm and
 installer follow-on cells must finish on
 the in-place route at the second synthetic version. All
-complete 24-package closures stay readable through a paired registry. The source entry and package
+complete 25-package closures stay readable through a paired registry. The source entry and package
 hashes, archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
 
@@ -112,7 +116,7 @@ The synthetic packer logs the start and elapsed time of each phase: verifying A,
 the stamped build, packing, output verification and the final unchanged-A check. A failed phase
 is named before the error is rethrown. Archive inspection hashes every member in one traversal
 per archive, without a `tar` subprocess per file. Both synthetic versions still build separately.
-Archive hashes, the complete 24-package closure, member hashes and native guards remain required.
+Archive hashes, the complete 25-package closure, member hashes and native guards remain required.
 
 Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
@@ -173,7 +177,7 @@ asserts the stock trust-policy refresh before a daemon-hosted Manager starts. Th
 guard is unchanged. The composed hosted container upgrade
 still needs its own original result before it can be called a reproduction or a passing fix.
 
-The packed phase builds the exact PR head's six native targets, assembles all 24 fixed-group
+The packed phase builds the exact PR head's six native targets, assembles all 25 fixed-group
 packages and retains native, prepublish and prepack guards. Its read-only loopback registry serves
 the hash-verified candidate closure and installed-version metadata. Candidate version must be newer
 than public latest. Installer reruns use the candidate source's receipt-bound script.

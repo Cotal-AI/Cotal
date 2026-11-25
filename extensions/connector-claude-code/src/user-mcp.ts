@@ -5,8 +5,10 @@ import { mcpServerProblem, type McpServerSpec } from "@cotal-ai/core";
 import { mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** The user-owned MCP declarations, shared by setup and launch-time environment selection. */
+export const claudeUserMcpPath = (): string => join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
+
 export function claudeUserMcpServers(): Record<string, unknown> {
-  const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
+  const path = claudeUserMcpPath();
   if (!existsSync(path)) return {};
   let config: { mcpServers?: Record<string, unknown> } | null;
   try {

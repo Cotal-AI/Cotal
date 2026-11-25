@@ -26,10 +26,12 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, setupSpaceStreams } from "@cotal-ai/core";
+import { CotalEndpoint, isReachable, membershipBucket, setupSpaceStreams } from "@cotal-ai/core";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect } from "@nats-io/transport-node";
 import { recordMesh } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { ConsoleSession, clean, wait } from "./_console-pty.js";
+import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { ConsoleSession, clean, screen, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
@@ -46,6 +48,33 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 recordMesh({ space, server: SERVERS, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
+
+async function checkDisconnectedQuit(): Promise<void> {
+  const nc = await connect({ servers: SERVERS });
+  let s: ConsoleSession | undefined;
+  try {
+    const js = await jetstreamManager(nc);
+    const consumerCount = async () => (await js.streams.info(`KV_${membershipBucket(space)}`)).state.consumer_count;
+    const before = await consumerCount();
+    s = new ConsoleSession(["--space", space, "--server", SERVERS], home, { CI: "false", CONTINUOUS_INTEGRATION: "false" });
+    check("console opens on a live broker", await s.waitFor(`● ${space}`, 40_000), clean(s.out).slice(-500));
+    const deadline = Date.now() + 10_000;
+    while ((await consumerCount()) <= before && Date.now() < deadline) await wait(100);
+    check("console has a live membership watch before the outage", (await consumerCount()) > before);
+    await nc.close();
+    const from = s.mark();
+    await killAndAwaitExit(srv, "SIGTERM");
+    check("the console paints disconnected before quit", await s.waitFor(`⨯ ${space}`, 10_000, from), clean(s.out.slice(from)).slice(-500));
+    const quitFrom = s.mark();
+    const exited = await s.quit(20_000);
+    const output = s.out.slice(quitFrom);
+    check("q exits zero, restores the terminal, and prints no timeout after the broker stops",
+      exited && output.includes("\x1b[?1049l") && !output.includes("TimeoutError"), { exit: s.exited, output: clean(output).slice(-500) });
+  } finally {
+    await nc.close();
+    await s?.close();
+  }
+}
 
 let session: ConsoleSession | undefined;
 let poster: CotalEndpoint | undefined;
@@ -84,7 +113,7 @@ try {
   const s = session;
 
   console.log("1. unread badges");
-  check("console paints", await s.waitFor(`${space} · #`, 40_000), clean(s.out).slice(-300));
+  check("console paints", await s.waitFor(`${space} · all`, 40_000), clean(s.out).slice(-300));
   check("channel tab visible", await s.waitFor("#kept", 15_000));
   await wait(1500); // let the first channel poll land and the baseline settle
   check("no fake unread at startup", !clean(s.out).includes("+1") && !clean(s.out).includes("+2"));
@@ -146,16 +175,29 @@ try {
   const strips = clean(s.out.slice(dm)).match(/1: all[^\n]*/g) ?? [];
   check("delchan: the deleted channel's tab is gone on the next poll", strips.length > 0 && !strips[strips.length - 1].includes("#doomed"), strips.at(-1));
   check("delchan: the tab never carried a badge on the way out", !/#doomed \d+ \+\d/.test(clean(s.out.slice(dm))), clean(s.out.slice(dm)).match(/#doomed \d+ \+\d/)?.[0]);
+
+  console.log("4. the aggregate and the channel named all are separate tabs");
+  await poster.multicast("other-feed-marker", { channel: "kept" });
+  await poster.multicast("literal-all-marker", { channel: "all" });
+  check("the aggregate and #all have separate tab labels", await s.waitFor(/1: all\s+2: #all\b/, 15_000));
+  check("the aggregate shows both channels", await s.waitFor("other-feed-marker", 5_000) && await s.waitFor("literal-all-marker", 5_000));
+  const selectAll = s.mark();
+  s.write("2");
+  check("tab 2 selects the concrete #all channel", await s.waitFor("feed · #all", 5_000, selectAll));
+  const displayed = await screen(s.out, 140, 36);
+  check("the selected #all feed only shows posts from #all",
+    displayed.includes("literal-all-marker") && !displayed.includes("other-feed-marker"), displayed);
+  check("the two tabs have distinct React keys", !clean(s.out).includes("Encountered two children with the same key"));
   check("console quits cleanly", await s.quit(), s.exited);
 
-  console.log("4. color follows --no-color and NO_COLOR");
+  console.log("5. color follows --no-color and NO_COLOR");
   // An SGR sequence that sets a foreground or background color. Bold, dim and resets are not color.
   const colored = (raw: string) =>
     [...raw.matchAll(/\x1b\[([0-9;]*)m/g)].some((m) => m[1].split(";").some((p) => /^(3[0-8]|4[0-8]|9[0-7]|10[0-7])$/.test(p)));
   const paint = async (args: string[], env: Record<string, string>) => {
     const c = new ConsoleSession([...args, "--space", space, "--server", SERVERS], home, env, { cols: 140, rows: 36 });
     try {
-      const painted = await c.waitFor(`${space} · #`, 40_000);
+      const painted = await c.waitFor(`${space} · all`, 40_000);
       await wait(1500); // the roster and the channel strip paint after the frame
       return { painted, colored: colored(c.out), tail: clean(c.out).slice(-200) };
     } finally {
@@ -168,6 +210,9 @@ try {
   check("--no-color paints the console with no ANSI color, even under FORCE_COLOR", flagged.painted && !flagged.colored, flagged.tail);
   const noColor = await paint([], { NO_COLOR: "1" });
   check("a non-empty NO_COLOR paints the console with no ANSI color", noColor.painted && !noColor.colored, noColor.tail);
+
+  await Promise.all([reader.stop(), stub.stop(), poster.stop()]);
+  await checkDisconnectedQuit();
 } catch (e) {
   fail++;
   console.error("  ✗ threw:", e);
@@ -176,8 +221,7 @@ try {
   try { await reader?.stop(); } catch { /* down */ }
   try { await stub?.stop(); } catch { /* down */ }
   try { await poster?.stop(); } catch { /* down */ }
-  srv.kill("SIGKILL");
-  await new Promise<void>((res) => { if (srv.exitCode !== null) return res(); srv.once("exit", () => res()); setTimeout(res, 3000); });
+  await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();
   rmSync(dir, { recursive: true, force: true });
 }

@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { resolve } from "node:path";
 import { EnvFlagError } from "@cotal-ai/connector-core";
 import { runJcodeHost } from "./host.js";
 import {
@@ -52,8 +52,6 @@ function renderEffortRefusal(error: unknown): string | undefined {
   return `Jcode reasoning effort refused: requested tier ${JSON.stringify(error.requestedTier)}; effective model ${JSON.stringify(error.effectiveModel)}; provider ${JSON.stringify(error.provider)}${via}; provider code ${error.providerCode}${ladder}`;
 }
 
-// The host clears COTAL_* before starting Jcode. Keep the workspace so its log reference fits the launch receipt.
-const workspace = process.env.COTAL_JCODE_HOME?.trim() || process.cwd();
 runJcodeHost().catch((error) => {
   if (error instanceof JcodeEffortUnsupported) {
     const via = error.apiMethod ? ` via ${JSON.stringify(error.apiMethod)}` : "";
@@ -93,7 +91,7 @@ runJcodeHost().catch((error) => {
   } else {
     retainJcodeStartupError(error);
     const logPath = jcodeDiagnosticLogPath();
-    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode startup failed (${startupFailureCode(error)}); ${logPath ? `workspace log: ${relative(workspace, logPath)}` : "private diagnostic log unavailable"}\n`);
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode startup failed (${startupFailureCode(error)}); ${logPath ? `workspace log: ${resolve(logPath)}` : "private diagnostic log unavailable"}\n`);
   }
   process.exit(1);
 });

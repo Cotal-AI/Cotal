@@ -12,7 +12,7 @@
   "mutations": [
     {
       "name": "let a URL through --host to the bracketing",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-host.ts",
       "find": "    console.error(\n      c.red(\n        `✗ ${source} ${host} looks like a URL - it takes a bind host only (an IP or hostname, no scheme); pass the broker URL with ${urlSource} instead`,\n      ),\n    );\n    process.exit(1);",
       "replace": "",
       "expectRed": "...naming --host and pointing at --server",
@@ -23,7 +23,7 @@
     },
     {
       "name": "drop the bind-host parse refusal (the parse guard)",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-host.ts",
       "find": "    console.error(\n      c.red(\n        `✗ ${source} ${host} is not a valid bind host - an IP or hostname only, with no port; the port comes from ${urlSource} (or its default), never from the bind host`,\n      ),\n    );\n    process.exit(1);",
       "replace": "    throw new Error(\"Invalid URL\");",
       "expectRed": "a host:port spelling is refused as a bind host",

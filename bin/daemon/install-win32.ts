@@ -163,8 +163,8 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
     if (!value || !/^S-1-[0-9]+(?:-[0-9]+)+$/.test(value)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `whoami did not name the current user's SID (${out.detail}); nothing was changed`);
     return value;
   };
-  const registered = (name: string, requireInstances = false): RegisteredTask => {
-    const out = run(system32("WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(READ_TASK, "utf16le").toString("base64")], { ...process.env, COTAL_DAEMON_TASK: name, COTAL_DAEMON_TASK_INSTANCES: requireInstances ? "1" : "0" });
+  const registered = (name: string, requireInstances = false, timeoutMs?: number): RegisteredTask => {
+    const out = run(system32("WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(READ_TASK, "utf16le").toString("base64")], { ...process.env, COTAL_DAEMON_TASK: name, COTAL_DAEMON_TASK_INSTANCES: requireInstances ? "1" : "0" }, timeoutMs);
     let o: unknown;
     try { o = out.status === 0 ? JSON.parse(out.stdout.replace(/^\uFEFF/, "").trim()) : undefined; } catch { o = undefined; }
     const r = o && typeof o === "object" ? o as Record<string, unknown> : undefined;
@@ -243,7 +243,8 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
       try { lstatSync(unitPath); present = true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${unitPath} could not be inspected; no absent task definition was inferred`); }
       if (present) throw new CommandFailure("refused", "CONFLICT", `${unitPath} already exists and no install of this daemon recorded it; it was not written over`);
-      if (registered(unit).present) throw new CommandFailure("refused", "CONFLICT", `a task named ${unit} is already registered and no install of this daemon recorded it; nothing was written`);
+      // The first PowerShell launch can be slow. Wait for the read before publishing a definition.
+      if (registered(unit, false, 60_000).present) throw new CommandFailure("refused", "CONFLICT", `a task named ${unit} is already registered and no install of this daemon recorded it; nothing was written`);
       const { text, bytes, sha256 } = renderScheduledTask({ sid: user, argv, workingDirectory: homedir() });
       return { mechanism: "scheduled-task", unit, unitPath, bytes, sha256, user: userInfo().username,
         restart: `every ${element(text, "Interval")} unless running (${element(text, "MultipleInstancesPolicy")})`, wantedBy: `logon of ${element(text, "UserId")}` };

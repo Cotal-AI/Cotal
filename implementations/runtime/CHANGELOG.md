@@ -1,5 +1,477 @@
 # @cotal-ai/runtime
 
+## 0.179.0
+
+### Patch Changes
+
+- Updated dependencies [3b5bde1]
+- Updated dependencies [0413abe]
+- Updated dependencies [c7f487b]
+  - @cotal-ai/core@0.179.0
+  - @cotal-ai/workspace@0.179.0
+  - @cotal-ai/lang@0.179.0
+
+## 0.178.0
+
+### Patch Changes
+
+- 7f8494d: Starting a hosted workflow on an open mesh points to offline simulation or a static-auth mesh instead of suggesting that you start a manager.
+- d15dae4: If a local workflow answer or amendment has a malformed run ID, the CLI points you to the local run list for the same target and tells you to replace only the ID.
+- b056af3: Keep `--plain` in the retry command printed when a workflow simulation needs a scripted result.
+- ca6b557: When a simulation results file has an unknown top-level key, name the file and explain how to correct the key.
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [ee23092]
+- Updated dependencies [9370503]
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/lang@0.178.0
+
+## 0.177.0
+
+### Patch Changes
+
+- 4f253b5: Keep the broker selection and output format when a hosted journal read finds no record and suggests listing runs. A journal row limit stays on the subsequent read.
+- f35ff3d: The local workflow list on an open mesh keeps the journal shortcut and suggests offline simulation instead of starting a hosted run.
+- 64438d7: When a local workflow resume has a malformed run ID, show how to list runs on the same target without a Manager.
+- 27d8f41: When a workflow simulation refuses an invalid clock start or duration, it names the results file and shows how to correct the value.
+- ff66e76: Keep `--json` in the retry command when a workflow simulation needs a missing scripted result.
+- Updated dependencies [d03e96f]
+- Updated dependencies [d649b5f]
+- Updated dependencies [0bb3186]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8aa785c]
+- Updated dependencies [a450399]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/lang@0.177.0
+
+## 0.176.6
+
+### Patch Changes
+
+- ea08bc8: Report the results filename and how to fix it when a workflow simulation receives a JSON array or another non-object value as its results script.
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/lang@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- e6810ad: When a local workflow resume is missing its run ID, show how to list runs on the same target without a manager and add the ID to the original command.
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/lang@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- 7a6895d: Use a matching endpoint import space from the file, explain how to proceed with relative `ZDOTDIR` or invalid simulation results, and document which JSON modes stream records.
+- 959cd61: `run show` checks its journal limit before suggesting how to look up a run ID, so the suggested read no longer repeats an incompatible limit and JSON format.
+- 3696130: When a local workflow revoke finds no admission, suggest a run list for the same space that works without a manager, and document how to take a full backup after system-account rotation.
+- 0f60f11: When `cotal run check` cannot find a run, suggest a local listing on the same target so the command works without a manager.
+- 871ccaa: When a journal read needs a run ID, keep its space, broker and Manager or local endpoint in the suggested list and journal commands.
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [99e0752]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [dd96500]
+- Updated dependencies [d31ba81]
+- Updated dependencies [87465c9]
+- Updated dependencies [c82c548]
+- Updated dependencies [e73a285]
+- Updated dependencies [0758948]
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/lang@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [a38ed1d]
+  - @cotal-ai/lang@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/lang@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/lang@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+- bedf4ee: Quote workflow simulation retry paths and reject local admission lists with no patterns before contacting the broker.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+- Updated dependencies [7266240]
+- Updated dependencies [28b97c7]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/lang@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- 806ac82: Reject an empty `--handler` for a workflow simulation as a usage error, and say how to name the results file or leave the option out.
+- 7b16e50: Reject a local workflow start that omits an admission option as a usage error before any broker contact, naming the missing option and how to supply it.
+- a943a0e: Keep validation problems visible when JSON output cannot be written, and retain workflow warnings when the simulation results script is refused.
+- a023cff: Waiting hosted workflows check for timer fires and settlements without replaying the journal on every empty poll.
+- a70411d: Refuse a simulation results file whose clock.start is past the safe-integer range, so a one-millisecond sleep is never reported as zero elapsed time; name the supported range and how to fix it.
+- 2017841: A simulation stopped by a missing scripted result now says to save the result in a results file and rerun with `--handler`, instead of only showing the result object.
+- 56ff44a: When a hosted workflow command finds no registered Manager, its recovery names the local stack's project folder or directs the operator to its host.
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/lang@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- 1afa1b1: Keep the original CLI options when correcting an attach manager ID, removing a source file from hosted resume, or adding a missing run ID to local revoke.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [8cf0871]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/lang@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
+## 0.175.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.175.1
+  - @cotal-ai/lang@0.175.1
+  - @cotal-ai/workspace@0.175.1
+
+## 0.175.0
+
+### Patch Changes
+
+- Updated dependencies [e91ed5b]
+- Updated dependencies [4907c2d]
+  - @cotal-ai/workspace@0.175.0
+  - @cotal-ai/core@0.175.0
+  - @cotal-ai/lang@0.175.0
+
+## 0.174.4
+
+### Patch Changes
+
+- fa3107a: Keep JSON refusals quiet when the reader closes the pipe, report failed JSON simulation warnings only in the receipt, and point local run failure views to the driving process instead of manager logs.
+- Updated dependencies [a2c9581]
+- Updated dependencies [8aceac1]
+- Updated dependencies [bd76aab]
+- Updated dependencies [a9413a5]
+- Updated dependencies [d4633a8]
+  - @cotal-ai/workspace@0.174.4
+  - @cotal-ai/core@0.174.4
+  - @cotal-ai/lang@0.174.4
+
+## 0.174.3
+
+### Patch Changes
+
+- affcbdd: `run show` rejects diagnostic paging flags even with a journal limit, and `watch --json` reports an invalid view with stream error and end records.
+- f85c211: Local `cotal run answer` and `cotal run amend` reject a whitespace-only `--by` before contacting the broker.
+- 23c283e: A simulation results script with a fault entry that names no step, or carries a field the reader does not know, is now refused before the simulation runs instead of simulating as if the fault were not there.
+- c42b757: A failed offline simulation keeps the warnings static validation found. They print with the failure in text mode and ride in the failure envelope in JSON mode.
+- b8c54dd: Keep the intended space in CLI retry and follow-up commands and name it in membership stream errors when local records identify it.
+- f98cece: Workflow commands offer offline simulation on open meshes, keep the selected route in checkpoint and receipt follow-ups, and ship a working simulation example.
+- Updated dependencies [ab010b5]
+- Updated dependencies [f2158ba]
+- Updated dependencies [52c5b11]
+- Updated dependencies [61b02ca]
+- Updated dependencies [43963e8]
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+- Updated dependencies [4697bab]
+- Updated dependencies [b8c54dd]
+  - @cotal-ai/workspace@0.174.3
+  - @cotal-ai/core@0.174.3
+  - @cotal-ai/lang@0.174.3
+
+## 0.174.2
+
+### Patch Changes
+
+- Updated dependencies [7b7e60c]
+- Updated dependencies [1e5fbb4]
+  - @cotal-ai/core@0.174.2
+  - @cotal-ai/workspace@0.174.2
+  - @cotal-ai/lang@0.174.2
+
+## 0.174.1
+
+### Patch Changes
+
+- d287713: The mesh handler's contract types and module-level helpers now live in their own module, with no change in behavior.
+- Updated dependencies [0d29594]
+  - @cotal-ai/workspace@0.174.1
+  - @cotal-ai/core@0.174.1
+  - @cotal-ai/lang@0.174.1
+
+## 0.174.0
+
+### Patch Changes
+
+- 1fba601: `cotal run simulate` now refuses a results script whose `clock` has a field it does not know, such as `clock.checkpoints`. The misspelled field used to be ignored, so the simulation ran with the one-minute default instead of the delay the author wrote. The refusal is `SCHEMA_INVALID`, names the field and the file, and names the singular field when the typo is its plural.
+- 8fcd1b0: When `run revoke` rejects `--json` or `--plain`, it tells you to remove that flag from the original command so the supplied actor, reason, and target stay intact.
+- Updated dependencies [5053a5e]
+- Updated dependencies [f93db6f]
+- Updated dependencies [f6760fa]
+- Updated dependencies [f1abc70]
+- Updated dependencies [9cc5f7a]
+- Updated dependencies [78d93f9]
+- Updated dependencies [96ef3da]
+- Updated dependencies [f670fe9]
+- Updated dependencies [12bd829]
+- Updated dependencies [5faf2c8]
+- Updated dependencies [f3e469a]
+  - @cotal-ai/core@0.174.0
+  - @cotal-ai/workspace@0.174.0
+  - @cotal-ai/lang@0.174.0
+
+## 0.173.0
+
+### Patch Changes
+
+- 980dd2f: Reject invalid simulation clock durations before running the workflow, and keep the supplied arguments in the retry commands for `run answer` and `run check`.
+- Updated dependencies [e268f34]
+- Updated dependencies [e489bae]
+- Updated dependencies [7bce605]
+- Updated dependencies [5beae54]
+- Updated dependencies [871b5b3]
+  - @cotal-ai/core@0.173.0
+  - @cotal-ai/workspace@0.173.0
+  - @cotal-ai/lang@0.173.0
+
+## 0.172.2
+
+### Patch Changes
+
+- Updated dependencies [801c561]
+- Updated dependencies [ed5599e]
+- Updated dependencies [731d13e]
+- Updated dependencies [6b69068]
+- Updated dependencies [ef90254]
+- Updated dependencies [e09d43d]
+  - @cotal-ai/workspace@0.172.2
+  - @cotal-ai/core@0.172.2
+  - @cotal-ai/lang@0.172.2
+
+## 0.172.1
+
+### Patch Changes
+
+- 2c7d939: Keep the same workflow route and endpoint in the JSON command suggested by `cotal run show`.
+- dd65534: Workflow simulations now require a destination agent handle on scripted handoffs and reject destinations on other scripted turn outcomes.
+- fc3d455: Return a usage error for out-of-range workflow timeouts and refuse local resumes of completed or failed runs without replaying them.
+- Updated dependencies [46f5a7a]
+- Updated dependencies [e9d7585]
+- Updated dependencies [2ec9a4d]
+- Updated dependencies [a880a09]
+- Updated dependencies [6f05bd5]
+- Updated dependencies [ee3a15c]
+- Updated dependencies [c3d0a38]
+- Updated dependencies [f346cde]
+- Updated dependencies [6e98cc0]
+- Updated dependencies [cceb29a]
+- Updated dependencies [6a6a4e4]
+- Updated dependencies [9a06339]
+- Updated dependencies [fb6c87f]
+- Updated dependencies [e11a800]
+- Updated dependencies [728bde0]
+- Updated dependencies [2037c77]
+  - @cotal-ai/workspace@0.172.1
+  - @cotal-ai/core@0.172.1
+  - @cotal-ai/lang@0.172.1
+
+## 0.172.0
+
+### Patch Changes
+
+- Updated dependencies [de93c7e]
+- Updated dependencies [14b556d]
+- Updated dependencies [f166a78]
+- Updated dependencies [8aa6645]
+- Updated dependencies [7b4f3dd]
+- Updated dependencies [1e9c863]
+- Updated dependencies [807e3e7]
+- Updated dependencies [351daaf]
+  - @cotal-ai/core@0.172.0
+  - @cotal-ai/workspace@0.172.0
+  - @cotal-ai/lang@0.172.0
+
+## 0.171.5
+
+### Patch Changes
+
+- 41108ac: Move the mesh handler's conclaves (planning, executing and releasing a conclave, and the channel, members and ACL registry handles they share) out of `mesh-handler.ts` into an internal `mesh-conclave.ts` component that owns the open conclave plans and the registry handles. The package surface is unchanged.
+- 0e46c2b: Move the mesh handler's `spawn` action (cwd resolution, the worktree claim and release, the submission and its terminal await, and `spawnArgs`) out of `mesh-handler.ts` into an internal `mesh-spawn.ts` component that reads the handler's members through its dependencies. The package surface is unchanged.
+- Updated dependencies [24daff4]
+- Updated dependencies [3ea52d4]
+- Updated dependencies [7b216e3]
+- Updated dependencies [11081d7]
+- Updated dependencies [2f6ff7a]
+- Updated dependencies [3accd52]
+- Updated dependencies [3d6a37f]
+- Updated dependencies [88313a0]
+- Updated dependencies [8281e1d]
+- Updated dependencies [2fdf963]
+- Updated dependencies [9f948a3]
+- Updated dependencies [8708701]
+  - @cotal-ai/core@0.171.5
+  - @cotal-ai/workspace@0.171.5
+  - @cotal-ai/lang@0.171.5
+
+## 0.171.4
+
+### Patch Changes
+
+- 58eb0ee: Move the constants and helpers that the mesh handler shares with its components (poll and deadline bounds, the seat and agent-handle readings, the permit and supervise readers and `CheckpointAnswerMissing`) out of `mesh-handler.ts` into an internal `mesh-handler-shared.ts`, so the components no longer import the handler at runtime. The package surface is unchanged.
+- Updated dependencies [38a233e]
+- Updated dependencies [7f6cda9]
+- Updated dependencies [8c2d0c9]
+- Updated dependencies [82e9e79]
+- Updated dependencies [8a918ce]
+- Updated dependencies [5cbdcfe]
+- Updated dependencies [29564fe]
+- Updated dependencies [a58d5bf]
+- Updated dependencies [b393c16]
+- Updated dependencies [85c0a50]
+  - @cotal-ai/core@0.171.4
+  - @cotal-ai/workspace@0.171.4
+  - @cotal-ai/lang@0.171.4
+
+## 0.171.3
+
+### Patch Changes
+
+- Updated dependencies [d4b3949]
+- Updated dependencies [f900d77]
+- Updated dependencies [fdac103]
+- Updated dependencies [342d8af]
+- Updated dependencies [b647c12]
+- Updated dependencies [eb7fd6a]
+  - @cotal-ai/core@0.171.3
+  - @cotal-ai/workspace@0.171.3
+  - @cotal-ai/lang@0.171.3
+
+## 0.171.2
+
+### Patch Changes
+
+- Updated dependencies [08ac896]
+- Updated dependencies [87b8626]
+- Updated dependencies [d388cfe]
+- Updated dependencies [576ce19]
+- Updated dependencies [31dc8ae]
+- Updated dependencies [2af222f]
+- Updated dependencies [7a433a6]
+- Updated dependencies [7a433a6]
+- Updated dependencies [a55bdb0]
+- Updated dependencies [7fbd856]
+- Updated dependencies [5ce3bda]
+  - @cotal-ai/core@0.171.2
+  - @cotal-ai/workspace@0.171.2
+  - @cotal-ai/lang@0.171.2
+
+## 0.171.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.171.1
+  - @cotal-ai/lang@0.171.1
+  - @cotal-ai/workspace@0.171.1
+
+## 0.171.0
+
+### Patch Changes
+
+- f2f8058: Hosted workflow starts include syntax diagnostics in JSON refusals, and simulations reject invalid handoff destinations, nonnumeric clock starts, and duplicate script keys.
+- 95f1f36: The `cotal run show` help now explains that `--limit` applies only to text output and cannot be combined with `--json`.
+- 18044e7: Separate the mesh handler's turn and ask clients into an internal module without changing the runtime API.
+- Updated dependencies [edd19cc]
+- Updated dependencies [7ff146c]
+- Updated dependencies [725bd24]
+- Updated dependencies [bbea1c9]
+- Updated dependencies [3a01e61]
+- Updated dependencies [00fcd05]
+- Updated dependencies [11555a1]
+- Updated dependencies [67a59e9]
+- Updated dependencies [1a51b71]
+- Updated dependencies [f2f8058]
+- Updated dependencies [f976f2f]
+- Updated dependencies [58dcdc6]
+- Updated dependencies [3cae462]
+  - @cotal-ai/core@0.171.0
+  - @cotal-ai/workspace@0.171.0
+  - @cotal-ai/lang@0.171.0
+
+## 0.170.0
+
+### Patch Changes
+
+- a9e235f: Workflow plans report the correct call-site line numbers for every JavaScript line ending.
+- 49f387d: Quote option values in CLI corrections so they can be pasted into a shell, and show the required status and handoff destination when `cotal run yield` is missing a turn ID.
+- a171c3e: Workflow simulations now name the results file and explain what to correct when a scripted checkpoint result is invalid.
+- ee44b80: Separate the mesh handler's pause timers and settlement into an internal module without changing the runtime API.
+- 78b79b8: Separate the mesh handler's checkpoint relay and presence watch into an internal module without changing the runtime API.
+- 20ff353: Hosted workflows resume from their journals when JetStream returns after a broker outage interrupts a journal write.
+- Updated dependencies [c701881]
+- Updated dependencies [ad6d984]
+- Updated dependencies [3afefa8]
+- Updated dependencies [0e42b19]
+- Updated dependencies [dd478d4]
+- Updated dependencies [6170fc9]
+- Updated dependencies [8c965ac]
+- Updated dependencies [b73a8de]
+- Updated dependencies [2b1659e]
+- Updated dependencies [07978b3]
+- Updated dependencies [20ff353]
+- Updated dependencies [3e748e8]
+  - @cotal-ai/workspace@0.170.0
+  - @cotal-ai/core@0.170.0
+  - @cotal-ai/lang@0.170.0
+
 ## 0.169.0
 
 ### Patch Changes

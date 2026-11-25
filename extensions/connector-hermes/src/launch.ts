@@ -15,13 +15,15 @@
  * The manager runs this in a PTY; stdio is inherited so the gateway's output is what you attach to.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, discardLaunchArtifacts, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
-import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
+import { hasIdentity, configFromEnv, controlEndpoint, controlFromEnv, eventPlaneArmed, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
+import { hermesEfforts } from "./models.js";
 import { startSidecar } from "./sidecar.js";
 import { HERMES_FORK_RECORD, hermesSeatHome, moveLegacyHermesFork } from "./seat-home.js";
 
@@ -103,10 +105,16 @@ const yamlStr = (s: string): string => `"${s.replace(/\\/g, "\\\\").replace(/"/g
  * Build the isolated Hermes profile (HERMES_HOME) so the operator's ~/.hermes is never touched.
  * Drops the cotal plugin into the profile's plugins dir, enables it + the cotal platform, and
  * turns approvals off (an autonomous spawned gateway has no human at the TUI to approve commands).
+ * A launch with `askPermissions` keeps them manual instead, and the plugin puts each one behind
+ * the agent's prompt desk (plugin/cotal/approvals.py). With the event plane armed it turns on
+ * Hermes's streaming, which is how Hermes hands the adapter a reply while the model writes it
+ * (plugin/cotal/streams.py). It sets `terminal.cwd` to the launcher's folder, which the gateway
+ * inherits: Hermes runs its terminal and file tools there, and in the home folder without it.
+ * A launch's variant is the profile's reasoning effort ({@link launchEffort}).
  */
 export function setupProfile(
   home: string,
-  opts: { model: string | undefined; persona?: string; config: Pick<AgentConfig, "name" | "role" | "space" | "feedbackKey"> },
+  opts: { model: string | undefined; persona?: string; config: AgentConfig; effort?: string },
 ): void {
   // A managed profile is a temporary directory and reads nothing from ~/.hermes, so the model the
   // operator configured there is not a model this gateway has. With none resolved here, hermes
@@ -135,8 +143,13 @@ export function setupProfile(
     "    cotal:",
     "      enabled: true",
     "approvals:",
-    "  mode: off",
+    `  mode: ${opts.config.askPermissions ? "manual" : "off"}`,
+    "terminal:",
+    `  cwd: ${yamlStr(process.cwd())}`,
   ];
+  if (opts.effort) lines.push("agent:", `  reasoning_effort: ${yamlStr(opts.effort)}`);
+  if (eventPlaneArmed(opts.config))
+    lines.push("streaming:", "  enabled: true", "  transport: draft", '  cursor: ""', "  edit_interval: 0.25");
   lines.push(`model: ${yamlStr(opts.model)}`);
   writeFileSync(join(home, "config.yaml"), lines.join("\n") + "\n");
 
@@ -144,6 +157,20 @@ export function setupProfile(
   // shared briefing after it; gated on persona so we don't clobber the default SOUL.
   if (opts.persona)
     writeFileSync(join(home, "SOUL.md"), `${opts.persona.trim()}\n\n${briefing(opts.config, "hermes")}\n`);
+}
+
+/** The launch's variant (`COTAL_VARIANT`) as the reasoning effort the managed profile sets, or
+ *  undefined for Hermes's default. Hermes ignores an effort it does not know and runs the
+ *  provider's default, so a variant this Hermes does not take is refused rather than dropped. */
+export function launchEffort(adopt: string | undefined, efforts: () => string[] = hermesEfforts): string | undefined {
+  const effort = process.env.COTAL_VARIANT?.trim();
+  if (!effort) return undefined;
+  if (adopt)
+    throw new LaunchRefused(`${ADOPT_HOME_ENV} runs your own profile, whose config.yaml sets Hermes's reasoning effort and which this mode does not edit; set agent.reasoning_effort there instead of the variant ${JSON.stringify(effort)}`);
+  const known = efforts();
+  if (!known.includes(effort))
+    throw new LaunchRefused(`the variant ${JSON.stringify(effort)} is not a reasoning effort this Hermes takes (${known.join(", ")})`);
+  return effort;
 }
 
 /** A major.minor as a sortable pair, or null when the string is not one. Compared numerically,
@@ -297,9 +324,18 @@ function forkHermesSession(opts: { sourceHome: string; source: string; seatHome:
   return JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as HermesFork;
 }
 
-/** The control socket's per-launch directory, once minted. Shutdown removes it after the gateway has
- *  exited, and a launch that fails before then removes it on its way out. */
-const controlDirs: string[] = [];
+/** Files the launcher itself created, rather than those already tracked by `buildLaunch`. */
+const localArtifacts: string[] = [];
+
+/** Create this launch's empty turn journal (plugin/cotal/journal.py) in the profile. Its name is
+ *  the event plane's thread id. */
+function createTurnJournal(home: string): string {
+  const dir = join(home, "cotal-events");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, `${randomUUID()}.jsonl`);
+  writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+  return path;
+}
 
 async function main(): Promise<void> {
   // No identity → a plain run, not a launcher-spawned agent. Stay off the mesh.
@@ -316,12 +352,22 @@ async function main(): Promise<void> {
   // Managed (default): a disposable profile under tmp, regenerated every launch and removed when the
   // seat stops, unless it holds a `--resume` fork. Adopted (opt-in): the operator's own profile, into
   // which only this connector's plugin directory is written, and which is never removed.
-  const managed = adopt ? undefined : hermesSeatHome(config.space, config.name);
+  const persistent = adopt ? undefined : hermesSeatHome(config.space, config.name);
+  const moved = persistent && moveLegacyHermesFork(config.space, config.name);
+  const disposableHome = process.env.COTAL_HERMES_SEAT_HOME;
+  const disposableRoot = disposableHome && dirname(dirname(disposableHome));
+  if (persistent && disposableRoot && (dirname(disposableRoot) !== tmpdir()
+    || !/^cotal-hermes-[A-Za-z0-9]{6}$/.test(basename(disposableRoot))
+    || disposableHome !== join(disposableRoot, "profiles", basename(persistent.home))))
+    throw new LaunchRefused("the disposable Hermes profile is not inside its launch temporary directory");
+  const managed = persistent && disposableRoot && disposableHome && !existsSync(join(persistent.home, HERMES_FORK_RECORD))
+    ? { root: disposableRoot, home: disposableHome }
+    : persistent;
   const home = adopt ?? managed!.home;
-  const moved = managed && moveLegacyHermesFork(config.space, config.name);
   if (moved) log(`moved this seat's --resume fork from ${moved} to ${home}`);
+  const effort = launchEffort(adopt);
   if (adopt) setupAdoptedProfile(home, { persona });
-  else setupProfile(home, { model: process.env.HERMES_MODEL, persona, config });
+  else setupProfile(home, { model: process.env.HERMES_MODEL, persona, config, effort });
 
   // `cotal spawn --resume`: fork before the seat joins the mesh, so a session that cannot be read is
   // refused while nothing has joined. A relaunch reuses the fork and does not read the source again.
@@ -346,45 +392,31 @@ async function main(): Promise<void> {
 
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
-  // This launcher owns the control socket's per-launch directory and removes it at shutdown.
-  const control = controlEndpoint(config.space, config.name, controlDirs);
+  // A managed launch has already registered the control directory and material with its watcher.
+  // A standalone launcher owns anything it creates here until the gateway drains.
+  const suppliedControl = controlFromEnv();
+  const control = suppliedControl ?? controlEndpoint(config.space, config.name, localArtifacts);
   const bridgeSock = bridgeSocketPath(control.path);
   const toolsFile = join(home, "cotal-tools.json");
-  // This launcher mints the control endpoint itself, so it has to hand the token onward to two
-  // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
-  // rather than an environment variable, so that the gateway's descendants do not INHERIT a
-  // control-plane bearer none of them asked for.
-  //
-  // Say what that does and does not buy, because the stronger sentence that used to be here was
-  // wrong. This connector keeps the material POINTER in the gateway's environment, because the
-  // gateway child is a later reader. So a descendant running as the same user can still open the
-  // file deliberately. What changes is that nothing receives the token by accident, which is the
-  // narrowed contract this whole change is honest about rather than a claim that the token is out of
-  // reach.
-  //
-  // MERGED onto the material this launcher was itself launched with, not written fresh over it: the
-  // sidecar re-parses the environment for its mesh config, and a control-only file would leave it
-  // reading a launch with no creds in it, which is open mode wearing the wrong hat. Merging keeps
-  // one carrier per launch, which is the invariant configFromEnv enforces.
+  // The sidecar and gateway both read the same private file. The gateway inherits the path, not
+  // the key, though another process running as this user can still open the file deliberately.
   const inherited = process.env[LAUNCH_MATERIAL_ENV]?.trim();
-  const material = writeLaunchMaterial({
-    ...(inherited ? readLaunchMaterial(inherited) : {}),
-    controlKey: control.token,
-    controlVersion: control.version,
-  });
+  let material = inherited;
+  if (!suppliedControl || !material) {
+    material = writeLaunchMaterial({
+      ...(inherited ? readLaunchMaterial(inherited) : {}),
+      controlKey: control.token,
+      controlVersion: control.version,
+    });
+    localArtifacts.push(dirname(material));
+    if (inherited) discardLaunchMaterial(inherited);
+  }
   process.env[LAUNCH_MATERIAL_ENV] = material;
-  // The inherited copy has been folded into the merged one and has no reader left. Leaving it on
-  // disk would mean this connector, alone among the five, keeps TWO files holding the same
-  // credential for the life of the seat, which is a second copy nobody asked for and a longer
-  // exposure than the carrier's own contract describes. Best-effort: the merged file is already in
-  // place, so a failure to unlink is untidy rather than unsafe.
-  // Same discard the sessions use, so the superseded copy's private directory goes with it instead
-  // of being left behind empty, and so this connector cannot grow its own idea of what is safe to
-  // delete.
-  if (inherited) discardLaunchMaterial(inherited);
   process.env.COTAL_CONTROL_SOCKET = control.path;
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
+  const journal = eventPlaneArmed(config) ? createTurnJournal(home) : undefined;
+  if (journal) process.env.COTAL_HERMES_EVENTS = journal;
 
   const sidecar = startSidecar();
 
@@ -408,7 +440,7 @@ async function main(): Promise<void> {
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 
   // Let the gateway drain after SIGTERM, kill its tree if it is still up, and wait for its exit.
-  // Every stop waits for this before it removes the managed root or the control socket's directory:
+  // Every graceful stop waits for this before it removes the managed root or its local artifacts:
   // removing either earlier would let a draining gateway write into a directory after it was deleted,
   // or dial a socket path whose directory is gone.
   const drainGateway = async (): Promise<void> => {
@@ -452,9 +484,16 @@ async function main(): Promise<void> {
     // did), the gateway may still be running and using both directories, so they stay and the log
     // says where.
     if (drained.status === "rejected") {
-      const left = [...controlDirs, ...(disposable ? [disposable.root] : [])].join(", ");
+      const left = [dirname(control.path), dirname(material), ...(disposable ? [disposable.root] : [])].join(", ");
       log(`could not prove the gateway exited (${String((drained.reason as Error).message).replace(/\s+/g, " ").trim()}), so ${left} is left on disk; remove it once the gateway has exited`);
-      process.exit(code);
+      if (suppliedControl && inherited) await gatewayExit;
+      else process.exit(code);
+    }
+    // The journal is this launch's alone; an adopted or forked profile outlives it.
+    try {
+      if (journal) rmSync(journal, { force: true });
+    } catch (e) {
+      log(`could not remove the turn journal ${journal}, so it is left on disk: ${(e as Error).message}`);
     }
     if (disposable) {
       try {
@@ -464,9 +503,9 @@ async function main(): Promise<void> {
       }
     }
     try {
-      discardLaunchArtifacts(controlDirs);
+      discardLaunchArtifacts(localArtifacts);
     } catch (e) {
-      log(`could not remove the control socket directory, so it is left on disk: ${(e as Error).message}`);
+      log(`could not remove the local launch artifacts, so they are left on disk: ${(e as Error).message}`);
     }
     process.exit(code);
   };
@@ -484,9 +523,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   main().catch((e) => {
     log(e instanceof LaunchRefused ? `refused: ${e.message}` : `fatal: ${(e as Error).stack ?? String(e)}`);
     try {
-      discardLaunchArtifacts(controlDirs);
+      discardLaunchArtifacts(localArtifacts);
     } catch (err) {
-      log(`could not remove the control socket directory, so it is left on disk: ${(err as Error).message}`);
+      log(`could not remove the local launch artifacts, so they are left on disk: ${(err as Error).message}`);
     }
     process.exit(1);
   });

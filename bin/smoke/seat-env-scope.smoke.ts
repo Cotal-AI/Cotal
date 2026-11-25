@@ -27,7 +27,7 @@
  *       wrote it: never recursively, never outside the OS temp root
  *   A10 every COTAL_ name a connector's launch emits is one the operator-env-keep census parses
  *   A11 the material's private directory is on the spec's artifacts, and a real child started
- *       through reclaimWithChild removes it when it exits
+ *       through reclaimWithChild removes it on exit without using or changing the agent's PATH
  *
  * A2 is the one that could not have been faked by reading the same object the assertion was written
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
@@ -188,18 +188,27 @@ for (const name of CONNECTORS) {
   // readers, and before #4089 nothing removed it after the seat stopped.
   const materialDir = dirname(materialPath);
   assert.ok(
-    spec.artifacts?.includes(materialDir),
+    spec.artifacts && spec.artifacts.includes(materialDir),
     `A11: the ${name} connector's launch material directory ${materialDir} is not on the spec's artifacts, so it outlives the seat`,
   );
   // And a real child started through reclaimWithChild takes it with it on exit. One connector is
   // enough for the removal leg; the membership check above is what each connector owes.
   if (name === "claude" && process.platform !== "win32") {
-    const launched = reclaimWithChild({ command: process.execPath, args: ["-e", ""], artifacts: spec.artifacts });
-    const child = spawnSync(launched.command, launched.args, { stdio: "ignore" });
+    const agentBin = join(work, "agent-bin");
+    const utilityLog = join(work, "watcher-utility");
+    mkdirSync(agentBin);
+    // The probes still perform the operation so a broken watcher exits after being detected.
+    for (const utility of ["sleep", "rm"])
+      writeFileSync(join(agentBin, utility), `#!/bin/sh\nprintf '%s\n' '${utility}' >> "$UTILITY_LOG"\ncommand -p ${utility} "$@"\n`, { mode: 0o700 });
+    const launched = reclaimWithChild({ command: process.execPath, args: ["-e", "process.stdout.write(process.env.PATH)"], artifacts: spec.artifacts });
+    const env = { PATH: agentBin, UTILITY_LOG: utilityLog };
+    const child = spawnSync(launched.command, launched.args, { env, encoding: "utf8", timeout: 15_000 });
     assert.equal(child.status, 0, `A11: the reclaim-wrapped child did not exit cleanly (${child.status ?? child.signal})`);
+    assert.equal(child.stdout, agentBin, "A11: the reclaim wrapper changed the child's PATH");
     const deadline = Date.now() + 15_000;
-    while (existsSync(materialDir) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-    assert.equal(existsSync(materialDir), false, `A11: the ${name} launch material directory survived its child's exit`);
+    while (spec.artifacts.some(existsSync) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+    assert.ok(spec.artifacts.every((dir) => !existsSync(dir)), "A11: launch artifact directories survived the child's exit");
+    assert.equal(existsSync(utilityLog), false, "A11: the watcher ran a utility from the child's PATH");
   }
 
   // A10 - every COTAL_ name a launch emits is one the operator-env-keep census parses.

@@ -35,7 +35,7 @@
     },
     {
       "name": "N3 pty spare optional-chains close instead of calling release",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/preservation.ts",
       "find": "      if (this.isProcessBoundSeat(a)) {\n        stop.push(a);\n        continue;\n      }\n",
       "replace": "      if (false) {\n        stop.push(a);\n        continue;\n      }\n",
       "expectRed": "releaseManagedAgents validates PTY release before invoking handles",

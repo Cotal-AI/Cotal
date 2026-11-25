@@ -5,7 +5,7 @@ import { assertLifecycleToken } from "@cotal-ai/core";
 import {
   assertRecordIdentity, brokerAddressKey, commandIsCotalSupervisor, identityRecord,
   MANAGER_PIDFILE, readMeshRegistry, readProcessCommand, recordedLocalProcessPaths,
-  readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
+  probeLiveness, readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
   localProcessPathCandidates, verifyIdentityPin, homeCotalDir,
 } from "@cotal-ai/workspace";
 import { goneStackRoot } from "./stack-journal.js";
@@ -257,7 +257,13 @@ export function localUpdateManagers(
         cwd = readlinkSync(`/proc/${pid}/cwd`);
         env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(value => value.includes("=")).map(value => { const split = value.indexOf("="); return [value.slice(0, split), value.slice(split + 1)]; }));
       } catch {
-        if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+          if (stat.slice(stat.lastIndexOf(")")).startsWith(") Z ")) continue;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ENOENT" || code === "ESRCH" || probeLiveness(pid) === "dead") continue;
+        }
         blocked(`cannot read launch coordinates for Manager pid ${pid}, user ${uid}, verb supervise; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying`);
       }
     }

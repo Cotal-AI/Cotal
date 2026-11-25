@@ -63,10 +63,15 @@ function tokenRefusal(what: "credential label" | "--role", value: string, other:
   const found = new RegExp(other.source, "u").exec(value)?.[0];
   if (found === undefined) return new CommandFailure("refused", "USAGE_INVALID", `the ${what} is empty; ${noun} takes ${allowed}`, { remedy: pass, selfContained: true });
   const fixed = value.replace(new RegExp(other.source, "gu"), "_");
+  const example = what === "--role" && fixed.startsWith("-") ? `\`--role=${fixed}\`` : fixed;
   return new CommandFailure("refused", "USAGE_INVALID", `the ${what} "${oneLine(boundedValue(value, SHOWN_VALUE_MAX))}" has "${oneLine(found)}", which ${noun} cannot hold; ${noun} takes only ${allowed}`, {
-    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${fixed}`,
+    remedy: [...fixed].length > SHOWN_VALUE_MAX ? pass : `${pass}, such as ${example}`,
     selfContained: true,
   });
+}
+
+function channelOptionExample(flag: string, pattern: string): string {
+  return `${flag}${pattern.startsWith("-") ? "=" : " "}${shellPath(pattern)}`;
 }
 
 function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", entry: string, error: unknown): CommandFailure {
@@ -81,7 +86,7 @@ function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", en
       `the ${flag} channel "${shown}" starts with "#", which is not part of a channel name`,
       {
         remedy: validStripped
-          ? `drop the leading "#", for example \`${flag} ${shellPath(stripped)}\``
+          ? `drop the leading "#", for example \`${channelOptionExample(flag, stripped)}\``
           : `pass channel names or patterns without a leading "#", such as \`${flag} general\` or \`${flag} 'team.>'\``,
         selfContained: true,
       },
@@ -102,7 +107,7 @@ function channelPatternRefusal(flag: "--allow-subscribe" | "--allow-publish", en
     `the ${flag} channel "${shown}" is not a valid channel pattern: ${oneLine(boundedValue(reason, SHOWN_VALUE_MAX))}`,
     {
       remedy: validFixed
-        ? `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} ${shellPath(fixed)}\``
+        ? `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${channelOptionExample(flag, fixed)}\``
         : `use dot-separated channel tokens of letters, digits, _ and - (or * and a trailing > for wildcards), such as \`${flag} general\` or \`${flag} 'team.>'\``,
       selfContained: true,
     },
@@ -148,11 +153,18 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   }
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
-  for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");
+  // The provisioning path already checks its own minimum before resolving the root.
+  if (!values.provision && Number(values["expires-in"]) === 0) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-in must be at least 1 second for a file-only mint", {
+    remedy: "use --expires-in 1 or a larger whole number, or use --no-expiry instead to mint without an expiry",
+    selfContained: true,
+  });
   assertExpiryInRange(values);
   // A past or present expiry writes a credential the broker already refuses, under a label that is
   // then taken.
   if (values["expires-at"] !== undefined && Number(values["expires-at"]) <= Math.floor(Date.now() / 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--expires-at is not in the future, so the credential would already be expired; nothing was written", { remedy: "give a later Unix time in seconds, or a lifetime with --expires-in <seconds>" });
-  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out; an --out file is re-minted with its matching --identity", { remedy: "drop --out to replace the standing credential, or pass the --out file's own --identity" });
+  if (values.replace !== undefined && values.out !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--replace replaces the label's standing credential, so it takes no --out", {
+    remedy: "drop --out to replace the standing credential, or drop --replace to re-mint an existing export using the same file for --out and --identity",
+  });
   for (const key of ["identity", "out"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !values[key].trim() || /[\u0000-\u001f\u007f]/u.test(values[key]))) throw new CommandFailure("refused", "USAGE_INVALID", "credential paths must be nonempty and contain no terminal controls");
 }

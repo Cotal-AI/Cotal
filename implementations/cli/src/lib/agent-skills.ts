@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { mkSecretDir } from "@cotal-ai/core";
-import { homeCotalDir } from "@cotal-ai/workspace";
+import { codeSpan, homeCotalDir } from "@cotal-ai/workspace";
+import { displayCmd } from "./self-exec.js";
 
 /**
  * Cross-vendor Agent Skills distribution.
@@ -93,6 +94,11 @@ function manifestPath(): string {
 
 type Manifest = { skills: Record<string, string> }; // skill name -> digest Cotal last wrote
 
+function corruptManifest(path: string, reason: string): Error {
+  const remedy = codeSpan(`${displayCmd()} setup --skills`);
+  return new Error(`Corrupt Cotal skills manifest at ${path} (${reason}). Restore a valid manifest, then run ${remedy}.`);
+}
+
 /** Read the ownership manifest. Absent bootstraps to empty; a present-but-malformed manifest (bad JSON,
  *  wrong shape, an illegal skill name, or a non-digest value) FAILS LOUD rather than silently resetting.
  *  This ledger authorizes deletion, so its integrity is the safety boundary: a corrupt or tampered file
@@ -104,19 +110,19 @@ function readManifest(): Manifest {
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    throw new Error(`Corrupt Cotal skills manifest at ${path} (invalid JSON). Fix or delete it, then re-run \`cotal setup\`.`);
+    throw corruptManifest(path, "invalid JSON");
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error(`Corrupt Cotal skills manifest at ${path} (unexpected shape). Fix or delete it, then re-run \`cotal setup\`.`);
+    throw corruptManifest(path, "unexpected shape");
   const skills = (parsed as { skills?: unknown }).skills;
   // Must be a plain object, never an array: array indices ("0", "1") pass a slug check, so an array
   // would let a numeric "name" be treated as owned (and deleted), and a string property assigned to an
   // array is dropped by JSON.stringify, so ownership would silently fail to persist. Reject it outright.
   if (typeof skills !== "object" || skills === null || Array.isArray(skills))
-    throw new Error(`Corrupt Cotal skills manifest at ${path} (skills is not an object). Fix or delete it, then re-run \`cotal setup\`.`);
+    throw corruptManifest(path, "skills is not an object");
   for (const [name, dig] of Object.entries(skills as Record<string, unknown>)) {
-    if (!validSkillName(name)) throw new Error(`Corrupt Cotal skills manifest at ${path}: illegal skill name ${JSON.stringify(name)}.`);
-    if (typeof dig !== "string" || !DIGEST.test(dig)) throw new Error(`Corrupt Cotal skills manifest at ${path}: bad digest for ${JSON.stringify(name)}.`);
+    if (!validSkillName(name)) throw corruptManifest(path, `illegal skill name ${JSON.stringify(name)}`);
+    if (typeof dig !== "string" || !DIGEST.test(dig)) throw corruptManifest(path, `bad digest for ${JSON.stringify(name)}`);
   }
   return { skills: skills as Record<string, string> };
 }

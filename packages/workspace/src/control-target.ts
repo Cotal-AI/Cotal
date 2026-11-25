@@ -92,7 +92,7 @@ export async function resolveControlTarget(
   // connect helper takes the selected space or this folder's.
   const withSpace = flags.creds
     ? flags.space === undefined && flags.server !== undefined ? { ...flags, space: soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE } : flags
-    : { ...flags, offline: flags.offline ?? (!opts.readOnly && resolveReadsLiveness(process.cwd(), { server: flags.server, space: flags.space }) ? (await pruneStaleMeshes(flags.server)).offline : []) };
+    : { ...flags, ...(flags.offline === undefined && !opts.readOnly && resolveReadsLiveness(process.cwd(), flags) ? await pruneStaleMeshes(flags.server, "targets") : { offline: flags.offline ?? [] }) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
@@ -109,6 +109,7 @@ export async function resolveControlTarget(
         server: withSpace.server,
         space: withSpace.space,
         offline: withSpace.offline,
+        openInventory: withSpace.openInventory,
         readOnly: opts.readOnly,
       }).mode;
     } catch (e) {
@@ -183,7 +184,7 @@ function seatLaunchIdentity(): { name: string; actor: string; uid: string; seatS
  *  or with a space named or a sweep already taken, the flags come back unchanged. */
 export async function sweepForSeatResolve<F extends ConnectFlags>(flags: F): Promise<F> {
   if (flags.space || flags.offline !== undefined || !seatLaunchIdentity()) return flags;
-  return { ...flags, offline: (await pruneStaleMeshes(flags.server)).offline };
+  return { ...flags, ...await pruneStaleMeshes(flags.server, "targets") };
 }
 
 /**
@@ -220,8 +221,8 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   // Managed-seat resolution retains its sweep when no space is named, so a kept dead record is
   // not a live candidate here. Operator resolution skips a sweep its selection does not read. A sweep
   // the caller already took ({@link sweepForSeatResolve}) is the one read.
-  const offline = flags.space ? [] : flags.offline ?? (await pruneStaleMeshes(flags.server)).offline;
-  const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline });
+  const sweep = flags.space || flags.offline !== undefined ? {} : await pruneStaleMeshes(flags.server, "targets");
+  const mesh = resolveMeshTarget(process.cwd(), { space: flags.space, server: flags.server, offline: flags.space ? [] : flags.offline, openInventory: flags.openInventory, ...sweep });
   if (seatSpace && mesh.space !== seatSpace) return undefined;
   const at = { space: mesh.space, server: mesh.server, root: mesh.root, mode: mesh.mode, ...(mesh.policy ? { policy: mesh.policy } : {}) };
   if (mesh.mode === "open") return seatSpace ? { ...at, auth: { tls: mesh.tlsRequired, epCaller: { owner: DEV_OWNER, actor, uid } } } : undefined;

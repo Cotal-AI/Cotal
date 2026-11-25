@@ -31,7 +31,8 @@ import { checkedEviction } from "./barrier-evict.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGrantTransaction, type ActorRow } from "./ledger.js";
-import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
+import { INTERACTIVE_RETIRE_PATH } from "./service.js";
+import { runAuthService } from "./service-host.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
 import { isDiscoveryName, resolveDiscoveryLogin, resolveNativeMigration, COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";

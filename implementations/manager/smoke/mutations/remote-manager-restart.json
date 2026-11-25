@@ -19,7 +19,7 @@
     },
     {
       "name": "clean stop reuses the stale remote executor",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/broker-transport.ts",
       "find": "      if (this.leaseStopping) await this.renewRemoteExecutor(true);",
       "replace": "      if (this.leaseStopping) await this.renewRemoteStandingBundle(true);",
       "expectRed": "stock clean stop refreshes the executor and deregisters after its retained credential expires",

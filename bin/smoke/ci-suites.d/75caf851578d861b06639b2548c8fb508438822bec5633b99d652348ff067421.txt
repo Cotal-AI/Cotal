@@ -1,0 +1,4 @@
+# Streamed text on OpenCode 2.x: the plugin journals `session.text.delta` and `session.reasoning.delta` text, an element
+# publishes under its stream id while its step runs and its saved record ends it once, and an interrupted step's stream
+# ends before the run closes.
+smoke:opencode2-stream

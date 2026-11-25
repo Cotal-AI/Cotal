@@ -1,11 +1,13 @@
 import { dirname, isAbsolute } from "node:path";
 import { existsSync } from "node:fs";
-import { agentFilePath, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
+import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand } from "@cotal-ai/core";
 import {
   COLOR_VALUES,
   CommandFailure,
   PREFERENCE_KEYS,
+  cachedPreferences,
   isCommandFailure,
+  isMeshRegistryError,
   describeLayer,
   extensionProvides,
   findMesh,
@@ -24,6 +26,7 @@ import {
   presentationOf,
   readPreferences,
   resolvePreference,
+  spaceNameTooLong,
   writePreference,
   writeResult,
   type Cell,
@@ -34,9 +37,11 @@ import {
   type Report,
   type ResolvedPreference,
 } from "@cotal-ai/workspace";
+import { checkSpaceFlagValue } from "./meshes-add.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { personaCatalog, personaNameProblem } from "../lib/persona-files.js";
-import { launchSpace } from "../lib/spawn-defaults.js";
+import { registryFailure } from "../lib/registry-errors.js";
+import { directPersonaPath, launchSpace } from "../lib/spawn-defaults.js";
 
 export const configFlags = [
   { name: "user", type: "boolean", description: "read or write your own defaults, with no space's values" },
@@ -67,9 +72,8 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 /** The scope a run reads through or writes to: the user's defaults, or one space's values. */
 interface Scope {
   readonly space: string | null;
-  /** How the space was chosen: `--space`, or the space a launch here uses. A running space registered
-   *  for this folder is `folder`, even when another space is selected. With none running here, the
-   *  selected space is `selected`, and the only running space elsewhere is `running`. */
+  /** How the space was chosen: `--space`, the saved selection, this folder's space, or the only
+   *  running space elsewhere. */
   readonly from: "flag" | "selected" | "folder" | "running" | null;
 }
 
@@ -103,8 +107,8 @@ interface PreferenceWrite {
   readonly previous: string | null;
   readonly value: string | null;
   /** The key as a command here now resolves it, from this shell: through `--space`, else the space a
-   *  launch here uses, whichever scope was written. */
-  readonly effective: Setting;
+   *  launch here uses, whichever scope was written. Null when that scope could not be read. */
+  readonly effective: Setting | null;
 }
 
 export function validateConfigArguments(args: ParsedArgs): void {
@@ -116,7 +120,13 @@ export function validateConfigArguments(args: ParsedArgs): void {
   if (v.space !== undefined) {
     const problem = preferenceSpaceProblem(v.space);
     if (problem) throw usage(problem);
+    const flag = checkSpaceFlagValue(v.space);
+    if (!flag.ok) throw new CommandFailure("refused", "USAGE_INVALID", flag.message.replace(/^✗ /, ""), { remedy: flag.remedy });
+    const tooLong = spaceNameTooLong(v.space);
+    if (tooLong) throw new CommandFailure("refused", "USAGE_INVALID", tooLong, { remedy: "choose a shorter space name" });
   }
+  if (sub === "set" && args.positionals.length !== 3) throw usage("usage: cotal config set <key> <value> [--user | --space <name>]");
+  if (sub === "unset" && args.positionals.length !== 2) throw usage("usage: cotal config unset <key> [--user | --space <name>]");
 }
 
 /**
@@ -134,7 +144,7 @@ export async function config(args: ParsedArgs): Promise<void> {
   if (sub === undefined) {
     if (rest.length) throw usage("usage: cotal config [--user | --space <name>]");
     if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
-    const scope = readScope(v);
+    const scope = await readScope(v);
     const result: PreferencesResult = { kind: "preferences", file: preferencesPath(), revision: prefs.revision, scope, settings: PREFERENCE_KEYS.map((key) => setting(key, scope, prefs)) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues(result.settings) }, (value) => preferencesView(value, Boolean(v.verbose)));
     return;
@@ -143,14 +153,12 @@ export async function config(args: ParsedArgs): Promise<void> {
     if (rest.length !== 1) throw usage("usage: cotal config get <key> [--user | --space <name>]");
     const key = keyOf(rest[0]!);
     if (v.space !== undefined) assertKnownSpace(v.space, prefs, true);
-    const scope = readScope(v);
+    const scope = await readScope(v);
     const result: PreferenceResult = { kind: "preference", file: preferencesPath(), revision: prefs.revision, scope, setting: setting(key, scope, prefs) };
     writeResult(presentation, { command: "config", target: target(scope), result, warnings: invalidEnvironmentValues([result.setting]) }, preferenceView);
     return;
   }
   if (sub === "set" || sub === "unset") {
-    const want = sub === "set" ? 2 : 1;
-    if (rest.length !== want) throw usage(sub === "set" ? "usage: cotal config set <key> <value> [--user | --space <name>]" : "usage: cotal config unset <key> [--user | --space <name>]");
     const key = keyOf(rest[0]!);
     const value = sub === "set" ? rest[1]! : undefined;
     if (key === "harness" && value !== undefined) checkHarness(value);
@@ -167,11 +175,21 @@ export async function config(args: ParsedArgs): Promise<void> {
     const modeChanged: OutputWarning[] = replacedMode === undefined ? [] : [{ code: "PREFERENCES_MODE_CHANGED", target: { path: preferencesPath() }, message: `${preferencesPath()} was mode ${replacedMode.toString(8).padStart(4, "0")}, and this write replaced it with a new file at mode 0600; a file's mode does not stop config set or unset` }];
     // What a command here uses next, whichever scope was written: through `--space`, else the space a
     // launch here uses, as `spawn` resolves it. `--user` chooses where the value is saved, not that.
-    const here = readScope({ ...v, user: undefined });
-    const effective = setting(key, here, readPreferences());
+    let effective: Setting | null = null;
+    let missing: OutputWarning | undefined;
+    let unread: OutputWarning | undefined;
+    try {
+      const here = await readScope({ ...v, user: undefined });
+      effective = setting(key, here, changed ? cachedPreferences() : prefs);
+      if (key === "persona" && value?.trim()) missing = missingPersona(value, here);
+    } catch (error) {
+      if (!isMeshRegistryError(error)) throw error;
+      const failure = registryFailure(error);
+      const check = effective === null ? "determine the effective value in this project" : "check the persona catalog";
+      unread = { code: failure.code, target: failure.target, message: `Could not ${check}: ${failure.message}${failure.remedy ? `. To fix it, ${failure.remedy}.` : ""}` };
+    }
     const result: PreferenceWrite = { kind: "preference-write", file: preferencesPath(), revision, scope, key, previous, value: value ?? null, effective };
-    const missing = key === "persona" && value?.trim() ? missingPersona(value, here) : undefined;
-    writeResult(presentation, { command: "config", target: target(scope), result, warnings: [...modeChanged, ...shadowedWrite(result), ...(missing ? [missing] : [])], noOp: !changed }, writeView);
+    writeResult(presentation, { command: "config", target: target(scope), result, completeness: unread ? "partial" : "complete", warnings: [...modeChanged, ...shadowedWrite(result), ...(missing ? [missing] : []), ...(unread ? [unread] : [])], noOp: !changed }, writeView);
     return;
   }
   throw usage(`cotal config has no subcommand "${sub}" - run \`cotal help config\``);
@@ -185,18 +203,15 @@ function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): vo
   if (findMesh(space) || findPreparedSpace(space) || (saved && holdsValue(space))) return;
   const known = [...new Set([...loadMeshes().map((mesh) => mesh.space), ...loadPreparedSpaces().map((prepared) => prepared.space), ...(saved ? Object.keys(prefs.spaces).filter(holdsValue) : [])])].sort();
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named ${JSON.stringify(space)} is ${saved ? "registered, prepared or holding a saved value here" : "registered or prepared here"}${known.length ? `; known spaces: ${known.join(", ")}` : ""}`, {
-    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space}\` or register it with \`cotal space add ${space} --server <url>\``,
+    remedy: `name a known space with --space, or prepare it first with \`cotal space create ${space} --root <dir>\` or register it with \`cotal space add ${space} --server <url>\``,
   });
 }
 
-/** A read looks through `--space`, or when neither scope flag is given, the space a launch here uses,
- *  the one `spawn` resolves from this folder. A running space registered for this folder is that space
- *  even when `cotal use` selected another. Where a launch has no space, the selection is the scope, as
- *  it is outside a project and in a folder whose own space is not running. */
-function readScope(v: FlagValues<typeof configFlags>): Scope {
+/** With neither scope flag, use the launch target here, then the saved selection if there is one. */
+async function readScope(v: FlagValues<typeof configFlags>): Promise<Scope> {
   if (v.space !== undefined) return { space: v.space, from: "flag" };
   if (v.user) return { space: null, from: null };
-  const here = launchSpace(process.cwd());
+  const here = await launchSpace(process.cwd());
   if (here) {
     const from = here.source === "current" ? "selected"
       : here.source === "local-recorded" || here.source === "prepared" ? "folder"
@@ -261,7 +276,7 @@ function missingPersona(value: string, scope: Scope): OutputWarning | undefined 
   let catalog;
   try { catalog = personaCatalog({ space: scope.space }); }
   catch (error) { if (isCommandFailure(error)) return undefined; throw error; }
-  const path = agentFilePath(catalog.root, value);
+  const path = directPersonaPath(catalog.root, value);
   if (existsSync(path)) return undefined;
   const missing = isPersonaPath(value) ? `no persona file ${path}` : `no persona "${value}" in space ${catalog.space}'s catalog ${dirname(path)}`;
   return { code: "PERSONA_NOT_FOUND", target: { space: catalog.space, path }, message: `${missing}; the preference was saved, and a launch there needs that file` };
@@ -281,7 +296,7 @@ export function invalidEnvironmentValues(settings: readonly ResolvedPreference[]
  *  the value a command will use. */
 function shadowedWrite(w: PreferenceWrite): OutputWarning[] {
   if (w.value === null) return [];
-  const winner = w.effective.winner;
+  const winner = w.effective?.winner;
   if (!winner || winner.source === (w.scope.space === null ? "user" : "space")) return [];
   return [{ code: "PREFERENCE_SHADOWED", target: target(w.scope), message: `${describeLayer(winner)} (${winner.value}) outranks this value in this shell` }];
 }
@@ -347,11 +362,14 @@ function writeView(w: PreferenceWrite): Report {
         ? { text: `${w.key} is already ${w.value} in ${where}`, tone: "hint" }
         : { text: `${w.key} = ${w.value} in ${where}${w.previous === null ? "" : ` (it was ${w.previous})`}`, tone: "ok", mark: "✓" };
   const now = w.effective;
+  const effectiveRows: (readonly [string, Cell])[] = now
+    ? [["Effective value", now.value ?? "not set"], ["Source", now.winner ? describeLayer(now.winner) : "not set"]]
+    : [["Effective value", "unavailable"]];
   return {
     sections: [{
       blocks: [
         { kind: "lines", lines: [line] },
-        { kind: "fields", rows: [["Saved to", where], ["Effective value", now.value ?? "not set"], ["Source", now.winner ? describeLayer(now.winner) : "not set"], ["Running agents", "unchanged"]] },
+        { kind: "fields", rows: [["Saved to", where], ...effectiveRows, ["Running agents", "unchanged"]] },
       ],
     }],
   };

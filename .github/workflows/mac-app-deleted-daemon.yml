@@ -197,8 +197,8 @@ jobs:
           for (const name of ['release-candidate', 'release-next']) {
             const manifest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/${name}/manifest.json`));
             assert.equal(manifest.source, process.env.GITHUB_SHA);
-            assert.equal(manifest.packages.length, 24);
-            assert.equal(new Set(manifest.packages.map(pkg => pkg.name)).size, 24);
+            assert.equal(manifest.packages.length, 25);
+            assert.equal(new Set(manifest.packages.map(pkg => pkg.name)).size, 25);
             const version = manifest.packages[0].version;
             assert(manifest.packages.every(pkg => pkg.version === version));
             versions.push(version);

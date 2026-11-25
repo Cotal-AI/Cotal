@@ -3,6 +3,8 @@ import type { McpServerSpec } from "./connector-config.js";
 import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
 import type { ControlEndpoint } from "./control-exchange.js";
 import type { PersonaEndpoint } from "./persona-endpoints.js";
+import type { CommandTarget } from "./agent-endpoint.js";
+import type { CommandCatalog, FirstCommand } from "./agent-command-list.js";
 
 /** User-mode launch identity shared by the manager, connector and launch-material carrier. The
  *  sentinel is a file path, and the bearer command is argv. The material reader checks its rebuilt
@@ -16,8 +18,19 @@ export interface UserAuthLaunch {
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
+  /** Validate options without creating launch files or changing session state. The returned spec
+   * is not executable. Only set when the connector declares {@link Connector.supportsLaunchValidation}. */
+  validateOnly?: boolean;
   space: string;
   name: string;
+  /** The display name the seat starts with, when `set-name` (SPEC 13.22) gave it one other than
+   *  `name`. The connector forwards it (`COTAL_DISPLAY_NAME`) and keeps `name` as the launch name,
+   *  which in user mode is also the actor. */
+  displayName?: string;
+  /** The seat labels itself from the first message it receives (SPEC 13.22): its launch
+   *  {@link prompt}, else its first live direct message or mention. The connector forwards it
+   *  (`COTAL_AUTO_NAME`). A seat started with a {@link displayName} keeps that name instead. */
+  autoName?: boolean;
   role?: string;
   /** Stable agent id (the nkey public key). When set, the launched session adopts it
    *  as its `card.id` instead of generating a random one — so the id the launcher
@@ -91,6 +104,10 @@ export interface LaunchOpts {
    *  {@link Connector.supportsPrompt}, so a prompt on a connector that cannot deliver one is
    *  refused before any provisioning. */
   prompt?: string;
+  /** A harness command or skill the agent runs as its first turn, through its `agent` endpoint's
+   *  command lane under `id` (SPEC 13.22). The connector hands it to the seat with
+   *  `firstCommandEnv`. Only set when {@link Connector.commands} declares its target. */
+  firstCommand?: FirstCommand;
   /** This seat is started for one `once` task, which the manager relays to it as a turn. A
    *  connector that launches processes outside the seat's own process records them from launch on,
    *  so {@link Connector.retireAfterExit} can prove them gone. */
@@ -133,6 +150,13 @@ export interface LaunchOpts {
   events?: boolean;
   /** Publish tool inputs/results on the sibling rail. False retains names/times only. Defaults to true. */
   eventPayloads?: boolean;
+  /** Launch the harness in its mode that asks before it uses a tool, so its permission prompts reach
+   *  the agent's `agent` endpoint (SPEC 13.22) where the session serves one. Absent or false keeps
+   *  the connector's own launch mode. Gated upstream by {@link Connector.supportsAskPermissions}. */
+  askPermissions?: boolean;
+  /** Publish the model's reasoning (`REASONING_*`) on the session's event plane. Absent or false
+   *  publishes none. Gated upstream by {@link Connector.supportsReasoningEvents}. */
+  reasoningEvents?: boolean;
   /** The selected registration requires this session's structured event plane. A launcher sets this
    *  from trusted registration material; connectors carry it into launch material for session-side
    *  enforcement as well as arming the emitter. */
@@ -265,6 +289,32 @@ export interface ModelCatalogOpts {
    *  these files rather than resolving the bare name again, so it runs the binary a spawn will run.
    *  Absent when no manager boot inventory exists, as for a standalone call. */
   resolvedBinaries?: Readonly<Record<string, string>>;
+  /** The extra environment names the operator declared in `spawn.env`, read from the config a spawn
+   *  would read now: what a managed launch receives as {@link LaunchOpts.envAllow}. A catalog that
+   *  runs its harness passes them on as the launch does, so it lists the models a seat reaches.
+   *  Absent when none are declared, or for a standalone call. */
+  envAllow?: readonly string[];
+}
+
+/** What a seat on a connector runs on its `agent` endpoint (SPEC 13.22), and how the manager lists
+ *  it before any seat exists. */
+export interface ConnectorCommands {
+  /** What a seat's `command` takes. A first command with any other target is refused at spawn. */
+  readonly targets: readonly CommandTarget[];
+  /** What a seat started in `cwd` would list, read from the harness the seat would run, so the names
+   *  are the ones its `command` takes. Starts no seat, joins no mesh and keeps nothing. Resolves
+   *  `supported: false` when this install runs no commands; rejects when the harness did not answer. */
+  list(opts: CommandListOpts): Promise<CommandCatalog>;
+}
+
+export interface CommandListOpts {
+  /** The canonical directory the seat would start in. */
+  cwd: string;
+  /** As {@link ModelCatalogOpts.resolvedBinaries}. */
+  resolvedBinaries?: Readonly<Record<string, string>>;
+  /** The operator's spawn env allowlist, as {@link LaunchOpts.envAllow}, so the harness reads the
+   *  configuration a seat's would. */
+  envAllow?: readonly string[];
 }
 
 /** Manager-facing wrapper for one connector's catalog lookup. */
@@ -282,6 +332,8 @@ export interface ConnectorModelCatalog extends ModelCatalog {
  * and core stays ignorant of which ones exist.
  */
 export interface Connector extends Extension {
+  /** `buildLaunch` accepts `validateOnly` and does not write files or change state in that mode. */
+  supportsLaunchValidation?: true;
   readonly kind: "connector";
   readonly name: string;
   /** Connector-owned setup surface. The base CLI resolves this through the extension registry and
@@ -291,6 +343,9 @@ export interface Connector extends Extension {
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
+  /** The harness commands and skills its seats run. Absent: they run none, and the manager answers
+   *  `supported: false` before launch. */
+  readonly commands?: ConnectorCommands;
   /** The channel this connector publishes an agent's AG-UI event plane to (see
    *  {@link LaunchOpts.events}). OPTIONAL: only connectors that actually emit implement it, and
    *  asking for `events` from one that does not FAILS LOUD in the manager rather than minting a
@@ -303,6 +358,10 @@ export interface Connector extends Extension {
    *  `eventChannel`, so the grant the manager mints here and the subject the session publishes to
    *  are the same derivation and cannot drift. */
   eventChannel?(principal: { owner: string; actor: string }): string;
+  /** A session this connector launches serves its harness's tool permissions on the agent's
+   *  `agent` endpoint (SPEC 13.22) when the mesh is user-auth. A launch capability and nothing more:
+   *  it does not say a given session's endpoint will open. */
+  readonly prompts?: true;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager resolves each at boot, passes the absolute path through {@link LaunchOpts.resolvedBinaries},
@@ -357,6 +416,17 @@ export interface Connector extends Extension {
    *  Default-deny, so a prompt on a connector that does not declare it fails before any
    *  provisioning rather than being accepted and never submitted. */
   readonly supportsPrompt?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.askPermissions}. Default-deny, so a launch
+   *  that asks for it fails before any provisioning rather than running without asking. */
+  readonly supportsAskPermissions?: boolean;
+  /** Whether this connector can honor {@link LaunchOpts.reasoningEvents}. Default-deny, so a launch
+   *  that asks for it fails before any provisioning rather than publishing no reasoning. */
+  readonly supportsReasoningEvents?: boolean;
+  /** The bytes a terminal sends for the key that interrupts the harness's live turn, such as
+   *  `"\x1b"` for Escape. The manager's `interrupt` command writes them into a seat's terminal.
+   *  Declare it only after a live check shows the key ending a turn. Absent, the command refuses
+   *  seats on this connector. */
+  readonly interruptKey?: string;
   /** Whether a seat on this connector takes a relayed turn on an idle fresh session, hands it to
    *  the harness at most once, and yields when the turn ends. A `once` spawn needs it. Declare it
    *  only after a live check shows the harness doing all three; serving `turn-pending` is not

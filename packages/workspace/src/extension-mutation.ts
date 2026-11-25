@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
+import { closeSync, existsSync, fstatSync, futimesSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, constants, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
@@ -27,32 +27,81 @@ function globalUpdateChildPath(root: string): string {
   return join(canonicalGlobalRoot(root), ".cotal-update-child");
 }
 
-export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; repairAmbiguous?: () => void } = {}): () => void {
-  const deadline = Date.now() + (opts.waitMs ?? 0);
+/** The owner record stays immutable. Renewing updaters touch its inode without changing custody. */
+export function claimGlobalNpmUpdateLock(root: string, opts: { waitMs?: number; renew?: boolean; onWait?: () => void; repairAmbiguous?: () => void } = {}): () => void {
+  const waitMs = opts.waitMs ?? 0;
+  const deadline = Date.now() + waitMs;
   const canonicalRoot = canonicalGlobalRoot(root);
-  const held = acquireLock(join(canonicalRoot, ".cotal-update.lock"), {
-    label: "a global cotal-ai update",
-    waitMs: opts.waitMs ?? 0,
-    onTimeout: (owner) => new Error(
-      `another cotal-ai update is using npm global root ${canonicalRoot} (pid ${owner.pid}) - retry once it finishes`,
-    ),
-  });
+  const lock = join(canonicalRoot, ".cotal-update.lock");
+  let held: HeldLock;
+  let wait = waitMs;
+  let announced = false;
+  const retry = new Error();
+  for (;;) {
+    try {
+      held = acquireLock(lock, {
+        label: "a global cotal-ai update",
+        waitMs: wait,
+        onWait: () => { if (!announced) { announced = true; opts.onWait?.(); } },
+        onTimeout: owner => {
+          if (opts.renew && waitMs > 0) {
+            const current = inspectLock(lock);
+            if (current.state === "active" && current.owner.nonce === owner.nonce) {
+              const updated = lstatSync(lock, { throwIfNoEntry: false });
+              const confirmed = inspectLock(lock);
+              const now = Date.now();
+              if (confirmed.state === "active" && confirmed.owner.nonce === owner.nonce && updated?.isFile() && updated.mtimeMs > owner.ts && updated.mtimeMs <= now) {
+                wait = updated.mtimeMs + waitMs - now;
+                if (wait > 0) return retry;
+              }
+            }
+          }
+          return new Error(`another cotal-ai update is using npm global root ${canonicalRoot} (pid ${owner.pid}) - retry once it finishes`);
+        },
+      });
+      break;
+    } catch (error) {
+      if (error !== retry) throw error;
+    }
+  }
+  let stopRenewing: (() => void) | undefined;
   try {
     const path = globalUpdateChildPath(canonicalRoot);
     const marker = readMarker(path);
-    if (marker?.phase === "ambiguous" && opts.repairAmbiguous) {
-      inspectGlobalUpdateChild(canonicalRoot);
-      if (sameProcessAlive(marker.owner, undefined)) throw new Error(`ambiguous update owner is still running (pid ${marker.owner}); retry once it finishes`);
-      const before = readFileSync(path, "utf8");
-      opts.repairAmbiguous();
-      if (readFileSync(path, "utf8") !== before) throw new Error("ambiguous update marker changed during repair; nothing was cleared");
-      if (sameProcessAlive(marker.owner, undefined)) throw new Error("ambiguous update owner became live during repair; nothing was cleared");
-      renameSync(path, `${path}.retained-${Date.now()}-${randomBytes(6).toString("hex")}`);
+    if (marker && (marker.phase === "pending" || marker.phase === "ambiguous")) {
+      const start = marker.phase === "pending" ? marker.ownerStart : marker.custody?.ownerStart;
+      const gated = process.platform === "linux" && (marker.phase === "pending" ? marker.gated === true : marker.custody !== undefined);
+      const repair = !gated && (marker.phase === "ambiguous" ||
+        process.platform === "linux" && !marker.intermediary && (marker.operation === "global install" || marker.operation === "global reconcile"))
+        ? opts.repairAmbiguous : undefined;
+      if ((gated && !sameProcessAlive(marker.owner, start)) || repair) {
+        inspectGlobalUpdateChild(canonicalRoot);
+        const before = readFileSync(path, "utf8");
+        if (JSON.stringify(JSON.parse(before)) !== JSON.stringify(marker)) throw new Error("interrupted update marker changed before repair; nothing was cleared");
+        if (sameProcessAlive(marker.owner, start)) throw new Error(`interrupted update owner is still running (pid ${marker.owner}); retry once it finishes`);
+        repair?.();
+        if (sameProcessAlive(marker.owner, start)) throw new Error("interrupted update owner became live during repair; nothing was cleared");
+        if (marker.phase === "ambiguous" && marker.custody && (sameProcessAlive(marker.custody.pid, marker.custody.start) || processGroupAlive(marker.custody.pid)))
+          throw new Error(`global update child has surviving processes (pid ${marker.custody.pid}); retry once they finish`);
+        if (readFileSync(path, "utf8") !== before) throw new Error("interrupted update marker changed during repair; nothing was cleared");
+        renameSync(path, `${path}.retained-${Date.now()}-${randomBytes(6).toString("hex")}`);
+      }
     }
     assertNoProcessMutation(globalUpdateChildPath(canonicalRoot), "global cotal-ai update child", deadline);
-    return () => held.release();
+    if (opts.renew) {
+      const fd = openSync(lock, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      let timer: ReturnType<typeof setInterval> | undefined;
+      stopRenewing = () => { clearInterval(timer); stopRenewing = undefined; closeSync(fd); };
+      if (JSON.parse(readFileSync(fd, "utf8")).nonce !== held.nonce) throw new Error("global update reservation changed before renewal");
+      timer = setInterval(() => {
+        const now = new Date();
+        try { futimesSync(fd, now, now); }
+        catch { stopRenewing?.(); }
+      }, 1_000).unref();
+    }
+    return () => { try { stopRenewing?.(); } finally { held.release(); } };
   } catch (e) {
-    held.release();
+    try { stopRenewing?.(); } finally { held.release(); }
     throw e;
   }
 }
@@ -74,12 +123,12 @@ interface LockRequest {
 type MutationPolicy = Generator<LockRequest, () => void, HeldLock>;
 
 /** Update pass: acquire it, then refuse while an extension npm child is still marked live. */
-function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
+function* updatePassPolicy(waitMs: number | undefined, writer = extensionMutationLockPath()): MutationPolicy {
   // The first lock can create the shared config root. A group-writable umask must not make
   // Cotal's own directory fail the completion writer's protected-ancestor check.
-  mkdirSync(dirname(extensionMutationLockPath()), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(writer), { recursive: true, mode: 0o700 });
   const held = yield {
-    path: extensionUpdatePassLockPath(),
+    path: `${writer}.update`,
     opts: {
       label: "a `cotal update` extension pass",
       waitMs: waitMs ?? 0,
@@ -87,7 +136,7 @@ function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
     },
   };
   try {
-    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    assertNoProcessMutation(`${writer}.npm-child`, "extension npm mutation");
     return () => held.release();
   } catch (e) {
     held.release();
@@ -97,19 +146,20 @@ function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
 
 /** Shared pass -> writer order for every extension-prefix reader that can rewrite peer links and
  * every writer. An update child may borrow its live parent's pass, but always owns the writer. */
-function* mutationPolicy(opts: ExtensionMutationOptions): MutationPolicy {
+function* mutationPolicy(opts: ExtensionMutationOptions, writer = extensionMutationLockPath()): MutationPolicy {
   let releasePass: () => void;
   if (opts.borrowUpdateParent === undefined) {
-    releasePass = yield* updatePassPolicy(opts.waitMs);
+    releasePass = yield* updatePassPolicy(opts.waitMs, writer);
   } else {
-    if (!extensionUpdatePassOwnedBy(opts.borrowUpdateParent))
+    const pass = inspectLock(`${writer}.update`);
+    if (pass.state !== "active" || pass.owner.pid !== opts.borrowUpdateParent)
       throw new Error("the extension update parent no longer owns its pass lock");
-    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    assertNoProcessMutation(`${writer}.npm-child`, "extension npm mutation");
     releasePass = () => {};
   }
   try {
     const held = yield {
-      path: extensionMutationLockPath(),
+      path: writer,
       opts: {
         label: opts.label ?? "an extension mutation",
         waitMs: opts.waitMs ?? 0,
@@ -166,10 +216,10 @@ async function runPolicyAsync(policy: MutationPolicy, waitMs: number): Promise<(
 }
 
 /** Blocking claim of the pass -> writer locks; see {@link mutationPolicy}. */
-export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}): () => void {
+export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}, config?: string): () => void {
   const release = claimUpdateClosureAccess();
   try {
-    const writer = runPolicy(mutationPolicy(opts));
+    const writer = runPolicy(mutationPolicy(opts, config === undefined ? undefined : join(config, ".extensions.lock")));
     return () => { try { writer(); } finally { release(); } };
   } catch (error) { release(); throw error; }
 }
@@ -198,9 +248,9 @@ export function extensionUpdatePassOwnedBy(pid: number): boolean {
 }
 
 export type ProcessMutationRecord =
-  | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
-  | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string }
-  | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string };
+  | { readonly phase: "pending"; readonly owner: number; readonly ownerStart?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string; readonly gated?: true }
+  | { readonly phase: "live"; readonly owner: number; readonly ownerStart?: string; readonly pid: number; readonly start?: string; readonly intermediary: boolean; readonly nonce: string; readonly operation?: string; readonly seedGroup?: true }
+  | { readonly phase: "ambiguous"; readonly owner: number; readonly nonce: string; readonly operation?: string; readonly reason: string; readonly custody?: { readonly ownerStart: string; readonly pid: number; readonly start: string } };
 
 export interface ProcessMutation {
   markLive(pid: number): void;
@@ -217,15 +267,17 @@ export function processExitIsAmbiguous(
   return signal !== null || (intermediary && status !== 0);
 }
 
-export function beginExtensionNpmMutation(intermediary = process.platform === "win32"): ProcessMutation {
-  return beginProcessMutation(extensionNpmMutationPath(), "extension npm mutation", intermediary);
+export function beginExtensionNpmMutation(intermediary = process.platform === "win32", seedGroup = false): ProcessMutation {
+  if (seedGroup && (process.platform !== "linux" || intermediary)) throw new Error("a seed npm process group requires direct Linux execution");
+  return beginProcessMutation(extensionNpmMutationPath(), "extension npm mutation", intermediary, false, seedGroup);
 }
 
-export function beginGlobalUpdateChild(root: string, operation: "install" | "reconcile"): ProcessMutation {
+export function beginGlobalUpdateChild(root: string, operation: "install" | "reconcile", gated = false): ProcessMutation {
   return beginProcessMutation(
     globalUpdateChildPath(root),
     `global ${operation}`,
     operation === "install" && process.platform === "win32",
+    gated && process.platform === "linux",
   );
 }
 
@@ -311,28 +363,32 @@ export function inspectGlobalUpdateChild(root: string, localAccounts?: UpdateCus
   return { owner: inspectLock(join(canonical, ".cotal-update.lock")), child: readMarker(join(canonical, ".cotal-update-child")) };
 }
 
-/** Journal an actual mutating child across wrapper death. Pending closes spawn->PID publication;
- * live tracks the child itself; ambiguous is operator-repaired and never auto-cleared. */
-function beginProcessMutation(path: string, operation: string, intermediary: boolean): ProcessMutation {
+/** Journal an actual mutating child across wrapper death. A gated child cannot mutate before
+ * publication. A signalled gated child retains its exact identity and dedicated process group. */
+function beginProcessMutation(path: string, operation: string, intermediary: boolean, gated = false, seedGroup = false): ProcessMutation {
   assertNoProcessMutation(path, operation);
   const nonce = randomBytes(12).toString("hex");
   const ownerStart = processStartToken(process.pid);
-  writeMarker(path, { phase: "pending", owner: process.pid, ownerStart, intermediary, nonce, operation });
+  if (gated && !ownerStart) throw new Error(`cannot identify the ${operation} owner`);
+  writeMarker(path, { phase: "pending", owner: process.pid, ownerStart, intermediary, nonce, operation, ...(gated ? { gated: true } : {}) });
   return {
     markLive(pid) {
       if (!positiveInteger(pid)) throw new Error(`invalid ${operation} child pid ${pid}`);
       const current = readMarker(path);
       if (!current || current.nonce !== nonce)
         throw new Error(`${operation} marker changed before the child PID was published`);
+      const start = processStartToken(pid);
+      if (gated && !start) throw new Error(`cannot identify the ${operation} child`);
       writeMarker(path, {
         phase: "live",
         owner: process.pid,
         ownerStart,
         pid,
-        start: processStartToken(pid),
+        start,
         intermediary,
         nonce,
         operation,
+        ...(seedGroup ? { seedGroup: true } : {}),
       });
     },
     markAmbiguous(reason) {
@@ -342,11 +398,20 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
       writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason });
     },
     complete(status, signal, ambiguityReason) {
+      if (seedGroup) {
+        const current = readMarker(path);
+        if (current?.phase !== "live" || current.nonce !== nonce) throw new Error(`${operation} marker changed before completion`);
+        if (seedProcessGroupAlive(current.pid)) throw new Error(`${operation} has a running process group (${current.pid}). Retry once it exits.`);
+        removeMarker(path, nonce);
+        return;
+      }
       if (processExitIsAmbiguous(status, signal, intermediary)) {
         const current = readMarker(path);
         if (!current || current.nonce !== nonce)
           throw new Error(`${operation} marker changed before ambiguity was recorded`);
-        writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason: ambiguityReason });
+        const custody = gated && current.phase === "live" && ownerStart && current.start
+          ? { ownerStart, pid: current.pid, start: current.start } : undefined;
+        writeMarker(path, { phase: "ambiguous", owner: process.pid, nonce, operation, reason: ambiguityReason, custody });
         return;
       }
       removeMarker(path, nonce);
@@ -359,21 +424,29 @@ function beginProcessMutation(path: string, operation: string, intermediary: boo
 
 function assertNoProcessMutation(path: string, operation: string, deadline = 0): void {
   let marker = readMarker(path);
-  while (marker?.phase === "live" && sameProcessAlive(marker.pid, marker.start) && Date.now() < deadline) {
+  const childAlive = (live: Extract<ProcessMutationRecord, { phase: "live" }>): boolean =>
+    live.seedGroup ? process.platform !== "linux" || seedProcessGroupAlive(live.pid) :
+    sameProcessAlive(live.pid, live.start) || (process.platform === "linux" &&
+      (live.operation === "global install" || live.operation === "global reconcile") && processGroupAlive(live.pid));
+  while (marker?.phase === "live" && childAlive(marker) && Date.now() < deadline) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, Math.min(100, deadline - Date.now())));
     marker = readMarker(path);
   }
   if (!marker) return;
   if (marker.phase === "ambiguous") {
+    if (marker.custody) throw new Error(`${marker.operation ?? operation} ended ambiguously (${marker.reason}; ${path}). Run \`cotal update --self\` after its processes exit`);
     throw new Error(`${marker.operation ?? operation} ended ambiguously (${marker.reason}; ${path}) - if no descendant process is running, remove the marker and retry`);
   }
   if (marker.phase === "pending") {
     if (sameProcessAlive(marker.owner, marker.ownerStart))
       throw new Error(`${marker.operation ?? operation} is starting under pid ${marker.owner} - retry once it finishes`);
+    if (marker.gated) throw new Error(`${marker.operation ?? operation} stopped before publishing its child PID (${path}). Run \`cotal update --self\` to recover it`);
     throw new Error(`${marker.operation ?? operation} may have been orphaned before publishing its child PID (${path}) - if no descendant process is running, remove the marker and retry`);
   }
-  if (sameProcessAlive(marker.pid, marker.start))
+  if (childAlive(marker)) {
+    if (marker.seedGroup) throw new Error(`${marker.operation ?? operation} has a running process group (${marker.pid}). Retry once it exits.`);
     throw new Error(`${marker.operation ?? operation} is still running (pid ${marker.pid}) - retry once it finishes`);
+  }
   if (marker.intermediary) {
     const ownerAlive = sameProcessAlive(marker.owner, marker.ownerStart);
     throw new Error(
@@ -397,6 +470,42 @@ function sameProcessAlive(pid: number, start: string | undefined): boolean {
   return now === undefined || now === start;
 }
 
+function processGroupAlive(pid: number): boolean {
+  try { process.kill(-pid, 0); return true; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code === "EPERM") return true;
+    throw error;
+  }
+}
+
+/** A zombie cannot write. Recheck newly visible PIDs without requiring unrelated processes to stay put. */
+function seedProcessGroupAlive(pgid: number): boolean {
+  if (!processGroupAlive(pgid)) return false;
+  const inspected = new Set<string>();
+  const memberAlive = (entry: string): boolean => {
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      const [state, , group] = stat.slice(stat.lastIndexOf(")") + 2).split(" ", 3);
+      return Number(group) === pgid && state !== "Z" && state !== "X";
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ESRCH") return false;
+      throw error;
+    }
+  };
+  for (let pass = 0; pass < 4; pass++) {
+    const unseen = readdirSync("/proc").filter(entry => /^\d+$/.test(entry) && !inspected.has(entry));
+    if (!unseen.length) return false;
+    for (const entry of unseen) {
+      if (memberAlive(entry)) return true;
+      inspected.add(entry);
+    }
+  }
+  return processGroupAlive(pgid);
+}
+
 function readMarker(path: string): ProcessMutationRecord | undefined {
   if (!existsSync(path)) return undefined;
   let parsed: unknown;
@@ -416,21 +525,29 @@ function validMarker(value: unknown): value is ProcessMutationRecord {
   if (!positiveInteger(marker.owner) || !validNonce(marker.nonce) || !optionalString(marker.operation)) return false;
   if (marker.phase === "pending") {
     return optionalString(marker.ownerStart) && typeof marker.intermediary === "boolean" &&
-      exactKeys(marker, ["phase", "owner", "ownerStart", "intermediary", "nonce", "operation"]);
+      (marker.gated === undefined || marker.gated === true && typeof marker.ownerStart === "string" && !marker.intermediary && (marker.operation === "global install" || marker.operation === "global reconcile")) &&
+      exactKeys(marker, ["phase", "owner", "ownerStart", "intermediary", "nonce", "operation", "gated"]);
   }
   if (marker.phase === "live") {
     return positiveInteger(marker.pid) && optionalString(marker.ownerStart) && optionalString(marker.start) &&
       typeof marker.intermediary === "boolean" &&
-      exactKeys(marker, ["phase", "owner", "ownerStart", "pid", "start", "intermediary", "nonce", "operation"]);
+      (marker.seedGroup === undefined || marker.seedGroup === true && marker.intermediary === false && marker.operation === "extension npm mutation") &&
+      exactKeys(marker, ["phase", "owner", "ownerStart", "pid", "start", "intermediary", "nonce", "operation", "seedGroup"]);
   }
   if (marker.phase === "ambiguous") {
-    return typeof marker.reason === "string" && marker.reason.length > 0 && exactKeys(marker, ["phase", "owner", "nonce", "operation", "reason"]);
+    const custody = marker.custody as Record<string, unknown> | undefined;
+    return typeof marker.reason === "string" && marker.reason.length > 0 &&
+      (custody === undefined || Boolean(custody && typeof custody === "object" && !Array.isArray(custody) &&
+        (marker.operation === "global install" || marker.operation === "global reconcile") && positiveInteger(custody.pid) &&
+        typeof custody.ownerStart === "string" && custody.ownerStart.length > 0 && typeof custody.start === "string" && custody.start.length > 0 &&
+        exactKeys(custody, ["ownerStart", "pid", "start"]))) &&
+      exactKeys(marker, ["phase", "owner", "nonce", "operation", "reason", "custody"]);
   }
   return false;
 }
 
 function positiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 0x7fffffff;
 }
 
 function optionalString(value: unknown): value is string | undefined {

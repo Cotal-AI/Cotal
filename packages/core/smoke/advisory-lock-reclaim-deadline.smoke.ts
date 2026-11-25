@@ -64,13 +64,15 @@ try {
     const reclaimer = await liveReclaimer(path);
     const started = Date.now();
     let error: unknown;
+    let waits = 0;
     try {
-      acquireLock(path, { waitMs: 0 }).release();
+      acquireLock(path, { waitMs: 0, onWait: () => { waits++; } }).release();
     } catch (e) {
       error = e;
     }
     const elapsed = Date.now() - started;
     await reclaimer.released;
+    expect(waits === 0, "an immediate sync refusal does not report waiting");
     expect(error instanceof Error && elapsed < HOLD_MS / 3 && (error as Error).message.includes(`pid ${reclaimer.pid}`), {
       error: (error as Error | undefined)?.message?.slice(0, 160), elapsed, hold: HOLD_MS,
     });
@@ -82,13 +84,15 @@ try {
     const reclaimer = await liveReclaimer(path);
     const started = Date.now();
     let error: unknown;
+    let waits = 0;
     try {
-      (await acquireLockAsync(path, { waitMs: 0 })).release();
+      (await acquireLockAsync(path, { waitMs: 0, onWait: () => { waits++; } })).release();
     } catch (e) {
       error = e;
     }
     const elapsed = Date.now() - started;
     await reclaimer.released;
+    expect(waits === 0, "an immediate async refusal does not report waiting");
     expect(error instanceof Error && elapsed < HOLD_MS / 3 && (error as Error).message.includes(`pid ${reclaimer.pid}`), {
       error: (error as Error | undefined)?.message?.slice(0, 160), elapsed, hold: HOLD_MS,
     });
@@ -99,12 +103,25 @@ try {
     staleLock(path);
     const reclaimer = await liveReclaimer(path);
     const started = Date.now();
-    const held = acquireLock(path, { waitMs: HOLD_MS * 3 });
+    let waits = 0;
+    const onWait = (): void => { waits++; };
+    const held = acquireLock(path, { waitMs: HOLD_MS * 3, onWait });
     const elapsed = Date.now() - started;
     const state = inspectLock(path).state;
     held.release();
     await reclaimer.released;
     expect(state === "active" && elapsed >= HOLD_MS / 2, { state, elapsed, hold: HOLD_MS });
+    expect(waits === 1, { waits });
+    acquireLock(path, { onWait }).release();
+    staleLock(path);
+    acquireLock(path, { onWait }).release();
+    (await acquireLockAsync(path, { onWait })).release();
+    expect(waits === 1, "uncontended and stale-lock acquisitions do not report waiting");
+    staleLock(path);
+    const asyncReclaimer = await liveReclaimer(path);
+    (await acquireLockAsync(path, { waitMs: HOLD_MS * 3, onWait })).release();
+    await asyncReclaimer.released;
+    expect(waits === 2, "an async wait reports once across multiple polls");
   });
 } finally {
   rmSync(root, { recursive: true, force: true });

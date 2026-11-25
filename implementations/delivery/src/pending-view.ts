@@ -2,7 +2,7 @@ import {
   CotalEndpoint, dialerFor, dmDurable, dmStream, HISTORY_READERS, historyReaderConsumer, idFromCreds, isConsumerAlreadyExists, isConsumerNotFound, isStreamNotFound,
   parsePrincipalKey, parseSubject, standaloneConnectOpts, unicastSubject, type FlagSpec, type ParsedArgs, type Presence,
 } from "@cotal-ai/core";
-import { CommandFailure, connectOrThrow, isConnectRefusal, jsonFlag, plainFlag, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, codeSpan, CommandFailure, connectOrThrow, isConnectRefusal, isWorkspaceTargetError, jsonFlag, oneLine, plainFlag, presentationOf, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
 import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { randomUUID } from "node:crypto";
 import { parseDmDurable } from "./pending.js";
@@ -22,15 +22,14 @@ export function validatePendingArguments(args: ParsedArgs): void {
   if (args.values.durable !== undefined && !parseDmDurable(String(args.values.durable))) throw new CommandFailure("refused", "USAGE_INVALID", "--durable needs the exact lifecycle-keyed DM durable printed by a native read");
 }
 
-async function uniquePresence(ep: CotalEndpoint, name: string): Promise<Presence> {
+async function uniquePresence(ep: CotalEndpoint, name: string): Promise<Presence | undefined> {
   for (let attempt = 0; attempt < 20; attempt++) await new Promise((resolve) => setTimeout(resolve, 100));
   const roster = ep.getRoster();
   const byId = roster.filter((peer) => peer.card.id === name);
   if (byId.length === 1) return byId[0]!;
   const byName = roster.filter((peer) => peer.card.name === name);
   if (byName.length > 1 || byId.length > 1) throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "more than one roster entry matches the requested recipient; name its full principal ID or a previously printed durable");
-  if (byName.length === 1) return byName[0]!;
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no recipient with this exact name or principal ID was observed in the bounded roster read; no empty durable was inferred");
+  return byName[0];
 }
 
 /** One finite read receipt. It never acknowledges a DM or claims that candidate IDs prove a hole. */
@@ -42,7 +41,13 @@ export async function pendingView(args: ParsedArgs, command: "pending" | "delive
   let conn: Awaited<ReturnType<typeof connectOrThrow>>;
   try { conn = await connectOrThrow(values, "admin", { readOnly: true }); }
   catch (error) {
-    if (isConnectRefusal(error)) throw new CommandFailure("refused", error.code, "the selected admin credential could not establish the requested broker read; no other identity or mesh was substituted", { target: { requested } });
+    if (isConnectRefusal(error)) {
+      if (isWorkspaceTargetError(error.cause) && error.cause.code === "not-started") {
+        const failure = error.failure();
+        throw new CommandFailure("refused", error.code, failure.message, { target: { ...error.target, requested }, remedy: failure.remedy });
+      }
+      throw new CommandFailure("refused", error.code, "the selected admin credential could not establish the requested broker read; no other identity or mesh was substituted", { target: { requested } });
+    }
     throw error;
   }
   const { space, server, tls } = conn;
@@ -56,9 +61,17 @@ export async function pendingView(args: ParsedArgs, command: "pending" | "delive
     const ep = new CotalEndpoint({ space, servers: server, creds: conn.creds, tls, channels: [], consume: false, registerPresence: false, watchPresence: true, card: { name: "pending-view", kind: "endpoint" } });
     ep.on("error", () => {});
     await ep.start();
-    let peer: Presence;
+    let peer: Presence | undefined;
     try { peer = await uniquePresence(ep, requested); }
     finally { await ep.stop(); }
+    if (!peer) {
+      const override = values.server === undefined ? "" : ` --server ${brokerAddressForDisplay(values.server) === values.server ? shellPath(values.server) : "<url>"}`;
+      const creds = values.creds === undefined ? "" : ` --creds ${shellPath(oneLine(values.creds))}`;
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no recipient matched ${oneLine(JSON.stringify(requested))} in the bounded roster read for space ${oneLine(JSON.stringify(space))}. Pending count was not checked.`, {
+        target: { space, requested },
+        remedy: `run ${codeSpan(`cotal who --all --space ${shellPath(oneLine(space))}${override}${creds} --json`)} to check the recipient name or full principal ID`,
+      });
+    }
     if (!peer.lifecycleUid) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the selected roster entry has no lifecycle UID; no DM durable was guessed", { target: { space, requested } });
     recipient = parsePrincipalKey(peer.card.id);
     if (!recipient) throw new CommandFailure("refused", "SCHEMA_INVALID", "the selected roster entry has no usable principal; no other recipient was substituted", { target: { space, requested } });

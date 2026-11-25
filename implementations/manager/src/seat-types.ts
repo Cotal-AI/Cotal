@@ -1,4 +1,4 @@
-import type { ControlEndpoint, EpErrorCode, GoalRef, Identity, InlinePersona, IssuedBinding, LaunchOpts, MeshLaunchAgent, PersonaEndpoint } from "@cotal-ai/core";
+import type { ControlEndpoint, EpErrorCode, FirstCommand, GoalRef, Identity, InlinePersona, IssuedBinding, LaunchOpts, MeshLaunchAgent, PersonaEndpoint } from "@cotal-ai/core";
 import type { AgentHandle } from "./runtime/index.js";
 import type { ContinuityAssignment } from "./launch.js";
 import type { FreeSlotCause, ForkProvenance, ManagerResumeAgent } from "./manager.js";
@@ -45,7 +45,7 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
-  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume} (#1499), and
+  /** The one-time claim `transcript-receive` issued for carried bytes of {@link resume}, and
    *  the agent the CLI found them with. Imperative control args only, like `resume`. */
   resumeClaim?: string;
   resumeAgent?: string;
@@ -53,13 +53,26 @@ export interface StartAgentOpts {
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
   eventPayloads?: boolean;
-  /** #373: set by `opStart` when a non-owner, non-admin caller omitted `events` and the plane was served
-   *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
+  /** Launch the harness asking before it uses a tool. Refused before provisioning on a connector
+   *  that does not declare `supportsAskPermissions`. */
+  askPermissions?: boolean;
+  /** Publish the model's reasoning on the event plane. Refused before provisioning on a connector
+   *  that does not declare `supportsReasoningEvents`, and on a launch without the event plane. */
+  reasoningEvents?: boolean;
+  /** `opStart` sets this when a non-owner, non-admin caller omits `events` and the event plane
+   *  is disarmed. The reply includes it so the caller sees the downgrade. */
   eventsNotice?: string;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
   prompt?: string;
+  /** A harness command or skill the seat runs as its first turn, under the id the spawn's acceptance
+   *  names (SPEC 13.22). Imperative launches only, and never recorded on the launch, so no restart
+   *  runs it again. */
+  firstCommand?: FirstCommand;
+  /** The seat labels itself from its first message (`LaunchOpts.autoName`). Imperative launches only,
+   *  and only on this host: a delegated runtime refuses it. A relaunch never passes it again. */
+  autoName?: boolean;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
    *  creds AND forwarded to the connector from ONE source. Imperative-only — a manifest launch
@@ -132,11 +145,14 @@ export interface ManagedLaunch {
   endpoints?: PersonaEndpoint[];
   events: boolean;
   eventPayloads?: boolean;
+  /** Recorded only when true, so every relaunch of the seat asks as its spawn did. */
+  askPermissions?: true;
+  reasoningEvents?: true;
   shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
   resumed?: ForkProvenance;
-  /** A carried resume's claim (#1499): the digest the manager staged, which the seat's fork record
+  /** A carried resume's claim: the digest the manager staged, which the seat's fork record
    *  must name before {@link resumed} is set, the host it came from, and when it was staged. */
   carried?: { transcriptSha256: string; host: string; transferredAt: string };
   /** The connector's {@link LaunchSpec.resumeRecordPath} for this seat's fork. */
@@ -147,9 +163,13 @@ export interface ManagedLaunch {
 
 export interface ManagedAgent {
   name: string;
+  /** The display name the seat last showed in its own presence, when `set-name` made it differ from
+   *  {@link name}, the alias every manager key and, in user mode, the actor stay on. Kept with the
+   *  seat so a relaunch starts with it (`LaunchOpts.displayName`). */
+  displayName?: string;
   role?: string;
   agent: string;
-  /** The seat-private Claude home a carried resume launched in (#1499), removed when the seat is freed. */
+  /** The seat-private Claude home a carried resume launches in. Removed when the seat is freed. */
   seatHome?: string;
   /** Stable id the manager assigned this agent at spawn: the nkey public key (static auth), or
    *  the owner+actor principal dot-form (user mode). */
@@ -235,7 +255,7 @@ export interface ManagedAgent {
    *  watcher frees the slot with it, so an exit the stop caused is not logged or ended as the
    *  seat's own. */
   stopCause?: FreeSlotCause;
-  /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
+  /** Set while the manager has logged this seat off the mesh but still holds its slot.
    *  cleared when the seat is logged back on. */
   offMesh?: boolean;
   /** The one renewal admitted before terminalization. Retirement drains it before revocation and
@@ -300,5 +320,7 @@ export interface SpawnAcceptance {
   /** The connector-selected readiness budget persisted on this goal. A synchronous follower must
    *  outlive it; otherwise it can time out while the manager is still legitimately waiting. */
   readinessDeadlineMs: number;
+  /** The id the seat's first command is queued under, when the spawn named one. */
+  firstCommand?: { id: string };
   executor: { lifecycleUid: string; epoch: number };
 }

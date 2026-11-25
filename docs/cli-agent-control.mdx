@@ -9,6 +9,9 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Managed seat control uses the running manager's native endpoint commands.
 
+For an agent running directly in a terminal, use that terminal to type or quit. Use `cotal who --all`
+to see the agent's mesh status, with the same `--space` and `--server` options if you specified them.
+
 
 ## Managed seats [#managed-seats]
 
@@ -21,7 +24,7 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--space <s>` / `--server <url>` | resolved mesh | Which manager to reach. Select a registered space with `--space`, or override its broker URL with `--server` |
 | `<name>` / `--name <n>` | none | Managed agent to stop or attach, named positionally or with `--name`. `stop` needs one unless `--self` is given. `attach` without one lists your agents to choose from on a terminal, and refuses `USAGE_INVALID` where it cannot ask. A name that is missing or only whitespace is shown as that agent's id |
 | `--self` (`stop`) | off | Stop only the verified managed seat running this command (see [Stopping an agent](#stopping-an-agent)) |
 | `--force` (`stop`) | off | Request the native hard despawn (`graceful:false`); it does not bypass authority |
@@ -35,6 +38,18 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 
 ### Control credentials
 
+When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target
+in the requested output format. The retry keeps `--wide` or `--slots` if you supplied it.
+If `stop`, `attach`, `input` or named `status` refuses an empty pin or a roster principal ID, look up
+the manager in the space and on the broker you selected. The refusal identifies that roster.
+
+Without an agent name or an interactive terminal, `attach` refuses and suggests a roster command
+and an attach command with a name. Both keep the explicit `--space` and `--server`, and the attach
+retry keeps `--no-reconnect`. Both commands keep a valid `--on` selector. On an open or static-auth
+space, if the manager ID is malformed, the roster command omits `--on` so you can find the full ID
+to put in the attach retry. When you name the agent and mistype the manager ID, the attach retry
+also keeps `--no-reconnect`.
+
 On a controller stack started with `--no-manager`, `ps` refuses `TARGET_UNAVAILABLE`: no manager
 runs, so there are no managed agents to list. Bare `cotal up` adds the manager. A `manager` preset
 service started at the root answers instead, and `status` names it on its Manager row. Bare `up`
@@ -43,9 +58,10 @@ then refuses `LIFECYCLE_BLOCKED`, exit 2, naming that service and the
 bare `up` starts the stack's own manager. A stack manager whose process died stays registered, so
 `ps` waits out the manager's answer deadline first, then refuses the same way and names bare
 `cotal up`, which starts it again. While an `up` is still starting the
-stack's manager, `ps` refuses `TARGET_UNAVAILABLE` saying the manager is starting, and its Next is
-to run `cotal ps` again once `up` reports it started. That `up` holds the root's maintenance lock;
-once it has exited, `ps` gives the refusal above.
+stack's manager, `ps` refuses `TARGET_UNAVAILABLE` and shows the retry with the same explicit
+`--space`, `--server` and output flags. Run it once `up` reports that the manager started.
+While starting, `up` holds the root's maintenance lock. If it exits without starting the manager,
+`ps` gives the no-manager refusal above.
 
 On any other static or open space, such as a legacy stack started with `--no-manager`, a manager
 registry that lists no live manager makes `ps` refuse `TARGET_UNAVAILABLE`, exit 2: no manager is
@@ -60,12 +76,31 @@ still alive but does not answer, they name its PID and, if it stays unresponsive
 that process with `kill -KILL <pid>` before starting it again with bare `cotal up`. Neither command
 stops or restarts the manager.
 
+When managers answer but the `attach` picker has no agents to offer, its suggested `cotal ps` and
+`cotal spawn` commands keep the explicit space, broker and manager selectors.
+
 When no manager runs or is registered, the refusal's Next names the root of this machine's own stack
 for the space, as bare `cotal up` in that folder, because bare `up` in another project acts on that
 project's stack. When this machine only registered the space, records no stack for it, or reached
 it through a `--server` other than the broker its registration records, it cannot say where the
 stack runs. The Next then says to start the space's manager where its stack runs and names no local
 command.
+
+When a recorded local stack is stopped, `ps` refuses with exit 2. If the broker store is not
+writable, `ps` reports `PERMISSION_DENIED` and names the store and how to repair it, including when
+`--server` names the saved broker. A different `--server` does not use the local store to diagnose
+the refusal. Otherwise, `ps` reports `TARGET_UNAVAILABLE`. If the project's `.cotal` directory
+lacks write or search access, the refusal gives the permission repair instead of recommending
+a restart. If the recorded root's default
+`.cotal/channels.json` would prevent `up` from restarting the stack, the refusal names the file
+and the repair instead of recommending a restart. After `down` removes a foreground stack's
+registration, `ps` still checks its channel seed and saved broker address. If another program holds
+the controller stack's recorded address, the refusal tells you to free it before restarting the stack.
+`ps` does not change permissions or files, and it does not stop the listener.
+
+On a stopped local stack, `ps` reports an unreadable or invalid stack journal and its recovery step
+when no `--server` is passed or when it matches the saved broker address. A different address does
+not use the local journal to diagnose the refusal.
 
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
@@ -81,8 +116,9 @@ owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header. With no agents its Next is `cotal spawn`, or `cotal setup` when no agent application is set
-up here, as `status` reports it.
+header. With no agents it suggests `cotal spawn` for the space just listed, keeping any explicit
+broker address it can safely print. If `status` reports that no agent application is set up here,
+it suggests `cotal setup` instead.
 
 When `ps` asks every manager, it then asks each manager that answered for the host name in its own
 status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row
@@ -116,7 +152,7 @@ stop removes it, so the row names starting it again and stopping it if its host 
 and says no supported command removes the record if the host is gone. The row stays and the read
 stays `partial`.
 
-`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
+`--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does. On an open or user-auth space, `--slots` refuses and shows how to run the same read without `--slots`.
 
 A revision-32 manager also supports a bounded native `slots` query through
 `endpoint invoke manager slots --on <instance> --args '{"names":["worker"],"includeRetired":true}'`.
@@ -181,6 +217,7 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   advises aligning manager versions. The no-answer label means only that the instance is registered
   and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
   live one can be slow; if it is gone, deregister it.
+  The suggested one-manager read keeps any `--space`, `--server` and `--slots` from the request.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
   rather than falling through. On a static or open mesh a well-formed id that the registry lists for
   no manager is refused `TARGET_NOT_FOUND` at once, naming the managers that run, as `spawn --on`
@@ -224,10 +261,13 @@ seat when no live peer matches. Both paths retain the selected lifecycle and the
 checks. A live peer with an invalid or missing holding-manager hint still refuses.
 This happens by default; you do not need `--on`. When every instance
 answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
-before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
-as Next. When an instance did not answer for itself, the seat may run there, so they refuse
+before anything is sent, as they do with `--on`, naming the managers that answered. The roster
+command in Next keeps the space and broker selectors from the failed lookup. When an instance did
+not answer for itself, the seat may run there, so they refuse
 `TARGET_UNAVAILABLE` (exit 2) and name that instance. When more than one instance runs the name,
-they refuse `TARGET_AMBIGUOUS` (exit 2) and name each of them. `--json` carries each refusal. On a
+they refuse `TARGET_AMBIGUOUS` (exit 2) and name each of them. `stop` and `input` take `--json`,
+which carries each refusal. `attach` is text only: it refuses `--json` as an unknown option, exit 1,
+before any lookup. On a
 terminal the last two ask instead, listing only the managers that hold the name or did not answer,
 and the refusal's Next gives the command again with `--on` for each.
 
@@ -305,9 +345,9 @@ concludes nothing.
   them, read-only, with their state, application and host, and exits 0. It says that no manager
   answered, and its Next starts one: bare `cotal up` on the root of the space's own stack, as for a
   static stack above, and `cotal manager start` anywhere else. `--on` keeps refusing
-  `TARGET_UNAVAILABLE`, exit 2, when its manager does not answer, and `--slots` refuses `UNSUPPORTED`, exit 2, because user-auth and open spaces own no durable static slot rows. Your ledger row needs the `admin` scope to
-  reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary). A broker-refused
-  read keeps that refusal and adds the documented scope requirement and `cotal auth grants` remedy.
+  `TARGET_UNAVAILABLE`, exit 2, when its manager does not answer, and `--slots` refuses `UNSUPPORTED`, exit 2, because user-auth and open spaces own no durable static slot rows. Your own sign-in reaches `ps` whatever
+  your ledger row's scope. An agent's own credential needs `spawn` or `admin` for it. A broker-refused
+  read keeps that refusal and adds the documented requirement and `cotal auth grants` remedy.
   The broker does not identify whether the missing permission is for the route, command or target;
   the CLI does not substitute another caller or retry on a different route.
 
@@ -324,8 +364,8 @@ the same press, so a terminal with either protocol enabled detaches too. It does
 mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
 `127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
 drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
-they are cross-agent admin operations. On a user-auth mesh, your own agents (any agent under your
-owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
+they are cross-agent admin operations. On a user-auth mesh, your sign-in stops and attaches to your own agents (any agent under your
+owner) whatever your scope; another owner's agent needs `admin` on your ledger row
 ([identity & auth](identity-and-auth.mdx)). Launch detached agents with [`spawn --detach`](cli-agents.mdx#spawn).
 
 `pty` is the only runtime that streams a terminal. A seat started by the `tmux`, `cmux`, `orca` or
@@ -373,6 +413,8 @@ Pressing the detach key ends the view with `Detached`. A remote terminal-session
 process exit or manager shutdown, prints `Attach session ended`. Neither report claims the agent
 is still running or that its cleanup completed. Use `cotal ps` to check its current state.
 `--no-reconnect` restores the single-session behaviour.
+If the auth service refuses access to the selected manager before the first session, `attach`
+reports `PERMISSION_DENIED` and exits 2 without opening a terminal session.
 
 Each reconnect also hands the abandoned session back to the manager, over the first link that can
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
@@ -482,7 +524,8 @@ cotal input --name reviewer --text=--verbose          # dash-leading text: use -
 
 Enter is pressed by default, since a command typed but never submitted has not been delivered.
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
-send it later.
+send it later. If a manager selection refusal prints a retry command, it keeps `--no-enter` when
+you supplied it.
 
 At a Claude selection menu, including `AskUserQuestion`, text input is refused before any bytes
 are written. Pasting a number or an answer there can otherwise confirm the highlighted option
@@ -498,9 +541,14 @@ A write the manager cannot confirm, such as a terminal write that failed partway
 `Outcome unconfirmed` and is not typed again. Part of the text may already be at the prompt, so check
 the seat before you send it again.
 
+If `--space` names an unregistered space, `input --json` writes a `refused` envelope with
+`TARGET_NOT_FOUND` to stdout and exits 2. It sends no input.
+
 With no manager running, as after `cotal service stop stack-manager`, `input` refuses
-`TARGET_UNAVAILABLE` (exit 2) before it sends anything and names bare `cotal up`, as `ps` does.
-`stop` and `attach` find their seat the same way and refuse the same. A manager that stays
+`TARGET_UNAVAILABLE` (exit 2) before it sends anything. `stop` and `attach` find their seat the
+same way and refuse the same. Like `ps`, they name the local project where `cotal up` starts the
+manager. For a space that runs elsewhere, they tell you to start the manager where its stack runs.
+A manager that stays
 registered but does not answer, such as one that crashed, leaves `input` and `stop` waiting out its
 answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was sent, with
 `cotal status` as the next step.
@@ -508,13 +556,17 @@ answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was se
 
 ### Input authority
 
-**This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
-anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
-not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
-needs the `admin` scope. The reason is that a write into a terminal is control of whatever is
-running in it, and on a user-auth mesh the
-own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
-could otherwise type into a sibling it never started. Seat locality is still resolved for you.
+**This one is narrower than `stop` or `attach`.** Those two are granted to anything holding
+`spawn`, so an agent can stop and attach to seats under its own owner. `input` is granted to
+operator credentials and, on a user-auth mesh, to your own sign-in for every agent under your owner,
+whatever your scope. No agent credential holds it. The reason is that a write into a terminal is
+control of whatever is running in it, and the own-owner rule covers every seat under an owner, not
+only the ones a caller launched: a `spawn`-scoped agent could otherwise type into a sibling it never
+started. Your right comes from your ledger row being a person's, so you cannot hand it to an agent
+you spawn. It rides your sign-in, though: an agent whose shell runs as you, on a machine where you
+are signed in, can run `cotal input` under it.
+Typing into an agent under another owner needs the `admin` scope. Seat locality is still resolved
+for you.
 
 Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
 `herdr`) attach to a process they do not own, so they have no input stream for it and the command
@@ -542,7 +594,7 @@ persona names the manager, its host and the file it looked for, which is created
 missing connector is `DEPENDENCY_UNAVAILABLE`, as it is for a spawn in this terminal, and the
 refusal names the manager's instance and the host its status reports. An
 unpinned launch that no manager received is refused with `TARGET_UNAVAILABLE` and exit 2. With no
-manager running, the CLI says so before it sends and names bare `cotal up`. When registered managers do not answer the launch describe, the launch
+manager running, the CLI says so before it sends and names bare `cotal up`. If the local broker's recorded payload limit is below the manager's minimum, the CLI instead names the commands to stop the stack and restart it with a higher limit. The broker keeps running until you stop it. When registered managers do not answer the launch describe, the launch
 was never sent and is refused the same way. The reason follows `ps` when this folder records
 its manager stopped, starting or running but silent. When every live manager
 reports `classSpawn: false`, the refusal is `DEPENDENCY_UNAVAILABLE`: it names each manager and its
@@ -560,14 +612,23 @@ its message.
 
 `stop <agent>` requests graceful native despawn. `--force` requests the existing
 `graceful:false` contract; it does not grant authority or bypass incarnation checks.
+A retry for a malformed manager ID keeps `--force` if you requested it.
+Without an agent name, `stop` refuses before contacting the space. The suggested roster and stop
+commands keep the explicit `--space` and `--server`, and the stop retry keeps the output format.
+On an open or static space, if `--on` is not a valid manager instance ID, the retry asks for both
+the agent name and the manager instance ID from the roster.
 `stop --self` uses only a verified managed seat caller and its attributed manager. It accepts no
 other target or credential. Missing, mismatched and unsupported user-auth seat context refuses
 without switching to the operator. JSON and plain modes show the acknowledged native result,
 not a separate measurement of process exit. Stop and input do not seed connector installations.
 
+In a stopped local space's project folder, `cotal stop <agent> --json` writes one
+`TARGET_UNAVAILABLE` refusal to stdout and tells you to run `cotal up` there.
+
 Failed name resolution refuses before a stop, terminal input or first attach is submitted. The
 receipt retains the inspect error and responding manager. It records local pre-submission proof
-without inventing a native effect outcome.
+without inventing a native effect outcome. When a manager cannot resolve the agent named by `stop`,
+its suggested `ps` command keeps the original space and broker options and any explicit manager selection.
 
 When the manager refuses a stop, terminal input or first attach before anything ran, for example
 because the agent is not running or the caller may not control it, its reply carries
@@ -592,3 +653,5 @@ claim.
 Managed imperative spawn accepts `--restarts <n> --restart-window <ms>` as a pair, using the
 existing native `supervise` object. Both values must be positive safe integers. Direct foreground
 launch and the legacy manifest form reject these flags instead of ignoring them.
+Omit both flags to stay in this terminal. To keep restart supervision, use a managed launch with `-d`
+instead of `--foreground` and omit any options that only apply to direct launches.

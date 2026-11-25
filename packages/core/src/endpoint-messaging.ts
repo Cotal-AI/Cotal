@@ -1,8 +1,10 @@
 // The messaging region of CotalEndpoint, as an internal component. Moved verbatim from endpoint.ts;
 // the endpoint keeps the public methods and forwards to them. Not re-exported by the index.
+import type { ConnectionState } from "./endpoint-connection-state.js";
+import type { EndpointIdentity } from "./endpoint-identity.js";
 import { randomUUID } from "node:crypto";
-import { headers, PermissionViolationError, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
-import { JetStreamApiCodes, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { headers, PermissionViolationError, TimeoutError } from "@nats-io/transport-node";
+import { JetStreamApiCodes } from "@nats-io/jetstream";
 import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { assertIdToken } from "./endpoint-subjects.js";
 import { isCasLoss } from "./endpoint-records.js";
@@ -23,13 +25,6 @@ import type { CotalMessage, EndpointRef, HistoryMessage, Part } from "./types.js
 /** What the messaging component reads from its endpoint. State is read when it is used, never
  *  copied, and every method is looked up on the endpoint at call time. */
 export interface EndpointMessagingDeps {
-  nc: () => NatsConnection | undefined;
-  js: () => JetStreamClient | undefined;
-  jsm: () => JetStreamManager | undefined;
-  space: () => string;
-  owner: () => string;
-  actor: () => string;
-  channels: () => string[];
   notLiveMsg: () => string;
   ref: () => EndpointRef;
   publishMsg: (subject: string, msg: CotalMessage) => Promise<void>;
@@ -40,15 +35,8 @@ export interface EndpointMessagingDeps {
 /** The messaging verbs of one endpoint: multicast (plain and serialized), unicast, anycast, and the
  *  event-payload channel. Internal: `CotalEndpoint` keeps the public methods and forwards to it. */
 export class EndpointMessaging {
-  constructor(private readonly deps: EndpointMessagingDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly deps: EndpointMessagingDeps) {}
 
-  private get nc() { return this.deps.nc(); }
-  private get js() { return this.deps.js(); }
-  private get jsm() { return this.deps.jsm(); }
-  private get space() { return this.deps.space(); }
-  private get owner() { return this.deps.owner(); }
-  private get actor() { return this.deps.actor(); }
-  private get channels() { return this.deps.channels(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private ref() { return this.deps.ref(); }
   private publishMsg(subject: string, msg: CotalMessage) { return this.deps.publishMsg(subject, msg); }
@@ -65,7 +53,7 @@ export class EndpointMessaging {
     // itself be a wildcard subscription like `team.>`). On no channels there is NO default: refuse
     // rather than pick `general`, which is a destination the caller never chose and, for an agent
     // whose cred carries no channel row, one the broker would deny anyway.
-    const channel = opts?.channel ?? this.channels.find(isConcreteChannel);
+    const channel = opts?.channel ?? this.identity.channels.find(isConcreteChannel);
     if (channel === undefined)
       throw new Error(
         "no default channel: this endpoint is not on any concrete channel, so there is nothing to broadcast to - name a channel explicitly, or join one first",
@@ -75,7 +63,7 @@ export class EndpointMessaging {
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
-      space: this.space,
+      space: this.identity.space,
       from: this.ref(),
       channel,
       // Priority/wake hint, not routing — validation (against the roster) is the connector's
@@ -85,7 +73,7 @@ export class EndpointMessaging {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(chatSubject(this.space, this.owner, this.actor, channel), msg);
+    await this.publishMsg(chatSubject(this.identity.space, this.identity.owner, this.identity.actor, channel), msg);
     return msg;
   }
 
@@ -101,7 +89,7 @@ export class EndpointMessaging {
    *  the client's own headers, are charged against the same ceiling and the caller never sees them.
    *  Use {@link encodedSize}, which measures what will actually be sent. */
   get maxPayload(): number {
-    const max = this.nc?.info?.max_payload;
+    const max = this.conn.nc?.info?.max_payload;
     if (typeof max !== "number" || !Number.isFinite(max) || max <= 0)
       throw new Error(`${this.notLiveMsg()} - max_payload is only known while connected`);
     return max;
@@ -131,11 +119,11 @@ export class EndpointMessaging {
    *   one replica. Never degrades to a warning: the failure it prevents is silent.
    */
   async assertExpectationSemantics(): Promise<void> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    const stream = chatStream(this.space);
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
+    const stream = chatStream(this.identity.space);
     let replicas: number | undefined;
     try {
-      replicas = (await this.jsm.streams.info(stream)).config.num_replicas;
+      replicas = (await this.conn.jsm.streams.info(stream)).config.num_replicas;
     } catch (e) {
       throw new Error(
         `cannot verify expectation semantics: stream "${stream}" info unavailable (${(e as Error).message}). ` +
@@ -169,7 +157,7 @@ export class EndpointMessaging {
     return {
       id: opts.id,
       ts: Date.now(),
-      space: this.space,
+      space: this.identity.space,
       from: this.ref(),
       channel: opts.channel,
       mentions: normalizeMentions(opts.mentions),
@@ -272,7 +260,7 @@ export class EndpointMessaging {
     replyTo?: string;
     contextId?: string;
   }): Promise<{ message: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     if (!isConcreteChannel(opts.channel))
       throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
     // Reuse the existing id grammar rather than mint a second one: [A-Za-z0-9_-]{1,64} admits a
@@ -291,8 +279,8 @@ export class EndpointMessaging {
     assertPartsSerializable(message.parts);
     // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
     // the ack, and publishMsg deliberately does neither.
-    const ack = await this.js.publish(
-      chatSubject(this.space, this.owner, this.actor, opts.channel),
+    const ack = await this.conn.js.publish(
+      chatSubject(this.identity.space, this.identity.owner, this.identity.actor, opts.channel),
       JSON.stringify(message),
       { msgID: opts.id, expect: { lastSubjectSequence: expected, ...(opts.expectedLastMsgId !== undefined ? { lastMsgID: opts.expectedLastMsgId } : {}) } },
     );
@@ -301,22 +289,22 @@ export class EndpointMessaging {
 
   /** Publish a payload frame on this principal's forge-locked sibling event rail. */
   async publishEventPayload(opts: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     assertIdToken(opts.id, "publish id");
     if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
       throw new Error("payload expectation must be a non-negative safe integer");
     if (!opts.parts.length) throw new Error("payload frame requires parts");
-    const message = this.casEnvelope({ ...opts, channel: `events.${this.owner}.${this.actor}` });
+    const message = this.casEnvelope({ ...opts, channel: `events.${this.identity.owner}.${this.identity.actor}` });
     assertPartsSerializable(message.parts);
-    const ack = await this.js.publish(eventPayloadSubject(this.space, this.owner, this.actor), JSON.stringify(message),
+    const ack = await this.conn.js.publish(eventPayloadSubject(this.identity.space, this.identity.owner, this.identity.actor), JSON.stringify(message),
       { msgID: opts.id, expect: { lastSubjectSequence: opts.expectedLastSubjectSeq } });
     return { ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
   /** Read payload history through a single native-filtered consumer, never through CHAT. */
   async eventPayloadHistory(owner: string, actor: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
-    return (await this.streamHistory(eventPayloadStream(this.space),
-      [eventPayloadSubject(this.space, assertValidOwnerToken(owner), assertValidOwnerToken(actor))], opts?.limit ?? 100, undefined, opts?.signal))
+    return (await this.streamHistory(eventPayloadStream(this.identity.space),
+      [eventPayloadSubject(this.identity.space, assertValidOwnerToken(owner), assertValidOwnerToken(actor))], opts?.limit ?? 100, undefined, opts?.signal))
       .map(row => row.msg);
   }
 
@@ -324,9 +312,9 @@ export class EndpointMessaging {
    *  the stream or its info-read permission returns null and emits a warning. Other authorization,
    *  transport and config errors throw. */
   async eventPayloadLimit(): Promise<number | null> {
-    if (!this.jsm) throw new Error(this.notLiveMsg());
-    const stream = eventPayloadStream(this.space);
-    const info = await this.jsm.streams.info(stream).catch((err: unknown) => {
+    if (!this.conn.jsm) throw new Error(this.notLiveMsg());
+    const stream = eventPayloadStream(this.identity.space);
+    const info = await this.conn.jsm.streams.info(stream).catch((err: unknown) => {
       const denial = err instanceof PermissionViolationError ? err
         : (err as { cause?: unknown } | null)?.cause;
       const infoDenied = denial instanceof PermissionViolationError && denial.operation === "publish"
@@ -362,11 +350,11 @@ export class EndpointMessaging {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
-      space: this.space,
+      space: this.identity.space,
       from: this.ref(),
       to: instanceId,
       parts: opts?.parts ?? [{ kind: "text", text }],
@@ -380,9 +368,9 @@ export class EndpointMessaging {
     assertPartsSerializable(msg.parts);
     // Publish DIRECTLY rather than through publishMsg, the way multicastExpecting does: this path
     // must read the ack, and publishMsg deliberately discards it.
-    const subject = unicastSubject(this.space, recip.owner, recip.actor, this.owner, this.actor);
+    const subject = unicastSubject(this.identity.space, recip.owner, recip.actor, this.identity.owner, this.identity.actor);
     try {
-      const ack = await this.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
+      const ack = await this.conn.js.publish(subject, JSON.stringify(msg), { msgID: msg.id });
       return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
     } catch (error) {
       if (error instanceof TimeoutError)
@@ -411,13 +399,13 @@ export class EndpointMessaging {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
-    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!this.conn.js) throw new Error(this.notLiveMsg());
     // The subject builder admits `*` for allow rules; a publish needs one concrete role.
     assertValidRole(service);
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
-      space: this.space,
+      space: this.identity.space,
       from: this.ref(),
       toService: service,
       parts: opts?.parts ?? [{ kind: "text", text }],
@@ -427,8 +415,8 @@ export class EndpointMessaging {
     assertPartsSerializable(msg.parts);
     // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this path
     // must read the ack, and publishMsg deliberately discards it.
-    const ack = await this.js.publish(
-      anycastSubject(this.space, service, this.owner, this.actor),
+    const ack = await this.conn.js.publish(
+      anycastSubject(this.identity.space, service, this.identity.owner, this.identity.actor),
       JSON.stringify(msg),
       { msgID: msg.id },
     );
