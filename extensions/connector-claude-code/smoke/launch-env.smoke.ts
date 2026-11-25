@@ -18,10 +18,16 @@
  *
  * Run: pnpm smoke:claude-launch-env
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { discardLaunchArtifacts, LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { claudeConnector, CLAUDE_PROVIDER_KEYS } from "../src/extension.js";
+
+// Each launch makes its private directories under the temp dir, and nothing here starts a child to
+// remove them, so they go in a scratch temp dir this suite removes.
+const scratch = mkdtempSync(join(tmpdir(), "claude-launch-env-"));
+process.env.TMPDIR = scratch;
 
 let pass = 0;
 let fail = 0;
@@ -233,6 +239,61 @@ check(
   skippedArgs.filter((a) => a.includes("permission")),
 );
 
+// The opt-in launch fields. askPermissions launches in Claude's asking mode, managed or foreground, and
+// refuses an operator permission option; reasoningEvents turns on Claude's thinking summaries. Both
+// reach the launch material, and a launch without them carries neither.
+{
+  const launch = (extra: Record<string, unknown>) =>
+    claudeConnector.buildLaunch({ space: "smoke", name: "claude-8", events: false, cwd: managedCwd, ...extra } as never);
+  const refusalOf = (extra: Record<string, unknown>): string => {
+    try {
+      discardLaunchArtifacts(launch(extra).artifacts ?? []);
+      return "";
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  const material = (spec: { env?: Record<string, string> }) => readLaunchMaterial(spec.env![LAUNCH_MATERIAL_ENV]!);
+  const asking = launch({ askPermissions: true, reasoningEvents: true });
+  const plain = launch({});
+  const foreground = claudeConnector.buildLaunch({ space: "smoke", name: "claude-9", events: false, askPermissions: true } as never);
+  const settings = (args: string[]): string[] => args.flatMap((a, i) => (a === "--settings" ? [args[i + 1] ?? ""] : []));
+  check("askPermissions launches a managed seat in Claude's default mode, not bypass", JSON.stringify(permissionModes(asking.args)) === JSON.stringify(["default"]), permissionModes(asking.args));
+  check("askPermissions launches a foreground seat in the default mode too", JSON.stringify(permissionModes(foreground.args)) === JSON.stringify(["default"]), permissionModes(foreground.args));
+  for (const option of [{ "permission-mode": "plan" }, { "dangerously-skip-permissions": "" }]) {
+    const why = refusalOf({ askPermissions: true, launchOptions: option });
+    check(`askPermissions with the launch option ${Object.keys(option)[0]} refuses the launch`, /askPermissions/.test(why) && why.includes(Object.keys(option)[0]!), why);
+  }
+  check("reasoningEvents turns on Claude's thinking summaries", JSON.stringify(settings(asking.args)) === JSON.stringify(['{"showThinkingSummaries":true}']), settings(asking.args));
+  const why = refusalOf({ reasoningEvents: true, launchOptions: { settings: "{}" } });
+  check("reasoningEvents with a settings launch option refuses the launch", /reasoningEvents/.test(why), why);
+  check("both fields reach the launch material", material(asking).askPermissions === true && material(asking).reasoningEvents === true, material(asking));
+  check(
+    "a launch without the fields keeps bypass, passes no --settings and carries neither field",
+    JSON.stringify(permissionModes(plain.args)) === JSON.stringify(["bypassPermissions"]) && settings(plain.args).length === 0 &&
+      material(plain).askPermissions === undefined && material(plain).reasoningEvents === undefined,
+    plain.args,
+  );
+  check(
+    "the connector declares askPermissions where it serves prompts, and reasoningEvents",
+    claudeConnector.supportsAskPermissions === (process.platform !== "win32") && claudeConnector.prompts === claudeConnector.supportsAskPermissions && claudeConnector.supportsReasoningEvents === true,
+  );
+  for (const spec of [asking, plain, foreground]) discardLaunchArtifacts(spec.artifacts ?? []);
+}
+
+// A turn's images go to a folder the launch makes for the seat: private, removed with the launch's
+// artifacts, and readable by the model without a permission prompt.
+if (process.platform !== "win32") {
+  const spec = claudeConnector.buildLaunch({ space: "smoke", name: "claude-10", events: false, cwd: managedCwd, askPermissions: true } as never);
+  const dir = spec.env!.COTAL_CLAUDE_TURN_IMAGES ?? "";
+  const rules = spec.args.flatMap((a, i) => (a === "--allowedTools" ? [spec.args[i + 1] ?? ""] : []));
+  check("the launch names a private image folder that is one of its artifacts",
+    dir !== "" && (statSync(dir).mode & 0o777) === 0o700 && (spec.artifacts ?? []).includes(dir), { dir, artifacts: spec.artifacts });
+  check("the model may read that folder without asking", rules.includes(`Read(/${dir}/**)`), rules);
+  discardLaunchArtifacts(spec.artifacts ?? []);
+  check("discarding the launch's artifacts removes the folder", !existsSync(dir));
+}
+
 // A step after the mint that throws (here the carried transcript is gone when it is placed) leaves
 // none of the launch's artifacts behind: not the control socket's directory, not the launch material.
 // The stand-in `claude` only reports a version, so this runs where a shell script can.
@@ -269,6 +330,7 @@ if (process.platform !== "win32") {
 }
 
 rmSync(managedRoot, { recursive: true, force: true });
+rmSync(scratch, { recursive: true, force: true });
 if (fail) {
   console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
   process.exit(1);

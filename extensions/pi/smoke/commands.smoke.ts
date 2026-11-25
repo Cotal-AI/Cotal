@@ -1,18 +1,19 @@
 /**
  * A pi seat lists and runs pi's own commands, prompt templates and skills for its `agent` endpoint,
- * and stops pi's turn on `interrupt`.
+ * takes its owner's turns, reports its usage, and stops pi's turn on `interrupt`.
  *
  * The shipped dispatcher and PiDriver run over a fake pi host that behaves as pi 1.5.2 was measured
  * to: `sendUserMessage` with `expandPromptTemplates` runs an extension command's handler before it
- * returns, and starts a turn for a template or a skill. The fake mesh hands queued commands to the
- * dispatcher as the shared command lane does. No broker is started.
+ * returns, and starts a turn for a template or a skill. Without the option it starts a turn on the
+ * message as given. The fake mesh hands queued commands and turns to the dispatcher as the shared
+ * command lane does. No broker is started.
  *
  * Run: pnpm smoke:pi-commands
  */
 import type { CommandDispatch, MeshAgent } from "@cotal-ai/connector-core";
-import { CommandRefused, type AgentCommand } from "@cotal-ai/connector-core";
+import { CommandRefused, type AgentCommand, type AgentTurn } from "@cotal-ai/connector-core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiCommandInfo } from "../src/commands.js";
+import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiCommandInfo, type PiSessionView } from "../src/commands.js";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "../src/driver.js";
 
 let passed = 0;
@@ -36,8 +37,11 @@ const PI_COMMANDS: PiCommandInfo[] = [
   { name: "skill:demo", source: "skill", description: "A demo skill" },
 ];
 
+type Queued = AgentCommand | { turn: AgentTurn };
+const label = (job: Queued): string => ("turn" in job ? "turn" : job.name);
+
 /** One seat: the shipped driver and dispatcher, a fake pi session and a fake mesh queue. */
-function seat(commands: PiCommandInfo[] = PI_COMMANDS) {
+function seat(commands: PiCommandInfo[] = PI_COMMANDS, runsCommands = true) {
   const s = {
     turnOpen: false,
     startsTurns: true,
@@ -46,8 +50,14 @@ function seat(commands: PiCommandInfo[] = PI_COMMANDS) {
     sent: [] as string[],
     handlers: [] as string[],
     batches: [] as string[],
+    userMessages: [] as unknown[],
     aborts: 0,
-    queue: [] as AgentCommand[],
+    queue: [] as Queued[],
+    sessionOpen: true,
+    model: { provider: "prov", id: "vision", input: ["text", "image"] } as PiSessionView["model"],
+    contextUsage: { tokens: 51_200, contextWindow: 200_000 } as { tokens: number | null; contextWindow: number } | undefined,
+    entries: [] as unknown[],
+    oauth: false,
     states: [] as string[],
     pendingTurn: undefined as { goalIds: string[]; text: string } | undefined,
     signal: new AbortController(),
@@ -73,7 +83,12 @@ function seat(commands: PiCommandInfo[] = PI_COMMANDS) {
   const pi: PiCommandHost = {
     getCommands: () => commands,
     sendUserMessage(text, options) {
-      if (options.expandPromptTemplates !== true) throw new Error("sent without expandPromptTemplates");
+      if (options?.expandPromptTemplates !== true) {
+        s.userMessages.push(text);
+        if (s.startsTurns) queueMicrotask(startTurn);
+        return;
+      }
+      if (typeof text !== "string") throw new Error("a command was sent as parts");
       s.sent.push(text);
       const name = text.slice(1).split(" ")[0];
       if (commands.some((c) => c.source === "extension" && c.name === name)) return void s.handlers.push(text);
@@ -93,20 +108,27 @@ function seat(commands: PiCommandInfo[] = PI_COMMANDS) {
       });
     },
   };
-  const dispatcher = piCommandDispatcher(() => pi, (): PiDriver => driver);
+  const session: PiSessionView = {
+    get model() { return s.model; },
+    modelRegistry: { isUsingOAuth: () => s.oauth },
+    sessionManager: { getEntries: () => s.entries },
+    getContextUsage: () => s.contextUsage,
+  };
+  const dispatcher = piCommandDispatcher({ host: () => pi, turns: (): PiDriver => driver, session: () => (s.sessionOpen ? session : undefined), commands: runsCommands });
   const mesh = {
     id: "me",
     attention: "open",
     get queuedCommands() { return s.queue.length; },
     async dispatchNextCommand(): Promise<CommandDispatch> {
-      const command = s.queue.shift();
-      if (!command) return "empty";
+      const job = s.queue.shift();
+      if (!job) return "empty";
       try {
-        await dispatcher.dispatch(command);
-        s.states.push(`${command.name}:started`);
+        if ("turn" in job) await dispatcher.turn!(job.turn);
+        else await dispatcher.dispatch(job);
+        s.states.push(`${label(job)}:started`);
         return "dispatched";
       } catch (e) {
-        s.states.push(`${command.name}:${e instanceof CommandRefused ? `refused/${e.code}` : `unknown/${(e as Error).message}`}`);
+        s.states.push(`${label(job)}:${e instanceof CommandRefused ? `refused/${e.code}` : `unknown/${(e as Error).message}`}`);
         return "failed";
       }
     },
@@ -130,7 +152,11 @@ function seat(commands: PiCommandInfo[] = PI_COMMANDS) {
     s.queue.push({ target, name, args });
     driver.onCommand();
   };
-  return { s, ctx, dispatcher, driver, queue, startTurn, endTurn };
+  const queueTurn = (text: string, images: AgentTurn["images"] = []): void => {
+    s.queue.push({ turn: { text, images } });
+    driver.onCommand();
+  };
+  return { s, ctx, dispatcher, driver, queue, queueTurn, startTurn, endTurn };
 }
 
 console.log("1. only a pi that runs commands an extension sends gets a dispatcher");
@@ -284,6 +310,104 @@ console.log("\n8. a held delivery lets a command start the next turn");
   endTurn();
   await until(() => s.states.length === 1);
   check("the command starts once that turn ended", s.sent[0] === "/greet not-yet" && s.states[0] === "greet:started", { sent: s.sent, states: s.states });
+}
+
+const PNG = { mimeType: "image/png" as const, data: "iVBORw0KGgo=" };
+const JPEG = { mimeType: "image/jpeg" as const, data: "/9j/4AAQ" };
+
+console.log("\n9. an owner's turn reaches pi as the user's own message");
+{
+  const { s, dispatcher, queueTurn } = seat();
+  check("the dispatcher takes turns with images", typeof dispatcher.turn === "function" && dispatcher.images === true);
+  queueTurn("/greet is plain text here");
+  await until(() => s.states.length === 1);
+  check("the text is sent as typed, without pi's command path, and is started once its turn starts",
+    JSON.stringify(s.userMessages) === JSON.stringify(["/greet is plain text here"]) && s.sent.length === 0 && s.states[0] === "turn:started" && s.turnOpen,
+    { userMessages: s.userMessages, sent: s.sent, states: s.states });
+}
+{
+  const { s, queueTurn } = seat();
+  queueTurn("what is in these?", [PNG, JPEG]);
+  await until(() => s.states.length === 1);
+  check("text and images go as one message: the text, then each image", JSON.stringify(s.userMessages[0]) === JSON.stringify([
+    { type: "text", text: "what is in these?" },
+    { type: "image", data: PNG.data, mimeType: "image/png" },
+    { type: "image", data: JPEG.data, mimeType: "image/jpeg" },
+  ]), s.userMessages);
+}
+{
+  const { s, queueTurn } = seat();
+  queueTurn("", [PNG]);
+  await until(() => s.states.length === 1);
+  check("an image with no text carries no empty text part", JSON.stringify(s.userMessages[0]) === JSON.stringify([{ type: "image", data: PNG.data, mimeType: "image/png" }]), s.userMessages);
+}
+{
+  const { s, queueTurn } = seat();
+  s.model = { provider: "prov", id: "text-only", input: ["text"] };
+  queueTurn("look", [PNG]);
+  queueTurn("no image this time");
+  await until(() => s.states.length === 2);
+  check("images for a model that takes none are refused before pi sees them, and the queue moves on",
+    s.states[0] === "turn:refused/failed-precondition" && s.states[1] === "turn:started" && JSON.stringify(s.userMessages) === JSON.stringify(["no image this time"]),
+    { states: s.states, userMessages: s.userMessages });
+}
+{
+  const { s, queueTurn } = seat();
+  s.model = undefined;
+  queueTurn("hello");
+  await until(() => s.states.length === 1);
+  check("with no model selected the turn is refused and pi is sent nothing", s.states[0] === "turn:refused/failed-precondition" && s.userMessages.length === 0, s.states);
+}
+{
+  const { s, queueTurn, startTurn, endTurn } = seat();
+  startTurn();
+  queueTurn("after your turn");
+  await sleep(50);
+  check("a turn waits while pi runs one", s.userMessages.length === 0 && s.states.length === 0, s.userMessages);
+  endTurn();
+  await until(() => s.states.length === 1);
+  check("it starts once pi is idle", s.states[0] === "turn:started" && s.userMessages[0] === "after your turn", s.states);
+}
+{
+  const { s, queueTurn } = seat();
+  s.startsTurns = false;
+  queueTurn("into the void");
+  await until(() => s.states.length === 1, 8_000);
+  check("a turn pi never starts is unknown after the start bound", s.states[0]?.startsWith("turn:unknown/pi started no turn within 5 s"), s.states);
+}
+{
+  const { s, dispatcher, queueTurn } = seat(PI_COMMANDS, false);
+  check("a pi that runs no commands lists no command kinds", dispatcher.targets.size === 0);
+  queueTurn("older pi");
+  await until(() => s.states.length === 1);
+  check("and still takes the owner's turn", s.states[0] === "turn:started" && s.userMessages[0] === "older pi", s.states);
+}
+
+console.log("\n10. usage reports pi's context window and the session's cost");
+{
+  const { s, dispatcher } = seat();
+  s.entries = [
+    { type: "session" },
+    { type: "message", message: { role: "user", content: "hi" } },
+    { type: "message", message: { role: "assistant", usage: { cost: { total: 0.0125 } } } },
+    { type: "message", message: { role: "toolResult", usage: { cost: { total: 0.0005 } } } },
+    { type: "compaction", usage: { cost: { total: 0.002 } } },
+    { type: "usage", usage: { cost: { total: 0.001 } } },
+    { type: "custom", usage: { cost: { total: 9 } } },
+  ];
+  const got = await dispatcher.usage!();
+  check("context is pi's tokens and window, cost the sum of pi's recorded usage in USD",
+    got.context?.used === 51_200 && got.context.size === 200_000 && got.cost?.currency === "USD" && Math.abs(got.cost.amount - 0.016) < 1e-9, got);
+  s.contextUsage = { tokens: null, contextWindow: 200_000 };
+  s.entries = [];
+  check("unknown tokens and a zero cost are left out", JSON.stringify(await dispatcher.usage!()) === "{}");
+  s.entries = [{ type: "message", message: { role: "assistant", usage: { cost: { total: 1 } } } }];
+  s.oauth = true;
+  check("a subscription sign-in reports no cost", (await dispatcher.usage!()).cost === undefined);
+  s.sessionOpen = false;
+  let message = "";
+  try { await dispatcher.usage!(); } catch (e) { message = (e as Error).message; }
+  check("with no session open it fails", message === "pi has no session open", message);
 }
 
 console.log(`\n${failed === 0 ? "PI-COMMANDS SMOKE OK" : "PI-COMMANDS SMOKE FAILED"}  (${passed} passed, ${failed} failed)`);

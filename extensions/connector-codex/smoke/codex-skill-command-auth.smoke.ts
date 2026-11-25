@@ -12,7 +12,11 @@
  * `not-found` and starts no turn. A skill queued behind a turn that never ends stays queued until the
  * owner's `interrupt`, which answers `interrupted`; the stopped turn frees the thread and the skill
  * runs. With no turn running, `interrupt` answers `idle`, and so does one Codex refuses because the
- * turn ended while it was on its way (fake only).
+ * turn ended while it was on its way (fake only). The owner's `turn` runs their words, and a PNG
+ * they attach, as a turn of its own on the same thread: `turn/start` carries the text and the image as
+ * a data URL, and live Codex puts both into the model request. `usage` answers no context until
+ * Codex reports token usage, then the last call's total tokens in the model's window. Presence says
+ * the agent serves interrupt, turn, images and usage.
  *
  * Run: pnpm smoke:codex-skill-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -89,6 +93,8 @@ for (const name of ["smoke-echo", "smoke-off"]) {
   writeFileSync(join(work, ".agents/skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name === "smoke-echo" ? "Reply with the word PINEAPPLE." : "A skill the user turned off."}\n---\n${SKILL_BODY}\n`);
 }
 const ECHO_PATH = join(work, ".agents/skills/smoke-echo/SKILL.md");
+/** A 1×1 red PNG. */
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
 // What the harness was asked. Fake: the app-server journals each `turn/start` input. Live: the mock
 // Responses endpoint records the last user text of each model request.
@@ -104,8 +110,8 @@ const mock = createServer((req, res) => {
   req.on("data", (d) => (raw += d));
   req.on("end", () => {
     if (!req.url?.endsWith("/responses")) return void res.writeHead(404).end();
-    const input = (JSON.parse(raw) as { input?: { type?: string; role?: string; content?: { text?: string }[] }[] }).input ?? [];
-    const users = input.filter((i) => i.type === "message" && i.role === "user").map((i) => (i.content ?? []).map((c) => c.text ?? "").join(""));
+    const input = (JSON.parse(raw) as { input?: { type?: string; role?: string; content?: { text?: string; image_url?: string }[] }[] }).input ?? [];
+    const users = input.filter((i) => i.type === "message" && i.role === "user").map((i) => (i.content ?? []).map((c) => c.text ?? (c.image_url ? `[image ${c.image_url.slice(0, 22)}]` : "")).join(""));
     // Each request carries the thread's whole history, so a turn's own input is the user messages
     // added since the previous request.
     const own = users.slice(usersSeen).join("\n");
@@ -221,6 +227,11 @@ try {
   const presence = webEp.getRoster().find((p) => p.card.id === `${A}.cody`);
   if (presence?.runtime) cody = { owner: A, actor: "cody", uid: W.cody.uid, runtimeId: presence.runtime.id };
   check(`the host came online${live ? " on the installed codex" : ""}`, served && cody !== undefined, served ? undefined : hostOut.join("").slice(-3000));
+  check("presence says the agent serves interrupt, turn, images and usage",
+    same(presence?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true }), presence?.agentEndpoint);
+  const fresh = await call("usage");
+  check("before Codex reports token usage, usage answers supported with no context",
+    fresh.ok && fresh.value.ok && same(fresh.value.data, { supported: true }), fresh.ok ? fresh.value : verdict(fresh));
 
   const listed = await call("commands");
   const catalog = listed.ok && listed.value.ok ? (listed.value.data as { supported: boolean; commands?: CommandEntry[] }) : undefined;
@@ -254,21 +265,41 @@ try {
   await sleep(500);
   check("none of them started a turn", turnCount() === before, turnCount() - before);
 
+  const said = await call("turn", { text: "OWNER-WORDS" });
+  const saidId = said.ok && said.value.ok ? (said.value.data as { id?: string }).id : undefined;
+  check("the owner's turn is accepted and reads started", verdict(said) === "ok" && (await settle(saidId)) === "started", verdict(said));
+  await until(() => turnCount() >= before + 1);
+  check("it runs their words as typed", live ? modelTurns.at(-1)?.includes("OWNER-WORDS") === true
+    : same(fakeTurns().at(-1)?.input, [{ type: "text", text: "OWNER-WORDS", text_elements: [] }]), live ? modelTurns.at(-1) : fakeTurns().at(-1));
+  await until(() => webEp.getRoster().some((p) => p.card.id === `${A}.cody` && p.status === "idle"));
+  const shown = await call("turn", { text: "LOOK", images: [{ mimeType: "image/png", data: PNG }] });
+  const shownId = shown.ok && shown.value.ok ? (shown.value.data as { id?: string }).id : undefined;
+  check("a turn with a PNG is accepted and reads started", verdict(shown) === "ok" && (await settle(shownId)) === "started", verdict(shown));
+  await until(() => turnCount() >= before + 2);
+  check("the image goes with the text as a data URL", live ? ["LOOK", "[image data:image/png;base64,"].every((part) => modelTurns.at(-1)?.includes(part))
+    : same(fakeTurns().at(-1)?.input, [{ type: "text", text: "LOOK", text_elements: [] }, { type: "image", url: `data:image/png;base64,${PNG}` }]), live ? modelTurns.at(-1) : fakeTurns().at(-1));
+  await until(() => webEp.getRoster().some((p) => p.card.id === `${A}.cody` && p.status === "idle"));
+  const used = await call("usage");
+  const context = used.ok && used.value.ok ? (used.value.data as { context?: { used: number; size: number } }).context : undefined;
+  check("after a turn, usage answers the last call's total tokens in the model's window",
+    live ? (context?.used ?? 0) > 0 && (context?.size ?? 0) > 0 : same(context, { used: 1000 + before + 2, size: 258400 }), used.ok ? used.value : verdict(used));
+  const ownerTurns = 2;
+
   const idle = await call("interrupt");
   check("with no turn running, interrupt answers idle", idle.ok && idle.value.ok && same(idle.value.data, { state: "idle" }), idle.ok ? idle.value : verdict(idle));
 
   await webEp.unicast(`${A}.cody`, "HOLD-OPEN until interrupted");
-  const holding = await until(() => turnCount() > before);
+  const holding = await until(() => turnCount() > before + ownerTurns);
   const stuck = await queue({ target: "skill", name: "smoke-echo" });
   await sleep(3000);
   const behind = await readState(stuck.id);
   check("a skill sent while a turn that never ends runs still reads queued 3 s later, and starts no turn",
-    holding && stuck.verdict === "ok" && behind === "queued" && turnCount() === before + 1, [holding, stuck.verdict, behind, turnCount() - before]);
+    holding && stuck.verdict === "ok" && behind === "queued" && turnCount() === before + ownerTurns + 1, [holding, stuck.verdict, behind, turnCount() - before]);
   const stop = await call("interrupt");
   const freed = await settle(stuck.id);
   check("the owner's interrupt answers interrupted, and the queued skill then runs: it reads started",
     stop.ok && stop.value.ok && same(stop.value.data, { state: "interrupted" }) && freed === "started", [verdict(stop), stop.ok && stop.value.ok ? stop.value.data : undefined, freed]);
-  await until(() => turnCount() >= before + 2);
+  await until(() => turnCount() >= before + ownerTurns + 2);
   const last = live ? modelTurns.at(-1) ?? "" : JSON.stringify(fakeTurns().at(-1)?.input ?? []);
   check("that turn is the skill", live ? last.includes(SKILL_BODY) && !last.includes("HOLD-OPEN") : last.includes('"type":"skill"'), last);
 

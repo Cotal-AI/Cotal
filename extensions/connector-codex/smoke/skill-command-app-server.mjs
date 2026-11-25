@@ -5,7 +5,8 @@
 // -32600 "no active turn to interrupt" when none runs.
 // A turn whose text contains HOLD-OPEN stays open until interrupted. One whose text contains
 // RACE-END also stays open, and an interrupt finds it already ending: the interrupt is refused, then
-// the turn completes. Every other turn completes at once.
+// the turn completes. Every other turn completes at once, after `thread/tokenUsage/updated` reports
+// 1000 + the turn's number as the last call's total tokens, in a 258400-token window.
 import { appendFileSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
@@ -50,6 +51,11 @@ function endTurn(turnId, status) {
   notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status } });
 }
 
+function reportUsage(turnId) {
+  const tokens = (total) => ({ totalTokens: total, inputTokens: total - 10, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0 });
+  notify("thread/tokenUsage/updated", { threadId: THREAD, turnId, tokenUsage: { total: tokens(5000), last: tokens(1000 + turnSeq), modelContextWindow: 258400 } });
+}
+
 function onMessage(msg) {
   journal({ ev: "recv", method: msg.method, id: msg.id, ...(msg.method === "turn/start" ? { input: msg.params?.input } : {}) });
   if (msg.method === "initialize") {
@@ -65,7 +71,10 @@ function onMessage(msg) {
     const text = (msg.params?.input ?? []).map((i) => i?.text ?? "").join("\n");
     if (text.includes("HOLD-OPEN")) held = turnId;
     else if (text.includes("RACE-END")) racing = turnId;
-    else endTurn(turnId, "completed");
+    else {
+      reportUsage(turnId);
+      endTurn(turnId, "completed");
+    }
   } else if (msg.method === "turn/interrupt") {
     if (racing !== undefined && msg.params?.turnId === racing) {
       write({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: "no active turn to interrupt" } });

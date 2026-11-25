@@ -13,8 +13,8 @@
  * 3. Unknown field nested inside an allowed event (`events[0].leaked: "<bytes>"`)
  *
  * THE TOOL RESULT MARKER'S VALUE IS CLOSED TOO. `cotal.toolResult` stands in for the result the
- * fence drops, so its `value` holds `toolCallId` and `isError` and nothing else. A marker carrying
- * content, or missing a key, or carrying a non-boolean `isError`, is `extra-property`.
+ * fence drops, so its `value` holds `toolCallId`, at most `isError`, and nothing else. A marker
+ * carrying content, or missing `toolCallId`, or carrying a non-boolean `isError`, is `extra-property`.
  *
  * POSITIVE CONTROLS:
  * - A well-formed frame with only known keys passes.
@@ -282,7 +282,7 @@ try {
   }
 
   // ── THE TOOL RESULT MARKER ─────────────────────────────────────────────────────────────────
-  // The marker's value is checked as a closed shape: a call id and a boolean, no more.
+  // The marker's value is checked as a closed shape: a call id and at most a boolean, no more.
   const markerFrame = (value: unknown) => ({
     kind: "ag-ui.frame" as const,
     protocol: "ag-ui/0.0.57",
@@ -314,8 +314,8 @@ try {
     const frame = markerFrame({ toolCallId: "tc1" });
     const verdict = frozenBodyEgressVerdict([frame]);
     const path = extraPropertyPath(frame as Record<string, unknown>);
-    c("closed-schema:marker a marker with no isError is refused at events[0].value",
-      verdict === "extra-property" && path === "events[0].value", { verdict, path });
+    c("closed-schema:marker a marker with no isError, for a harness that did not say, is clean",
+      verdict === "clean" && path === undefined, { verdict, path });
   }
 
   {

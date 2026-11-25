@@ -223,7 +223,7 @@ cotal spawn --harness claude --model sonnet
 `--model` overrides the persona's model pin.
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
-A logged-out `claude` reports `claude is not logged in; run claude to log in`.
+With a logged-out `claude`, the read fails with `claude is not logged in; run claude to log in`.
 An alias such as `opus` is listed with the model it currently resolves to, for example `Opus 5.5 (claude-opus-5-5)`.
 The Claude connector rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
 Choose the corresponding connector for another provider's model.
@@ -259,6 +259,7 @@ cotal spawn --harness claude --opt permission-mode=default
 ```
 
 For an unattended agent, arrange a way to answer prompts before using that mode.
+A launch with the [`askPermissions` field](connectors.mdx#opt-in-launch-fields) starts in that mode without `--opt`.
 On a signed-in space, the agent's owner can answer each tool permission from another session while Claude's dialog stays open.
 See [Tool permissions](claude-connector-reference.mdx#tool-permissions).
 Native `--opt` values carry host-launch authority. See [Launch agents](launch-agents.mdx#set-launch-options).

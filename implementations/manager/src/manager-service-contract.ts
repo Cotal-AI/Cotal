@@ -192,7 +192,7 @@ const STATUS_OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["agent", "state", "binaries", "eventPlane", "prompts"],
+        required: ["agent", "state", "binaries", "eventPlane", "prompts", "askPermissions", "reasoningEvents"],
         properties: {
           agent: { type: "string" },
           state: { enum: ["available", "unavailable"] },
@@ -204,6 +204,10 @@ const STATUS_OUTPUT_SCHEMA = {
            *  the agent endpoint: the connector declares it and the mesh is user-auth. A launch
            *  capability, not a promise that a given session's endpoint opens. */
           prompts: { type: "boolean" },
+          /** Whether this connector takes `askPermissions` and `reasoningEvents` on `spawn`. A
+           *  launch that asks for one the row reports false is refused before provisioning. */
+          askPermissions: { type: "boolean" },
+          reasoningEvents: { type: "boolean" },
           reason: { type: "string" },
         },
       },
@@ -341,6 +345,8 @@ export interface ManagerConnectorStatus {
   binaries: Record<string, string>;
   eventPlane: boolean;
   prompts: boolean;
+  askPermissions: boolean;
+  reasoningEvents: boolean;
   reason?: string;
 }
 
@@ -1348,11 +1354,15 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  55 = `spawn` takes `autoName`, so the seat labels itself from its first message. The input schema
  *  is closed, so a revision-54 contract rejects this field.
  *
- *  56 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
- *  against the connector's model catalog. The input schema is closed, so a revision-55 contract
+ *  56 = `spawn` takes the opt-in `askPermissions` and `reasoningEvents`, and every `status.connectors`
+ *  row requires both as booleans, the connector's declarations. The spawn input and status output
+ *  schemas are closed, so a revision-55 contract rejects either.
+ *
+ *  57 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
+ *  against the connector's model catalog. The input schema is closed, so a revision-56 contract
  *  rejects the field. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 56, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 57, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

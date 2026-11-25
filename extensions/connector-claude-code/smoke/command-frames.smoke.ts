@@ -77,6 +77,10 @@ accepts("an interrupt answer", { id: ID, op: "interrupt", outcome: "interrupted"
 accepts("an interrupt answer with a reason", { id: ID, op: "interrupt", outcome: "interrupted", reason: "a tool is still running" });
 accepts("an idle interrupt answer", { id: ID, op: "interrupt", outcome: "idle" });
 accepts("an error answer", { id: ID, op: "error", reason: "the mod could not list commands" });
+accepts("a prompt submitted answer", { id: ID, op: "prompt", outcome: "submitted" });
+accepts("a prompt refused answer", { id: ID, op: "prompt", outcome: "refused", reason: "a Stop stands" });
+accepts("a usage answer with tokens and dollars", { id: ID, op: "usage", window: 200000, tokens: 1234, usd: 0.5 });
+accepts("a usage answer with the window alone", { id: ID, op: "usage", window: 200000 });
 accepts("a line of exactly 1 MiB", listOfBytes(MAX_LINE_BYTES));
 
 console.log("refused frames");
@@ -118,7 +122,14 @@ refuses("a reason of 2001 characters", { ...refusedRun, reason: "r".repeat(2001)
 refuses("an interrupt answer with a run outcome", { id: ID, op: "interrupt", outcome: "started" });
 refuses("an interrupt answer with an empty reason", { id: ID, op: "interrupt", outcome: "interrupted", reason: "" });
 refuses("an error answer with no reason", { id: ID, op: "error" });
+refuses("a prompt submitted answer with a reason", { id: ID, op: "prompt", outcome: "submitted", reason: "extra" });
+refuses("a prompt refused answer with no reason", { id: ID, op: "prompt", outcome: "refused" });
+refuses("a prompt answer with a run outcome", { id: ID, op: "prompt", outcome: "started" });
+refuses("a usage answer with no window", { id: ID, op: "usage", tokens: 1 });
+refuses("a usage answer whose tokens are not whole", { id: ID, op: "usage", window: 200000, tokens: 1.5 });
+refuses("a usage answer with negative dollars", { id: ID, op: "usage", window: 200000, usd: -1 });
+refuses("a usage answer with an unknown field", { id: ID, op: "usage", window: 200000, percent: 3 });
 
-check("ran 19 accepted and 38 refused frames", accepted === 19 && refused === 38, { accepted, refused });
+check("ran 23 accepted and 45 refused frames", accepted === 23 && refused === 45, { accepted, refused });
 console.log(`command-frames.smoke: ${accepted} accepted, ${refused} refused`);
 finish();

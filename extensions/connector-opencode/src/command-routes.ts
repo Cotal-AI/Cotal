@@ -1,6 +1,6 @@
 /**
- * How OpenCode 2.x lists and runs commands and skills at its server: what a seat's plugin (plugin2.ts)
- * lists and runs, and what the connector lists before launch (command-catalog.ts).
+ * How OpenCode 2.x lists and runs commands and skills at its server: what a seat's dispatcher
+ * (commands2.ts) lists and runs, and what the connector lists before launch (command-catalog.ts).
  */
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
 

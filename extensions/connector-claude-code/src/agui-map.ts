@@ -87,6 +87,7 @@
  */
 import {
   type AguiEvent,
+  type Merged,
   type RecordMapper,
   runStarted,
   runFinished,
@@ -102,6 +103,7 @@ import {
   reasoningMessageContent,
   reasoningMessageEnd,
 } from "@cotal-ai/connector-core";
+import { hiddenText, mapStreamLine, savedText, type ClaudeStreamState } from "./claude-stream.js";
 
 /**
  * One JSONL entry, typed to what the mapping actually reads and no further.
@@ -124,6 +126,8 @@ export interface ClaudeEntry {
    * against the values `ABSENT_ORIGIN_RULE` enumerates.
    */
   promptSource?: string;
+  /** The id of the prompt a `user` entry belongs to, on the prompt and on its tool results alike. */
+  promptId?: string;
   /** The harness's own compaction record. A string-content `user` entry that is not a turn. */
   isCompactSummary?: boolean;
   isVisibleInTranscriptOnly?: boolean;
@@ -231,8 +235,10 @@ const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
 const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | "sdk" | "auto-continuation" | null => {
   const kind = entry.origin?.kind;
   // Native wake and inline prompts use the plugin's own attribution, not a human's.
-  // Match the same origin as native-wake.js so their bodies stay off the event channel.
-  if (kind === "plugin" && entry.origin?.name === "cotal" && !entry.origin.asUser) return "channel";
+  // Match the same origin as native-wake.js so their bodies stay off the event channel. The plugin
+  // submits as the user only an owner's `turn` (hooks/commands.js): the owner's own words, recorded
+  // on 2.1.330 as origin {kind: "plugin", name: "cotal", asUser: true} with promptSource "system".
+  if (kind === "plugin" && entry.origin?.name === "cotal") return entry.origin.asUser ? "human" : "channel";
   if (kind === undefined) {
     // ABSENT origin. Not an error — absence is a known shape — and not a blanket refusal either,
     // because a headless prompt has no `origin` and IS a turn.
@@ -277,6 +283,25 @@ export function userInterrupt(entry: ClaudeEntry): string | undefined {
   return text !== undefined && USER_INTERRUPT_TEXTS.has(text) ? text : undefined;
 }
 
+// The texts Claude Code writes for a reply it has none of: when it closes a turn itself, as on a
+// resume after the reply was cut off, and for a message with no content.
+const NO_RESPONSE = "No response requested.";
+const NO_CONTENT = "(no content)";
+// What Claude Code drops from a reply's text before it shows it.
+const DROPPED_BLOCKS = /<(commit_analysis|context|function_analysis|pr_analysis)>.*?<\/\1>\n?/gs;
+const MEMORY_TAGS = /<\/?(?:cc-memory|cc_memory|ccmemory|CC-MEMORY|CC_MEMORY|CCMEMORY)(?=[\s/>])[^>]{0,1024}>/g;
+
+/**
+ * Whether Claude Code's terminal shows nothing for an assistant text block, whoever wrote it. Its
+ * renderer (2.1.331) returns no row for {@link NO_RESPONSE}, for {@link NO_CONTENT}, and for a text
+ * that is blank once it drops {@link DROPPED_BLOCKS} and {@link MEMORY_TAGS}. Every other text shows,
+ * an API error included.
+ */
+function hiddenByClaude(text: string): boolean {
+  if (text === NO_RESPONSE || text.trim() === NO_CONTENT) return true;
+  return (text.includes("<") ? text.replace(DROPPED_BLOCKS, "").replace(MEMORY_TAGS, "") : text).trim() === "";
+}
+
 /** A content block. Same reasoning as above: shape-tolerant, read narrowly. */
 export interface ClaudeBlock {
   type?: string;
@@ -315,11 +340,16 @@ interface ClaudeMapperOptions {
    * rather than being given a real-looking number.
    */
   now?: () => number;
+  /** Streamed reply text: the numbering that ties a saved text block to what streamed under it, and
+   *  the parts open on the wire. Without it, every text block maps whole from its saved entry. */
+  stream?: ClaudeStreamState;
 }
 
 /** What {@link createClaudeMapper} returns: the mapper plus the report of a run the emitter closed. */
 export interface ClaudeMapper {
   map: RecordMapper<ClaudeEntry>;
+  /** {@link map} over the transcript merged with the delta journal (`claude-stream.ts`). */
+  mapMerged: RecordMapper<Merged<ClaudeEntry>>;
   /**
    * Forget a run the EMITTER closed out of band, so this mapper stops treating it as open.
    *
@@ -541,14 +571,11 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       const cotal = Object.keys(meta).length > 0 ? { cotal: meta } : {};
 
       if (b.type === "text" && typeof b.text === "string") {
-        events.push(
-          textMessageStart({ messageId, timestamp: ts, role: "assistant", ...cotal }),
-          textMessageContent({ messageId, delta: b.text, timestamp: ts }),
-          textMessageEnd({ messageId, timestamp: ts }),
-        );
+        events.push(...(hiddenByClaude(b.text) ? hiddenText(opts.stream, entry, b.text, ts) : savedText(opts.stream, entry, messageId, b.text, ts, cotal)));
         return;
       }
-      if (b.type === "thinking" && opts.reasoning && typeof b.thinking === "string") {
+      // A block whose display Claude omitted has empty text; it maps to nothing, not an empty message.
+      if (b.type === "thinking" && opts.reasoning && typeof b.thinking === "string" && b.thinking !== "") {
         // `signature` is not read here and is not reachable from here. §3.5.
         events.push(
           reasoningMessageStart({ messageId, timestamp: ts, ...cotal }),
@@ -586,5 +613,11 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
     if (open === runId) open = null;
   };
 
-  return { map, forgetOpenRun };
+  const mapMerged: RecordMapper<Merged<ClaudeEntry>> = (record) => {
+    if (!("harness" in record)) return opts.stream ? mapStreamLine(opts.stream, open, record) : null;
+    opts.stream?.order.observe(record.harness);
+    return map(record.harness);
+  };
+
+  return { map, mapMerged, forgetOpenRun };
 }

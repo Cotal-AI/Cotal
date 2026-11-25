@@ -149,10 +149,15 @@ const CORPUS: { name: string; part: unknown }[] = [
     { type: T.TOOL_CALL_END, toolCallId: "c11" },
     { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c11", isError: true } }) },
 
-  { name: "malformed result markers (a non-boolean isError, an extra key, a missing key)", part: frame(
+  { name: "a call with a result marker that does not say whether it failed", part: frame(
+    { type: T.TOOL_CALL_START, toolCallId: "c13", toolCallName: "exec_command" },
+    { type: T.TOOL_CALL_END, toolCallId: "c13" },
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c13" } }) },
+
+  { name: "malformed result markers (a non-boolean isError, an extra key, no call id)", part: frame(
     { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c12", isError: "yes" } },
     { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c12", isError: false, content: "x" } },
-    { type: T.CUSTOM, name: "cotal.toolResult", value: { toolCallId: "c12" } }) },
+    { type: T.CUSTOM, name: "cotal.toolResult", value: { isError: false } }) },
 
   { name: "CUSTOM, named and unnamed", part: frame(
     { type: T.CUSTOM, name: "checkpoint" }, { type: T.CUSTOM }) },

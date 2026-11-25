@@ -527,6 +527,8 @@ If space selection is ambiguous and you did not pass `--space`, the import uses 
 space only if it matches one of the registered candidates. It does not change the current selection.
 If no local space resolves, pass the file's space with `--space`. For a new local space,
 prepare it with `cotal space create <space> --root <project-directory>` first. The import needs no running broker.
+If a stopped project still records its last broker and space but has no registration, the refusal
+names that space. If it matches the reference, prepare it again from its project folder and retry the import.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
@@ -601,6 +603,9 @@ The CLI grammar also names `endpoint watch <target> <record-key-or-topic> [--sin
 The current resolver supplies command contracts, not a verified mapping of these application
 capabilities. This is a CLI integration limit, not a claim that the selected endpoint lacks them.
 No arbitrary subject, pool implementation or remote execution is guessed.
+The suggested `endpoint describe` keeps the original target, space, broker and instance pin.
+If you supplied a credential file or a broker address that cannot be displayed unchanged, the
+refusal tells you to keep the original selection options without printing their values.
 
 `endpoint invoke --handle <private-file>` is also an explicit unsupported boundary, because no
 verified native auth-slot adapter is connected. It opens no file, redeems no handle and publishes no call.

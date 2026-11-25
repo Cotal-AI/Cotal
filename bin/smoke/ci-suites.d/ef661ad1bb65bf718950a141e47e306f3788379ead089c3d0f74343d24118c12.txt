@@ -1,0 +1,2 @@
+# A Codex reply streams on the event plane from the delta journal, and the saved message closes it.
+smoke:agui-codex-stream

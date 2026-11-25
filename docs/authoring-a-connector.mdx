@@ -64,8 +64,15 @@ Declare only the features your connector implements:
 - Set `supportsPrompt`, `supportsModelVariant`, `supportsModes`, or `supportsResume` only when the application can honor that request.
   Unsupported requests are refused before provisioning.
   Resume creates a new session from the source transcript and leaves the source unchanged.
+- Set `supportsAskPermissions` when the connector can launch the application in its mode that asks before it uses a tool.
+  The launch then carries `askPermissions: true`, and the session reads `config.askPermissions` from its launch material.
+  Serve the application's prompts on the agent endpoint and declare `prompts` as well, so a client can answer them.
+- Set `supportsReasoningEvents` when the connector's event mapper can publish the model's reasoning as `REASONING_*` events.
+  The session reads `config.reasoningEvents` and publishes reasoning only when it is true.
 - Set `interruptKey` to the bytes of the key that stops the application's live turn, such as `"\x1b"` for Escape.
   The manager's `interrupt` command writes it into the seat's terminal. Declare it only after a live check shows the key ending a turn.
+- Declare nothing for the agent endpoint's `interrupt`, `turn`, images and `usage`.
+  Each seat's presence says which of them it serves now, derived from the dispatcher its session hands `MeshAgent` ([agent commands](connector-runtime-reference.mdx#agent-commands)).
 - Use `supportsSessionContinuation` for recovery of the same meshed session after a process restart.
   Use `supportsSessionReopen` only when an existing named session can be reopened without creating a replacement.
   Set `supportsFreshStart` when a launch without a session handle creates a new session.
@@ -75,6 +82,8 @@ Declare only the features your connector implements:
 - List external executables in `requires` so preflight can report a missing command before launch.
 - Implement `listModels` if the application provides a model catalog.
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
+  The Manager passes the boot `resolvedBinaries` and the `spawn.env` names a launch would receive as `envAllow`.
+  A read that runs the application builds its environment from them as `buildLaunch` does, so it lists the models a seat reaches.
   List on each model only the `variants` and `modes` the application offers for the logged-in account.
   Set `defaultVariant` to the variant it runs when a launch names none, and `isDefault` on the one model it runs when a launch names no model.
   A mode is a `toggle` with a boolean `default`, or a `choice` with `options` and the default option's id.

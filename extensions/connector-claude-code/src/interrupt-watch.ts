@@ -17,7 +17,7 @@ function interrupted(line: string): boolean {
 }
 
 /**
- * Watch a Claude Code transcript for an interrupt of the turn that is open now.
+ * Watch the Claude Code transcript of the turn that is open now: for an interrupt, and for growth.
  *
  * Claude Code fires no hook when its user interrupts a turn, so a seat that waited for one stayed
  * `working` until its next turn ended. The transcript does record the interrupt, as a `user` entry
@@ -25,9 +25,14 @@ function interrupted(line: string): boolean {
  * `onInterrupt` once, at the first interrupt record. A transcript Claude has not created yet is read
  * from its start once it appears. `watchFile` polls, so it also sees a file that does not exist yet.
  *
+ * Claude Code queues each transcript line and writes its queue on a 100 ms timer, so a hook can run
+ * before the line it follows is on disk: PreToolUse runs before its `tool_use` line is written, and
+ * no hook follows until the tool ends. `onGrowth` is called whenever the transcript grows, so a
+ * reader it wakes reads such a line while the tool runs.
+ *
  * @returns a function that stops the watch.
  */
-export function watchForInterrupt(path: string, onInterrupt: () => void): () => void {
+export function watchForInterrupt(path: string, onInterrupt: () => void, onGrowth: () => void): () => void {
   let offset = statSync(path, { throwIfNoEntry: false })?.size ?? 0;
   let partial = Buffer.alloc(0);
   let state: "idle" | "reading" | "again" | "stopped" = "idle";
@@ -77,7 +82,9 @@ export function watchForInterrupt(path: string, onInterrupt: () => void): () => 
   };
 
   function changed(curr: Stats): void {
-    if (curr.size > offset) void scan();
+    if (curr.size <= offset) return;
+    onGrowth();
+    void scan();
   }
 
   watchFile(path, { persistent: false, interval: POLL_MS }, changed);

@@ -114,6 +114,9 @@ const agent = z.strictObject({
     // Older inventories and seat records carry no payload choice. Preserve that absence so the
     // connector applies its publication default, while an explicit false survives a restart.
     eventPayloads: z.boolean().optional(),
+    // Kept only when the spawn asked, so a record written before these fields reads as not asked.
+    askPermissions: z.literal(true).optional(),
+    reasoningEvents: z.literal(true).optional(),
     // Start takes any declared server key as written, empty or long, so a bound per name here would
     // refuse to preserve an agent that launched. The args byte cap bounds the list.
     shareTools: z.array(z.string()).optional(),

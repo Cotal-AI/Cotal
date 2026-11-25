@@ -19,13 +19,13 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 const { check, finish } = createSuite();
 
 const shipped = managerShippedSurface();
-check("the Manager contract retains the prompts fact after spawn modes advance it", shipped.revision === 56, shipped);
+check("the Manager contract retains the prompts fact after spawn modes advance it", shipped.revision === 57, shipped);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,
   terminalSessions: true, agentCount: 0, uptimeMs: 1, classSpawn: true, staticReconciliation: { state: "idle", failures: [] },
 };
-const row = (extra: Record<string, unknown>) => ({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: false, ...extra }] });
+const row = (extra: Record<string, unknown>) => ({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: false, askPermissions: false, reasoningEvents: false, ...extra }] });
 const valid = (status: unknown) => MANAGER_STATUS_CONTRACT.output.validate(status) === true;
 check("status accepts prompts true and false on a connector row", valid(row({ prompts: true })) && valid(row({ prompts: false })));
 check("status requires an explicit prompts fact, so a revision-51 row is refused", !valid(row({})));
