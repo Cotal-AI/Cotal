@@ -113,14 +113,15 @@ On a space where people sign in, the thread also uses the agent's `agent` endpoi
 - The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
 - A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
 - After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage. The usage arrives before the prompt answers, unless the agent takes more than 3 seconds to report it.
+- Choosing another model or reasoning choice on a running thread switches the agent with its `set-model`, from its next turn. The thread then shows what the agent runs. The model must belong to the agent's application and be one it lists: a model of another application, or the application's default, needs a new agent after `/despawn`. When the agent's presence says it cannot switch, or the agent refuses the model, the choice fails with the reason and stays. Each connector's reference page says what its switch calls and what it leaves on the launch model.
 
 ## Choose the agent [#options]
 
-A new thread offers these options next to the model list. They apply when the first prompt spawns the agent.
+A new thread offers these options next to the model list. They apply when the first prompt spawns the agent. On a running thread, the model and reasoning choices switch the agent instead, and the others need a new agent after `/despawn`.
 
 | Option | What it sets |
 | --- | --- |
-| Model | The application and model, as `<application>/<model>`. Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice has that model's name and reasoning choices. A model id the list does not show is passed to the manager as given. |
+| Model | The application and model, as `<application>/<model>`. On a running thread, choosing another model of the same application switches the agent ([above](#threads)). Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice has that model's name and reasoning choices. A model id the list does not show is passed to the manager as given. |
 | Harness | The application the agent runs, when more than one can. Choosing a model moves it to that model's application, and choosing another harness starts that application on its default model. |
 | Reasoning | The model's variant. Offered while any listed model has variants; for a model without them it holds only the model default. |
 | Persona | A persona from the manager's catalog. A catalog of 64 or more personas offers a short list: the default, the current choice, and up to 16 personas you own. `/persona` picks any other. |
@@ -175,6 +176,7 @@ person controls every agent under their own owner (see
 - Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
 - When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
 - Renaming a running agent with `/name` needs a space where people sign in, because only there does an agent take a new name from its owner.
+- Switching a running agent's model needs a space where people sign in too, and an application whose connector can switch it. Hermes cannot yet.
 - `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - Questions an agent stops to ask, and the agent's own commands, reach the client only on a space where people sign in.

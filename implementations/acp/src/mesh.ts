@@ -27,12 +27,13 @@ export interface AgentCatalog {
 }
 
 /** Which `agent` endpoint commands a seat serves now, as its presence `agentEndpoint` field says
- *  (SPEC §6). */
+ *  (SPEC §6). A seat older than `set-model` omits `setModel`. */
 export interface AgentEndpointServes {
   readonly interrupt: boolean;
   readonly turn: boolean;
   readonly images: boolean;
   readonly usage: boolean;
+  readonly setModel?: boolean;
 }
 
 export interface CatalogModel {
