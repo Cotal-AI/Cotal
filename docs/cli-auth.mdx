@@ -533,7 +533,9 @@ lifecycle UID the mint reports.
 Each file `auth mint --out` wrote for the space from this root and that is still there is listed
 under Exported credential files, and in `result.exported`, with its state and expiry. These rows
 are not findings. A file missing its user seed block is unreadable even if its JWT still parses.
-Restore the complete file, or use the replacement mint the report names. An expired one is an
+Restore the complete file, or use the replacement mint the report names. If the JWT claims cannot
+be read, the report cannot determine the original grants. Restore the complete file or confirm the
+intended grants before minting a replacement to a new private path. An expired file is an
 `EXPORTED_CREDENTIAL_EXPIRED` warning. One near expiry or
 expired names `cotal auth mint <label> --identity <file> --out <file>`, which signs the same key
 again with the same grants. One whose key was revoked, or that an earlier space identity issued,
