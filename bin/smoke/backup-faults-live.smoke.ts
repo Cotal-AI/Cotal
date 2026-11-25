@@ -96,6 +96,34 @@ const attemptResidue = (root: string): string[] => {
   return existsSync(attempts) ? readdirSync(attempts) : [];
 };
 
+function assertAttemptsDestinationRefusal(root: string, run: (...args: string[]) => SpawnSyncReturns<string>): void {
+  const attempts = join(root, ".cotal", "maintenance", "attempts");
+  mkdirSync(attempts, { mode: 0o700, recursive: true });
+  const destination = join(attempts, "forbidden");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const journalBefore = readFileSync(journal);
+  const attemptsBefore = attemptResidue(root).sort();
+  const message = `the backup destination ${destination} overlaps the maintenance attempt directory ${attempts}. No backup was created.`;
+  const remedy = `name a destination outside ${attempts}`;
+  const plain = run("backup", "create", ".cotal/maintenance/attempts/forbidden", "--plain");
+  assert.equal(plain.status, 1, plain.stderr);
+  assert.match(plain.stderr, /Code:\s+USAGE_INVALID/);
+  assert.ok(plain.stderr.includes(message) && plain.stderr.includes(remedy), plain.stderr);
+  assert.doesNotMatch(plain.stderr, /LIFECYCLE_BLOCKED|before recovery|Usage:/);
+  const json = run("backup", "create", destination, "--json");
+  assert.equal(json.status, 1, `${json.stdout}${json.stderr}`);
+  const envelope = JSON.parse(json.stdout);
+  assert.equal(envelope.outcome, "refused");
+  assert.equal(envelope.error.code, "USAGE_INVALID");
+  assert.equal(envelope.error.message, message);
+  assert.equal(envelope.error.remedy, remedy);
+  assert.deepEqual(envelope.target, { directory: destination, attemptId: null, priorClaimAttemptId: null });
+  assert.deepEqual(readFileSync(journal), journalBefore);
+  assert.deepEqual(attemptResidue(root).sort(), attemptsBefore);
+  assert.equal(existsSync(destination), false);
+  assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
+}
+
 function assertBackupUsage(run: (...args: string[]) => SpawnSyncReturns<string>): void {
   const restore = run("backup", "restore", "--help");
   const refused = run("backup", "restore", "sample-backup", "--only", "full");
@@ -293,6 +321,7 @@ async function backupStageFaultScenario(): Promise<void> {
     assert.ok(inside.status === 1 && insideEnvelope.error?.code === "USAGE_INVALID" && (insideEnvelope.error.message ?? "").includes(`is inside the preserved store ${sourcePath}`), `a destination inside the store is a usage refusal\n${inside.stdout}${inside.stderr}`);
     const insidePlain = run("backup", "create", join(sourcePath, "bk1"));
     assert.ok(insidePlain.status === 1 && !insidePlain.stderr.includes("Usage"), `that refusal prints no command help\n${insidePlain.stderr}`);
+    assertAttemptsDestinationRefusal(root, run);
     // So is one inside the space's material folder, which `clean all` removes with whatever it
     // holds, named directly or through a link outside `.cotal`.
     const material = readdirSync(join(root, ".cotal")).find((entry) => entry.startsWith("space."));
