@@ -76,6 +76,7 @@ const noop = async (): Promise<void> => {};
     }
     const missingSpace = /^--space needs a value$/;
     const blankSpace = /^--space\/-s is empty; name one space$/;
+    const repeatedSpace = /^Option '-s, --space' cannot be repeated$/;
     function checkStreamRefusal(words: string[], stream: string, target: object, message: RegExp, remedy?: string): void {
       const result = run(words);
       const label = JSON.stringify(words);
@@ -101,6 +102,8 @@ const noop = async (): Promise<void> => {};
       [["-js"], null, missingSpace, "write --space <s>"],
       [["--json", "--space="], null, blankSpace],
       [["--json", "-s", "  "], null, blankSpace],
+      [["-j", "--space=", "-sarchive"], null, repeatedSpace],
+      [["-j", "--space=first", "-sarchive"], "archive", repeatedSpace],
     ] as const) {
       checkStreamRefusal(["watch", ...flags], "watch", { requestedSpace }, message, remedy);
     }
@@ -112,6 +115,10 @@ const noop = async (): Promise<void> => {};
       checkStreamRefusal([...words, "-j", "--follow", "--space", "--space", "other"], stream, target, missingSpace, "write --space <s>");
       checkStreamRefusal([...words, "-j", "--follow", "--space=  "], stream, target, blankSpace);
     }
+    checkStreamRefusal(["history", "--follow", "--dms", "--space", "\u00a0\t", "-sarchive", "-j"],
+      "history", { space: null, channel: null, dms: true }, repeatedSpace);
+    checkStreamRefusal(["channel", "members", "#review", "--follow", "-s", "\u00a0\t", "--space=archive", "-j"],
+      "membership", { space: null, channel: "review" }, repeatedSpace);
 
     const upHelp = run(["up", "--help"]);
     assert.equal(upHelp.status, 0, upHelp.stderr);
