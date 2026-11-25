@@ -219,7 +219,9 @@ names another folder's stack. In a folder with its own controller stack, a `--sp
 another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Each refusal names
 the space and, when this machine started it elsewhere, its root, and its next step runs the same
 `down` from that root. If the project folder cannot be accessed, `down` leaves the stack and its
-records unchanged and asks you to restore access before retrying. `--json` and `--plain` carry that
+records unchanged and asks you to restore access before retrying. If something other than a folder,
+such as a regular file, now sits at that root, the next step names it and asks you to move it aside
+and restore the original project folder there before running that `down`. `--json` and `--plain` carry that
 refusal as structured output when the current folder has no stack of its own.
 
 A manual or catalog connection records the folder that uses it. If a named stop or preview finds
