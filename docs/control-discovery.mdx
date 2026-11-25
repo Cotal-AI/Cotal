@@ -371,6 +371,15 @@ or determine placement. Use the verified responder's `instanceId` for attributio
 must accept status payloads that omit either field and leave the missing value unknown.
 The optional fields advance the Manager cluster revision to 28.
 
+The reply also carries `machine`, and the Manager's presence card carries it as `meta.machine`.
+It is an HMAC-SHA256 of the host's OS machine identity, keyed by that identity over
+`cotal manager host`, so it does not reveal the identity. A caller on the same machine computes
+the same value with `managerMachineId()` from `@cotal-ai/workspace` and recognises its own
+Managers by it. A host name can change while a Manager runs, as macOS renames a machine when its
+network changes, so `host` cannot do this. A Manager that cannot read its machine identity, as in
+a container without `/etc/machine-id`, omits `machine`, and a caller treats it as running on
+another machine. The field advances the Manager cluster revision to 55.
+
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
 instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a

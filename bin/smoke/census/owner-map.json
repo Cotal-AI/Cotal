@@ -102,6 +102,7 @@
   "cli:__service-manager": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--console-host": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--console-port": "internal:native service child that service start execs under controller custody",
+  "cli:__service-manager--idle-exit": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--launch": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--launch-request": "internal:native service child that service start execs under controller custody",
   "cli:__service-manager--launch-sha256": "internal:native service child that service start execs under controller custody",
@@ -948,6 +949,7 @@
   "cli:service--file": "current:service add --file",
   "cli:service--follow": "current:service logs --follow",
   "cli:service--foreground": "current:service start --foreground",
+  "cli:service--idle-exit": "current:service start --idle-exit",
   "cli:service--instance": [
    "current:service start --instance",
    "current:service stop --instance",

@@ -30,10 +30,20 @@ terminal and for one a manager runs.
   into a project folder and config file your account owns, then review the folder and run
   `cotal trust <path>` if the settings require trust.
 - Restart a running manager at this version so its spawns apply the rule. Run the printed trust
-  command on the execution host, as the account that runs the manager.
+  command on the execution host, as the account that runs the manager. A manager service also
+  checks project trust before it starts with project-supplied environment names.
 
 If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
 for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
+recognise it as running here.
 
 ## The agent endpoint on every space
 

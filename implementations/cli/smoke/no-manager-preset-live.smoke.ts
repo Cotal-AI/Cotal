@@ -18,7 +18,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, skipSuite, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -62,6 +62,7 @@ const instances = (): Instance[] => (cotal("service", "--space", space, "--json"
 const running = (definition: string) => instances().find((row) => row.definition === definition && row.observedProcess === "running");
 
 try {
+  mkdirSync(join(root, ".cotal"), { mode: 0o700 });
   const prepared = cotal("space", "create", space, "--root", root);
   check("fixture: the space is prepared at the sandbox root", prepared.status === 0, shown(prepared));
   anchor = recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
@@ -85,10 +86,27 @@ try {
     }
   }
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
+  writeFileSync(join(root, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["TRUST_SERVICE_TEST"] } }));
+  const blockedStart = cotal("service", "start", "mgr", "--space", space, "--json");
+  const remedy = `cotal trust ${root}`;
+  check("manager service startup refuses to forward an untrusted project environment and creates no running instance",
+    blockedStart.status === 2 && blockedStart.env?.error?.code === "PERMISSION_DENIED" && blockedStart.env.error.message.includes(`\`${remedy}\``) && !running("mgr"), shown(blockedStart));
+  const trust = cotal("trust", root);
+  check("the printed trust action accepts the project before the manager start is retried", trust.status === 0, shown(trust));
   const started = cotal("service", "start", "mgr", "--space", space);
   const mgr = running("mgr");
   check("fixture: a manager preset service starts at that root", added.status === 0 && started.status === 0 && mgr !== undefined, { added: shown(added), started: shown(started) });
   const id = mgr?.instanceId ?? "<none>";
+  const trustFile = join(env.XDG_CONFIG_HOME, "cotal", "trusted-projects.json");
+  if (trust.status === 0 && mgr !== undefined) {
+    const trusted = readFileSync(trustFile);
+    try {
+      rmSync(trustFile);
+      const blockedRestart = cotal("service", "restart", "mgr", "--space", space, "--yes", "--json");
+      check("manager service restart refuses before stopping the existing process",
+        blockedRestart.status === 2 && blockedRestart.env?.error?.message.includes(`\`${remedy}\``) && running("mgr")?.pid === mgr.pid, shown(blockedRestart));
+    } finally { writeFileSync(trustFile, trusted, { mode: 0o600 }); }
+  }
 
   const status = cotal("status", "--json");
   const folder = status.env?.result?.folder as { noManager?: boolean; managerService?: unknown } | undefined;
