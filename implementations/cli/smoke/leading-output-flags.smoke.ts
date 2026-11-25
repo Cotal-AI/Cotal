@@ -13,7 +13,7 @@
  * Run: pnpm smoke:leading-output-flags
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -24,7 +24,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string }[] }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string; message?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -34,8 +34,8 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
-const run = (args: string[], config = env.XDG_CONFIG_HOME) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config }, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], config = env.XDG_CONFIG_HOME, extra: Record<string, string> = {}) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -95,6 +95,40 @@ for (const placement of ["leading", "trailing"]) {
     !existsSync(journal) && existsSync(root), shown(r));
 }
 
+const collisionConfig = join(home, "retained-collision");
+const collisionRoot = join(collisionConfig, "cotal", "extensions");
+const collisionManifest = join(collisionRoot, "extensions.json");
+const collisionFixture = JSON.stringify({ extensions: [{ pkg: "output-fixture", spec: "output-fixture@1.0.0", version: "1.0.0", commands: [{ name: "config", summary: "Test a retained command collision" }] }] });
+mkdirSync(collisionRoot, { recursive: true });
+writeFileSync(collisionManifest, collisionFixture);
+const missingKey = ["config", "get", "missing-key"];
+const collisionRefusal = run([...missingKey, "--json"], collisionConfig);
+const collisionWarnings = collisionRefusal.envelope?.warnings;
+check("finite JSON refusal carries the retained extension collision once", collisionRefusal.status === 1 && collisionRefusal.stderr === "" &&
+  collisionRefusal.envelope?.command === "config" && collisionRefusal.envelope.outcome === "refused" &&
+  collisionRefusal.envelope.error?.code === "USAGE_INVALID" && collisionRefusal.envelope.error.message?.includes('unknown preference "missing-key"') === true &&
+  collisionWarnings?.length === 1 && collisionWarnings[0]?.code === "EXTENSION_COMMAND_COLLISION" &&
+  collisionWarnings[0].message?.includes("output-fixture@1.0.0") === true && readFileSync(collisionManifest, "utf8") === collisionFixture, shown(collisionRefusal));
+const collisionText = run(missingKey, collisionConfig);
+check("text refusal keeps the retained extension collision on stderr", collisionText.status === 1 && collisionText.stdout === "" &&
+  collisionText.stderr.includes("output-fixture@1.0.0"), shown(collisionText));
+const collisionParse = run(["--json", "config", "get", "color", "--unknown-option"], collisionConfig);
+check("JSON parser refusal carries the retained extension collision", collisionParse.status === 1 && collisionParse.stderr === "" &&
+  collisionParse.envelope?.error?.code === "USAGE_INVALID" && collisionParse.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionParse));
+const collisionSuccess = run(["cfg", "get", "color", "-j"], collisionConfig);
+check("JSON success keeps the built-in alias and the retained extension warning", collisionSuccess.status === 0 && collisionSuccess.stderr === "" &&
+  collisionSuccess.envelope?.command === "config" && collisionSuccess.envelope.outcome === "ok" &&
+  collisionSuccess.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionSuccess));
+for (const args of [["history", "general"], ["channel", "members", "general"]]) {
+  const finite = run([...args, "--json", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision in its finite JSON refusal`, finite.status === 1 && finite.stderr === "" &&
+    finite.envelope?.error?.code === "USAGE_INVALID" && finite.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(finite));
+  const stream = run([...args, "--json", "--follow", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision on stderr for its JSON stream refusal`, stream.status === 1 &&
+    stream.envelope === undefined && stream.stdout.includes('"type":"error"') && stream.stdout.includes('"type":"end"') &&
+    stream.stderr.includes("output-fixture@1.0.0"), shown(stream));
+}
+
 for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--json", "version"], ["--json", "--no-input", "version"]]) {
   const r = run(args);
   check(`cotal ${args.join(" ")} writes the version envelope`, r.status === 0 && r.envelope?.command === "version" && r.envelope.outcome === "ok", shown(r));
@@ -145,6 +179,21 @@ for (const flag of ["--no-input", "--no-color"]) {
 const malformedText = run(["--no-input=", ...search.slice(0, -1)]);
 check("an empty attached value still gets the switch remedy in text", malformedText.status === 1 && malformedText.stdout === "" &&
   malformedText.stderr.includes("--no-input takes no value") && malformedText.stderr.includes("omit --no-input or pass it without a value"), shown(malformedText));
+
+for (const [flag, ...tail] of [
+  ["--no-color", "--no-input=false", "status", "--json"],
+  ["--no-input", "-j", "--no-color=false", "--", "status"],
+]) {
+  const args = [`${flag}=false`, ...tail];
+  const r = run(args);
+  check(`${args.join(" ")} preserves the first error in JSON`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+}
+
+const malformedWithLiteralJson = run(["--no-color=false", "--no-input=false", "status", "--", "--json"]);
+check("a literal --json does not set the format of a malformed leading switch refusal", malformedWithLiteralJson.status === 1 &&
+  malformedWithLiteralJson.stdout === "" && malformedWithLiteralJson.stderr.includes("--no-color takes no value"), shown(malformedWithLiteralJson));
 
 const literalGlobal = run([...search, "--", "--no-input=false"]);
 check("after -- an attached global value is still a page word", literalGlobal.status === 1 && literalGlobal.stderr === "" &&
@@ -210,6 +259,27 @@ const dashAfterVerb = run(["backup", "verify", dashFlag, "./not-there", "-j"]);
 check("a typographic flag after the backup verb keeps the same refusal", dashAfterVerb.status === 1 && dashAfterVerb.stderr === "" &&
   dashAfterVerb.envelope?.command === "backup verify" && dashAfterVerb.envelope.error?.code === "USAGE_INVALID" &&
   dashAfterVerb.envelope.error.message?.startsWith(`${dashFlag} starts with a typographic dash`) === true, shown(dashAfterVerb));
+
+const scaffold = run(["endpoint", "init", "note", "--dir", "starter"]);
+check("endpoint init creates the contract for the separator check", scaffold.status === 0, shown(scaffold));
+if (scaffold.status === 0) {
+  copyFileSync(join(neutral, "starter", "contract.json"), join(neutral, "--plain"));
+  const endpointCheck = (...args: string[]) => run(["endpoint", "check", ...args], undefined,
+    { FORCE_COLOR: "1", NO_COLOR: "", LC_ALL: "C.UTF-8" });
+  const separated = endpointCheck("--wibble", "--", "--plain");
+  const prefixed = endpointCheck("--wibble", "./--plain");
+  check("a filename after -- cannot switch a usage refusal to plain output",
+    separated.status === 1 && prefixed.status === 1 && separated.stdout === "" && prefixed.stdout === "" &&
+    separated.stderr === prefixed.stderr && separated.stderr.startsWith("\x1b[31m✗ Unknown option '--wibble'"),
+    { separated: shown(separated), prefixed: shown(prefixed) });
+  const explicit = endpointCheck("--plain", "--wibble", "--", "--plain");
+  check("--plain before the separator still selects an uncolored usage refusal",
+    explicit.status === 1 && explicit.stdout === "" && explicit.stderr.startsWith("Request refused\n") &&
+    explicit.stderr.includes("USAGE_INVALID") && !explicit.stderr.includes("\x1b"), shown(explicit));
+  const valid = endpointCheck("--", "--plain");
+  check("endpoint check still accepts the file named --plain after the separator",
+    valid.status === 0 && valid.stdout.includes("Endpoint contract valid locally") && valid.stdout.includes("\x1b[") && valid.stderr === "", shown(valid));
+}
 
 finish();
 process.exit(process.exitCode ?? 0);

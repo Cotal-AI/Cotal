@@ -189,6 +189,7 @@ try {
 
   if (!selected || selected === "refusal") {
     const root = project("refused");
+    const reservation = "space held in ";
     const refused = run(root, "up", "--space", "refused", "--server", "nats://127.0.0.1:4222", "--open", "--no-manager");
     check("an explicit reserved address is a confirmed CONFLICT", refused.status === 2 && refused.receipt?.error?.code === "CONFLICT", shown(refused));
     const { startSetupLocalStack } = await import("../src/commands/setup-start.js");
@@ -198,13 +199,13 @@ try {
     catch (error) { failure = error as typeof failure; }
     finally { process.argv[1] = original; }
     check("setup preserves the native child's confirmed CONFLICT", failure?.outcome === "refused" && failure.code === "CONFLICT", failure);
-    check("setup preserves the classified conflict diagnostic", failure?.message?.includes("another registration names this exact broker address") === true, failure);
+    check("setup preserves the named reservation in the conflict diagnostic", failure?.message?.includes(reservation) === true, failure);
     env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(connector).href}`;
     const setup = run(root, "setup", "--destination", "local", "--harness", "setup-smoke", "--project", root, "--space", "refused", "--start", "--detach", "--yes");
     check("public setup reports a confirmed refusal with preparation saved", setup.status === 4 && setup.receipt?.result?.startup?.state === "refused" && setup.receipt.result.startup.failure?.code === "CONFLICT", shown(setup));
-    check("public setup retains the actionable classified diagnostic", setup.receipt?.result?.startup?.failure?.message?.includes("another registration names this exact broker address") === true, shown(setup));
+    check("public setup retains the named reservation in the conflict diagnostic", setup.receipt?.result?.startup?.failure?.message?.includes(reservation) === true, shown(setup));
     const plain = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "setup-smoke", "--project", root, "--space", "refused", "--start", "--detach", "--yes", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
-    check("the human setup report names the classified conflict", plain.status === 4 && /Cause:?\s+CONFLICT/.test(plain.stdout) && plain.stdout.includes("another registration names this exact broker address"), plain.stdout);
+    check("the human setup report names the reservation and conflict code", plain.status === 4 && /Cause:?\s+CONFLICT/.test(plain.stdout) && plain.stdout.includes(reservation), plain.stdout);
     check("the human setup report distinguishes a confirmed refusal from an unknown command", plain.stdout.includes("Command refused") && !plain.stdout.includes("Command outcome unconfirmed"), plain.stdout);
     delete env.NODE_OPTIONS;
 

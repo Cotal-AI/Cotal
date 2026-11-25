@@ -17,7 +17,7 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 
 const { check, finish } = createSuite();
 
-check("the launch fields advance the Manager cluster to revision 55", managerShippedSurface().revision === 55);
+check("the launch fields advance the Manager cluster to revision 56", managerShippedSurface().revision === 56);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,
@@ -26,7 +26,7 @@ const base = {
 const row = (extra: Record<string, unknown>) => ({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: true, prompts: false, ...extra }] });
 const valid = (status: unknown) => MANAGER_STATUS_CONTRACT.output.validate(status) === true;
 check("status accepts both facts as booleans", valid(row({ askPermissions: true, reasoningEvents: false })) && valid(row({ askPermissions: false, reasoningEvents: true })));
-check("status requires both facts, so a revision-54 row is refused", !valid(row({})) && !valid(row({ askPermissions: false })) && !valid(row({ reasoningEvents: false })));
+check("status requires both facts, so a revision-55 row is refused", !valid(row({})) && !valid(row({ askPermissions: false })) && !valid(row({ reasoningEvents: false })));
 check("status keeps both facts typed as booleans", !valid(row({ askPermissions: "yes", reasoningEvents: false })) && !valid(row({ askPermissions: false, reasoningEvents: 1 })));
 
 async function inspect(installed: boolean): Promise<ManagerConnectorStatus[]> {

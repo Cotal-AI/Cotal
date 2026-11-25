@@ -10,7 +10,7 @@ import type { ModelCatalog, ModelInfo } from "@cotal-ai/core";
  * group lets a stop take down whatever it started.
  */
 const SERVE_ARGS = ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"];
-const CATALOG_SOURCE = "opencode serve --stdio: GET /api/model";
+const CATALOG_SOURCE = "opencode serve --stdio GET /api/model";
 /** One bound on the whole read: the server's start, the plugins' settling and the model read. */
 const CATALOG_TIMEOUT_MS = 10_000;
 /** OpenCode's own wait for its plugins (`opencode models` and its ACP catalog, 2.4.1) polls this often. */

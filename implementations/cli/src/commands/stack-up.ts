@@ -68,6 +68,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
+import { controlsRecordedAdapter } from "../lib/service-adapters.js";
 import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readOwnedLogTail, readServiceLog, removeServiceLogs, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
@@ -660,10 +661,16 @@ function strandedBroker(space: string): ServiceInstance | undefined {
   return rows.length === 1 && observeServiceProcess(rows[0]!.record.value) === "running" ? rows[0]!.record.value : undefined;
 }
 
+function strandedBrokerRemedy(root: string, noManager: boolean, invokedRoot?: string): string {
+  if (invokedRoot === undefined || invokedRoot === root) return `Run \`cotal down --yes\`, then \`cotal up${noManager ? " --no-manager" : ""}\`.`;
+  const stop = `cd ${shellWord(root)} && ${displayCmd({ fromAnyFolder: true })} down --yes`;
+  return `Stop that broker with ${codeSpan(stop)}, then repeat your original startup command from the folder where you invoked it.`;
+}
+
 /** What a detached up interrupted by a signal left: the members that run, and the command that
  *  finishes the start or stops them. An up given `--no-manager` names `cotal up --no-manager`, since
  *  bare `up` adds the manager. */
-export function stackUpInterrupted(root: string, space: string, noManager = false): CommandFailure {
+export function stackUpInterrupted(root: string, space: string, noManager = false, invokedRoot?: string): CommandFailure {
   const up = `cotal up${noManager ? " --no-manager" : ""}`;
   const stranded = strandedBroker(space);
   const running = runningStackRoles(space);
@@ -673,7 +680,7 @@ export function stackUpInterrupted(root: string, space: string, noManager = fals
       ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running.`
       : `Interrupted before any member of the stack in ${root} started.`;
   const remedy = stranded
-    ? `Run \`cotal down --yes\`, then \`${up}\`.`
+    ? strandedBrokerRemedy(root, noManager, invokedRoot)
     : running.length
       ? `Run \`${up}\` to finish the start, or \`cotal down --yes\` to stop ${running.length === 1 ? "it" : "them"}.`
       : `Run \`${up}\` to start it.`;
@@ -918,7 +925,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // prepared again under a running broker. This start refuses before any write and names the stop.
   const stranded = registration ? undefined : strandedBroker(space);
   if (stranded)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the \`cotal up\` that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with `cotal down --yes`, then run `cotal up` again" });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the \`cotal up\` that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: strandedBrokerRemedy(root, request.noManager, request.invokedRoot) });
   // A broker stopped by a signal accepts connections and never answers, so every step through it would
   // wait out its budget, and its readiness check would record a listener that serves nothing. This
   // start refuses before any write and names the signal that resumes it.
@@ -1050,6 +1057,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
+    if (!brokerRunning && previous === undefined && request.retryAtAnotherAddress) {
+      const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
+      if (holder) throw new CommandFailure("refused", "CONFLICT", `another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`, {
+        remedy: await request.retryAtAnotherAddress(brokerHost ?? brokerListenAddress(server).host)
+          ?? "choose an unreserved broker address and retry with `--server`",
+      });
+    }
     snapshot = writeStackJournal(root, current ?? recorded, journal);
     settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;
@@ -1166,7 +1180,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const credsKey = deliveryCredsKey(space, { injected: false, root });
       const credsPath = join(root, ".cotal", credsKey);
       const deliveryRows = serviceInstances(space, STACK_DEFINITION.delivery);
-      if (!(deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running")) {
+      const runningDelivery = deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running" ? deliveryRows[0] : undefined;
+      const stoppedDelivery = mode === "auth" && prepared && runningDelivery && await stopDeliveryForBrokerRepair(root, recordedMembers, runningDelivery);
+      if (!runningDelivery || stoppedDelivery) {
         const creds = await mintCreds(auth, newIdentity(), "delivery");
         // A daemon that was killed, or that exited when its broker went away, cannot release shard 0,
         // and a replacement started inside the row's TTL loses the create and refuses to bind. No
@@ -1299,6 +1315,20 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
   return { journal, changed, allReused, ...(storeTenants.length ? { storeShared: { path: storePath, tenants: storeTenants } } : {}), ...(storeWarnings.length ? { storeWarnings } : {}), ...(clearedRecords.length ? { clearedRecords } : {}), ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(rotation ? { rotation } : {}) };
+}
+
+/** A delivery process can still be exiting after broker loss. Stop the stack's exact recorded
+ * member so the ordinary start waits for its lease and requires fresh delivery readiness. */
+async function stopDeliveryForBrokerRepair(root: string, members: StackMember[], selected: ServiceInstanceSnapshot): Promise<boolean> {
+  const value = selected.record.value;
+  const member = members.find((row) => row.role === "delivery");
+  if (member?.instanceId !== selected.name || !member.process || !value.process || member.process.pid !== value.process.pid || member.process.token !== value.process.token) return false;
+  const definition = serviceDefinitionStore(value.space).read(STACK_DEFINITION.delivery);
+  const launch = definition?.record.value.launch;
+  if (!definition || definition.record.revision !== value.definitionRevision || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.delivery || launch.options.root !== root) return false;
+  if (!controlsRecordedAdapter(value, prepareProcessService(definition).adapter)) return false;
+  await stopProcessService(definition, selected);
+  return true;
 }
 
 /** Stop a broker this call started, through its exact kernel stop, and read whether its log says it

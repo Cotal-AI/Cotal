@@ -32,7 +32,7 @@ export async function piCommandCatalog(opts: CommandListOpts, env: Record<string
   if (!piRunsCommands(version))
     return { supported: false, reason: `pi ${version} sends an extension's /name to its model as text, so its seats run no agent commands; pi 0.84.2 or later runs them` };
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
-  const answer = await askPi({ bin, args: ["--no-session", "--offline", "--extension", TRUST_ENTRY], cwd: opts.cwd, env, type: "get_commands", boundMs: 10_000 });
+  const answer = await askPi({ bin, args: ["--no-session", "--offline", "--extension", TRUST_ENTRY], cwd: opts.cwd, env, boundMs: 10_000 }, (ask) => ask({ type: "get_commands" }));
   if ("failed" in answer) throw new Error(answer.failed);
   if (answer.reply.success !== true)
     throw new Error(`pi refused get_commands: ${typeof answer.reply.error === "string" ? answer.reply.error : "no reason given"}`);

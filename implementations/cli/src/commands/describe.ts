@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
-  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken,
+  BASELINE_LIFECYCLE_ENDPOINT, EpEnvelopeError, assertCommandToken, assertLifecycleToken,
   epCast, invokeCommand, invokeRepairingSplit, parsePrincipalKey, resolveService, unansweredRequest,
   type CompletionResult, type EpAttributedReply, type EpVerbTarget, type FlagSpec,
   type FlagValues, type ParsedArgs, type ResolvedService,
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
 import {
-  CommandFailure, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
+  CommandFailure, brokerAddressForDisplay, codeSpan, commandFailureReport, exitCode, failureEnvelope, jsonFlag, plainFlag, presentationOf, renderReport, streamRecord, writeEnvelope, writeResult, writeStreamRecord,
   loadMeshes, targetFlags, type Report,
   recordOperationSpace, resolveMeshTarget,
 } from "@cotal-ai/workspace";
@@ -17,8 +17,9 @@ import { endpointResolution, resolveEndpointSelection, validateEndpointSelector 
 import { endpointFailure, NativeReplyError, shellWord, verifyPinnedEndpoint, withPairedCallerRemedy } from "../lib/endpoint-errors.js";
 import { refuseUnmappedHandle } from "../lib/endpoint-capability-gates.js";
 import { invokeEndpointScatter, writeEndpointScatter } from "../lib/endpoint-scatter.js";
-import { onInstanceId, onFlag, onRerun } from "../lib/control.js";
-import { rosterOf } from "../lib/manager-choice.js";
+import { onFlag } from "../lib/control.js";
+import { targetWords } from "../lib/confirmation-required.js";
+import { managerRosterHint, rosterOf } from "../lib/manager-choice.js";
 import { openEndpointConnection as epConnection, pairedCallerCommand } from "../lib/endpoint-client.js";
 
 const endpointTargetFlags = targetFlags.map((flag) => flag.name === "creds" ? { ...flag, description: "explicit credential file; native calls require its paired standalone context and registered static root" } : flag);
@@ -41,6 +42,20 @@ export function describeComplete(argv: string[]): CompletionResult {
   return { items: [{ value: BASELINE_LIFECYCLE_ENDPOINT }], directive: "nofiles" };
 }
 
+function validateEndpointPin(args: ParsedArgs, operation: "describe" | "invoke"): void {
+  const { on, server } = args.values;
+  if (on === undefined) return;
+  try { assertLifecycleToken(String(on), "instanceId"); } catch {
+    const manager = args.positionals[0] === BASELINE_LIFECYCLE_ENDPOINT || args.positionals[0] === `ep:${BASELINE_LIFECYCLE_ENDPOINT}`;
+    const lookup = manager && args.values.creds === undefined ? ` For the native Manager, use ${managerRosterHint(args.values)}.` : "";
+    const simple = Object.keys(args.values).every((key) => ["on", "space", "server", "json", "plain"].includes(key))
+      && (server === undefined || typeof server === "string" && brokerAddressForDisplay(server) === server);
+    const retry = simple ? `Retry with ${codeSpan(`cotal endpoint ${operation} ${args.positionals.map(shellWord).join(" ")}${targetWords(args.values)} --on <instance>${args.values.json ? " --json" : args.values.plain ? " --plain" : ""}`)}.`
+      : "Replace only the --on value in the original command.";
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on needs the full instance ID of the selected endpoint.${lookup} ${retry}`, { selfContained: true });
+  }
+}
+
 export function validateEndpointArguments(args: ParsedArgs, operation: "describe" | "invoke"): void {
   presentationOf(args.values);
   if (args.positionals.length !== (operation === "describe" ? 1 : 2)) throw new CommandFailure("refused", "USAGE_INVALID", operation === "describe" ? "describe needs one native endpoint class" : "invoke needs one native endpoint class and one command");
@@ -49,7 +64,7 @@ export function validateEndpointArguments(args: ParsedArgs, operation: "describe
     if (operation === "invoke") assertCommandToken(args.positionals[1]!);
   } catch { throw new CommandFailure("refused", "USAGE_INVALID", "use a valid native endpoint class and command token"); }
   if (args.values.creds !== undefined && (typeof args.values.creds !== "string" || !args.values.creds || args.values.creds.length > 4096 || /[\u0000-\u001f\u007f]/u.test(args.values.creds))) throw new CommandFailure("refused", "USAGE_INVALID", "--creds needs one bounded protected file reference without terminal controls");
-  if (args.values.on !== undefined) onInstanceId(String(args.values.on), onRerun(`cotal endpoint ${operation}`, args.values, args.positionals));
+  validateEndpointPin(args, operation);
   if (operation === "describe") return;
   const values = args.values as FlagValues<typeof invokeFlags>;
   if (values.all && (values.cast || values.wait || values.on !== undefined || values.self || values.name !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--all is an untargeted class scatter and cannot combine with --on, --self, --name, --cast or --wait");
@@ -73,7 +88,7 @@ function parsedInput(text: string | undefined): Record<string, unknown> | undefi
 
 export async function describeCmd(args: ParsedArgs, commandName = "describe"): Promise<void> {
   validateEndpointArguments(args, "describe");
-  const requestedInstance = args.values.on === undefined ? undefined : onInstanceId(String(args.values.on), onRerun("cotal endpoint describe", args.values, args.positionals));
+  const requestedInstance = (args.values as FlagValues<typeof describeFlags>).on;
   const selection = resolveEndpointSelection(args.positionals[0]!, args.values as { space?: string; server?: string; creds?: string }, requestedInstance);
   const { endpoint, instanceId: on } = selection;
   recordOperationSpace(selection.space);
@@ -117,7 +132,7 @@ export async function invokeCmd(args: ParsedArgs, commandName = "invoke"): Promi
   const values = args.values as FlagValues<typeof invokeFlags>;
   const [selector, command] = args.positionals as [string, string];
   const input = parsedInput(values.args);
-  const requestedInstance = values.on === undefined ? undefined : onInstanceId(values.on, onRerun("cotal endpoint invoke", values, [selector, command]));
+  const requestedInstance = values.on;
   const selection = resolveEndpointSelection(selector, values, requestedInstance);
   const { endpoint } = selection;
   let on = selection.instanceId;

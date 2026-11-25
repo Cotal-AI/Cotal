@@ -316,6 +316,9 @@ try {
     const refusal = await rejection(run([], { ...selectors, "dry-run": true, [format]: true }));
     check(`a ${format} ledger preview by ${Object.keys(selectors).join(" and ")} keeps the original preview`,
       refusal?.code === "UNSUPPORTED" && refusal.remedy === `omit --${format} from the original command; keep --dry-run and the same deployment selection`, refusal);
+    const apply = await rejection(run([], { ...selectors, [format]: true }));
+    check(`a ${format} ledger teardown by ${Object.keys(selectors).join(" and ")} keeps the deployment selection`,
+      apply?.code === "UNSUPPORTED" && apply.remedy === `omit --${format} from the original command; keep the same deployment selection`, apply);
   }
 
   // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
@@ -360,6 +363,15 @@ try {
   check("...and its preview refuses the same way, naming the preview to run there",
     previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(meshA.root, 0o000);
+    try {
+      const inaccessible = await rejection(run([], { space: "teamA", yes: true }));
+      check("an inaccessible retained root advises restoring access instead of changing folders",
+        inaccessible?.code === "PERMISSION_DENIED" && inaccessible.message?.includes(`${meshA.root} could not be accessed`) === true &&
+        inaccessible.remedy === "restore access to the original project folder, then try again", inaccessible);
+    } finally { chmodSync(meshA.root, 0o700); }
+  }
   recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
   for (const preview of [false, true]) {
     const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));

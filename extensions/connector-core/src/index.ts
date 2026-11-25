@@ -32,6 +32,7 @@ export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";
 export { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+export type { AgentNaming, NameFromMessage, NameRequest } from "./agent-naming.js";
 export {
   COMMAND_LIST_MS, CommandRefused, ENDED_COMMANDS_KEPT, MAX_QUEUED_COMMANDS,
   type AgentCommand, type AgentTurn, type AgentUsage, type CommandDispatch, type CommandDispatcher, type CommandQueue,

@@ -50,7 +50,8 @@ async function terminal(element: React.ReactElement) {
   });
   return {
     key: async (value: string) => { await act(async () => { stdin.write(value); }); await pause(); },
-    screen: (marker: string) => until(() => frame.includes(marker), `Expected ${marker}; saw: ${frame}`),
+    screen: (marker: string | RegExp) => until(
+      () => typeof marker === "string" ? frame.includes(marker) : marker.test(frame), `Expected ${marker}; saw: ${frame}`),
     rerender: async (next: React.ReactElement) => {
       frame = "";
       await act(async () => { app.rerender(<StrictMode>{next}</StrictMode>); });
@@ -198,7 +199,8 @@ try {
   let selected: string | undefined;
   const term = await terminal(<SpacePicker server={servers} onSelect={(space) => { selected = space; }} />);
   try {
-    await term.screen("no spaces found"); await term.key("j"); await term.key("\x1b[B");
+    await term.screen(/no spaces found on this server\. For a local mesh, run `(?:pnpm )?cotal up` and connect to the address it reports\. *(?:│)?$/m);
+    await term.key("j"); await term.key("\x1b[B");
     for (const space of ["alpha", "beta", "gamma"]) {
       await jsm.streams.add({ name: `CHAT_${space}`, subjects: [`cursor.${space}`] });
     }

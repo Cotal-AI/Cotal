@@ -740,20 +740,70 @@ try {
   }
 
   const spacedSource = "sample card.md";
-  const importBytes = Buffer.from("---\nname: sample\nsubscribe: []\n---\nReview a sample.\n");
-  writeFileSync(join(scratch, spacedSource), importBytes);
-  const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", "--plain"], scratch);
-  const retry = mismatch.stderr.match(/create it under its own name with `([^`]+)`/)?.[1];
-  check("a mismatched import quotes the original filename and preserves the catalog selector",
-    mismatch.status === 1 && mismatch.stderr.includes("SCHEMA_INVALID") &&
-      retry === "cotal persona create sample --file 'sample card.md' --space alpha" && !existsSync(agentFilePath(ALPHA, "other")), mismatch.stderr);
-  if (process.platform !== "win32" && retry === "cotal persona create sample --file 'sample card.md' --space alpha") {
-    const copied = spawnSync("sh", ["-c", `cotal() { "$NODE" "$CLI" "$@"; }; ${retry}`], {
-      cwd: scratch, env: { ...childEnv, NODE: process.execPath, CLI: binary }, encoding: "utf8", timeout: 30_000,
-    });
-    const imported = agentFilePath(ALPHA, "sample");
-    check("the retry works as printed and imports the original bytes into alpha",
-      copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
+  for (const format of ["plain", "json"]) {
+    const name = `sample-${format}`;
+    const importBytes = Buffer.from(`---\nname: ${name}\nsubscribe: []\n---\nReview a sample.\n`);
+    writeFileSync(join(scratch, spacedSource), importBytes);
+    const mismatch = native(["persona", "create", "other", "--file", spacedSource, "--space", "alpha", `--${format}`], scratch);
+    const failure = format === "json" ? JSON.parse(mismatch.stdout).error : undefined;
+    const schemaInvalid = format === "json" ? failure?.code === "SCHEMA_INVALID" : mismatch.stderr.includes("SCHEMA_INVALID");
+    const remedy = format === "json" ? failure?.remedy : mismatch.stderr;
+    const retry = remedy?.match(/create it under its own name with `([^`]+)`/)?.[1];
+    const launchers = format === "json" ? ["cotal"] : ["cotal", "pnpm cotal"];
+    check(`a mismatched import quotes the filename and keeps --space and --${format}`,
+      mismatch.status === 1 && schemaInvalid &&
+        launchers.some(cli => retry === `${cli} persona create ${name} --file 'sample card.md' --space alpha --${format}`) &&
+        !existsSync(agentFilePath(ALPHA, "other")), mismatch.stdout + mismatch.stderr);
+    if (process.platform !== "win32") {
+      const copied = spawnSync("sh", ["-c", `cotal() { "$NODE" "$CLI" "$@"; }; pnpm() { "$@"; }; ${retry}`], {
+        cwd: scratch, env: { ...childEnv, NODE: process.execPath, CLI: binary }, encoding: "utf8", timeout: 30_000,
+      });
+      const imported = agentFilePath(ALPHA, name);
+      check(`the --${format} retry imports the original bytes into alpha`,
+        copied.status === 0 && existsSync(imported) && readFileSync(imported).equals(importBytes), copied.stdout + copied.stderr);
+      if (format === "json") {
+        const receipt = JSON.parse(copied.stdout);
+        check("the printed JSON retry returns a persona-written document for alpha",
+          receipt.outcome === "ok" && receipt.target?.space === "alpha" && receipt.result?.kind === "persona-written" &&
+            receipt.result?.name === name, copied.stdout + copied.stderr);
+      }
+    }
+  }
+
+  {
+    // The file's own name already occupies the catalog, so the own-name retry the
+    // mismatch refusal would print is a command the catalog refuses. The refusal must
+    // omit it and point at a separate copy instead, leaving the original intact.
+    const occupied = "---\nname: occupied_retry\nagent: claude\n---\nFixture.\n";
+    const occupiedPath = agentFilePath(ALPHA, "occupied_retry");
+    writeFileSync(occupiedPath, occupied);
+    const clash = native(["persona", "create", "fresh_retry", "--file", occupiedPath, "--space", "alpha", "--plain"], scratch);
+    check("a mismatched import with an occupied own name omits the conflicting create retry",
+      clash.status === 1 && clash.stderr.includes("SCHEMA_INVALID") &&
+      !clash.stderr.includes("cotal persona create occupied_retry") &&
+      clash.stderr.includes("change its name to 'fresh_retry' in a separate copy of the input file and retry with that copy") &&
+      readFileSync(occupiedPath, "utf8") === occupied, clash.stderr);
+    const copy = join(scratch, "fresh_retry.md");
+    writeFileSync(copy, occupied.replace("name: occupied_retry", "name: fresh_retry"));
+    const copied = native(["persona", "create", "fresh_retry", "--file", copy, "--space", "alpha", "--plain"], scratch);
+    check("the advised separate copy imports under the requested name and leaves the original intact",
+      copied.status === 0 && readFileSync(agentFilePath(ALPHA, "fresh_retry"), "utf8") === readFileSync(copy, "utf8") &&
+      readFileSync(occupiedPath, "utf8") === occupied, copied.stdout + copied.stderr);
+    // A twin that differs only in case refuses the suggested create too, so it is omitted as well.
+    const twinPath = join(ALPHA, ".cotal", "agents", "CaseTwin.md");
+    writeFileSync(twinPath, "---\nname: casetwin\n---\nFixture.\n");
+    const twinClash = native(["persona", "create", "fresh_twin", "--file", twinPath, "--space", "alpha", "--plain"], scratch);
+    check("a mismatched import with a case-only twin omits the conflicting create retry",
+      twinClash.status === 1 && twinClash.stderr.includes("SCHEMA_INVALID") &&
+      !twinClash.stderr.includes("cotal persona create casetwin"), twinClash.stderr);
+    // Piped input has no file to copy, so the occupied remedy keeps only the corrected pipe.
+    const pipedOccupied = Buffer.from("---\nname: occupied_retry\n---\nInstructions from standard input.\n");
+    const stdinClash = native(["persona", "create", "fresh_stdin", "--file", "-", "--space", "alpha", "--json"], scratch, childEnv, pipedOccupied);
+    const stdinFailure = JSON.parse(stdinClash.stdout).error;
+    check("the stdin mismatch remedy drops the occupied retry and keeps the corrected pipe",
+      stdinClash.status === 1 && stdinFailure?.code === "SCHEMA_INVALID" &&
+      !stdinFailure?.remedy.includes("pipe the original definition into") &&
+      stdinFailure?.remedy === "set its name to 'fresh_stdin' and pipe the corrected definition into the original command", stdinClash.stdout);
   }
 
   const decoyFile = agentFilePath(ALPHA, "encoded");
@@ -821,10 +871,11 @@ try {
   const stdinRetry = stdinFailure?.remedy.match(/pipe the original definition into `([^`]+)` again/)?.[1];
   check("the stdin name-mismatch remedy says to pipe the original bytes into the same catalog",
     stdinMismatch.status === 1 && stdinFailure?.code === "SCHEMA_INVALID" &&
-    stdinRetry === "cotal persona create piped-card --file - --space alpha" && !existsSync(agentFilePath(ALPHA, "other-stdin")), stdinMismatch.stdout);
+    stdinRetry === "cotal persona create piped-card --file - --space alpha --json" && !existsSync(agentFilePath(ALPHA, "other-stdin")), stdinMismatch.stdout);
   const pipedRetry = native(stdinRetry.split(" ").slice(1), scratch, childEnv, piped);
   check("the corrected command saves the original stdin definition to alpha",
-    pipedRetry.status === 0 && readFileSync(agentFilePath(ALPHA, "piped-card")).equals(piped), pipedRetry.stdout + pipedRetry.stderr);
+    pipedRetry.status === 0 && JSON.parse(pipedRetry.stdout).result?.kind === "persona-written" &&
+      readFileSync(agentFilePath(ALPHA, "piped-card")).equals(piped), pipedRetry.stdout + pipedRetry.stderr);
 
   for (const [field, value, expected] of [
     ["model", "42", '"model" must be a string; got number'],
@@ -974,12 +1025,17 @@ try {
 
   {
     const path = agentFilePath(MESH, "broken-fence");
-    writeFileSync(path, "---\nname: broken-fence\n---oops\nBody.\n");
-    for (const args of [["persona", "show", "broken-fence"], ["spawn", "broken-fence", "--foreground", "--dry-run"]]) {
-      const refused = native([...args, "--json"]);
-      const { error } = JSON.parse(refused.stdout);
-      check(`${args[0]} refuses a malformed closing fence`, refused.status === 1 && error?.code === "SCHEMA_INVALID" &&
-        error.message.includes(path) && error.message.includes('missing closing "---" frontmatter fence'), refused.stdout + refused.stderr);
+    for (const [source, diagnostic] of [
+      ["---\nname: broken-fence\n---oops\nBody.\n", 'missing closing "---" frontmatter fence on its own line'],
+      ["---\n---\nBody.\n", '"name" is required'],
+    ]) {
+      writeFileSync(path, source);
+      for (const args of [["persona", "show", "broken-fence"], ["spawn", "broken-fence", "--foreground", "--dry-run"]]) {
+        const refused = native([...args, "--json"]);
+        const { error } = JSON.parse(refused.stdout);
+        check(`${args[0]} reports ${diagnostic}`, refused.status === 1 && error?.code === "SCHEMA_INVALID" &&
+          error.message.includes(path) && error.message.endsWith(diagnostic), refused.stdout + refused.stderr);
+      }
     }
     writeFileSync(path, "---\r\nname: broken-fence\r\n--- \t\r\nBody.\r\n");
     const repaired = native(["persona", "show", "broken-fence", "--json"]);

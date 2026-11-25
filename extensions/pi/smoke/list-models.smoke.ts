@@ -22,7 +22,7 @@ interface JournalEntry {
   seatIdentity?: boolean;
   providerKey?: boolean;
   env?: Record<string, string | null>;
-  command?: { id?: string; type?: string };
+  command?: { id?: string; type?: string; provider?: string; modelId?: string };
   sigterm?: boolean;
 }
 
@@ -77,23 +77,35 @@ try {
   check("the pi connector serves its catalog from listPiModels", piConnector.listModels === listPiModels);
 
   {
-    const pi = fakePi("reply", { FAKE_PI_REPLY: fixture("pi-models-anthropic.jsonl") });
+    // pi-catalog.json holds pi 1.5.2's own answers, recorded with an Anthropic key and three local
+    // models: a reasoning model, one whose id has a colon, and one without reasoning.
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json") });
     const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    const recorded = (JSON.parse(readFileSync(fixture("pi-models-anthropic.jsonl"), "utf8")) as { data: { models: { provider: string; id: string }[] } }).data.models;
+    const recorded = JSON.parse(readFileSync(fixture("pi-catalog.json"), "utf8")) as {
+      models: { data: { models: { provider: string; id: string }[] } };
+      levels: Record<string, string[]>;
+    };
+    const ids = recorded.models.data.models.map((m) => `${m.provider}/${m.id}`);
     check(
       "maps pi's recorded reply to one provider/id per model, the form pi's --model takes",
-      catalog.models.length === 18 && catalog.models.map((m) => m.id).join(",") === recorded.map((m) => `anthropic/${m.id}`).join(","),
+      catalog.models.length === 21 && catalog.models.map((m) => m.id).join(",") === ids.join(","),
       catalog.models.map((m) => m.id),
     );
     const sonnet = catalog.models.find((m) => m.id === "anthropic/claude-sonnet-5-5");
     check("keeps pi's provider and display name", sonnet?.provider === "anthropic" && sonnet.name === "Claude Sonnet 5.5", sonnet);
-    const levels = (id: string): string | undefined => catalog.models.find((m) => m.id === `anthropic/${id}`)?.variants?.map((v) => v.name).join(",");
-    check("a model's variants are the thinking levels pi offers for it, leaving out the levels its map marks null",
-      levels("claude-sonnet-5-5") === "low,medium,high,xhigh,max" && levels("claude-fable-5") === "minimal,low,medium,high,xhigh,max",
-      { sonnet: levels("claude-sonnet-5-5"), fable: levels("claude-fable-5") });
-    check("xhigh and max only where the map names them",
-      levels("claude-haiku-4-5") === "off,minimal,low,medium,high" && levels("claude-opus-4-6") === "off,minimal,low,medium,high,max",
-      { haiku: levels("claude-haiku-4-5"), opus: levels("claude-opus-4-6") });
+    const variants = (id: string): string | undefined => catalog.models.find((m) => m.id === id)?.variants?.map((v) => v.name).join(",");
+    const differing = ids.filter((id) => variants(id) !== recorded.levels[id]!.join(","));
+    check("each model's variants are the thinking levels pi listed for it", ids.length === 21 && differing.length === 0, differing);
+    check(
+      "Haiku 4.5 offers off to high and Opus 4.6 offers up to max, as pi lists them",
+      variants("anthropic/claude-haiku-4-5") === "off,minimal,low,medium,high" && variants("anthropic/claude-opus-4-6") === "off,minimal,low,medium,high,max",
+      { haiku: variants("anthropic/claude-haiku-4-5"), opus: variants("anthropic/claude-opus-4-6") },
+    );
+    check(
+      "a model id with a colon keeps its id and its own levels",
+      variants("local/qwen3:high") === "off,minimal,low,medium,high" && variants("local/plain") === "off",
+      catalog.models.slice(-3),
+    );
     check("a listed catalog is supported and names its source", catalog.unavailable === undefined && catalog.source === "pi --mode rpc get_available_models", catalog);
     const [start, ...rest] = pi.journal();
     const argv = start?.argv ?? [];
@@ -102,8 +114,14 @@ try {
       argv.join(" ").includes("--mode rpc") && argv.includes("--no-session") && argv.includes("--offline"),
       argv,
     );
-    const commands = rest.filter((e) => e.command).map((e) => e.command?.type);
-    check("sends pi one get_available_models command and no prompt", commands.join(",") === "get_available_models", commands);
+    const commands = rest.filter((e) => e.command).map((e) => e.command!);
+    const expected = ["get_available_models", ...ids.flatMap((id) => [`set_model ${id}`, "get_available_thinking_levels"])];
+    const sent = commands.map((c) => (c.type === "set_model" ? `set_model ${c.provider}/${c.modelId}` : c.type));
+    check(
+      "one pi lists the models, then selects each and reads its levels, and gets no prompt",
+      sent.length === 43 && sent.join("\n") === expected.join("\n"),
+      sent,
+    );
     check("gives pi the provider keys a launch gets", start?.providerKey === true, start);
     check("gives pi no seat identity", start?.seatIdentity === false, start);
     check("stops pi once it answered", await goneWithin(pi.pid(), 3_000));
@@ -116,7 +134,7 @@ try {
     Object.assign(process.env, { PI_CODING_AGENT_DIR: agentDir, PI_CATALOG_DECLARED_KEY: "declared", PI_CATALOG_UNDECLARED: "undeclared" });
     const names = ["PI_CODING_AGENT_DIR", "PI_CATALOG_DECLARED_KEY", "PI_CATALOG_UNDECLARED"];
     const envAllow = ["PI_CODING_AGENT_DIR", "PI_CATALOG_DECLARED_KEY"];
-    const declared = fakePi("reply", { FAKE_PI_REPLY: fixture("pi-models-anthropic.jsonl"), FAKE_PI_REPORT_ENV: names.join(",") });
+    const declared = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REPORT_ENV: names.join(",") });
     await listPiModels({ resolvedBinaries: { pi: declared.bin }, envAllow });
     const seen = declared.journal()[0]?.env;
     check("a catalog read gives pi the spawn.env names it is handed, with their values",
@@ -125,7 +143,7 @@ try {
     const launch = piConnector.buildLaunch({ space: "pilistmodels", name: "pi-1", events: false, envAllow }).env ?? {};
     check("the catalog read gets the declared names a launch gets",
       names.every((name) => (name in launch) === (seen?.[name] !== null)), { launch: names.filter((name) => name in launch), seen });
-    const bare = fakePi("reply", { FAKE_PI_REPLY: fixture("pi-models-anthropic.jsonl"), FAKE_PI_REPORT_ENV: names.join(",") });
+    const bare = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REPORT_ENV: names.join(",") });
     await listPiModels({ resolvedBinaries: { pi: bare.bin } });
     check("without spawn.env names the catalog read gets none of them",
       names.every((name) => bare.journal()[0]?.env?.[name] === null), bare.journal()[0]?.env);
@@ -133,11 +151,46 @@ try {
   }
 
   {
-    const models = [{ provider: "openai", id: "gpt-4o", reasoning: false }, { provider: "openai", id: "o9", reasoning: true }];
-    const pi = fakePi("reply", { FAKE_PI_REPLY: replyFile({ type: "response", command: "get_available_models", success: true, data: { models } }) });
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "get_available_thinking_levels" });
     const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    check("a model without reasoning has no variants, and one with no map gets pi's five base levels",
-      catalog.models[0]?.variants === undefined && catalog.models[1]?.variants?.map((v) => v.name).join(",") === "off,minimal,low,medium,high", catalog.models);
+    check(
+      "a pi too old to list thinking levels is unavailable with pi's own error and the version that added them",
+      catalog.models.length === 0 &&
+        catalog.unavailable === "pi refused get_available_thinking_levels for anthropic/claude-fable-5: Unknown command: get_available_thinking_levels (pi 0.81.0 added it)",
+      catalog,
+    );
+  }
+
+  {
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "get_available_thinking_levels", FAKE_PI_REFUSE_ERROR: "No model selected" });
+    const read = await failure(pi.bin);
+    check(
+      "a pi that refuses to list a model's thinking levels for another reason fails the read with pi's own error",
+      read.error === "pi refused get_available_thinking_levels for anthropic/claude-fable-5: No model selected",
+      read,
+    );
+  }
+
+  {
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "set_model" });
+    const read = await failure(pi.bin);
+    check(
+      "a pi that refuses to select a listed model fails the read with pi's own error",
+      read.error === "pi refused set_model for anthropic/claude-fable-5: Unknown command: set_model",
+      read,
+    );
+  }
+
+  {
+    const recorded = JSON.parse(readFileSync(fixture("pi-catalog.json"), "utf8")) as { levels: Record<string, unknown> };
+    recorded.levels["local/plain"] = "off";
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: replyFile(recorded) });
+    const read = await failure(pi.bin);
+    check(
+      "a model whose levels are not a list fails the whole read",
+      read.error === "pi answered get_available_thinking_levels for local/plain without a level list",
+      read,
+    );
   }
 
   {
@@ -186,8 +239,9 @@ try {
   }
 
   {
-    const models = [{ provider: "anthropic", id: "claude-sonnet-5-5" }, { name: "No identity" }];
-    const pi = fakePi("reply", { FAKE_PI_REPLY: replyFile({ type: "response", command: "get_available_models", success: true, data: { models } }) });
+    const recorded = JSON.parse(readFileSync(fixture("pi-catalog.json"), "utf8")) as { models: { data: { models: unknown[] } } };
+    recorded.models.data.models.push({ name: "No identity" });
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: replyFile(recorded) });
     const read = await failure(pi.bin);
     check("a model with no provider or id fails the whole read", read.catalog === undefined && /no provider or id/.test(read.error), read);
   }

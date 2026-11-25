@@ -284,9 +284,10 @@ semantics remain opaque to the native parser, so a file declaring them produces 
 exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
 names the path and asks you to retry with an existing contract file. If you pass a directory,
 `check` names it and asks for a contract file. If the directory contains a regular `contract.json`,
-the refusal shows how to check that file. On Windows, for paths containing a backslash, or when a
-terminal report must escape characters in the path, use shell completion to enter the directory and run
-`cotal endpoint check contract.json` there. `check` never selects a file for you.
+the refusal shows how to check that file and keeps `--json` or `--plain` if you requested it.
+On Windows, for paths containing a backslash, or when a terminal report must escape characters
+in the path, use shell completion to enter the directory and run the suggested command there.
+`check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
 endpoint. Authoring takes no space, broker, caller or invocation flags.
@@ -394,7 +395,11 @@ digests - and prints each command with its capability class and targeting shape.
 pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
 `manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
 unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
-calls one command by name. When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
+calls one command by name. If either command refuses an invalid pin, use the full instance ID of
+the selected endpoint. For the native `manager` endpoint without a credential file, the lookup
+keeps the selected space and broker. A Manager roster cannot identify a different endpoint.
+
+When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
 once more to the instance that answered its describe; a caller whose grants name only that instance, such as a service
 caller grant, therefore needs no `--on`. It fetches only that command's cluster and schema closures,
 plus those of `inspect` when `--name` names a manager target. `--args` is a JSON object validated against the fetched input schema
@@ -520,6 +525,10 @@ Next names a command for each space and keeps the original inventory options. `s
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
 If space selection is ambiguous and you did not pass `--space`, the import uses the file's
 space only if it matches one of the registered candidates. It does not change the current selection.
+If no local space resolves, pass the file's space with `--space`. For a new local space,
+prepare it with `cotal space create <space> --root <project-directory>` first. The import needs no running broker.
+If a stopped project still records its last broker and space but has no registration, the refusal
+names that space. If it matches the reference, prepare it again from its project folder and retry the import.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.

@@ -25,7 +25,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -182,6 +182,32 @@ async function checkStoppedRestartBlockers(cwd: string, server: string): Promise
   });
   try { inspect(`stop the process listening on ${hostname}:${port}`); }
   finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
+}
+
+function checkStoppedDirectoryRepair(cwd: string, space: string): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const control = join(cwd, ".cotal");
+  const mode = statSync(control).mode & 0o777;
+  const before = readdirSync(control).sort();
+  const remedy = `chmod u+wx ${control}`;
+  const verdict = `"${space}" is stopped; its last operation, \`cotal down\`, completed`;
+  chmodSync(control, 0o500);
+  try {
+    for (const [flag, exit] of [["--plain", 0], ["--components", 1]] as const) {
+      const report = cliIn(cwd, ["status", flag, "--space", space]);
+      const [main = "", health = ""] = report.stdout.split("\nComponent Health\n");
+      check(`status ${flag} keeps the stopped verdict and names the control directory repair`,
+        report.status === exit && main.includes(verdict) && main.includes(remedy) && !report.stdout.includes("start it again with") &&
+        (flag === "--plain" || (/target\s+absent · not-started/.test(health) && health.includes(verdict) && health.includes(remedy))), `${report.stdout}${report.stderr}`);
+    }
+    const report = cliIn(cwd, ["ps", "--json", "--space", space]);
+    const body = JSON.parse(report.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
+    check("ps keeps the stopped refusal and gives the control directory repair instead of a restart",
+      report.status === 2 && body.error?.code === "TARGET_UNAVAILABLE" && body.error.message?.startsWith(verdict) === true &&
+      body.error.remedy?.includes(remedy) === true && !body.error.remedy.includes("start it again with"), body);
+    check("stopped-stack diagnostics leave the control directory and its permissions alone",
+      (statSync(control).mode & 0o777) === 0o500 && JSON.stringify(readdirSync(control).sort()) === JSON.stringify(before));
+  } finally { chmodSync(control, mode); }
 }
 
 async function cliAsync(args: string[], childEnv = env): Promise<{ status: number | null; stdout: string; stderr: string }> {
@@ -652,6 +678,13 @@ try {
       check("status keeps the selected space but replaces the stopped folder's restart banner with store repair",
         held.status === 0 && text.includes(`Mesh: ${WEB_SPACE}`) && text.includes(`the broker store ${openStore} is not writable`) && text.includes(`chmod -R u+w ${openStore}`) && !text.includes(`this folder holds the stopped space "${openSpace}"`), text);
     } finally { chmodSync(openStore, 0o700); }
+    const control = join(openRoot, ".cotal"), mode = statSync(control).mode & 0o777;
+    chmodSync(control, 0o500);
+    try {
+      const held = read();
+      check("status keeps the selected space but replaces the stopped folder's restart banner with directory repair",
+        held.status === 0 && held.stdout.includes(`Mesh: ${WEB_SPACE}`) && held.stdout.includes(`chmod u+wx ${control}`) && !held.stdout.includes(`this folder holds the stopped space "${openSpace}"; restart it`), held.stdout);
+    } finally { chmodSync(control, mode); }
   }
   const stoppedStore = (cwd: string, store = join(cwd, ".cotal", "nats"), target?: { space: string; server: string; otherServer: string }) => {
     if (process.platform === "win32" || process.getuid?.() === 0) return;
@@ -928,6 +961,7 @@ try {
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
+  checkStoppedDirectoryRepair(controllerRoot, controllerSpace);
   await checkStoppedRestartBlockers(controllerRoot, controllerServer);
   const selectedStopped = cliIn(webRoot, ["status", "--components"]);
   const selectedHealth = selectedStopped.stdout.split("Component Health")[1] ?? "";

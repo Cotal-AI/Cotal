@@ -68,6 +68,17 @@ function selectedSpace(args: ParsedArgs): string | EndpointReference {
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.space) return error.details.space;
+    const fileImport = args.positionals[0] === "add" && typeof args.values.file === "string";
+    if (fileImport && error.code === "not-started" && error.details.lastRun && error.details.stackSpace && error.details.recordedRoot === undefined) {
+      const { message } = workspaceErrorParts({ kind: "target", error });
+      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", message, {
+        remedy: "if the reference names this space, prepare it from the recorded project folder with `cotal space create <space> --root .`, then retry the import with `--space <space>`",
+      });
+    }
+    if (fileImport && error.code === "no-meshes")
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no local space was resolved for this endpoint import", {
+        remedy: "retry with the reference file's space using `--space <space>`. For a new local space, prepare it first with `cotal space create <space> --root <project-directory>`",
+      });
     const candidates = error.details.spaces;
     if (error.code === "ambiguous-target" && candidates?.length && args.positionals[0] === "add" &&
       values.space === undefined && typeof args.values.file === "string") {

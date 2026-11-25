@@ -146,6 +146,15 @@ let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: brokerA.servers, space: spaceA, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
+  const startFile = join(wsA, "start.cotal.js");
+  writeFileSync(startFile, PURE);
+  const noManager = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "r", "start", startFile, "--json"], {
+    cwd: wsA, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  }).catch((error: { code?: number; stdout?: string }) => error);
+  const noManagerError = JSON.parse(noManager.stdout || "{}").error;
+  c("A0. Hosted start still points to the manager on a static-auth mesh without one",
+    "code" in noManager && noManager.code === 2 && noManagerError?.code === "TARGET_UNAVAILABLE"
+      && noManagerError?.remedy.endsWith("a stack started with --no-manager has none"), noManager);
   delivery = await bootDeliveryDaemon({
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: workspaceSecretStore(wsA).identity,
@@ -1163,11 +1172,28 @@ try {
   scratch.push(wsB);
   mkdirSync(join(wsB, ".cotal", "agents"), { recursive: true });
   recordMesh({ space: spaceB, server, root: wsB, mode: "open", ts: new Date().toISOString() });
+  const file = join(wsB, "cp.cotal.js");
+  writeFileSync(file, CHECKPOINT);
+  const runCli = (...args: string[]) => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", ...args], {
+    cwd: wsB, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  });
+  const { stdout: localList } = await runCli("list", "--local", "--plain");
+  c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
+    localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
+      localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
+  const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
+  const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
+  const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
+  const openStartRemedy = "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run";
+  c("B0a. Hosted start on a broker-only open mesh gives the same simulation and static-auth guidance in JSON and plain output",
+    "code" in brokerOnlyStart && brokerOnlyStart.code === 2 && refusal.outcome === "refused" && refusal.target?.space === spaceB
+      && refusal.error?.code === "UNSUPPORTED" && refusal.error?.message === "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission"
+      && refusal.error?.remedy === openStartRemedy
+      && "code" in plainStart && plainStart.code === 2
+      && plainStart.stderr?.split("\n").some((line) => line.trim() === openStartRemedy) === true, { refusal, plainStart });
   mgr = new Manager({ space: spaceB, servers: server, runtime: "pty", workspaceRoot: wsB });
   await mgr.start();
 
-  const file = join(wsB, "cp.cotal.js");
-  writeFileSync(file, CHECKPOINT);
   const LOGS: string[] = [];
   const realLog = console.log;
   console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -1177,8 +1203,8 @@ try {
     return LOGS.join("\n");
   };
   // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
-  // no run and admits no local one: both refusals name the fact. The hosted one is the manager's
-  // refusal, thrown classified for the command kernel; the local one goes through `console.error` +
+  // no run and admits no local one: both refusals name the fact. The hosted one is classified for
+  // the command kernel; the local one goes through `console.error` +
   // `process.exit(1)`, captured here the way A7 captures them.
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -1209,7 +1235,7 @@ try {
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh is refused by the manager, UNSUPPORTED, naming the space and that runs need a static-auth mesh", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B1. `cotal run start` on an open mesh with a manager is still refused as UNSUPPORTED", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh cannot host workflow runs"), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
@@ -1249,7 +1275,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 110;
+const EXPECTED_CELLS = 113;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

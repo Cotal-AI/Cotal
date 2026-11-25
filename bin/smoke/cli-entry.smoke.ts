@@ -1152,7 +1152,7 @@ require('node:module').syncBuiltinESMExports();`);
     JSON.parse(mismatch.stdout).error?.code === "CONFLICT", shown(mismatch));
   const cases: [string, string, string[]][] = [
     ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
-    ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],
+    ["a misspelt key", `${head}chanels:\n  ops: {}\n`, ['m.yaml:5:1: unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],
     ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
     ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ["has a problem,", 'm.yaml:7:17: "ghost" is not declared in agents: (at channels.ops.subscribe.0)']],
     ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],
@@ -1377,6 +1377,15 @@ require('node:module').syncBuiltinESMExports();`);
   const noLedger = cotal(["down", "-f", manifest, "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
   check("no-ledger recorded-stack preview still validates the manifest's persona",
     noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
+  for (const [file, code, remedy] of [["absent.yaml", "TARGET_NOT_FOUND", "check the file path"], [`${manifest}/child`, "TARGET_NOT_FOUND", "check the file path"], [".", "USAGE_INVALID", "name the manifest file in it"]] as const) {
+    const r = cotal(["down", "-f", file, "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
+    const error = envelopes(r)[0]?.error;
+    check(`no-ledger preview classifies the manifest path ${file} before reading its contents`, error?.code === code && error.remedy?.includes(remedy) === true && r.status !== 0, shown(r));
+  }
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const r = cotal(["down", "-f", manifest, "--dry-run", "--json"], (home) => { prepare(home, false); chmodSync(join(dirname(home), manifest), 0o000); }, noSeed);
+    check("no-ledger preview reports an unreadable manifest before persona validation", r.status === 2 && envelopes(r)[0]?.error?.code === "PERMISSION_DENIED", shown(r));
+  }
   // A new project records no stack and no ledger, so there is no run ID to offer.
   const fresh = cotal(["down", "-f", "old.yaml", "--dry-run"], (home) => writeFileSync(join(dirname(home), "old.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: fresh\nchannels: {}\n"), noSeed);
   check("down -f in a root with no ledger and no stack says it holds none and names team remove and the stack preview, with no run ID",

@@ -62,10 +62,19 @@ function main(): void {
       const listed = child([entry, "ext", "--json"]);
       check("installed root is the retained prefix before initial seeding", before.status === 0 && before.stdout.trim() === expected && listed.status === 0 && JSON.parse(listed.stdout).result.root === expected);
       check("reading the fresh installed root creates no prefix", !existsSync(expected));
+      const added = child([entry, "ext", "add", join(repo, "implementations", "acp")]);
+      assert.equal(added.status, 0, added.stdout + added.stderr);
+      const helpBefore = child([entry, "acp", "--help"]);
+      assert.equal(helpBefore.status, 0, helpBefore.stdout + helpBefore.stderr);
       const seeded = child([entry, "ext", "seed"]);
       assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
       const after = child([entry, "ext", "root"]);
       check("initial seeding keeps the advertised installed root", after.status === 0 && after.stdout === before.stdout && existsSync(expected));
+      const helpAfter = child([entry, "acp", "--help"]);
+      check("initial seeding keeps the installed ACP command", helpAfter.status === 0 && helpAfter.stdout === helpBefore.stdout);
+      const listAfter = child([entry, "ext", "list", "--json"]);
+      const items = listAfter.status === 0 ? JSON.parse(listAfter.stdout).result.items as { pkg: string; seeded: boolean }[] : [];
+      check("initial seeding keeps ACP alongside the seven built-ins", items.some(item => item.pkg === "@cotal-ai/acp" && !item.seeded) && items.filter(item => item.seeded).length === 7);
     }
     {
       const dir = join(root, "remove");
@@ -205,7 +214,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 36 : 33, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 38 : 33, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);
