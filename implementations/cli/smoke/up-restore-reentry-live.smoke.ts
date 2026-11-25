@@ -32,7 +32,7 @@
  * Run: pnpm smoke:up-restore-reentry:live
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -54,6 +54,7 @@ const coreDist = join(WT, "packages", "core", "dist", "index.js");
 const openConfPath = join(root, ".cotal", "server-open.conf");
 // Roomy enough for the fixture's real writes; what is under test is that the record keeps it.
 const CAP = 17179869184;
+const RESTORE_CAP = CAP * 2;
 const recorded = (space: string): { attachHost?: unknown; maxSessions?: unknown; maxFileStore?: unknown } | undefined => {
   const dir = join(home, "meshes");
   for (const f of existsSync(dir) ? readdirSync(dir).filter((n) => n.endsWith(".json")) : []) {
@@ -96,7 +97,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const baseEnv = (() => {
   const copy = { ...process.env };
   for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
-  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 })();
 
 /** Blocking `cotal <args>`, the way an operator runs it. */
@@ -189,12 +190,99 @@ try {
 
   const cut = runSync(["down", "--preserve-state"]);
   ok("the cut exited 0", cut.status === 0, tail(cut).slice(-1200));
+  const launcher = /^\s{2}(.+) <command> \[options\]$/m.exec(runSync([]).stdout)?.[1];
+  mkdirSync(join(root, "private store"));
+  for (const target of ["store", "all"]) {
+    for (const storeFlag of [[], ["--store-dir", "./private store/../.cotal/nats"]]) {
+      const clean = runSync(["clean", target, "--dry-run", ...storeFlag]);
+      const text = tail(clean);
+      ok(`preservation refuses the ${target} preview and names another preview${storeFlag.length ? " of the same quoted path" : ""}`,
+        clean.status === 2 && text.includes("LIFECYCLE_BLOCKED") && !text.includes("--force")
+          && text.includes(`clean ${target}${storeFlag.length ? " --store-dir './private store/../.cotal/nats'" : ""} --dry-run\` again`), text);
+    }
+  }
+  ok("the refused previews left the preserved cut ready", journal().state === "ready");
+  const store = join(root, ".cotal", "nats"), savedStore = join(root, "saved-store");
+  const readyJournal = readFileSync(journalPath);
+  const readyStore = lstatSync(store, { bigint: true });
+  for (const [target, mode, cleanTarget] of [["store", "--yes", "store"], ["space", "--dry-run", "all"]] as const) {
+    const reset = runSync(["reset", target, space, mode, "--plain"]);
+    const text = tail(reset);
+    ok(`reset ${target} ${mode} names the resume, stop and matching cleanup preview from the project root`,
+      reset.status === 2 && text.includes("LIFECYCLE_BLOCKED") && text.includes(`from ${root}`)
+        && text.includes("resume the preserved store with `cotal up`") && text.includes("stop it without preserving with `cotal down --yes`")
+        && text.includes(`cotal clean ${cleanTarget} --dry-run`) && !/restore recovery|fallback cleanup|--force/.test(text), text);
+  }
+  const afterReset = lstatSync(store, { bigint: true });
+  ok("both refused resets leave the ready journal and store identity unchanged",
+    readyJournal.equals(readFileSync(journalPath)) && readyStore.dev === afterReset.dev && readyStore.ino === afterReset.ino);
+  renameSync(store, savedStore);
+  try {
+    const missing = runSync(["status", "--space", space, "--plain"]);
+    const next = missing.stdout.split("\nNext\n")[1] ?? "";
+    ok("status gives missing-store recovery in Next instead of ordinary restart advice",
+      missing.status === 0 && launcher !== undefined && next.includes(`the preserved store recorded at ${store} is missing`) && next.includes(`\`${launcher} backup restore <dir> --accept-missing-source\``) && !next.includes(`${launcher} up`), tail(missing).slice(-1800));
+    const json = runSync(["status", "--space", space, "--json"]);
+    const { result } = JSON.parse(json.stdout) as { result?: { maintenance?: { state?: string; next?: string }; hints?: string[] } };
+    const maintenance = result?.maintenance;
+    ok("status JSON keeps the existing maintenance report and recovery hint without a sourceMissing key",
+      json.status === 0 && maintenance?.state === "ready" && maintenance.next?.includes(`the preserved store recorded at ${store} is missing`) === true
+        && result?.hints?.[0] === maintenance.next && !/"sourceMissing"\s*:/.test(json.stdout), tail(json).slice(-2400));
+    const blocked = runSync(["up"]);
+    ok("up refuses to resume the missing store without starting anything", blocked.status === 2 && tail(blocked).includes("TARGET_NOT_FOUND") && tail(blocked).includes("nothing was started"), tail(blocked).slice(-1200));
+  } finally { renameSync(savedStore, store); }
+  const restoredStatus = runSync(["status", "--space", space, "--plain"]);
+  ok("after the original store is returned, status offers a normal resume again",
+    restoredStatus.status === 0 && launcher !== undefined && restoredStatus.stdout.includes(`or resume with bare \`${launcher} up\``) && !restoredStatus.stdout.includes("--accept-missing-source"), tail(restoredStatus).slice(-1800));
   const made = runSync(["backup", "create", artifact, "--only", "registry"]);
   ok("the registry backup exited 0", made.status === 0, tail(made).slice(-1200));
 
+  const before = readFileSync(journalPath);
+  const brokerOnly = runSync(["up", "--foreground", "--no-manager", "--open", "--space", space, "--server", server]);
+  ok("broker-only startup reports a lifecycle refusal and leaves the preserved cut untouched",
+    brokerOnly.status === 2 && tail(brokerOnly).includes("LIFECYCLE_BLOCKED") && tail(brokerOnly).includes("a maintenance attempt to recover") &&
+    readFileSync(journalPath).equals(before), tail(brokerOnly));
+  const identity = lstatSync(store, { bigint: true });
+  const attempts = join(root, ".cotal", "maintenance", "attempts");
+  const staging = () => JSON.stringify(existsSync(attempts) ? readdirSync(attempts).sort() : null);
+  const stagedBefore = staging();
+  for (const [flags, message, code] of [
+    [["--no-manager"], /--no-manager cannot be combined with --restore: the restore needs a manager/, 1],
+    [["--no-manager", "--runtime", "pty"], /--no-manager cannot be combined with --restore/, 1],
+    [["--restore-only", "full"], /--restore-only takes registry/, 1],
+    [["--file", "cotal.yaml"], /--restore cannot be combined with --file/, 1],
+    [["--channels", "channels.json"], /--restore cannot be combined with --file/, 1],
+    [["--rotate-sys"], /--restore cannot be combined with --rotate-sys/, 1],
+    [["--auth-timeout", "2"], /--auth-timeout cannot be combined with --restore/, 1],
+    [["--max-payload", "1048576"], /--max-payload cannot be combined with --restore/, 1],
+    [["--account-resolver", "full"], /--account-resolver cannot be combined with --restore/, 1],
+    [["--recreate-membership-store"], /--recreate-membership-store cannot be combined with --restore/, 1],
+    [["--recreate-issued-stores", "rescue"], /--recreate-issued-stores cannot be combined with --restore/, 1],
+    [["--manager-name", "backup-manager"], /--manager-name.*cannot be combined with --restore/, 1],
+    [["--seat-cap", "5"], /--seat-cap.*cannot be combined with --restore/, 1],
+    [["--space", "wrong-space"], /--space .* does not match the preserved space/, 1],
+    [["--user-auth"], /--user-auth conflicts with the preserved auth mode/, 1],
+    [["--logfile-size-limit", "0"], /--logfile-size-limit must be a positive integer/, 1],
+    [["--logfile-max-num", "2"], /--logfile-max-num require --log-file/, 1],
+    [["--host", "127.0.0.2"], /--host .* and --server .* name different addresses/, 1],
+    [["--server", server.replace("nats:", "tls:")], /no TLS certificate and key are configured/, 1],
+    [["--service-endpoints"], /--service-endpoints can only be used with user auth/, 1],
+    [["--exchange-public-port", "43033"], /--exchange-public-port can only be used with user auth/, 1],
+    [["--runtime", "missing-restore-runtime"], /runtime did not pass preflight/, 2],
+    [["--json"], /retained native launcher, which has no structured or plain receipt/, 2],
+    [["--plain"], /retained native launcher, which has no structured or plain receipt/, 2],
+  ] as const) {
+    const result = runSync(["up", "--restore", artifact, "--detach", ...flags]);
+    const after = lstatSync(store, { bigint: true });
+    ok(`${flags.join(" ")} refuses with the preserved store and ready journal untouched`,
+      result.status === code && message.test(tail(result)) && readFileSync(journalPath).equals(before)
+        && journal().state === "ready" && identity.dev === after.dev && identity.ino === after.ino && staging() === stagedBefore,
+      { status: result.status, log: tail(result).slice(0, 1000), state: journal().state });
+  }
+
   console.log("\n2) SUBJECT A: the first `up --restore` reaches the listener-bind boundary");
   const restore = runSync(
-    ["up", "--restore", artifact, "--detach", "--server", server, "--space", space, "--max-file-store", String(CAP)],
+    ["up", "--restore", artifact, "--detach", "--server", server, "--space", space, "--max-file-store", String(RESTORE_CAP)],
     { COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_BIND: "1" },
   );
   const restoreLog = tail(restore);
@@ -211,7 +299,7 @@ try {
   const boundPid = intent.listenerProof?.processOwner?.pid;
   ok("…and its bound listener is ALIVE (the re-entry precondition)", alive(boundPid), { boundPid });
   const jetstream = existsSync(openConfPath) ? readFileSync(openConfPath, "utf8").split("\n").filter((l) => l.startsWith("jetstream")).join("\n") : "";
-  ok("…and that listener runs with the restore's store cap", jetstream.includes(`max_file_store: ${CAP}`), jetstream);
+  ok("…and that listener runs with the explicit replacement cap", jetstream.includes(`max_file_store: ${RESTORE_CAP}`), jetstream);
 
   console.log("\n4) SUBJECT B: the restore RE-ENTRY completes under the inherited lock");
   const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
@@ -225,7 +313,7 @@ try {
   const adopted = recorded(space);
   ok("the adopted record keeps the attach host and the session ceiling",
     adopted?.attachHost === "127.0.0.1" && adopted.maxSessions === 7, adopted);
-  ok("…and the store cap the restored broker runs with", adopted?.maxFileStore === CAP, adopted);
+  ok("…and the store cap the restored broker runs with", adopted?.maxFileStore === RESTORE_CAP, adopted);
 
   runSync(["down", "--yes"]);
   console.log(`\nUP RESTORE RE-ENTRY SMOKE OK ✅  (${pass} passed)`);

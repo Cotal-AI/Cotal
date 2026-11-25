@@ -3,7 +3,7 @@
   "mutations": [
     {
       "name": "F1 the derivation is replaced by a bare prefix test, which is the silent chat loss this classifier was moved into core to remove: a human channel called events.standup is swept out of the sidebar it was being read in",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "  return rows.filter((row) => !isEventChannel(row.channel));",
       "replace": "  return rows.filter((row) => !row.channel.startsWith(\"events.\"));",
       "expectRed": "1.3 `events.standup` STAYS: prefix-shaped, not principal-shaped",
@@ -11,7 +11,7 @@
     },
     {
       "name": "F2 the backfill filters nothing before it fetches, so every event channel is still asked for and its history still merged: the answer looks the same and the cost is exactly what it was",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "    const chans = chatOnly(listed);",
       "replace": "    const chans = listed;",
       "expectRed": "2.1 no event channel was ever ASKED for",
@@ -27,7 +27,7 @@
     },
     {
       "name": "F4 the live tap classifies by the bare events. prefix, so a human channel called events.standup is taken for an agent's stream and its messages reach only the feeds watching an agent that does not exist",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-request.ts",
       "find": "  const agent = channel === undefined ? null : eventChannelPrincipal(channel);",
       "replace": "  const agent = channel?.startsWith(\"events.\") ? { owner: \"local\", actor: \"x\" } : null;",
       "expectRed": "5.4 the live tap sends a frame on a principal-shaped channel as no `message`, and the near-miss names as `message`",

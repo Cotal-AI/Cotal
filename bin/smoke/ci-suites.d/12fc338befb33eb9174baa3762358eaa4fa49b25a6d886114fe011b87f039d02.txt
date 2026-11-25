@@ -1,0 +1,3 @@
+# The manager's instance liveness lease: acquire for every row a failed create finds, release at
+# the broker's revision, and the stop fence, against a stub endpoint.
+smoke:instance-lease

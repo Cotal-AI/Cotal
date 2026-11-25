@@ -40,7 +40,7 @@
     },
     {
       "name": "source offsets are hashed along with the structure",
-      "file": "packages/lang/src/interpret.ts",
+      "file": "packages/lang/src/interpret-state.ts",
       "find": "    if (k === \"start\" || k === \"end\" || k === \"loc\" || k === \"range\") continue;",
       "replace": "",
       "expectRed": "a REINDENTED losing arm is not an edited one: same structure, same digest, walk completes",

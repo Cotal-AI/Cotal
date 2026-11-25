@@ -20,9 +20,9 @@ cotal spawn
 ```
 
 A bare spawn runs the default persona in this terminal. `--foreground` explicitly keeps that path.
-A catalog with no default persona, such as a Cloud space's before anything prepared it, gets the
-shipped one written on that first spawn, and the launch says so. A persona you named or saved as a
-preference is still refused when it is missing. `--dry-run` writes nothing and says the launch would.
+If the catalog has no default persona, a bare `cotal spawn` or a direct `cotal spawn default`
+writes the shipped one and says so. A missing persona file, saved preference or other catalog
+name is still refused. `--dry-run` previews the shipped default without writing it.
 `--detach` launches through a manager and returns after the agent joins.
 `--on <instance>` launches through that manager and attaches this terminal when its runtime streams a terminal.
 The built-in `pty` runtime streams one; tmux, cmux, Orca, and Herdr provide their own terminal surfaces.
@@ -45,6 +45,9 @@ A managed launch can also ask for its working folder when its host differs from 
 Use `--on` and `-C` to make those choices explicit in scripts.
 Closing a direct foreground terminal may end its agent.
 Use `--dry-run` to preview a launch without allocating an agent, provisioning credentials, or starting the application.
+For a direct launch, the preview checks launch arguments if the installed connector supports preview
+validation. It creates no launch files.
+A managed preview leaves execution-host checks to the selected manager.
 
 ### Choose the persona
 
@@ -75,6 +78,8 @@ OpenCode uses `provider/model`.
 To inspect a connector's model IDs and variants, run `cotal models --harness <connector>`.
 Every connector except Hermes lists a catalog.
 For OpenCode, select one with `--model provider/model --variant high`.
+For Claude, the variant is the effort level, as in `--model opus --variant high`.
+For pi, the variant is the thinking level, as in `--model anthropic/claude-opus-4-6 --variant high`.
 
 A spawned Claude Code agent loads Cotal's tools, Claude's native MCP sources, and declared sharing overrides.
 Use `--share-tools none` for Cotal alone or `--share-tools a,b` for named declared servers.
@@ -123,7 +128,7 @@ Set `COTAL_DETACH_KEY=ctrl-<char>` if that conflicts with the application's keyb
 ### Inspect an exited seat
 
 For a pty agent that exits on its own, the manager's `seat reaped:` log line includes its exit code and signal, when applicable.
-If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal-<name>/<part>]`, the report includes its last such line, limited to 240 characters.
+If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal-<name>/<part>]`, the report includes up to 4,352 characters of its last such line and adds an ellipsis if the line is longer.
 
 On Linux, a manager can adopt and reap seats that an older manager left under detached per-seat custodians.
 It does not launch new custodians.
@@ -157,9 +162,18 @@ Its reason appears in the manager's status response and a `connector <name> unav
 Available rows record the absolute executable paths the manager found.
 
 Launches and preserved-state resumes use those recorded paths.
-`cotal models` reports the same unavailable reason, so installing or removing an application after boot does not silently change the manager's answer.
+When a launch, `cotal models` or status read asks for an unavailable connector, the Manager
+checks its declared binaries on PATH again and updates its status row. Installing an application
+into a directory already on that PATH needs no restart. Once available, its resolved paths stay pinned.
 Catalog reads run the same recorded absolute binary as a launch. `COTAL_OPENCODE_BIN` and `COTAL_CODEX_BIN` override it.
-Restart the manager to repeat its startup checks, after accounting for its running seats.
+A connector that was available at boot keeps its recorded paths even if PATH later changes.
+Since 0.167.1, a detached launch that no manager can take reports the installed connectors' unavailable reasons, including missing executables.
+Install or repair those applications on the named manager hosts and make them available on the PATH used to start the managers.
+The refusal suggests adding a connector only on managers whose connector inventory is empty.
+If the manager needs a different PATH, restart it under its own supervisor. For a saved manager
+service, use `cotal service restart <name> --yes`. For a foreground `cotal up` stack, run
+`cotal down --yes` from its project folder or press Ctrl-C in its terminal. This stops the broker
+and hosted workflow runs and can stop agents. Repeat the original foreground start with the updated PATH.
 A connector registered after startup has no recorded row, so launch, resume, and model lookup check PATH when called.
 
 ## Manage local personas [#personas-from-the-cli]
@@ -169,6 +183,7 @@ Use `show <name>` to read a persona, `create <name> --file <persona.md>` to add 
 `remove <name> --yes` deletes the local definition.
 Edits validate a private draft and refuse promotion if the source changed meanwhile.
 Prepared spaces have a catalog before startup.
+In the project folder of a stopped open space, `--space <name>` can select the catalog when the last run recorded that name.
 Use `--json` or `--plain` for finite reports.
 
 The legacy `personas` parser remains available during migration; its `--running` overlay is live.

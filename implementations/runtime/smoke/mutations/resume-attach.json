@@ -40,7 +40,7 @@
   "mutations": [
     {
       "name": "the recorded deadline is ignored, so an own-holder resume re-mints from its own clock",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "        holder: this.binding.holder,\n        deadline: prior.initialDeadline,\n        now,",
       "replace": "        holder: this.binding.holder,\n        deadline,\n        now,",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -52,7 +52,7 @@
     },
     {
       "name": "the spec read is dropped entirely, so every resume mints as if it were first",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    const prior = await readCheckpointSpec(this.kv, ref);",
       "replace": "    const prior = undefined as { initialDeadline: number; holder: { id: string; lifecycleUid: string } } | undefined;",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -64,7 +64,7 @@
     },
     {
       "name": "the overdue guard is dropped, so a past deadline is re-minted and refused",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    if (mine && prior.initialDeadline > now) {",
       "replace": "    if (mine) {",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -76,7 +76,7 @@
     },
     {
       "name": "the overdue pause is recognised and then nothing is done about it",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    await reconcileCheckpointSchedule(this.kv, this.js, this.jsm, this.binding.space, {\n      ref,\n      instanceId: this.binding.instanceId,\n      epoch: this.binding.epoch,\n    });",
       "replace": "    return;",
       "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
@@ -88,7 +88,7 @@
     },
     {
       "name": "PAIRED: the recorded deadline is ignored, graded on the `wait` timeout rather than on `sleep`",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "        holder: this.binding.holder,\n        deadline: prior.initialDeadline,\n        now,",
       "replace": "        holder: this.binding.holder,\n        deadline,\n        now,",
       "command": "pnpm smoke:runtime-mesh-wait",
@@ -99,7 +99,7 @@
     },
     {
       "name": "every holder is treated as the minter, so a takeover re-mints a pause it does not hold",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "    const mine = prior.holder.id === this.binding.holder.id\n      && prior.holder.lifecycleUid === this.binding.holder.lifecycleUid;",
       "replace": "    const mine = true;",
       "command": "pnpm smoke:runtime-mesh-checkpoint",

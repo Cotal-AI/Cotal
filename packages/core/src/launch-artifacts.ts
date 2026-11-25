@@ -21,9 +21,9 @@
  * other launcher starts the child through {@link reclaimWithChild}, so a watcher beside the child
  * removes them once the child is gone, even when the launcher was killed.
  * What stays until the OS temp reaper removes it: the files of a spawn that threw anything but
- * {@link SpawnRefused} before its child started, those of a watcher that was itself SIGKILLed while
- * its launcher was dead, and on Windows, which has no POSIX shell to run the watcher, those of a
- * killed launcher.
+ * {@link SpawnRefused} before its child started, those of a watcher that was killed or could not
+ * run its utilities while the launcher was dead, and on Windows, which has no POSIX shell to run
+ * the watcher, those of a killed launcher.
  *
  * WHAT OWNER-PRIVATE MEANS. Each file is 0600 inside a 0700 directory. That is OS-user isolation:
  * any process running as the same user can read the file while it exists, as it can the agent file
@@ -113,23 +113,31 @@ function assertArtifactDirs(artifacts: readonly string[]): void {
 /** Run by `/bin/sh -c` as `<script> cotal-launch <n> <n dirs> <command> <args...>`. The watcher
  *  ignores the hangup, interrupt and terminate signals a closing terminal or a stop sends to the
  *  child's process group, holds no terminal, and polls the shell's pid, which `exec` hands to the
- *  command. A reused pid only delays the removal. It is the only owner left once the launcher is
- *  dead, so it tries every directory it could not remove again every five seconds until all are
- *  gone. */
+ *  command. A reused pid only delays the removal. The watcher resolves its utilities once using the
+ *  POSIX default path, without changing the child's PATH. It retries failed removal every five
+ *  seconds, but stops if it cannot run a utility or sleep. */
 const RECLAIM_SCRIPT = `p=$$ n=$1
 shift
 (
   trap '' HUP INT QUIT TERM
-  while kill -0 "$p" 2>/dev/null; do sleep 1; done
+  sleeper=$(command -p -v sleep) && remover=$(command -p -v rm) || exit 1
+  case "$sleeper" in /*) ;; *) exit 1 ;; esac
+  case "$remover" in /*) ;; *) exit 1 ;; esac
+  while kill -0 "$p" 2>/dev/null; do
+    "$sleeper" 1 || exit 1
+  done
   while :; do
     i=0 left=0
     for d; do
       [ "$i" -lt "$n" ] || break
-      rm -rf -- "$d" || left=1
+      "$remover" -rf -- "$d" || {
+        case $? in 126|127) exit 1 ;; esac
+        left=1
+      }
       i=$((i + 1))
     done
     [ "$left" = 0 ] && break
-    sleep 5
+    "$sleeper" 5 || exit 1
   done
 ) </dev/null >/dev/null 2>&1 &
 shift "$n"

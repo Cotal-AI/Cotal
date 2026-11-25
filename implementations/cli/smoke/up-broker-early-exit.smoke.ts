@@ -10,7 +10,8 @@
  *
  * `up --foreground` with the stand-in that exits 1 ends with exit 5, a failed run, not the broker's
  * own 1. Its line says the broker exited before the mesh was recorded, as `cotal meshes` confirms,
- * and its next step is the one a detached start gives, not the same `up` again. Off a terminal its
+ * and a stand-in that exits 0 before answering still fails startup.
+ * The next step is the one a detached start gives, not the same `up` again. Off a terminal its
  * start line is one line on stdout and its exit line one on stderr. On an 80-column terminal both
  * wrap at spaces, each continuation under its text, with no path split and `cotal up` whole.
  * The dashboard credential notice wraps too, keeping `service start web` whole and its full text.
@@ -67,6 +68,15 @@ try {
   suite.check("foreground: its next step is the output above, then the file or PATH, not the same up", line.includes(`next: read the terminal output above, then fix ${join(scratch, "bin-code", "nats-server")} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again`) && !line.includes("repair:"), line);
   const meshes = spawnSync(process.execPath, [cli, "meshes"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("foreground: no record was written for it", meshes.status === 0 && flat(meshes.stdout).includes("no meshes registered"), flat(`${meshes.stdout}${meshes.stderr}`));
+  const cleanRoot = join(scratch, "fg-clean-exit"), cleanBin = join(scratch, "bin-clean-exit");
+  mkdirSync(cleanRoot);
+  mkdirSync(cleanBin, { mode: 0o755 });
+  assertScratchHeld(cleanRoot, "the project folder");
+  writeFileSync(join(cleanBin, "nats-server"), `#!/bin/sh\nif [ "$1" = --version ]; then echo "nats-server: v2.14.0"; fi\nexit 0\n`, { mode: 0o755 });
+  const cleanServer = `nats://127.0.0.1:${await freePort()}`;
+  const earlyCleanExit = spawnSync(process.execPath, [cli, "up", "--foreground", "--server", cleanServer], { cwd: cleanRoot, env: envFor(cleanBin), encoding: "utf8", timeout: 120_000 });
+  const startupError = flat(earlyCleanExit.stderr);
+  suite.check("foreground: an exit 0 before readiness still fails startup", earlyCleanExit.status === 5 && startupError.includes("OPERATION_FAILED") && startupError.includes(`exited with code 0 before it answered at ${cleanServer}`), `${earlyCleanExit.status} ${startupError}`);
   const fake = join(scratch, "bin-code", "nats-server");
   const provisioned = "• web: provisioned web.creds - the dashboard's read-only credential, the `service start web` default";
   suite.check("foreground: off a terminal, the dashboard credential notice stays one line on stdout",

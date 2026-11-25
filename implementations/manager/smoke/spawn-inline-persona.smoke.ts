@@ -96,7 +96,6 @@ type Seat = { id: string; name: string; lifecycleUid: string; issued?: { generat
 type Internals = {
   managerInstanceId: string;
   agents: Map<string, Seat>;
-  freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   driveStaticRetirement: (a: unknown, surfaceFailure?: boolean) => Promise<void>;
   inventoryReferenceError: (entry: ManagerResumeAgent) => string | undefined;
   resumeEntryOf: (a: Seat) => ManagerResumeAgent;
@@ -107,6 +106,9 @@ type Internals = {
     retiring: Map<string, { lastError?: string }>;
     deprovision: (a: unknown) => Promise<void>;
     deprovisioningFlight: Map<string, Promise<void>>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: FreeSlotCause) => void;
   };
 };
 
@@ -392,10 +394,9 @@ try {
     check("a catalog persona naming a command the spawner lacks is refused by name", refused(await spawnAs(epLead, "ep_wide"), /endpoints com\.example\.orders refund/));
     check("a spawner holding no endpoint rows hands on none", refused(await spawnAs(lead, "ep_none", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["list"] }] } }), /endpoints com\.example\.orders list/));
     const refSpawn = await spawnAs(undefined, "ep_ref");
-    // The manager does not echo a persona file's load error; the parser's own refusal names the rule
-    // (packages/core agent-file smoke).
+    // File and inline persona refusals preserve the validation rule without launching a seat.
     check("a persona file naming a reference endpoint is refused even for an operator instrument, and starts no seat",
-      refused(refSpawn, /invalid native frontmatter/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
+      refused(refSpawn, /a single-label endpoint/) && seatOf(S.M, "ep_ref") === undefined, refSpawn);
     check("so is a reserved command on an inline record", refused(await spawnAs(epLead, "ep_desc", { persona: { prompt: "x", subscribe: [], endpoints: [{ endpoint: "com.example.orders", commands: ["describe"] }] } }), /reserved command "describe"/));
     // The record, the resume entry and a renewal keep the same commands, so the renewed ceiling still
     // equals the evidence the spawn recorded.
@@ -498,7 +499,7 @@ try {
     const d = okData(await spawnAs(undefined, "kept", { persona: { prompt: "x" } }));
     const seat = seatOf(S.M, "kept")!;
     seat.suppressCleanup = true;
-    S.M.freeSlot(seat, false, "process-exit");
+    S.M.namesCapacity.freeSlot(seat, false, "process-exit");
     check("a preservation cut keeps the snapshot", existsSync(inlineSnapshotPath(workspaceRoot, d!.lifecycleUid)));
   }
   {
@@ -805,9 +806,11 @@ try {
     check("a user-auth definition naming endpoints is refused and writes nothing", refused(epDefine, userEp) && !existsSync(join(root, ".cotal", "agents", "ep_user_def.md")), epDefine);
     const epDefineEmpty = await U.M.opDefinePersona({ name: "ep_user_empty", persona: "x", subscribe: [], endpoints: [] }, spawner, false);
     check("so is one naming an empty list", refused(epDefineEmpty, userEp) && !existsSync(join(root, ".cotal", "agents", "ep_user_empty.md")), epDefineEmpty);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = {};
+    // Fakes a hosted manager on a manager built without one, through the config cast.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = {};
     const epHosted = await U.M.opDefinePersona({ name: "ep_hosted", persona: "x", subscribe: [], endpoints: [] }, spawner, false);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = undefined;
+    // Restores the config of the manager built without a hosting authority.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = undefined;
     check("and so is a hosted manager's", refused(epHosted, userEp), epHosted);
     // define-persona reads the same row: the definer puts only capabilities its scope carries.
     const defineAs = (who: string, name: string, capabilities: string[]) => U.M.opDefinePersona({ name, persona: "x", capabilities }, who, false);
@@ -821,9 +824,11 @@ try {
     grantActor(ledger, { owner, actor: "boss", scope: ["admin"], allowSubscribe: [], allowPublish: [], label: "smoke operator" });
     const exempt = await defineAs(principalKey(owner, "boss").key, "trusted", ["run"]);
     check("a user-auth definer whose row holds admin is exempt", exempt.ok && JSON.stringify(loadAgentFile(definedPath("trusted")).capabilities) === JSON.stringify(["run"]), exempt);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = {};
+    // Fakes a hosted manager on a manager built without one, through the config cast.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = {};
     const hostedDefine = await defineAs(spawner, "hosted_def", ["spawn"]);
-    (U.mgr as unknown as { remoteAuthority?: unknown }).remoteAuthority = undefined;
+    // Restores the config of the manager built without a hosting authority.
+    (U.mgr as unknown as { config: { remoteAuthority?: unknown } }).config.remoteAuthority = undefined;
     check("a hosted manager reads no ledger, so its definer puts no capability into a persona", refused(hostedDefine, /user authority is hosted/) && !existsSync(definedPath("hosted_def")), hostedDefine);
     // The bound reads the persona as it will be written. A redefine that omits `capabilities` keeps
     // the saved list, so the saved list is checked against the definer as it holds now.

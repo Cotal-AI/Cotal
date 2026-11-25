@@ -62,4 +62,12 @@ if (!extensionPartKind) {
 }
 extensionPartKind.pattern = "^[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)+$";
 
+// SPEC §6: the presence `prompts` counts are non-negative integers, which TypeScript cannot say.
+const presencePrompts = definitions.PresencePrompts;
+if (!presencePrompts?.properties?.open || !presencePrompts.properties.seq) throw new Error("expected PresencePrompts with open and seq");
+for (const field of ["open", "seq"]) {
+  presencePrompts.properties[field].type = "integer";
+  presencePrompts.properties[field].minimum = 0;
+}
+
 writeFileSync("spec/cotal.schema.json", `${JSON.stringify(schema, null, 2)}\n`);

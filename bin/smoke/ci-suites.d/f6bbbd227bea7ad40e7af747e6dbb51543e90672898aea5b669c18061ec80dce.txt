@@ -1,0 +1,3 @@
+# Reasoning on the OpenCode event plane: a 1.x and a 2.x seat armed with `reasoningEvents` in their launch material
+# publish each turn's saved reasoning as one reasoning message with its text, inside the run and before the answer.
+smoke:opencode-reasoning-events

@@ -1,0 +1,3 @@
+# The command lists a launcher reads before launch, from stand-in harnesses, and the first command each
+# connector writes into its launch.
+smoke:command-catalogs

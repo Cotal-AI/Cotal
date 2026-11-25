@@ -358,6 +358,16 @@ try {
     fg.kill("SIGINT");
     const fgExit = await Promise.race([new Promise<number | null>((r) => fg.once("exit", (code) => r(code))), sleep(60_000).then(() => "timeout" as const)]);
     check("the foreground `up` exits on SIGINT", fgExit !== "timeout", fgExit);
+    const cleared = cotal(["use", "--clear"], { cwd: fgRoot });
+    check("clear the selected space before previewing the stopped project", cleared.status === 0, out(cleared));
+    for (const selector of [[], ["--space", FG_SPACE]]) {
+      const preview = cotal(["spawn", "--detach", "--dry-run", "--json", ...selector], { cwd: fgRoot });
+      const receipt = JSON.parse(preview.stdout || "null");
+      check(`a detached preview names the stopped open space ${selector.length ? "explicitly" : "from its folder"} without starting it`,
+        preview.status === 0 && receipt?.target?.space === FG_SPACE && receipt?.result?.kind === "managed-launch-preview"
+          && receipt.result.personaValidation === "not-checked-on-execution-host" && receipt.result.allocated === false
+          && receipt.result.launched === false && !(await portOpen(FG_PORT)), out(preview));
+    }
   } else skip("the SIGINT cell", "a signal to a child on win32 is a hard terminate");
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);

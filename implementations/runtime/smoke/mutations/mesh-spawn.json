@@ -20,7 +20,7 @@
   "mutations": [
     {
       "name": "workflow spawn drops explicit cwd forwarding",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),",
       "replace": "    ...(false ? { cwd: req.cwd } : {}),",
       "expectRed": "the child process cwd is the prepared clone, distinct from the manager root",
@@ -40,7 +40,7 @@
     },
     {
       "name": "a resume re-invokes instead of re-attaching to the recorded acceptance",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "      if (ext === undefined) {",
       "replace": "      if (true) {",
       "expectRed": "the resume sent NOTHING to the endpoint: the recorded acceptance is the submission",
@@ -49,7 +49,7 @@
     },
     {
       "name": "the acceptance is never bound as the entry's external state",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "          ...(req.placement !== undefined ? { host: req.placement.instanceId } : {}),\n          spawnedAt: this.now(),\n        };\n        await ctx.bind(ext);",
       "replace": "          ...(req.placement !== undefined ? { host: req.placement.instanceId } : {}),\n          spawnedAt: this.now(),\n        };",
       "expectRed": "the acceptance floor is bound as the entry's external state before the terminal wait",
@@ -85,7 +85,7 @@
     },
     {
       "name": "every terminal is read as succeeded",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (fact.state !== \"succeeded\") {",
       "replace": "function spawnHandleOf(req: SpawnRequest, ext: Readonly<Record<string, unknown>>, fact: GoalResultFact, endpoint: string): AgentHandleValue {\n  if (false) {",
       "expectRed": "the failure is the catchable L4002",
@@ -103,7 +103,7 @@
     },
     {
       "name": "an adopted seat is never handed to the migrated program's spawn",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    const adoptions = ext === undefined ? this.adoptable.get(req.persona) : undefined;\n    const adopted = adoptions?.[0];",
       "replace": "    const adoptions = ext === undefined ? this.adoptable.get(req.persona) : undefined;\n    const adopted = undefined;",
       "expectRed": "the edited program's spawn settled with the ADOPTED seat's handle, minting nothing",
@@ -112,7 +112,7 @@
     },
     {
       "name": "the adopted spawn binds no hand-over on its entry",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "        adoptedFrom: journalEntryKeyString(adopted),\n",
       "replace": "",
       "expectRed": "and bound the hand-over on its own entry: the seat's floor plus the step it was adopted from",
@@ -139,7 +139,7 @@
     },
     {
       "name": "a resume of an adopted spawn keys its short-circuit on the request id alone",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "      typeof recorded?.goalId === \"string\" && (recorded.goalId === goalId || typeof recorded.adoptedFrom === \"string\")",
       "replace": "      typeof recorded?.goalId === \"string\" && recorded.goalId === goalId",
       "expectRed": "a resume of the adopted spawn after its bind re-reads the adopted goal and submits nothing",
@@ -189,7 +189,7 @@
     },
     {
       "name": "the affinity gate is disarmed: a cwd with no target rides class anycast",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    if (req.cwd !== undefined && req.placement === undefined)\n      throw new EffectError(\"L4000\", \"spawn\",",
       "replace": "    if (false && req.cwd !== undefined && req.placement === undefined)\n      throw new EffectError(\"L4000\", \"spawn\",",
       "expectRed": "a cwd with no placement target refuses before any describe, allocation or child, with no anycast fallback",
@@ -207,7 +207,7 @@
     },
     {
       "name": "the placement target is dropped from the step-identity PROJECTION",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "          ...(req.placement !== undefined\n            ? { placement: { endpoint: req.placement.endpoint, instanceId: req.placement.instanceId } }\n            : {}),\n",
       "replace": "",
       "expectRed": "a replay whose ONLY edit is the placement instance id diverges at the recorded spawn step, with two different input hashes and nothing dispatched to the new target",

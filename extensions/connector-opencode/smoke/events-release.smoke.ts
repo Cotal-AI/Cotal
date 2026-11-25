@@ -33,7 +33,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer, connect as netConnect, type Socket } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -210,6 +210,9 @@ try {
   // written" are the same observation and the reap cells would pass against a dead event plane.
   check("a session that publishes events has a thread log on disk", threadDirs(WS_INPROC).length === 1, threadDirs(WS_INPROC));
   check("and the principal's lock is held while it does", lockExists(WS_INPROC));
+  // A thread's delta journal lives and dies with its WAL, so a reap removes it too.
+  const journalOfA = join(principalDir(WS_INPROC)!, threadDirs(WS_INPROC)[0]!, "deltas.jsonl");
+  writeFileSync(journalOfA, "", { mode: 0o600 });
 
   // A `/new` whose drain SETTLES. The predecessor's run is closed on the wire and nothing it wrote
   // is unaccounted for, so its log has nothing left to recover and goes.
@@ -218,6 +221,7 @@ try {
   await sleep(2_000);
   check("a retirement whose drain settled reaps the predecessor's log", logged(`${WAL_REAPED} ${A}`), logs.slice(-6));
   check("and leaves only the live session's log behind", threadDirs(WS_INPROC).length === 1, threadDirs(WS_INPROC));
+  check("the reap removes the thread's delta journal with its WAL", !existsSync(journalOfA));
 
   // A `/new` whose drain SPENDS THE BOUND. Nothing cancels an abandoned drain, so it may still be
   // writing; the log stays. This is the half a suite that only watched for deletion would miss.
@@ -268,7 +272,6 @@ try {
     ready: existsSync(ready1) ? readFileSync(ready1, "utf8").trim() : "(absent)",
   });
 
-  const { writeFileSync } = await import("node:fs");
   writeFileSync(goDispose, "go\n");
   for (let i = 0; i < 400 && first.exitCode === null && first.signalCode === null; i++) await sleep(100);
   check("dispose ends its host process", first.exitCode === 0, { exitCode: first.exitCode, signal: first.signalCode });

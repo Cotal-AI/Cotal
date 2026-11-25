@@ -15,7 +15,7 @@ const fixture = join(import.meta.dirname, "update-recovery.fixture.ts");
 const now = Date.now();
 function cell(name: string) {
   const base = join(root, name);
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(base, "home"), COTAL_HOME: join(base, "cotal"), XDG_CONFIG_HOME: join(base, "config"), TMPDIR: join(base, "tmp"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", RECOVERY_TEST_NOW: String(now) };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: join(base, "home"), COTAL_HOME: join(base, "cotal"), XDG_CONFIG_HOME: join(base, "config"), TMPDIR: join(base, "tmp"), DO_NOT_TRACK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", RECOVERY_TEST_NOW: String(now) };
   for (const path of [env.HOME, env.COTAL_HOME, env.TMPDIR, join(env.XDG_CONFIG_HOME, "cotal"), join(base, "foreign/.update-snapshot-old")]) mkdirSync(path, { recursive: true, mode: 0o700 });
   const foreign = join(base, "foreign/.update-snapshot-old");
   writeFileSync(join(foreign, "untouched"), "foreign snapshot bytes\n");
@@ -35,8 +35,10 @@ function cell(name: string) {
   return { env, record, receipt, attempt, observation, foreign, save, run, retained };
 }
 
-for (const automatic of [false, true]) {
-  const c = cell(automatic ? "dead-auto" : "dead-manual");
+for (const mode of ["manual", "auto", "no-config"] as const) {
+  const c = cell(`dead-${mode}`);
+  // A config home that does not exist yet cannot own the foreign snapshot, and is no reason to stop the update.
+  if (mode === "no-config") rmSync(c.env.XDG_CONFIG_HOME, { recursive: true });
   const before = [readFileSync(c.receipt), readFileSync(c.attempt)];
   const foreignBefore = readFileSync(join(c.foreign, "untouched"));
   const check = c.run({}, ["update", "--check"]);
@@ -44,7 +46,7 @@ for (const automatic of [false, true]) {
   assert.match(check.output, /retain these unusable records and continue/);
   assert.deepEqual(readFileSync(c.receipt), before[0], "check does not rewrite recovery");
   assert.equal(existsSync(c.observation), false, "check never starts observation");
-  const result = c.run(automatic ? { COTAL_AUTO_UPDATE: "1" } : {});
+  const result = c.run(mode === "auto" ? { COTAL_AUTO_UPDATE: "1" } : {});
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Retained unusable interrupted-update records in .*; continuing the update/);
   assert.match(result.output, /ordinary reconciliation completed/);
@@ -89,6 +91,29 @@ for (const failed of [false, true]) {
     assert.equal(readFileSync(join(c.env.XDG_CONFIG_HOME, "cotal/seed/restored"), "utf8"), "original seed bytes");
   }
   assert.deepEqual(c.retained(), []);
+}
+
+if (process.platform === "linux" || process.platform === "darwin") {
+  const c = cell("live-valid-snapshot");
+  const local = join(c.env.XDG_CONFIG_HOME, "cotal/.update-snapshot-live");
+  mkdirSync(local, { mode: 0o700 });
+  c.save({ ...c.record, phase: "replacing", snapshot: local, owner: { pid: process.pid, start: processStartToken(process.pid)!, nonce: "live-owner" } });
+  const entry = join(import.meta.dirname, "../../../bin/dist/cotal.js");
+  const version = (word = "--version") => spawnSync(process.execPath, [entry, word], { env: c.env, encoding: "utf8", timeout: 30000 });
+  const live = version("version");
+  assert.equal(live.status, 0, live.stderr);
+  assert.equal(live.stdout.match(/An update is in progress in pid \d+\. Wait for it to finish\./g)?.length, 1);
+  assert.doesNotMatch(live.stdout + live.stderr, /needs repair|interrupted update|update --self/);
+  for (const flag of ["--version", "-V"]) {
+    const result = version(flag);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, live.stdout);
+    assert.equal(result.stderr, live.stderr);
+  }
+  c.save({ ...c.record, phase: "replacing", snapshot: local });
+  const stopped = version();
+  assert.equal(stopped.status, 0, stopped.stderr);
+  assert.match(stopped.stdout, /restore the interrupted update/);
 }
 
 for (const malformed of [false, true]) {
@@ -140,9 +165,11 @@ for (const shape of ["absent", "missing", "file", "symlink", "reused-owner"] as 
   mkdirSync(join(local, "seed"), { recursive: true, mode: 0o700 });
   writeFileSync(join(local, "seed", "restored"), "original seed bytes");
   c.save({ ...c.record, snapshot: local });
-  const result = c.run();
+  const result = c.run({}, ["update", "--self", "--space", "test-space"]);
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Restored cotal-ai@0.13.1/);
+  assert.match(result.output, /continued through restored entry: .*"update","--self","--space","test-space"/);
+  assert.doesNotMatch(result.output, /no newer latest tag/);
   assert.equal(readFileSync(join(c.env.XDG_CONFIG_HOME, "cotal/seed/restored"), "utf8"), "original seed bytes");
   assert.equal(existsSync(local), false);
   assert.deepEqual(c.retained(), []);

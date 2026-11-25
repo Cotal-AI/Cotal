@@ -257,6 +257,13 @@ static napi_value LaunchdJob(napi_env env, napi_callback_info info) {
     set_job_string(env, out, job, CFSTR("Program"), "program");
     set_job_arguments(env, out, job);
     set_job_string(env, out, job, CFSTR("WorkingDirectory"), "workingDirectory");
+    CFTypeRef pid_value = CFDictionaryGetValue(job, CFSTR("PID"));
+    int pid = 0;
+    if (pid_value != NULL && CFGetTypeID(pid_value) == CFNumberGetTypeID()
+        && CFNumberGetValue((CFNumberRef)pid_value, kCFNumberIntType, &pid) && pid > 0) {
+      napi_create_int32(env, pid, &v);
+      napi_set_named_property(env, out, "pid", v);
+    }
   }
   CFRelease(job);
   return out;

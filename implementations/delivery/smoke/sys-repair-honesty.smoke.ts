@@ -165,7 +165,8 @@ try {
   console.log("\n4) every writer of the pair is unreachable on a root the guard refuses");
   // Source-asserted, not recalled: this is the structural half of the finding, and drift must break
   // this suite rather than quietly invalidate the claim that no minting path exists on such a root.
-  const upSrc = readFileSync("implementations/cli/src/commands/up.ts", "utf8");
+  const upSrc = ["up.ts", "up-broker-auth.ts"]
+    .map((file) => readFileSync(`implementations/cli/src/commands/${file}`, "utf8")).join("\n");
   const rotSrc = readFileSync("packages/workspace/src/system-rotation.ts", "utf8");
   const healSrc = readFileSync("implementations/delivery/src/sys-creds.ts", "utf8");
   // As of P7 the pair is written through the SecretStore under the per-space key builders, never at a

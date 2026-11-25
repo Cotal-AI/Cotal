@@ -1,0 +1,3 @@
+# Claude's reply text streams on the event plane: the order tie across a tool call, a late flush,
+# the mismatch, a turn end that abandons a stream, a subagent's flush, and the mod's relay.
+smoke:claude-stream

@@ -40,8 +40,8 @@ Source-checkout launches run the host directly in Node with the TypeScript loade
 command-line wrapper can interrupt its shutdown. Published installs continue to run the compiled host directly.
 
 A seat that dies without that teardown, from a manager restart or a kill past the grace window,
-leaves its Jcode server running. The server has a process group of its own and carries no
-`COTAL_NAME`, so a name-keyed reap does not reach it, and it holds the seat's runtime directory
+leaves its Jcode server running. The server has a process group of its own, so teardown uses
+recorded process identities rather than a name-keyed reap. It holds the seat's runtime directory
 until its own five-minute idle timer expires. Each launch records its identity nonce and its host
 process in the private home, and the seat's next launch stops the tree that record names. The
 recorded host is the gate: while it is still alive the seat is still serving, so nothing is
@@ -50,7 +50,10 @@ signalled and the second launch meets Jcode's own runtime-directory lock instead
 The private Jcode home lives under `<manager-workspace>/.cotal/jcode/`. It is unique per
 space/name and is owner-only. The connector mirrors the operator's provider logins into it (below),
 so provider logins work without copying Jcode's transcript/config tree into the seat. The spawned
-Jcode process does not inherit `COTAL_*` values or the Cotal launch-material pointer.
+Jcode process inherits only the non-secret Cotal seat attribution used by `cotal stop --self`:
+`COTAL_SPACE`, `COTAL_MANAGER_INSTANCE`, `COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`,
+`COTAL_ACCEPTED_TOKEN` and `COTAL_HOME`. It does not inherit broker credentials or the
+Cotal launch-material pointer.
 
 Because the home is keyed by space and name, a seat respawned under the same space, name, and
 manager workspace lands in the same home, and the connector automatically continues the
@@ -64,7 +67,9 @@ never continues a session: it starts a fresh one even when its home holds a sess
 of the same name left, so that seat's task and history never reach it. An explicit `--resume` still
 forks the session it names. The short
 socket alias the connector derives from that home is reclaimed at every launch, so a name a stopped
-seat used stays launchable.
+seat used stays launchable. Jcode itself gets the home by its real path as `JCODE_HOME`, and the
+alias names only its runtime directory and sockets, because from Jcode 1.1 a shell command fails
+when any part of its home's path is a symlink.
 
 `cotal spawn --resume <id>` forks session `<id>` from your own Jcode home (`JCODE_HOME`, or the
 default Jcode home) into the seat's private home before the seat's instance starts. The Harness API
@@ -161,9 +166,9 @@ another launch cannot change it. An unprovable teardown, the recovery window exp
 disconnect after a successful replacement also ends the seat. When a turn failed on a Harness error
 and no turn has succeeded since, whether the host or the TUI owned it, the connector line that ends
 the seat this way also names that error as `last turn error: <message>`, so the manager's
-`seat reaped:` line carries it without a read of the seat's private log. The reap line keeps only the
-first 240 characters, so that field comes before the error of a failed recovery, which then reads
-`recovery error: <message>`. An unrecognized Harness SDK error
+`seat reaped:` line carries it without a read of the seat's private log. The connector puts that field
+before `recovery error: <message>` so it appears even if the manager cuts the end of the line.
+An unrecognized Harness SDK error
 code remains transient by default and retries inside the same bounded window; new permanent codes
 must be added to the explicit classifier and its exact-count regression.
 
@@ -202,12 +207,15 @@ to the host's one `MeshAgent`. The Jcode/MCP child receives a per-launch relay c
 the Cotal broker credential or its launch-material pointer. Jcode also overlays project
 `.jcode/mcp.json`, `.mcp.json`, and `.claude/mcp.json`; a managed launch **refuses** a workspace
 containing any of those files, because one could replace the `cotal` bridge or add tools that were
-not explicitly shared. Operator MCP configuration is isolated in the private home and project MCP
-configuration is not supported yet.
+not explicitly shared. The refusal, `Jcode host startup failed (project_mcp_config)`, names the
+files it found. A home directory is refused too when it holds Jcode's own `.jcode/mcp.json`, so
+start the agent in a project directory with `--cwd`. Operator MCP configuration is isolated in the
+private home and project MCP configuration is not supported yet.
 
 Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
-`cotal_orientation`. The call counts whether Jcode makes it directly or through its deferred
-`mcp_call` tool with server `cotal` and tool `cotal_orientation`. A call that fails, or whose MCP
+`cotal_orientation`. The call counts whether Jcode makes it directly or through its deferred MCP
+tool with server `cotal` and tool `cotal_orientation`. That tool is `mcp_call` up to Jcode 0.99.0
+and `mcp` with action `call` from 0.99.1. A call that fails, or whose MCP
 result is an error, does not count. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
 snapshot immediately before Jcode rebuilds that snapshot. The host repeats the identical proof once
 in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
@@ -258,6 +266,39 @@ turn, including ordinary channel traffic held in `dnd`. Quiet-channel traffic re
 through an explicit inbox pull. The connector log names a startup prompt waiting on in-flight
 steering and a turn deferred because native state changed during that wait.
 
+## Agent commands [#agent-commands]
+
+On a per-user mesh the host runs Jcode's native session operations as
+[agent commands](connector-runtime-reference.mdx#agent-commands), named as Jcode's own TUI names them:
+
+- `compact` asks Jcode to compact the conversation and takes no arguments. Jcode refuses when there
+  is too little to compact, and the command ends `refused` with Jcode's reason.
+- `rewind N` keeps the first N messages of the conversation. N is a whole number, 1 or more.
+- `rename <name>` names the session, and `rename --clear` restores its generated title.
+
+Each is one Harness request and starts no model turn. The host runs queued commands while no turn
+runs, before the next inbox turn. A call whose arguments Jcode cannot take ends `refused` with
+`failed-precondition` before Jcode sees it. `clear` is not offered: Jcode answers it with a session
+status the host reads as busy, so the seat would stop taking messages. Model and reasoning effort
+are set through [model selection](#model-selection), not as commands.
+
+`interrupt` sends Jcode's cancel for the running turn and answers `interrupted`, or `idle` when no
+turn runs. Jcode ends a cancelled turn as it ends
+one its user stopped, and the host closes that turn on its usual path.
+
+`turn` sends the owner's words as typed, with their images, as the user's own message in a turn of
+its own. That turn carries no inbox traffic, which waits for the next turn, and a seat's first turn
+opens with its channel briefing. Images go as Jcode's attachments. A turn starts while no turn runs,
+as a command does, and reads `started` once Jcode acknowledges the send. Jcode refusing the send
+first ends it `refused` with Jcode's reason. A send Jcode does not acknowledge within 10 seconds
+ends `unknown`, because the turn may still run.
+
+`usage` reports the context Jcode's last provider call used, against the context budget Jcode
+reported with that call. The count follows Jcode's own context meter: the input alone where the
+provider counts cache reads inside it, as OpenAI does, and the input plus cache reads and writes
+where the provider reports them apart, as Anthropic does. A Jcode that reports no budget, such as
+0.99.0, answers with no context. Jcode reports no cost.
+
 ## Model selection
 
 `--model` is passed to Jcode's session-level Harness API model selector. Jcode validates the model
@@ -288,19 +329,18 @@ errno. Fix the directory's permissions on the seat's private state and start aga
 never repairs or widens them itself. A missing `sessions/` directory is a first launch and is left
 alone.
 
-`cotal models --harness jcode` reads the declared catalog from the operator Jcode home's
-`config.toml`: each provider with `model_catalog = true`, its `[[providers.<name>.models]]` ids,
-and any declared `reasoning_efforts`. This is the same config Jcode copies into a private managed
-instance. The command fails loud when the file is unreadable, malformed, or enables a catalog
-without model entries.
+`cotal models --harness jcode` runs `jcode model list --json` with the binary and environment a
+seat's host gets, so Jcode reads the home and logins a seat would mirror. A model is listed when
+Jcode reports at least one available route for it. Jcode also lists models whose every route it
+reports unavailable, such as Claude models without a Claude login, and the catalog leaves those
+out. A listed model names its provider: the provider Jcode selected when that provider carries the
+model, or else the only provider that does. Jcode's availability is its own claim, not a launch
+check. With an OpenAI-compatible profile selected, Jcode marks routes of other built-in profiles
+available, while the session sends every model to the selected profile.
 
-The listed effort tiers are display declarations, not Jcode runtime capabilities. Jcode's named
-model config does not assign effort support per model. A named provider profile enables it through
-provider configuration or Jcode's model-family detection. `cotal models` prints
-that caveat inline as `(declared, not provider-verified)` after each configured tier list,
-so it cannot be missed by reading only the model rows. Providers can reject a tier the file names,
-so launch remains the authority: Jcode applies the requested value and a provider rejection ends the
-launch. `--refresh` does not turn this local declaration into a live probe.
+Jcode reports no reasoning efforts per model, so the catalog offers no variants. When Jcode cannot
+list, for example before `jcode login`, the read fails and names the error Jcode printed. Each read
+runs `jcode model list` again, so `--refresh` changes nothing.
 
 The Harness API can set a requested effort but cannot read an effective effort back. Its runtime
 identity reports provider, model, and routes only; no reply or event carries the applied tier. Cotal
@@ -369,9 +409,8 @@ limits, recovery and the connector coverage still deferred.
 The channel and grant rules are the same as the other connectors; see
 [Connect Claude Code](connect-claude.mdx#event-plane) for how to grant and read one.
 
-Jcode's live Harness API reports token-sized text and reasoning deltas, but that stream cannot be
-read again after a host crash. The connector therefore reads Jcode's native append-only session
-journal under the seat's private home. The journal supplies a durable byte cursor and is keyed by
+The connector reads Jcode's native append-only session journal under the seat's private home. The
+journal supplies a durable byte cursor and is keyed by
 the Jcode session id, which is also the AG-UI thread id. A restarted seat continues from the cursor
 stored in its event write-ahead log and does not republish records already acknowledged.
 
@@ -395,9 +434,20 @@ behind the stored cursor, and the next start publishes them. Any other emitter f
 the same way with the delay before the connector re-establishes the plane; the seat keeps running
 on every space.
 
-The journal records settled message blocks rather than live deltas. Text and reasoning therefore
-arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
-blocks. User prompt text is not republished onto the event channel. The launcher sets
+Jcode saves a reply once its provider call is complete, so the seat also journals the text and
+reasoning deltas the Harness API reports, through the
+[delta journal](connector-runtime-reference.mdx#streamed-text), and a reply streams on the event
+plane before Jcode saves it. Each provider call streams under a message of its own, and the reply
+Jcode saves for that call sends the rest of the text and ends it. Reasoning publishes from whichever
+block Jcode stores it in, Anthropic's signed thinking included. When the saved reply does not
+continue what streamed, as after a provider retry, the streamed message ends and the saved text
+publishes as a message of its own. A provider call that fails after it streamed leaves no saved
+reply, so the turn's end ends its streamed message. A turn's run ends with `RUN_FINISHED`, or with
+`RUN_ERROR` when Jcode failed the turn, whether the seat or the attached TUI started it. A delta that arrives while a checkpoint has left
+no journal waits until Jcode writes the next one. A delta journaled before a checkpoint is placed
+before it, also when the journal Jcode writes next has the inode number of the one it replaced, as
+ext4 can give it. Tool activity arrives when Jcode persists the
+tool-use and result blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted space. A registration
 that requires events refuses `--no-events`, and its launch always carries the flag and the workspace
 root the event log lives under. A hand-driven user-mode launch with `COTAL_EVENTS_REQUIRED=1` arms
@@ -496,7 +546,7 @@ See [Private instance ownership](#private-instance-ownership) for the current co
 
 ### Declared catalog
 
-See [Private instance ownership](#private-instance-ownership) for the current connector contract.
+See [Model selection](#model-selection) for the current catalog.
 
 ### Requested reasoning effort
 

@@ -220,7 +220,7 @@ const M = mgr as unknown as {
   renewManagedStaticCred(agent: Agent): Promise<void>;
   renewDaemonCreds(): Promise<void>;
   despawnAuthorized(agent: Agent, graceful: boolean, trackNonAdmin: boolean): { ok: boolean };
-  driveStaticRetirement(target: { name: string }, surfaceFailure?: boolean): Promise<void>;
+  staticLifecycle: { driveStaticRetirement(target: { name: string }, surfaceFailure?: boolean): Promise<void> };
   retirement: {
     retiring: Map<string, RetirementHold>;
   };
@@ -229,8 +229,8 @@ const M = mgr as unknown as {
 // What each alias's static terminal was handed: its teardown target, which must carry the accepted
 // renewal as a declared field and none of the live record's own fields.
 const terminalTargets = new Map<string, Record<string, unknown>>();
-const driveStaticRetirement = M.driveStaticRetirement.bind(mgr);
-M.driveStaticRetirement = (target, surfaceFailure) => {
+const driveStaticRetirement = M.staticLifecycle.driveStaticRetirement.bind(M.staticLifecycle);
+M.staticLifecycle.driveStaticRetirement = (target, surfaceFailure) => {
   terminalTargets.set(target.name, target);
   return driveStaticRetirement(target, surfaceFailure);
 };

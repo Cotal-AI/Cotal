@@ -177,9 +177,9 @@ export const TOOL_RESULT_EVENT = "cotal.toolResult";
  *
  * Its one member is the tool result marker, {@link TOOL_RESULT_EVENT}. The egress fence suppresses
  * `TOOL_CALL_RESULT` because its `content` is the tool output, and that leaves a viewer unable to
- * tell when a call finished. The marker carries a call id and a boolean and nothing else, and the
- * closed schema refuses one that carries more, so the reason the fence suppresses the result still
- * holds.
+ * tell when a call finished. The marker carries a call id and at most a boolean and nothing else,
+ * and the closed schema refuses one that carries more, so the reason the fence suppresses the result
+ * still holds.
  *
  * Earlier revisions held `cotal.ask.opened` and `cotal.ask.settled`. Both were removed when ask
  * state left this plane, because nothing consumed them: the board answers what is owed, the plane
@@ -640,11 +640,11 @@ function assertInterrupts(list: readonly AguiInterrupt[]): void {
  * outcome IS supplied its discriminator key is `type`, not `status` (measured: the schema refuses
  * `{status:"success"}` naming `outcome.type`), and the object is STRICT.
  *
- * The `interrupt` outcome is REPRESENTABLE and VALIDATED here, and UNSPENT: no source on this plane
- * constructs one, because a harness-native park is what would justify it and none of the three
- * sources reports one. It is checked anyway because the arm exists, and an arm that builds an event
- * the schema refuses is worse than an arm that does not exist. Its first draft took `unknown[]` and
- * passed it through, so `[]` and `[{}]` both produced a refused event with nothing looking.
+ * The `interrupt` outcome closes a turn its harness reports as interrupted: an aborted Codex turn,
+ * Claude Code's record of its user interrupting a turn, and an aborted Pi turn. Its list is checked
+ * because an arm that builds an event the schema refuses is worse than an arm that does not exist:
+ * the first draft took `unknown[]` and passed it through, so `[]` and `[{}]` both produced a refused
+ * event with nothing looking.
  */
 export function runFinished(o: {
   threadId: string;
@@ -829,18 +829,19 @@ export function toolCallResult(o: {
  *
  * A mapper emits it beside each `TOOL_CALL_RESULT`, at the result's timestamp. The fence drops the
  * result and lets the marker through, so a viewer learns that a call finished and how, and nothing
- * the tool read or returned. `isError` is always present.
+ * the tool read or returned. `isError` says whether the call failed, and is left out when the
+ * harness's record does not say: a mapper never defaults it.
  */
 export function toolResultMarker(o: {
   toolCallId: string;
-  isError: boolean;
+  isError?: boolean;
   timestamp?: number;
   cotal?: CotalMeta;
 }): WithCotal<CustomEvent> {
   return {
     type: AGUI_EVENT_TYPE.CUSTOM,
     name: TOOL_RESULT_EVENT,
-    value: { toolCallId: o.toolCallId, isError: o.isError },
+    value: { toolCallId: o.toolCallId, ...(o.isError === undefined ? {} : { isError: o.isError }) },
     ...(o.timestamp !== undefined ? { timestamp: o.timestamp } : {}),
     ...(o.cotal ? { cotal: o.cotal } : {}),
   } as WithCotal<CustomEvent>;
@@ -1166,14 +1167,14 @@ const KNOWN_EVENT_KEYS_BY_TYPE: ReadonlyMap<string, ReadonlySet<string>> = new M
   [AGUI_EVENT_TYPE.CUSTOM, new Set(["type", "timestamp", "rawEvent", "name", "value", "cotal"])],
 ]);
 
-/** The only keys a {@link TOOL_RESULT_EVENT} marker's `value` carries. */
+/** The only keys a {@link TOOL_RESULT_EVENT} marker's `value` carries. `isError` is optional. */
 const TOOL_RESULT_VALUE_KEYS: ReadonlySet<string> = new Set(["toolCallId", "isError"]);
 
 /**
  * Where a {@link TOOL_RESULT_EVENT} marker's `value` leaves its closed shape, relative to the
- * event, or `undefined` when it holds a string `toolCallId`, a boolean `isError` and nothing else.
- * An extra key is named (`value.<key>`); a value that is not a plain object, or a key that is
- * missing or of the wrong type, answers `value`.
+ * event, or `undefined` when it holds a string `toolCallId`, at most a boolean `isError`, and
+ * nothing else. An extra key is named (`value.<key>`); a value that is not a plain object, a missing
+ * `toolCallId` or a key of the wrong type answers `value`.
  */
 function toolResultValueDefect(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "value";
@@ -1181,10 +1182,9 @@ function toolResultValueDefect(value: unknown): string | undefined {
   for (const key of keys) {
     if (!TOOL_RESULT_VALUE_KEYS.has(key)) return `value.${key}`;
   }
-  if (keys.length !== TOOL_RESULT_VALUE_KEYS.size) return "value";
   const v = value as { toolCallId?: unknown; isError?: unknown };
   if (typeof v.toolCallId !== "string") return "value";
-  if (typeof v.isError !== "boolean") return "value";
+  if ("isError" in v && typeof v.isError !== "boolean") return "value";
   return undefined;
 }
 
@@ -1200,7 +1200,7 @@ export function toolResultMarkerDefect(e: { value?: unknown; rawEvent?: unknown 
   const defect = toolResultValueDefect(e.value);
   if (defect === undefined) return undefined;
   return defect === "value"
-    ? "value is not { toolCallId: string, isError: boolean }"
+    ? "value is not { toolCallId: string, isError?: boolean }"
     : `${defect} is not a key the marker's value carries`;
 }
 
@@ -1208,10 +1208,10 @@ export function toolResultMarkerDefect(e: { value?: unknown; rawEvent?: unknown 
  * A {@link TOOL_RESULT_EVENT} marker's `value` when it has the closed shape, or `undefined`. The
  * closed schema and the text renderer both read the marker through this one rule.
  */
-export function toolResultValue(value: unknown): { toolCallId: string; isError: boolean } | undefined {
+export function toolResultValue(value: unknown): { toolCallId: string; isError?: boolean } | undefined {
   if (toolResultValueDefect(value) !== undefined) return undefined;
-  const v = value as { toolCallId: string; isError: boolean };
-  return { toolCallId: v.toolCallId, isError: v.isError };
+  const v = value as { toolCallId: string; isError?: boolean };
+  return { toolCallId: v.toolCallId, ...(v.isError === undefined ? {} : { isError: v.isError }) };
 }
 
 /**
@@ -1225,7 +1225,7 @@ export function toolResultValue(value: unknown): { toolCallId: string; isError: 
  *    by `parseAguiFrame`; if it somehow reaches here it is reported as
  *    `events[i]` with no key.
  * 3. The `value` of a `CUSTOM` named {@link TOOL_RESULT_EVENT}, which must be
- *    `{ toolCallId, isError }` and nothing more, so the marker cannot carry
+ *    `{ toolCallId, isError? }` and nothing more, so the marker cannot carry
  *    tool output past the fence that drops the result.
  *
  * Returns the dotted path of the first unknown property found, e.g.

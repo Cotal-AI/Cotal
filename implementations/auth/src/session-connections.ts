@@ -160,3 +160,34 @@ export async function reconcileSessionConnections(opts: {
   }
   return seq;
 }
+
+/** Run bounded passes until the authority stops, with one in-flight pass to drain. */
+export function startSessionConnectionSweep(opts: Pick<Parameters<typeof reconcileSessionConnections>[0], "jsm" | "kv" | "space" | "secret" | "releaseWindowMs" | "evict"> & {
+  canSweep(): boolean;
+  log(line: string): void;
+}): () => Promise<void> {
+  const abort = new AbortController();
+  const retryLogged = new Set<string>();
+  const retries = new Map<string, { nextAt: number; delayMs: number }>();
+  let seq = 1, delayMs = 1000, failureLogged = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let flight: Promise<void> = Promise.resolve();
+  const schedule = (): void => {
+    if (abort.signal.aborted || !opts.canSweep()) return;
+    timer = setTimeout(() => {
+      if (abort.signal.aborted || !opts.canSweep()) return;
+      flight = reconcileSessionConnections({ ...opts, seq, maxRows: 64, signal: abort.signal, retryLogged, retries }).then((next) => {
+        seq = next ?? 1;
+        delayMs = 1000;
+        failureLogged = false;
+      }, (e: unknown) => {
+        delayMs = Math.min(delayMs * 2, 30_000);
+        if (abort.signal.aborted || !opts.canSweep() || failureLogged) return;
+        opts.log(`auth-plane: session connection eviction failed: ${e instanceof Error ? e.message : String(e)}`);
+        failureLogged = true;
+      }).then(schedule);
+    }, delayMs);
+  };
+  schedule();
+  return async () => { clearTimeout(timer); abort.abort(new Error("auth session sweep stopped")); await flight; };
+}

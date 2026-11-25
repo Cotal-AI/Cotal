@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { token } from "@cotal-ai/core";
-import schema from "./service-definition.schema.json" with { type: "json" };
+
+const schema = JSON.parse(readFileSync(new URL("./service-definition.schema.json", import.meta.url), "utf8")) as {
+  readonly properties: { readonly launch: { readonly oneOf: readonly [{ readonly properties: { readonly args: { readonly items: { readonly maxLength: number } } } }, ...unknown[]] } };
+};
 
 /** The imported local definition, before files, references and an adapter are resolved. Parsing
  *  authorizes no launch and opens no referenced path. The controller must check those separately. */
@@ -38,7 +42,7 @@ function definitionValidator(): ValidateFunction<ServiceDefinitionInput> {
 const refuse = (message: string): never => { throw new Error(`service definition: ${message}`); };
 
 /** The schema's bound on one process launch argument, in characters as it counts them. */
-const MAX_LAUNCH_ARG = (schema.properties.launch.oneOf[0] as { properties: { args: { items: { maxLength: number } } } }).properties.args.items.maxLength;
+const MAX_LAUNCH_ARG = schema.properties.launch.oneOf[0].properties.args.items.maxLength;
 
 /** The first process launch argument over {@link MAX_LAUNCH_ARG}, by its position, which the schema's
  *  own error at `launch` does not name. Undefined when there is none or `input` has no such list. */

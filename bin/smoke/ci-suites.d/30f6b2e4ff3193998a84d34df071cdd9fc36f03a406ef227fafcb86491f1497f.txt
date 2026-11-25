@@ -1,0 +1,3 @@
+# A Hermes seat launched with askPermissions puts each command approval behind the prompt desk,
+# answers a session's approvals in order, and denies at once when the desk cannot hold one.
+smoke:hermes-approvals

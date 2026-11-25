@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
@@ -6,6 +7,7 @@ import {
   bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
+  extensionReinstallAdvice,
   hostPackageDir,
   installedExtensionPackage,
   loadExtensionsManifest,
@@ -40,11 +42,9 @@ export function isBundledDesktopRuntime(): boolean {
  */
 
 /**
- * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
- * behind. Every caller links this host's peer into the extension (`bindExtensionPeers`) before the
- * import, so the copy that failed is nameable — path and version — and rankable against the extension.
- * Prescribing `cotal ext add` without ranking them tells the operator to reinstall whichever side is
- * CURRENT, and no reinstall of an extension can add an export to an older core.
+ * Identify the missing export and the peer linked by `bindExtensionPeers` before import.
+ * Recommend replacing one side only when its version or the extension's peer range establishes
+ * which side is behind.
  */
 function importFailure(pkg: string, version: string, e: unknown, remedy: string, meta: InstalledExtensionPackage): Error {
   const message = e instanceof Error ? e.message : String(e);
@@ -72,8 +72,8 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
       );
     case "same-version":
       return new Error(
-        `${head}, and ${at}. Same version, different build (${skew.because}): the installed ${peer} predates this ` +
-          `extension's source - rebuild or reinstall the cotal that owns ${skew.peerPath}.`,
+        `${head}, and ${at}. Both packages report ${skew.peerVersion}. ` +
+          `Check the extension's import and the exports of the linked peer before replacing either build.`,
       );
     case "extension-behind":
       return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${remedy}`);
@@ -82,6 +82,35 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
         `${head}, and ${at}. Neither side can be named as behind: ${skew.because} - compare the two installs before ` +
           `reinstalling either.`,
       );
+  }
+}
+
+/** Select the package's explicit export, if it has one. */
+function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
+  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
+  if (typeof dot === "string") return dot;
+  if (dot && typeof dot === "object") {
+    const d = dot as Record<string, string>;
+    return d.import ?? d.default;
+  }
+  return typeof meta.exports === "string" ? meta.exports : undefined;
+}
+
+/**
+ * Resolve the entry for both on-disk checks and import. Node allows `main` to omit the file
+ * extension. Directory entries use their own main or index file. Keep the declared path when
+ * neither resolves so the caller can report it as missing or unimportable.
+ */
+export function resolveExtensionEntry(dir: string, meta: InstalledExtensionPackage): string {
+  const exported = exportedEntry(meta);
+  const path = join(dir, exported ?? meta.main ?? "index.js");
+  const entry = statSync(path, { throwIfNoEntry: false });
+  if (entry && !entry.isDirectory()) return path;
+  if (!entry && (exported !== undefined || meta.main === undefined)) return path;
+  try {
+    return createRequire(join(dir, "package.json")).resolve(path);
+  } catch {
+    return path;
   }
 }
 
@@ -96,15 +125,8 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   const dir = extensionPackageDir(pkg);
   const meta = metadata ?? installedExtensionPackage(pkg);
   if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
-  let entry = meta.main ?? "index.js";
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
   try {
-    await import(pathToFileURL(join(dir, entry)).href);
+    await import(pathToFileURL(resolveExtensionEntry(dir, meta)).href);
   } catch (e) {
     throw importFailure(pkg, version, e, remedy, meta);
   }
@@ -172,7 +194,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   }
   if (onDisk.version !== ext.version) {
     throw new Error(
-      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale). ${extensionReinstallAdvice(ext)}`,
     );
   }
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.

@@ -21,7 +21,7 @@
   "mutations": [
     {
       "name": "a spawn subject with no persona is coerced to the string \"undefined\"",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "      if (typeof named !== \"string\" || named === \"\")\n        throw new RuntimeFault(",
       "replace": "      if (false)\n        throw new RuntimeFault(",
       "expectRed": "a spawn record with no persona is refused as L3041, never spawned as the persona \"undefined\"",
@@ -31,7 +31,7 @@
     },
     {
       "name": "the placement guard is removed entirely",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "      if (placementValue !== undefined && !isPlacementPair(placementValue))",
       "replace": "      if (false)",
       "expectRed": "`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
@@ -41,7 +41,7 @@
     },
     {
       "name": "the placement guard admits null, a primitive and an array",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  if (v === null || typeof v !== \"object\" || Array.isArray(v)) return false;",
       "replace": "  if (v === null) return true;\n  if (typeof v !== \"object\" || Array.isArray(v)) return true;",
       "expectRed": "`placement: null` is refused as a named L3048, never a raw TypeError out of the projection",
@@ -51,7 +51,7 @@
     },
     {
       "name": "a half-named placement is accepted as a pair",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "  return typeof r.endpoint === \"string\" && r.endpoint.length > 0\n    && typeof r.instanceId === \"string\" && r.instanceId.length > 0;",
       "replace": "  return typeof r.endpoint === \"string\" || typeof r.instanceId === \"string\";",
       "expectRed": "a partial placement is refused, and the message names the MISSING half rather than the given one",

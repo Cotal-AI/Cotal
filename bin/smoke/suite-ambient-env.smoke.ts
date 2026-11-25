@@ -814,7 +814,6 @@ const FROZEN: readonly string[] = [
   "bin/smoke/dogfood-live.smoke.ts",
   "bin/smoke/ext-live.smoke.ts",
   "bin/smoke/orca-extension-live.smoke.ts",
-  "bin/smoke/seed-tarball-live.smoke.ts",
   "bin/smoke/setup-pure-live.smoke.ts",
   "bin/smoke/spawn-detach-live.smoke.ts",
   "bin/smoke/up-stack-live.smoke.ts",

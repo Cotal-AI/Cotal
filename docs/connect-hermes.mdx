@@ -14,16 +14,15 @@ First [start the mesh](run-a-mesh.mdx).
 
 <Callout type="warn" title="Alpha connector">
 
-Hermes requires macOS or Linux, an external Python toolchain, and `--no-events`.
-It cannot join a space that requires the event plane.
-Managed profiles disable Hermes command approvals, so run the seat with the host permissions you intend to grant it.
+Hermes requires macOS or Linux and an external Python toolchain.
+Managed profiles disable Hermes command approvals unless the launch sets `askPermissions`, so run the seat with the host permissions you intend to grant it.
 The deployment image does not include Hermes.
 
 </Callout>
 
 ## Check the prerequisites [#prerequisites]
 
-Install `uv` and make it available on the execution host's `PATH`.
+Install [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and make it available on the execution host's `PATH`.
 The connector runs `uv run --project <connector> hermes gateway run`.
 That project provides the `hermes` command and requires Python `>=3.11,<3.14` and `hermes-agent>=0.18,<0.22`.
 A separate `hermes` binary on `PATH` does not satisfy this requirement.
@@ -37,33 +36,37 @@ The picker considers Hermes available when it finds `uv`; selecting Hermes does 
 Set a supported provider's API key on the execution host, then choose a model:
 
 ```bash
-cotal spawn --harness hermes --no-events --model <model>
+cotal spawn --harness hermes --model <model>
 ```
 
 A bare spawn runs the gateway in this terminal.
 Add `--detach` to launch through a manager and return after readiness. `--on <instance>` selects a manager and attaches where supported.
+`--prompt <text>` gives the seat its first turn. Its reply shows on the [event plane](#event-plane) and is not posted to the mesh.
 
 For a persona file on the execution host, use:
 
 ```bash
-cotal spawn --file <persona-file> --harness hermes --no-events --model <model>
+cotal spawn --file <persona-file> --harness hermes --model <model>
 ```
 
-A team manifest uses `agent: hermes` and `events: false`.
-A workflow uses `spawn("<persona>", { events: false })`.
+A team manifest uses `agent: hermes`.
 See [Define a team](define-a-team.mdx) and [Workflows](workflows.mdx).
 
 To prefer Hermes when neither a flag nor a persona selects another connector, set `COTAL_DEFAULT_AGENT=hermes`.
-Keep `--no-events` and a model selection on those launches.
+Keep a model selection on those launches.
 
 ## Choose a model [#choose-a-model]
 
 Use `--model <model>` or the persona file's `model:` field.
 The flag takes precedence.
-Hermes has no `cotal models` catalog.
+`cotal models --harness hermes` lists the models of the provider Hermes selects from the environment a launch receives, including the names in `spawn.env`.
+See [Model catalog](hermes-connector-reference.mdx#model-catalog).
+`--variant <effort>` or the persona file's `variant:` sets Hermes's reasoning effort, one of the variants `cotal models` lists.
 
 A managed profile does not read your `~/.hermes` configuration.
 The launch fails if neither source provides a model, even if you forward `HERMES_MODEL` through `spawn.env`.
+Direct `cotal spawn` checks for the model before issuing credentials, and its `--dry-run` checks it without running `uv`.
+If both `uv` and the model are missing, foreground `cotal spawn` reports both in the same refusal.
 To use your existing model configuration, [adopt your own profile](#use-your-own-hermes-profile).
 
 ## Use a custom endpoint [#use-a-custom-endpoint]
@@ -80,12 +83,13 @@ Then set the variables on the host that builds the launch:
 ```bash
 export HERMES_INFERENCE_PROVIDER=custom
 export CUSTOM_BASE_URL=http://127.0.0.1:8000/v1
-cotal spawn --harness hermes --no-events --model <model>
+cotal spawn --harness hermes --model <model>
 ```
 
 For a managed launch, the manager must receive those variables.
 Exporting them only in a later caller shell does not change an already running manager's environment.
 The connector forwards its declared provider keys and the names in `spawn.env`; it does not inherit your whole shell.
+`cotal models --harness hermes` then lists the models the endpoint serves.
 
 For an endpoint that requires a key, [adopt your own profile](#use-your-own-hermes-profile) and set its `config.yaml` model block:
 
@@ -103,6 +107,8 @@ Cotal passes the model name unchanged.
 ## Gateway ownership [#how-it-binds]
 
 Each seat runs a gateway with a Python plugin and a Cotal launcher that owns the mesh connection.
+The seat joins only after the gateway's plugin authenticates its bridge subscription.
+An immediate gateway exit fails the launch instead of reporting that the agent joined.
 The default profile is private to the seat and removed on stop, except when it holds a resumed fork.
 See the [Hermes connector reference](hermes-connector-reference.mdx#gateway-ownership) for process ownership, cleanup, and delivery behavior.
 
@@ -117,6 +123,7 @@ It leaves `SOUL.md` and `config.yaml` unchanged.
 Hermes still writes its own sessions, logs, lock files, and settings.
 Its first-use hints can rewrite `config.yaml`, remove comments, and change formatting.
 Your approval settings remain in effect, but this gateway has no interactive approval prompt for a human to answer.
+A launch with `askPermissions` is refused here, because it cannot change your approval settings.
 A persona that would overwrite your `SOUL.md` is refused.
 
 </Callout>
@@ -146,7 +153,7 @@ Set the absolute profile path in the environment of the process that builds the 
 
 ```bash
 export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --foreground --harness hermes --no-events
+cotal spawn --foreground --harness hermes
 ```
 
 This example uses direct execution so the launcher reads this shell's setting.
@@ -162,7 +169,7 @@ It does not append to the source transcript.
 SQLite can still create `state.db-wal` and `state.db-shm` beside the source database.
 
 ```bash
-cotal spawn --harness hermes --no-events --model <model> --resume <session-id>
+cotal spawn --harness hermes --model <model> --resume <session-id>
 ```
 
 Use the same seat name to continue its saved fork on a later launch.
@@ -177,12 +184,42 @@ See [Session forks](hermes-connector-reference.mdx#session-forks) for per-chat b
 
 ## Presence [#how-presence-follows-the-turn]
 
-Hermes reports `working` for model and tool calls, `waiting` for approvals, and `idle` at turn completion.
+Hermes reports `working` for model and tool calls, `waiting` for approvals, and `idle` at turn completion,
+including a turn that ends because the provider failed.
 Gateway reconnects and session starts do not finish a run turn.
 See the [presence mapping](hermes-connector-reference.mdx#presence-mapping) for hook details.
 
+## Event plane [#event-plane]
+
+Each seat publishes its turns as AG-UI events on its event channel, so an [ACP client](acp-clients.mdx) or a dashboard can show them.
+The events carry runs, the model's text, and tool calls with their status.
+The text streams while the model writes it, when the provider streams its responses.
+The model's reasoning is added only for a launch with `reasoningEvents`, which an [ACP client](acp-clients.mdx) thread sets.
+Tool arguments and results ride the payload rail.
+Add `--no-events`, or `events: false` in a manifest or workflow, to launch without it.
+See [Event plane](hermes-connector-reference.mdx#event-plane) for how turns become runs.
+
+## Approve commands [#approve-commands]
+
+A launch with `askPermissions` keeps Hermes's command approvals on.
+Each command Hermes stops for approval appears on the agent endpoint, and an [ACP client](acp-clients.mdx) thread shows it as a permission request.
+See [Command approvals](hermes-connector-reference.mdx#command-approvals) for the choices, the timeout and what Hermes does not ask about.
+
+## Answer questions [#answer-questions]
+
+A question the model asks with Hermes's clarify tool in the owner's chat appears on the agent endpoint, and an ACP thread shows it as a form.
+See [Clarify questions](hermes-connector-reference.mdx#clarify-questions).
+
+## Turns from the owner [#owner-turns]
+
+On a per-user mesh, the seat's owner can give it turns in their own words, images included, run the gateway's slash commands and skill commands, stop its work in progress, and read how full its context window is, through its [agent endpoint](connector-runtime-reference.mdx#agent-commands).
+Each turn and command runs in the gateway's operator chat, apart from the sessions that peer messages start.
+See [Agent commands](hermes-connector-reference.mdx#agent-commands) for which commands it lists, when a turn starts and what a stop does.
+
 ## Route answers to the right session [#how-an-answer-finds-its-session]
 
+Each seat uses one Hermes session per channel, shared by everyone who messages the seat there.
+Direct messages use a separate session for each peer.
 Answers to `cotal_dm` and `cotal_anycast` return to the session that asked when their correlation and sender checks pass.
 For a question asked on another Hermes platform, such as Telegram, enable gateway injection in the Hermes profile:
 
@@ -201,8 +238,9 @@ See [Answer routing](hermes-connector-reference.mdx#answer-routing) for correlat
 
 ## Unsupported launches [#limits]
 
-Hermes refuses an initial `--prompt`, model variants, arbitrary `--opt` values, and exact-session continuation.
-It has no AG-UI event plane and cannot run on Windows or in the current deployment image.
+Hermes refuses arbitrary `--opt` values and exact-session continuation.
+An adopted profile also refuses a model variant.
+It cannot run on Windows or in the current deployment image.
 You supply `uv` and the supported Python environment.
 
 ## Continue [#see-also]

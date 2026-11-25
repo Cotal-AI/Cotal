@@ -20,6 +20,7 @@ import {
   leadingSuiteHeader,
   suiteSourceFromScript,
 } from "./live-suite.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
@@ -27,17 +28,7 @@ const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
 };
 const scripts = pkg.scripts ?? {};
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const headerOf = (source: string) => leadingSuiteHeader(source);
 
@@ -175,9 +166,9 @@ check(
 const EXPECTED = 21;
 check(
   `every cell ran - ${EXPECTED} expected, so a cell that stops existing is not mistaken for one that passed`,
-  pass + fail === EXPECTED,
-  `${pass + fail} cells reported`,
+  passed() + failed() === EXPECTED,
+  `${passed() + failed()} cells reported`,
 );
 
-console.log(`LIVE SUITE SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`LIVE SUITE SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

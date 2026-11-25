@@ -24,6 +24,7 @@ import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
+import { connectionNotReadyWarning } from "./tool-specs-inbox.js";
 import { briefing } from "./briefing.js";
 import type { MeshAgent, NativeTurnParticipationLease } from "./agent.js";
 import type { AgentConfig } from "./config.js";
@@ -221,6 +222,8 @@ const APPROVAL_SETTLE_SECONDS = 25;
 
 /** How an embedder tunes the surface for what sits in front of it. */
 export interface GatewayOptions {
+  /** Replace the default approval instructions in the cotal_connect tool description. */
+  connectDescription?: string;
   /** A native embedder binds the connect call to a host-observed conversation. The value is only
    * a routing key, never authentication; the host must validate its own binding before issue. */
   connectContext?: boolean;
@@ -495,7 +498,7 @@ export function registerCotalGatewayTools(
     {
       title: "Cotal: connect this conversation",
       annotations: gatewayAnnotations("cotal_connect"),
-      description:
+      description: options.connectDescription ?? (
         "Request a Cotal connection for THIS conversation. " +
         (options.space ? "On a signed-in mesh, the person must " : "The person must ") +
         "review, edit and approve its permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
@@ -509,7 +512,7 @@ export function registerCotalGatewayTools(
           ? " Optional space names one mesh registered on this computer, and signed in when it is a signed-in space, overriding the default target without changing configuration. Omit it to use the CLI's default target. " +
             "An open or static mesh this computer runs needs no browser approval: the connection holds the channels, role and capabilities of that mesh's default persona, " +
             "or the part of them it asks for. Connecting shares this native conversation's activity from that point onward, including user and assistant messages and tool inputs and results; earlier history is not shared."
-          : ""),
+          : "")),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
@@ -559,6 +562,9 @@ export function registerCotalGatewayTools(
           // asks the host again with the same approval until the person decides or the hold ends.
           let resumeId = approvalId;
           const deadline = Date.now() + approvalHoldSeconds * 1000;
+          // The pause that reaches the deadline is the last: its timer can fire a little early, and the
+          // hold still ends with the open that follows it.
+          let lastPause = false;
           for (;;) {
             try {
               const c = await host.open(account, candidate, context, selection, resumeId, space);
@@ -567,16 +573,20 @@ export function registerCotalGatewayTools(
               const listening = wake ? `\n${wake.listening(c)}` : "";
               // A conversation that joins here had no launch-time system prompt, so the connect result
               // is where it is handed its bearings: the orientation card, then the shared briefing.
-              const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
+              const tools = toolsOf(c);
+              const card = await orientationCard(c.agent, c.config, source, undefined, tools);
               return toContent({
-                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
+                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway", tools)}`,
               });
             } catch (e) {
               if (!(e instanceof ApprovalRequired)) throw e;
               const remaining = deadline - Date.now();
-              if (approvalHoldSeconds > 0 && remaining > 0 && !(await pause(Math.min(APPROVAL_POLL_MS, remaining), extra.signal))) {
-                resumeId = e.pending.approval.id;
-                continue;
+              if (approvalHoldSeconds > 0 && remaining > 0 && !lastPause) {
+                lastPause = remaining <= APPROVAL_POLL_MS;
+                if (!(await pause(Math.min(APPROVAL_POLL_MS, remaining), extra.signal))) {
+                  resumeId = e.pending.approval.id;
+                  continue;
+                }
               }
               const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
               const joined = e.space ?? space;
@@ -696,7 +706,14 @@ export function registerCotalGatewayTools(
         const woke = await waitForWake(c.agent, limit * 1000, extra.signal);
         if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
         if (!woke) {
-          return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
+          const span = `${limit} second${limit === 1 ? "" : "s"}`;
+          // A wait that could not hear from the broker only knows the local buffer, as cotal_inbox says.
+          const notReady = connectionNotReadyWarning(c.agent);
+          return toContent({
+            text: notReady
+              ? `${notReady}\n\nNothing new reached the local buffer in ${span}. Call cotal_wait again to keep listening.`
+              : `No new messages in ${span}. Call cotal_wait again to keep listening.`,
+          });
         }
         try {
           return toContent(await runFor(inbox, c, {}, extra.signal));
@@ -876,6 +893,8 @@ export interface GatewayStdio {
   /** The source tag on messages this server sends. */
   source?: string;
   instructions?: string;
+  /** See {@link GatewayOptions.connectDescription}. */
+  connectDescription?: string;
   /** See {@link GatewayOptions.connectContext}. */
   connectContext?: boolean;
   /** See {@link GatewayOptions.tools}. */
@@ -902,6 +921,7 @@ export interface GatewayStdio {
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: o.instructions ?? GATEWAY_INSTRUCTIONS });
   registerCotalGatewayTools(server, host, o.source, {
+    connectDescription: o.connectDescription,
     ...(o.connectContext ? { connectContext: true } : {}),
     ...(o.tools ? { tools: o.tools } : {}),
     ...(o.selection ? { selection: true } : {}),

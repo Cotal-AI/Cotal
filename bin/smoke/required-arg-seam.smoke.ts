@@ -564,7 +564,23 @@ const SEAMS: Seam[] = [
   // which states `tls: false` for the suite's loopback broker.
   // 451/359 -> 452/360: agui-egress-acl-auth adds its payload-rail subscriber connection, which
   // states `tls: false` for the suite's loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 463, untypecheckedSites: 371 },
+  // 452/360 -> 457/365: run-host-live adds four connections (the interrupted driver, the reader,
+  // the admitter and the fresh driver of the interrupted-activation cells) and run-command adds
+  // one; each states `tls: false` for the suite's loopback broker.
+  // The idle-work observer adds one native connection and its suites add seven fixture calls.
+  // 465/372 -> 466/373: run-host-live adds one timer connection factory for broker outage
+  // recovery. It supplies delivery credentials and states `tls: false` for the loopback broker.
+  // 466/373 -> 467/374: run-command adds one connection for interrupted-run fixtures.
+  // It states `tls: false` for the suite's loopback broker.
+  // 467/374 -> 468/375: up-resume-render-lock adds one loopback connection factory to
+  // seed and verify the preserved membership bucket. It states `tls: false` explicitly.
+  // The run-host-live history writer uses a run-pinned credential and explicit loopback TLS policy.
+  // 469/376 -> 470/377: first-command-live adds its launcher's manager-caller connection, which
+  // states `tls: false` for the suite's loopback broker.
+  // 470/377 -> 471/378: spawn-auto-name adds one admin control connection to the Manager it
+  // drives. It states `tls: false` for the suite's loopback broker.
+  // The terminal session suites add eleven loopback broker connections with explicit TLS policy.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 482, untypecheckedSites: 389 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

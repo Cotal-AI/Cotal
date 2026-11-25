@@ -136,7 +136,6 @@ const M = mgr as unknown as {
   managerInstanceId: string;
   userMode: boolean;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
-  goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
     pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
     fn: (transport: import("@cotal-ai/core").LifecycleStateTransport) => Promise<T>,
@@ -144,6 +143,7 @@ const M = mgr as unknown as {
   // The real signature takes the spawn hooks as a third parameter; this hand-written view had
   // only two, so the mock below could pass `hooks` that the type said would never arrive.
   startAgent: (opts: Record<string, unknown>, spawner?: string, hooks?: SpawnHooks) => Promise<ControlReply>;
+  goalWriterComponent: { goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } }; };
 };
 
 /** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
@@ -506,7 +506,7 @@ try {
       strandedRow);
 
     {
-      const kvForSlots = M.goalWriter?.ctx.kv;
+      const kvForSlots = M.goalWriterComponent.goalWriter?.ctx.kv;
       if (!kvForSlots) throw new Error("manager goal-writer KV is not standing");
       const originalSlotsGet = kvForSlots.get;
       kvForSlots.get = async (): Promise<unknown> => { throw new Error("simulated store outage"); };
@@ -535,7 +535,7 @@ try {
     }
 
     const torn = await plantStrandedSlot("torn-inspect");
-    const kv = M.goalWriter?.ctx.kv;
+    const kv = M.goalWriterComponent.goalWriter?.ctx.kv;
     if (!kv) throw new Error("manager goal-writer KV is not standing");
     const originalGet = kv.get;
     let advancedBetweenReads = false;
@@ -614,7 +614,7 @@ try {
     const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
       parserRefusal.includes('"model" must not be empty')
-      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && rE.reply.ok === false && refusal.includes(`invalid persona definition ${emodelPath}: "model" must not be empty`)
       && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
       { parserRefusal, reply: rE.reply });
   }

@@ -133,6 +133,21 @@ export function createRuntime(mode: RuntimeMode, session: string): Runtime {
   return ownLaunchArtifacts(createBackend(mode, session));
 }
 
+/** The bundled Linux node-pty can import on musl but crash the manager on its first spawn. */
+export function ptyPlatformRefusal(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  const report = process.report as NodeJS.ProcessReport & { excludeNetwork: boolean };
+  const { excludeNetwork } = report;
+  report.excludeNetwork = true;
+  try {
+    const { header } = report.getReport() as { header: { glibcVersionRuntime?: string; glibcVersionCompiler?: string } };
+    // A statically linked glibc Node may only report the compiler's glibc version.
+    const glibc = header.glibcVersionRuntime ?? header.glibcVersionCompiler;
+    if (typeof glibc === "string" && /^\d+\.\d+(?:\.\d+)*$/.test(glibc)) return undefined;
+  } finally { report.excludeNetwork = excludeNetwork; }
+  return "Cotal's built-in PTY runtime requires glibc on Linux. Alpine and other musl distributions cannot start this runtime. Use a glibc distribution or container such as Debian, Ubuntu, or Fedora.";
+}
+
 function createBackend(mode: RuntimeMode, session: string): Runtime {
   const kind: RuntimeKind = mode === "auto" ? "pty" : mode;
   if (kind === "pty") {
@@ -145,6 +160,8 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
           `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
           `Run the manager under node, or install and select an external runtime.`,
       );
+    const refusal = ptyPlatformRefusal();
+    if (refusal) throw new Error(refusal);
     return new PtyRuntime();
   }
   let provider: RuntimeProvider;

@@ -21,13 +21,15 @@
  *
  * `service logs` on a log this account cannot read is refused PERMISSION_DENIED with a chmod step,
  * and `--follow` ends with that refusal as its error record.
+ * A saved service with no recorded instance instead points to a read-only status command.
+ * An explicit instance miss in `status` or `logs` identifies the target and points to inventory.
  *
  * Run: pnpm smoke:service-target-hint
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -40,10 +42,13 @@ const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-service-hint-"));
 const neutral = join(home, "neutral");
 mkdirSync(neutral);
+mkdirSync(join(home, ".cotal"), { mode: 0o700 });
 process.on("exit", (code) => { if (code === 0) rmSync(home, { recursive: true, force: true }); });
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
+// pnpm can prepend a relative bin directory, which service add refuses for bare executable names.
+const path = (process.env.PATH ?? "").split(delimiter).filter(isAbsolute).join(delimiter);
+const env = { ...HOST_ENV, PATH: path, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
 const run = (args: string[], cwd = neutral) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
@@ -96,6 +101,55 @@ check("help service remove lists --instance <full-id> in its usage and options",
   check("control: a file for sa under its existing name is still refused as already existing",
     again.status === 2 && again.stdout.includes('"code":"CONFLICT"') && again.stdout.includes("this service definition already exists"), shown(again));
 
+  for (const [flag, value, location] of [["--file", "", []], ["-f", "  ", ["--space", "missing-space"]]] as const) {
+    const empty = run(["service", "add", "blank-file", flag, value, ...location, "--json"], a);
+    const receipt = JSON.parse(empty.stdout);
+    check(`${flag} with a blank path refuses before resolving a target`,
+      empty.status === 1 && empty.stderr === "" && receipt.outcome === "refused" && receipt.target === null &&
+      receipt.error?.code === "USAGE_INVALID" && receipt.error.message.includes("--file") && receipt.error.remedy?.includes("--file <definition.json>"), shown(empty));
+  }
+
+  for (const [flags, dryRun] of [[[], false], [["--yes"], false], [["--dry-run"], true]] as const) {
+    const stop = run(["service", "stop", "tick", "--space", "sa", ...flags, "--json"], b);
+    const receipt = JSON.parse(stop.stdout);
+    check(`stop ${flags.join(" ")} of a saved service without an instance reports no-op`,
+      stop.status === 0 && receipt.outcome === "no-op" && receipt.target?.name === "tick" && receipt.target.space === "sa" &&
+      receipt.target.instanceId === null && receipt.result?.dryRun === dryRun, shown(stop));
+  }
+  const missingStop = run(["service", "stop", "tick", "--space", "sa", "--instance", "00000000-0000-4000-8000-000000000000", "--yes", "--json"], b);
+  check("stop still refuses an explicit instance ID that does not belong to the service",
+    missingStop.status === 2 && JSON.parse(missingStop.stdout).error?.code === "TARGET_NOT_FOUND", shown(missingStop));
+  const after = run(["service", "--space", "sa", "--json"], b);
+  const afterInventory = JSON.parse(after.stdout).result;
+  check("no stop allocates an instance and no blank import saves a definition",
+    after.status === 0 && afterInventory?.instances.length === 0 &&
+    afterInventory.definitions.map((row: { name: string }) => row.name).join() === "tick", shown(after));
+
+  const unstartedLogs = run(["service", "logs", "tick", "--space", "sa", "--tail", "30", "--plain"], b);
+  const statusStep = /^Next\n\s+(.+ service status tick --space sa --plain)$/m.exec(unstartedLogs.stderr)?.[1];
+  check("logs for an unstarted service explains why there is no log and names the explicit status command",
+    unstartedLogs.status === 2 && unstartedLogs.stderr.includes("TARGET_NOT_FOUND") &&
+    /An instance must run before it can produce a log\./.test(unstartedLogs.stderr.replace(/\s+/g, " ")) && statusStep !== undefined, shown(unstartedLogs));
+  if (process.platform !== "win32") {
+    const status = statusStep ? spawnSync("sh", ["-c", statusStep], { cwd: b, env, encoding: "utf8", timeout: 120_000 }) : undefined;
+    check("running the printed step in another space's folder reports not started without allocating an instance",
+      status?.status === 0 && /Recorded state:\s+not started/.test(status.stdout), status);
+  }
+  const instanceId = "00000000-0000-4000-8000-000000000000";
+  for (const verb of ["status", "logs"]) {
+    const args = ["service", verb, "tick", "--space", "sa", "--instance", instanceId];
+    const missing = run([...args, "--json"], b);
+    const receipt = JSON.parse(missing.stdout);
+    check(`${verb} --json refuses an unknown instance with its full target and scoped inventory command`,
+      missing.status === 2 && missing.stderr === "" && receipt.outcome === "refused" && receipt.error?.code === "TARGET_NOT_FOUND" &&
+      receipt.target?.space === "sa" && receipt.target.name === "tick" && receipt.target.instanceId === instanceId &&
+      receipt.error.remedy === "cotal service --space sa --json", shown(missing));
+    const plain = run([...args, "--plain"], b);
+    check(`${verb} --plain names the requested definition and instance and prints the Next command`,
+      plain.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(plain.stderr) && /Name:\s+tick/.test(plain.stderr) &&
+      new RegExp(`^\\s+Instance:\\s+${instanceId}$`, "m").test(plain.stderr) && /^Next\n\s+cotal service --space sa --json$/m.test(plain.stderr), shown(plain));
+  }
+
   const config = join(a, ".cotal", "broker.conf");
   writeFileSync(config, "", { mode: 0o600 });
   const broker = join(home, "broker.json");
@@ -117,6 +171,50 @@ check("help service remove lists --instance <full-id> in its usage and options",
   }
   const listed = run(["service", "--space", "sa", "--json"], a);
   check("...and sa lists both", listed.status === 0 && listed.stdout.includes('"name":"viafolder"') && listed.stdout.includes('"name":"viaspace"'), shown(listed));
+
+  const noSource = run(["service", "add", "retry", "-s", "sb", "--json"]);
+  const addReceipt = JSON.parse(noSource.stdout);
+  const retryFlags = /^cotal service add retry --exec "<command>" (--space sb --json)$/.exec(addReceipt.error?.remedy)?.[1];
+  check("add without a launch source refuses before resolving space and keeps the selector and JSON in its retry",
+    noSource.status === 1 && addReceipt.target === null && addReceipt.error?.code === "USAGE_INVALID" && retryFlags !== undefined, shown(noSource));
+  const retried = retryFlags === undefined ? undefined : run(["service", "add", "retry", "--exec", "/bin/sleep 300", ...retryFlags.split(" ")]);
+  check("following the add retry saves in sb instead of the selected sa",
+    retried?.status === 0 && JSON.parse(retried.stdout).target?.space === "sb" &&
+    run(["service", "show", "retry", "--json"]).status === 2, retried && shown(retried));
+
+  for (const [flags, cwd, space, saved] of [[["--space", "sb"], neutral, "sb", "retry"], [[], b, "sa", "tick"]] as const) {
+    const missing = run(["service", "show", "missing", ...flags, "--json"], cwd);
+    const receipt = JSON.parse(missing.stdout);
+    const listFlags = /^see the saved definitions with `cotal service (--space s[ab])`$/.exec(receipt.error?.remedy)?.[1];
+    check(`show with ${flags.length ? "an explicit" : "a selected"} space points to ${space}'s inventory`,
+      missing.status === 2 && receipt.error?.code === "TARGET_NOT_FOUND" && receipt.target?.space === space && listFlags === `--space ${space}`, shown(missing));
+    const inventory = listFlags === undefined ? undefined : run(["service", ...listFlags.split(" "), "--json"]);
+    const result = inventory?.status === 0 ? JSON.parse(inventory.stdout).result : undefined;
+    check(`following the show remedy lists ${space} from the neutral folder without starting the saved service`,
+      result?.definitions.some((row: { name: string }) => row.name === saved) && result.instances.length === 0, inventory && shown(inventory));
+  }
+}
+
+const reference = readFileSync(join(import.meta.dirname, "../../../docs/cli-services.mdx"), "utf8");
+const example = /^## Adding a service [^\n]*\n[^#]*?^```bash\ncotal space create ([\w-]+) --root \.\ncotal service add ([\w-]+) --space ([\w-]+) --exec "([^"]+)"\n```/m.exec(reference);
+check("the first add example names the same space it prepares", example !== null && example[1] === example[3]);
+if (example) {
+  const [, space, name, target, command] = example;
+  const project = join(home, "service-example");
+  mkdirSync(project);
+  const prepared = run(["space", "create", space!, "--root", "."], project);
+  const added = run(["service", "add", name!, "--space", target!, "--exec", command!], project);
+  check("the documented space create and service add save a definition", prepared.status === 0 && added.status === 0, [shown(prepared), shown(added)]);
+  const state = run(["service", "--space", space!, "--json"], project);
+  const inventory = state.status === 0 ? JSON.parse(state.stdout).result : undefined;
+  check("the prepared space has the saved definition but no instances or running broker",
+    inventory?.definitions.some((row: { name: string }) => row.name === name) && inventory.instances.length === 0 && !inventory.processes.some((row: { processState: string }) => row.processState === "alive"), shown(state));
+  const other = run(["service", "show", name!, "--space", "sa", "--json"], project);
+  check("the selected space does not have the definition",
+    other.status === 2 && JSON.parse(other.stdout).error?.code === "TARGET_NOT_FOUND", shown(other));
+  const current = run(["use", "--json"], project);
+  check("the example leaves the selection on sa",
+    current.status === 0 && JSON.parse(current.stdout).result?.current === "sa", shown(current));
 }
 
 // `service logs` on a log this account cannot read is a refusal with the step that opens it again. It

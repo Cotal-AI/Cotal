@@ -77,9 +77,9 @@
     {
       "name": "M2 the claude connector puts the control token back into the seat environment",
       "file": "extensions/connector-claude-code/src/extension.ts",
-      "find": "      COTAL_CONTROL_SOCKET: control.path,\n    };",
-      "replace": "      COTAL_CONTROL_SOCKET: control.path,\n      COTAL_CONTROL_TOKEN: control.token,\n    };",
-      "expectRed": "A1: the claude connector exports COTAL_CONTROL_TOKEN into the seat environment",
+      "find": "    env.COTAL_CONTROL_SOCKET = control.path;\n",
+      "replace": "    env.COTAL_CONTROL_SOCKET = control.path;\n    env.COTAL_CONTROL_KEY = control.token;\n",
+      "expectRed": "A1: the claude connector exports COTAL_CONTROL_KEY into the seat environment",
       "note": "The control token is the half a build script has least business holding. Claude is the connector that cannot drop the material reference after startup, so its env is the one worth pinning explicitly.",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"
     },
@@ -113,8 +113,8 @@
     {
       "name": "M6 half a control pair reads as no control plane instead of throwing",
       "file": "extensions/connector-core/src/session-env.ts",
-      "find": "  if (path && token) return { path, token };\n  if (!path && !token) return undefined;",
-      "replace": "  if (path && token) return { path, token };\n  if (true) return undefined;",
+      "find": "  if (!path && !token) return undefined;",
+      "replace": "  if (true) return undefined;",
       "expectRed": "A8: a socket with no resolvable token was reported as no control plane rather than a broken one",
       "note": "Exactly the shape that shipped: a broken control endpoint indistinguishable from a session that never had one. The pi launch failure this branch hit live was the loud version of it; the quiet version is a seat whose presence never advances.",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/connector-opencode... --filter @cotal-ai/connector-codex... --filter @cotal-ai/connector-hermes... --filter @cotal-ai/connector-jcode... --filter @cotal-ai/pi... build > /dev/null"

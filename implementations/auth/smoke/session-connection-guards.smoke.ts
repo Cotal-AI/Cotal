@@ -155,10 +155,10 @@ try {
   const legacyResponder = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "delivery"), card: { name: "legacy-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
   await legacyResponder.start();
   let useHook = false;
-  const adminHandler = legacyResponder as unknown as {
-    plane3: { evictPrincipal: (principal: string, connections?: core.KickTarget[]) => Promise<unknown> };
+  const { deliveryPlane: adminHandler } = legacyResponder as unknown as { deliveryPlane: {
+    plane3: { evictPrincipal?: (principal: string, connections?: core.KickTarget[]) => Promise<unknown> };
     handleDeliveryAdmin: (request: core.ControlRequest) => Promise<core.ControlReply>;
-  };
+  } };
   let ignoredHookCalled = false;
   adminHandler.plane3 = { evictPrincipal: async (principal) => { ignoredHookCalled = true; return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true }; } };
   const legacyReplies = legacyResponder.serveControl(core.CONTROL_DELIVERY_ADMIN, (request) => useHook ? adminHandler.handleDeliveryAdmin(request) : { ok: false, error: "unsupported operation" });
@@ -170,14 +170,32 @@ try {
     adminCaller = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "supervisor"), card: { name: "exact-hook-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
     await adminCaller.start();
     const coordinates = [legacy.issuance.connection!];
-    const ignored = await adminCaller.requestDeliveryAdmin("evictSessionConnections", { principal: legacy.row.holder.principal, connections: coordinates });
-    check("H1 a hook ignoring the exact filter is refused before execution", !ignored.ok && !ignoredHookCalled);
+    const args = { principal: legacy.row.holder.principal, connections: coordinates };
+    const request = (args: Record<string, unknown>, op = "evictSessionConnections") => adminCaller!.requestDeliveryAdmin(op, args);
+    const ordinary = await request({ principal: args.principal }, "evictPrincipal");
+    check("H0 the one-argument executor still serves principal eviction", ordinary.ok && ignoredHookCalled);
+    ignoredHookCalled = false;
+    const ignored = await request(args);
+    check("H1 a hook ignoring the exact filter is refused before execution", !ignored.ok && !ignoredHookCalled && ignored.error?.includes("accept the exact connection filter as its second argument") === true);
     adminHandler.plane3.evictPrincipal = async (principal, _connections) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true });
-    const noEcho = await adminCaller.requestDeliveryAdmin("evictSessionConnections", { principal: legacy.row.holder.principal, connections: coordinates });
-    check("H3 core refuses an executor result without its own filter echo", !noEcho.ok);
-    adminHandler.plane3.evictPrincipal = async (principal, connections) => ({ principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, connections: connections?.map((row) => ({ ...row })) });
-    const acknowledged = await adminCaller.requestDeliveryAdmin("evictSessionConnections", { principal: legacy.row.holder.principal, connections: coordinates });
-    check("H2 executor acknowledgement of received exact filter is accepted", acknowledged.ok);
+    const noEcho = await request(args);
+    check("H3 core refuses an executor result without its own filter echo", !noEcho.ok && noEcho.error?.includes("return the exact filter in its connections result") === true);
+    adminHandler.plane3 = {};
+    const noExecutor = await request(args);
+    check("H4 a missing executor names a compatible delivery daemon as the remedy", !noExecutor.ok && noExecutor.error?.includes("install and restart a delivery daemon that supports targeted session eviction") === true);
+    let calls = 0;
+    adminHandler.plane3.evictPrincipal = async (principal, connections) => {
+      calls++;
+      return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, connections: connections?.map((row) => ({ ...row })) };
+    };
+    const missingFilter = await request({ principal: args.principal });
+    check("H5 a missing filter is refused before execution", !missingFilter.ok && missingFilter.error?.includes("send connections with the exact broker serverId and cid") === true && calls === 0);
+    const missingPrincipal = await request({ connections: coordinates });
+    check("H6 a missing principal is refused before execution", !missingPrincipal.ok && missingPrincipal.error?.includes("set principal to the session holder's owner.actor") === true && calls === 0);
+    const badFilter = await request({ ...args, connections: [{ ...coordinates[0], cid: 0 }] });
+    check("H7 an invalid filter is refused before execution", !badFilter.ok && badFilter.error?.includes("send 1 to 256 exact serverId and positive cid pairs") === true && calls === 0);
+    const acknowledged = await request(args);
+    check("H2 an installed executor accepting and returning the corrected filter is accepted", acknowledged.ok && calls === 1);
   } finally { await adminCaller?.stop(); legacyReplies.unsubscribe(); await legacyResponder.stop(); }
   delivery = await startDeliveryService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
   await sweep(); await wait(100);

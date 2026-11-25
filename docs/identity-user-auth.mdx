@@ -346,6 +346,14 @@ administrative boundary of its own subtree, so you (and your agents) manage what
 without any extra grant. `admin` is the explicit opt-in for touching **other owners'**
 agents; it is never part of a default grant and never accepted from a manifest.
 
+**You control your own agents fully, whatever your scope.** Your sign-in lists, types into,
+interrupts, stops and attaches to every agent under your owner, and reads their event channels, live and from
+history. These rights come from your ledger row being a person's (`interactive`), never from a scope
+token, so no agent's own credential carries them and you cannot hand them to an agent you spawn.
+They ride your sign-in, so a program that runs as you where you are signed in can use them, an
+agent's shell included. An agent holding `spawn` stops and attaches to agents under its owner with
+its own credential, and never types into or interrupts one with it.
+
 ## Views [#views]
 
 **Elevated operator surfaces ride the same login** through a short-lived *view*: the
@@ -474,9 +482,10 @@ host accepts it only when its single sealed scan of the caller instance's
 target a foreign manager slot holder in the same space, but it runs only after the delivery daemon
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
-unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
-blocked by a foreign governance slot whose holder's gate is still frozen at the slot's stamp asks
-the host to reconcile that holder and retries the registration once. The goal-writer and session-ledger
+unhealthy executor before deregistration. A restart verify-evicts its old family. A Manager that
+finds another registration in flight retries from a fresh read, with exponential backoff and jitter
+within a 15-second budget. If the foreign holder is still in flight when that budget runs out, the
+Manager asks the host to reconcile that holder and retries registration once. The goal-writer and session-ledger
 credentials carry a random `issuance:` tag, so a restart that re-mints them within the second of an
 earlier issuance gets new ledger rows and never re-signs a credential its barrier revoked.
 

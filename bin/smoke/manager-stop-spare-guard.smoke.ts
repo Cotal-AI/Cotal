@@ -26,6 +26,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const SELF = "bin/smoke/manager-stop-spare-guard.smoke.ts";
@@ -42,6 +43,8 @@ const SPARE_COVERAGE = new Set([
   "implementations/manager/smoke/start-model-preflight.smoke.ts",
   "implementations/manager/smoke/preserve-state.smoke.ts",
   "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
+  // Its default stop runs over a seat still waiting for readiness and asserts that the PTY exited.
+  "implementations/manager/smoke/shutdown-custody.smoke.ts",
 ]);
 
 /**
@@ -60,11 +63,7 @@ const FROZEN_DROPPED = [
   "implementations/manager/smoke/manager-restart-live.smoke.ts",
 ] as const;
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 function smokeSources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -232,13 +231,13 @@ for (const named of SPARE_COVERAGE) {
   check(`spare-coverage suite is present: ${named}`, files.some((f) => relative(ROOT, f) === named), named);
 }
 
-const managerSrc = readFileSync(join(ROOT, "implementations/manager/src/manager.ts"), "utf8");
-const detach = managerSrc.match(/private releaseManagedAgents\(\): \{ failures: string\[\]; stop: ManagedAgent\[\] \} \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+const managerSrc = readFileSync(join(ROOT, "implementations/manager/src/preservation.ts"), "utf8");
+const detach = managerSrc.match(/\n  releaseManagedAgents\(\): \{ failures: string\[\]; stop: ManagedAgent\[\] \} \{([\s\S]*?)\n  \}/)?.[1] ?? "";
 check("releaseManagedAgents is present in manager.ts", detach.includes("for (const a of [...this.agents.values()])"));
 check("releaseManagedAgents does not optional-chain close", !/close\?\./.test(detach), detach);
 // The PTY-release predicate lives in isProcessBoundSeat; releaseManagedAgents leaves such a seat for
 // the caller to stop before it releases anything.
-const processBound = managerSrc.match(/private isProcessBoundSeat\(agent: ManagedAgent\): boolean \{([\s\S]*?)\n  \}/)?.[1] ?? "";
+const processBound = managerSrc.match(/\n  isProcessBoundSeat\(agent: ManagedAgent\): boolean \{([\s\S]*?)\n  \}/)?.[1] ?? "";
 check(
   "releaseManagedAgents validates PTY release before invoking handles",
   /if \(this\.isProcessBoundSeat\(a\)\) \{\s*stop\.push\(a\);\s*continue;/.test(detach)
@@ -257,5 +256,5 @@ check(
   !/readonly supportsRelease\s*=\s*true/.test(legacySrc) && !/release:\s*/.test(legacySrc),
 );
 
-console.log(`\nMANAGER-STOP-SPARE-GUARD ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`\nMANAGER-STOP-SPARE-GUARD ${failed() === 0 ? "OK" : "FAILED"}  (${passed()} passed, ${failed()} failed)`);
+finish();

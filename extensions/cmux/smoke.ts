@@ -78,7 +78,7 @@ try {
   rmSync(envRoot, { recursive: true, force: true });
 }
 
-const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: SECRET }, cwd: "/tmp" }).command;
+const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_KEY: SECRET }, cwd: "/tmp" }).command;
 
 ok("paneCommand returns a `bash <path>` invocation", /^bash '\/.*\/launch\.sh'$/.test(cmd));
 const scriptPath = cmd.replace(/^bash\s+'|'$/g, "");

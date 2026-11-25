@@ -253,6 +253,43 @@ function readRow(e: KvEntry | null): AnycastRecord | undefined {
   return row;
 }
 
+/** Outstanding effects in a retained tracking row. Terminal history and native deletion markers
+ * owe no work. Unknown shapes throw; the caller must also observe TASK and bracket its read with
+ * canonical stream/incarnation checks. This inspection never completes effects or removes history. */
+export function anycastRecordWork(entry: KvEntry): { owedNotices: number; pendingRemovals: number } {
+  const invalid = () => { throw new Error(`anycast record ${entry.key} has an unsupported shape`); };
+  if (!/^r\.[0-9A-Za-z]+\.[1-9][0-9]*$/.test(entry.key)) invalid();
+  if (entry.operation === "DEL" || entry.operation === "PURGE") {
+    if (entry.value.length !== 0) invalid();
+    return { owedNotices: 0, pendingRemovals: 0 };
+  }
+  const row = readRow(entry);
+  if (!row) return invalid();
+  const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
+  const time = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const holder = (value: AnycastHolderRef | undefined) => !!value && nonempty(value.id) && nonempty(value.name);
+  const fields = ["v", "epoch", "seq", "id", "role", "sender", "rev", "state", "taker", "previous", "removal", "leftAt", "outbox"];
+  if (Object.keys(row).some(key => !fields.includes(key)) || !Number.isFinite(Date.parse(row.epoch)) ||
+      anycastRecordKey(row.epoch, row.seq) !== entry.key || !nonempty(row.id) || !nonempty(row.role) ||
+      !nonempty(row.sender) || !isAnycastSeq(row.rev) || (row.leftAt !== undefined && !time(row.leftAt))) invalid();
+  if (row.state === "taken") {
+    if (!holder(row.taker) || !isAnycastSeq(row.taker!.count) || !time(row.taker!.at) || row.removal !== undefined) invalid();
+  } else if (row.state === "cancelled") {
+    if (row.taker !== undefined || row.previous !== undefined ||
+        (row.removal !== undefined && !["pending", "deleted", "already-gone"].includes(row.removal))) invalid();
+  } else invalid();
+  if (row.previous !== undefined && (!holder(row.previous) || !isAnycastSeq(row.previous.count))) invalid();
+  for (const event of row.outbox) {
+    const notice = event?.notice;
+    if (!nonempty(event?.key) || !nonempty(event?.text) || !notice || notice.seq !== row.seq ||
+        notice.role !== row.role || !holder(notice.taker) ||
+        (notice.event !== "taken" && notice.event !== "redelivered") ||
+        (notice.event === "redelivered" && !holder(notice.previous))) invalid();
+  }
+  return { owedNotices: row.outbox.length,
+    pendingRemovals: row.state === "cancelled" && (row.removal === undefined || row.removal === "pending") ? 1 : 0 };
+}
+
 /** The daemon's side of anycast request status: reads the queue, writes the records bucket, and
  *  sends the notices each transition owes. The caller supplies `send` (a DM from the daemon's own
  *  principal, published with the event key as its message id) and `mayAct`, the daemon's

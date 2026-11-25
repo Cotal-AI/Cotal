@@ -8,7 +8,8 @@
 import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, jsonFlag, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
 import { feedbackIntakePreset, feedbackIntakeProcess, runNativeFeedbackIntake, validateNativeIntakeArguments } from "./feedback-intake-service.js";
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLane, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle } from "./delivery.js";
+import { DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, runDelivery, startDeliveryService, type DeliveryLane, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle } from "./delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf } from "./delivery-creds.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
 import { runDeliveryHost } from "./delivery-host.js";
 import { deliveryPreset, deliveryService, nativeDeliveryCommand } from "./delivery-service.js";
@@ -19,7 +20,7 @@ const deliveryCommands: Command[] = [
   {
     kind: "command", name: "pending", group: "Messaging",
     summary: "read one exact DM durable's native counts and bounded candidate IDs without acknowledging messages",
-    positionals: "<agent>", usage: "cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--json|--plain]",
+    positionals: "<agent>", usage: "cotal pending <agent> [--durable <exact-dm-durable>] [--limit <1..100>] [--space <s>] [--server <url>] [--creds <private-file>] [--json|--plain]",
     flags: pendingFlags, outputs: ["json", "plain"], reads: true, prepareMeshTarget: false,
     validate: validatePendingArguments, run: pendingView,
     examples: [{ command: "cotal pending <agent>", note: "count the DMs waiting for an agent, unread" }, { command: "cotal pending <agent> --json", note: "the same as one JSON document" }],

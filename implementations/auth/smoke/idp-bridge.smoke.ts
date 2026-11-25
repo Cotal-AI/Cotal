@@ -31,12 +31,9 @@ import {
   pinnedJwksResolver,
   validateUserToken,
 } from "../src/index.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 async function rejects(name: string, fn: () => Promise<unknown> | unknown, needle?: string) {
   try { await fn(); check(`${name} (expected rejection)`, false); }
   catch (e) {
@@ -288,5 +285,6 @@ check("same sub under a different IdP issuer derives a DIFFERENT owner",
   deriveOwnerToken(SECRET, JSON.stringify([IDP_ISS, "human-42"])) !== deriveOwnerToken(SECRET, JSON.stringify([origin, "human-42"])));
 
 server.close();
-console.log(`\nidp-bridge smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail > 0 ? 1 : 0);
+console.log(`\nidp-bridge smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() > 0 ? 1 : 0);
