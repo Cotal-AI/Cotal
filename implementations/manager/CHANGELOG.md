@@ -1,5 +1,18 @@
 # @cotal-ai/manager
 
+## 0.178.0
+
+### Patch Changes
+
+- 9370503: Starting a manager with a malformed roster leaves its saved definition unchanged, and the dry run shows why the start would fail.
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [ee23092]
+- Updated dependencies [9370503]
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/seat@0.178.0
+
 ## 0.177.0
 
 ### Minor Changes

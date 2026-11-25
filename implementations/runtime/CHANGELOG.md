@@ -1,5 +1,21 @@
 # @cotal-ai/runtime
 
+## 0.178.0
+
+### Patch Changes
+
+- 7f8494d: Starting a hosted workflow on an open mesh points to offline simulation or a static-auth mesh instead of suggesting that you start a manager.
+- d15dae4: If a local workflow answer or amendment has a malformed run ID, the CLI points you to the local run list for the same target and tells you to replace only the ID.
+- b056af3: Keep `--plain` in the retry command printed when a workflow simulation needs a scripted result.
+- ca6b557: When a simulation results file has an unknown top-level key, name the file and explain how to correct the key.
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [ee23092]
+- Updated dependencies [9370503]
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/lang@0.178.0
+
 ## 0.177.0
 
 ### Patch Changes

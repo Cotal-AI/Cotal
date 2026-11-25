@@ -1,5 +1,15 @@
 # @cotal-ai/connector-claude-code
 
+## 0.178.0
+
+### Minor Changes
+
+- 59d8306: Claude Code agents can now be launched at a chosen effort level, and the Claude model list tells its aliases apart. `--variant <level>` renders Claude's `--effort` flag, an unknown level is refused before launch, and `cotal models --harness claude` lists each model's effort levels as variants and names an alias with the model it resolves to, such as `Opus 5.5 (claude-opus-5-5)`.
+
+### Patch Changes
+
+- 5935d73: Status names the owning Cotal home and its choices when the shared Claude profile's marketplace belongs to another home, instead of recommending `cotal setup --skills`, and no longer prints equal skills versions as a mismatch.
+
 ## 0.177.0
 
 ### Minor Changes
