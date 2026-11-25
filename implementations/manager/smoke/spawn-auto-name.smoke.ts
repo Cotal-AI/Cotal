@@ -125,7 +125,7 @@ try {
     check("is accepted and the seat joins", (r as { ok?: boolean }).ok === true && await joined("spawn-named"), r);
     const first = launchesOf("named")[0];
     check("the connector's launch carries autoName", first?.autoName === true, first?.autoName);
-    check("and the seat's launch env asks it to name itself (COTAL_AUTO_NAME=1)", first !== undefined && nameEnv(first).COTAL_AUTO_NAME === "1" && seatConfig(first).autoName === true,
+    check("and the seat's launch env asks it to label itself (COTAL_AUTO_NAME=1)", first !== undefined && nameEnv(first).COTAL_AUTO_NAME === "1" && seatConfig(first).autoName === true,
       first && nameEnv(first));
     const row = M.agents.get("named");
     const pid = row?.handle.pid;
@@ -137,7 +137,7 @@ try {
     }
     const second = launchesOf("named")[1];
     check("a supervised restart of the same lifecycle launches it again", relaunched && M.agents.get("named")?.lifecycleUid === row?.lifecycleUid, launchesOf("named").length);
-    check("without autoName, so the seat does not name itself again", second !== undefined && second.autoName === undefined && nameEnv(second).COTAL_AUTO_NAME === undefined && seatConfig(second).autoName === undefined,
+    check("without autoName, so the seat does not label itself again", second !== undefined && second.autoName === undefined && nameEnv(second).COTAL_AUTO_NAME === undefined && seatConfig(second).autoName === undefined,
       second && { autoName: second.autoName, env: nameEnv(second) });
   }
 

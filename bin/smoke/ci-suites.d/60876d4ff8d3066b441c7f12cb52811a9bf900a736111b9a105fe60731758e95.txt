@@ -1,3 +1,4 @@
-# An agent names itself from its first message on a real broker through the shipped auth callout:
-# the pending mark in presence, the owner's rename always wins, and no hook means no mark.
+# An agent labels itself from its first message on a real broker through the shipped auth callout:
+# the label and the pending mark in presence, its launch name still addressed by DM, mention and
+# lookup, the owner's set-name always wins, and no hook means no mark.
 smoke:agent-auto-name:auth

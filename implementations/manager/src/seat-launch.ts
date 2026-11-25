@@ -367,8 +367,8 @@ export class SeatLaunch {
     if (!hooks?.onOnce) return "once: a once task rides the spawn action, which this launch door is not";
     if (launch.prompt === undefined || launch.prompt.trim() === "") return "once: needs a prompt, which is the task";
     if (launch.supervise !== undefined) return "once: a once seat is never restarted, so it cannot carry supervise";
-    // The task reaches the seat as a relayed turn, never as a message, so the seat would wait to be named forever.
-    if (launch.autoName) return "once: a once seat cannot name itself from its first message (autoName)";
+    // The task reaches the seat as a relayed turn, never as a message, so the seat would wait to be labelled forever.
+    if (launch.autoName) return "once: a once seat cannot label itself from its first message (autoName)";
     if (!connector.supportsTurnRelay)
       return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
     if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)

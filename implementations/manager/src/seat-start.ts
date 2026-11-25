@@ -42,7 +42,7 @@ async function startupFailureDetail(a: ManagedAgent, outcome: "failed" | "exited
  *  only this host can honour. Undefined when there is none. */
 function hostOnlyChoice(opts: StartAgentOpts, delegatedBy: string): string | undefined {
   if (opts.resume) return `${delegatedBy}, so it cannot resume a session held on this host (resume)`;
-  if (opts.autoName) return `${delegatedBy}, so it cannot name the seat from its first message (autoName)`;
+  if (opts.autoName) return `${delegatedBy}, so it cannot label the seat from its first message (autoName)`;
   if (opts.resolved?.continuity === "exact") return `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)`;
   if (typeof opts.cwd === "string" && opts.cwd !== "")
     return `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory`;

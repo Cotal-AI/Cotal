@@ -1234,7 +1234,7 @@
   "env:COTAL_ALLOW_CHECKOUT_SEED": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_ALLOW_PUBLISH": "current:spawn --allow-publish",
   "env:COTAL_ALLOW_SUBSCRIBE": "current:spawn --allow-subscribe",
-  "env:COTAL_AUTO_NAME": "internal:whether a seat names itself from its first message, which the manager sets for a spawn with autoName",
+  "env:COTAL_AUTO_NAME": "internal:whether a seat labels itself from its first message, which the manager sets for a spawn with autoName",
   "env:COTAL_BACKFILL_FLOOR": "pending:config",
   "env:COTAL_BEARER_CMD": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_BRIDGE_SOCKET": "internal:connector plumbing the launcher sets for one harness",

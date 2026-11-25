@@ -187,7 +187,7 @@ export function launchEnv(
 }
 
 /** The seat's names as `COTAL_*` env: the launch name, the display name a relaunch restores when
- *  the seat was renamed, and whether the seat names itself from its first message. Every connector
+ *  the seat was renamed, and whether the seat labels itself from its first message. Every connector
  *  forwards them, so a seat keeps its actor and shows its last name. */
 export function nameEnv(opts: { name: string; displayName?: string; autoName?: boolean }): Record<string, string> {
   const env: Record<string, string> = {};

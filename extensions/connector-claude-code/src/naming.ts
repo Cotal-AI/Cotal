@@ -1,5 +1,5 @@
 /**
- * The Claude Code connector's naming request (SPEC 13.22, names from the first message): one
+ * The Claude Code connector's naming request (SPEC 13.22, labels from the first message): one
  * `claude -p` run on the session's own login, outside its conversation. It runs with no tools, no MCP
  * server, no hook and no saved session, in an empty private directory so no project settings or
  * CLAUDE.md apply. The message goes in on stdin, never in argv.
@@ -13,10 +13,10 @@ import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
 const NAME_ARGS = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}', "--no-session-persistence"];
 
-/** The launcher's absolute `claude`, carried for a seat that names itself, so the request runs the
+/** The launcher's absolute `claude`, carried for a seat that labels itself, so the request runs the
  *  binary the seat runs rather than resolving PATH again. */
 export const CLAUDE_RESOLVED_BIN_ENV = "COTAL_CLAUDE_RESOLVED_BIN";
-/** A seat's launch prompt, carried for a seat that names itself: the MCP server is not told the
+/** A seat's launch prompt, carried for a seat that labels itself: the MCP server is not told the
  *  first turn `claude` was started with. */
 export const CLAUDE_PROMPT_ENV = "COTAL_CLAUDE_PROMPT";
 

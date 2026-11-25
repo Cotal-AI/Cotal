@@ -8,7 +8,7 @@
  * session's provider keys pass and host-session markers and `COTAL_*` do not; it runs in an empty
  * private directory that is removed after; a failed run rejects with claude's own error; an abort stops
  * the process. `buildLaunch` carries `COTAL_AUTO_NAME`, the launch prompt and the resolved binary only
- * for a launch that names itself.
+ * for a launch that labels itself.
  *
  * Run: pnpm smoke:claude-naming
  */
@@ -116,7 +116,7 @@ try {
     const off = claudeConnector.buildLaunch(opts as never);
     discardLaunchArtifacts(on.artifacts ?? []);
     discardLaunchArtifacts(off.artifacts ?? []);
-    check("a launch that names itself carries COTAL_AUTO_NAME, its prompt and the resolved claude",
+    check("a launch that labels itself carries COTAL_AUTO_NAME, its prompt and the resolved claude",
       on.env?.COTAL_AUTO_NAME === "1" && on.env?.COTAL_CLAUDE_PROMPT === "triage issue 42" && on.env?.COTAL_CLAUDE_RESOLVED_BIN === "/opt/claude/bin/claude",
       on.env && { a: on.env.COTAL_AUTO_NAME, p: on.env.COTAL_CLAUDE_PROMPT, b: on.env.COTAL_CLAUDE_RESOLVED_BIN });
     check("any other launch carries none of them",

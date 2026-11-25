@@ -1,5 +1,5 @@
 /**
- * The Codex connector's naming request (SPEC 13.22, names from the first message): one ephemeral
+ * The Codex connector's naming request (SPEC 13.22, labels from the first message): one ephemeral
  * `codex exec` on the seat's own CODEX_HOME and launch config, so on the seat's login, provider and
  * model, at low reasoning. It runs in an empty private directory under a read-only sandbox, without
  * the seat's MCP servers or any config file in its CODEX_HOME, with web search and every tool feature
@@ -14,7 +14,7 @@ import type { AgentNaming, NameFromMessage } from "@cotal-ai/connector-core";
 /** The codex features that give the model a tool or run a command, on by default in codex-cli 0.170.0
  *  (`codex features list`). The request turns each off with `--disable`, which wins over the seat's own
  *  `-c features…` in either order. `codex exec` refuses a feature name it does not know, so a codex
- *  without one of them fails the request and the seat keeps its launch name. */
+ *  without one of them fails the request and the seat shows no label. */
 export const TOOL_FEATURES = [
   "apps", "browser_annotation_api", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "computer_use",
   "goals", "hooks", "image_generation", "in_app_browser", "multi_agent", "plugins", "remote_plugin", "shell_snapshot",

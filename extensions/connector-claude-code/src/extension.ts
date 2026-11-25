@@ -211,7 +211,7 @@ export const claudeConnector: Connector = {
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
-    // A seat that names itself asks its own `claude` from its MCP server, which sees only this env.
+    // A seat that labels itself asks its own `claude` from its MCP server, which sees only this env.
     if (opts.autoName && opts.resolvedBinaries?.claude) env[CLAUDE_RESOLVED_BIN_ENV] = opts.resolvedBinaries.claude;
 
     // A leading positional is claude's first message, auto-submitted on start —

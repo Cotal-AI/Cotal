@@ -1,5 +1,5 @@
 /**
- * The OpenCode 2.x connector's naming request (SPEC 13.22, names from the first message): one
+ * The OpenCode 2.x connector's naming request (SPEC 13.22, labels from the first message): one
  * `generate` on a child session of the seat's session, on the seat's own server, so on its login and
  * default model. A child session starts empty, so the seat's conversation stays out of the request
  * and the request stays out of the conversation; `generate` runs no tool and records no message. The
