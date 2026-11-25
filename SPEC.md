@@ -4157,6 +4157,11 @@ the persona would carry that the definer does not hold under the same delegation
 includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
 same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 45 of the manager cluster adds both fields; both inputs
 are closed, so a revision-44 contract rejects either.
+`define-persona` MUST apply the delegation bound to the effective read and publish grants as well,
+including inherited lists and lists taken from prompt frontmatter. A manager without access to the
+user-auth ledger MUST refuse a nonempty read or publish grant. A wire definition MUST NOT retain
+`launchOptions` from either the prompt or an existing catalog file. This does not restrict options in
+an operator's local persona file or in a spawn request.
 An ownership refusal of `define-persona` MUST carry `permission-denied` with outcome
 `not-executed`. The reference manager includes an `ai.cotal.persona-ownership-refused` error detail with
 `operatorOwned: boolean`, so a client can explain the refusal without copying persona content.
