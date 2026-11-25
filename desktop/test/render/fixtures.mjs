@@ -114,6 +114,13 @@ export function nativeStub(scenario) {
           await new Promise(() => {});
         }
         if (state.setupError) return fail("LIFECYCLE_BLOCKED", `Setup could not proceed: ${state.setupError}. Stop active sessions before retrying.`, state.setupError);
+        if (state.serviceBehind) {
+          // An older background service restarts into the app's version only when no agent runs, as the daemon's idle fence does.
+          state.serviceUpdates = (state.serviceUpdates ?? 0) + 1;
+          const running = (state.agents ?? []).flatMap(row => row.agents ?? []).filter(agent => agent.state === "running");
+          if (running.length) return fail("LIFECYCLE_BLOCKED", `the daemon refused managers-prepare-restart: SEATS_ACTIVE hosted Manager for acme-team holds ${running.length} active seat(s): ${running.map(agent => agent.name).join(", ")}\nNext: stop the seats through Manager mgr-1 in space acme-team, then run \`cotal daemon setup --space acme-team\``, "SEATS_ACTIVE");
+          state.version = undefined; state.serviceBehind = false;
+        }
         progress("applications", state.noApp ? "unavailable" : "available", "connectors: availability checked", { applications: ["Claude Code", "Codex", "Hermes", "Jcode", "OpenCode", "pi"] });
         if (state.noApp) return fail("DEPENDENCY_UNAVAILABLE", "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again.", "NO_AVAILABLE_CONNECTOR");
         state.connected = true; return ok({ launchReady: true, manager: manager() });
@@ -560,6 +567,26 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
     assert.equal(await page.locator("#recover").textContent(), "Check status");
     assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+  } },
+  // The app was updated and the background service still runs the previous version while agents work.
+  { name: "update-waits-for-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, version: "0.155.0", serviceBehind: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: [{ space: "acme-team", state: "read", agents: [{ name: "acp_mx2ngejyr3", application: "claude-code", cwd: "/projects/cotal", startedAt: new Date(Date.now() - 600_000).toISOString(), state: "running" }, { name: "acp_uoeconhmic", application: "codex", cwd: "/projects/site", startedAt: new Date(Date.now() - 120_000).toISOString(), state: "running" }] }] }, expect: async page => {
+    await page.locator("#notice:not([hidden])").waitFor();
+    assert.equal(await page.locator("#notice").textContent(), "An update for the background service is waiting for 2 agents on this computer to finish. It installs by itself when they end.");
+    assert.notEqual(await page.locator("#connection-title").textContent(), "Your connection needs an update");
+    assert.equal(await page.locator("#recovery-panel").isHidden(), true, "the window stays usable");
+    assert.equal(await page.locator("#agent-list .agent-row").count(), 2, "the waiting agents are listed");
+    assert.equal(await page.evaluate(() => window.__renderState.serviceUpdates ?? 0), 0, "no update is attempted while agents run");
+    assert.ok(!(await page.locator("body").textContent()).includes("cotal daemon"), "no CLI is offered");
+    await page.evaluate(() => { window.__renderState.agents = [{ space: "acme-team", state: "read", agents: [] }]; window.__emitTauri("desktop-hidden", null); window.__emitTauri("desktop-shown", null); });
+    await page.waitForFunction(() => window.__renderState.serviceUpdates === 1 && !window.__renderState.serviceBehind);
+    await page.waitForFunction(() => document.querySelector("#notice")?.hidden !== false && document.querySelector("#recovery-panel")?.hidden === true && document.querySelector("#connected-panel")?.hidden === false);
+  } },
+  // A refusal with several spaces listed keeps its explanation; the multi-space layout hides it only for the space list.
+  { name: "refusal-several-spaces-explained", state: { installed: true, signedIn: true, connected: true, multiple: true, version: "0.155.0", omitAgents: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent === "Your connection needs an update");
+    assert.ok(await page.evaluate(() => document.querySelectorAll("#connected-spaces li").length) >= 2, "both spaces are listed behind the refusal");
+    assert.equal(await page.locator("#connection-description").isVisible(), true, "the refusal explains itself");
+    assert.equal(await page.locator("#connection-icon").isVisible(), true);
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
