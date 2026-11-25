@@ -47,8 +47,9 @@ export function nativeStub(scenario) {
       if (request.op === "install") {
         if (state.installWait) await new Promise(() => {});
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
-        state.installed = true; return ok({ installed: true });
+        state.installed = true; state.serviceStopped = false; return ok({ installed: true });
       }
+      if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
       const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
@@ -542,6 +543,39 @@ export const scenarios = [
   { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#journey li').count(), 4) },
   { name: "link", state: { link } },
   { name: "custom-host", state: {}, act: page => page.click("#other-host") },
+  { name: "custom-host-back-to-cloud", state: {}, act: async page => { await page.click("#other-host"); await page.getByRole("button", { name: "Use Cotal Cloud", exact: true }).click(); }, expect: async page => {
+    assert.equal(await page.locator("#custom-host").isHidden(), true, "the host field closes");
+    assert.equal(await page.locator("#login").textContent(), "Continue with Cotal Cloud");
+    assert.equal(await page.locator("#other-host").isVisible(), true, "another host can be chosen again");
+  } },
+  { name: "settings-before-sign-in-tray", state: {}, act: page => page.evaluate(() => window.__emitTauri("desktop-open-settings", null)), expect: async page => {
+    assert.equal(await page.locator("#settings-panel").isVisible(), true, "the tray's Settings opens Settings before sign-in");
+    assert.match(await page.locator("#settings-versions").textContent(), /^App /);
+    assert.equal(await page.locator("#service-log").isVisible(), true, "the service log is reachable before sign-in");
+    assert.equal(await page.locator("#settings-account").textContent(), "No account selected");
+    assert.equal(await page.locator("#settings-signout").isDisabled(), true);
+    assert.equal(await page.locator("#settings-disconnect").isDisabled(), true);
+    await page.locator("#open-settings").click();
+    assert.equal(await page.locator("#settings-panel").isHidden(), true);
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "Back returns to Welcome");
+  } },
+  { name: "settings-before-sign-in-header", state: {}, act: page => page.getByRole("button", { name: "Settings", exact: true }).click(), expect: async page => {
+    assert.equal(await page.locator("#settings-panel").isVisible(), true, "the header's Settings opens Settings before sign-in");
+    await page.locator("#service-log summary").click();
+    await page.locator("#refresh-log").click();
+    await page.waitForFunction(() => (window.__renderState.logReads ?? 0) > 0);
+  } },
+  { name: "welcome-not-installed-quiet", state: {}, expect: async page => {
+    assert.equal(await page.locator("#recovery-panel").isHidden(), true, "before the first sign-in a missing service is not a problem");
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true);
+  } },
+  { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");
+    assert.equal(await page.locator("#recover").textContent(), "Start service");
+    await page.locator("#recover").click();
+    await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
+    assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
+  } },
   { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
   { name: "signed-in", state: {}, act: signIn },
   { name: "spaces", state: { multiple: true }, act: signIn },

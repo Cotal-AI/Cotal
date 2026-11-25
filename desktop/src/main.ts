@@ -156,7 +156,8 @@ preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
 function renderSettings(): void {
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
   const configured = stage === "finished" && !setupActive;
-  el("open-settings").hidden = !configured;
+  // Settings also opens before sign-in: the name, the service log and the version matter most when sign-in fails.
+  el("open-settings").hidden = setupActive || loginActive;
   text("open-settings", settingsOpen ? "Back" : "Settings");
   el("settings-panel").hidden = !settingsOpen;
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen;
@@ -579,6 +580,7 @@ function showStage(next: Stage, focus = false): void {
   renderConnections();
   text("login", linked || customHost || next === "sign-in" ? "Continue in browser" : "Continue with Cotal Cloud");
   el("other-host").hidden = customHost || linked;
+  el("cloud-host").hidden = !customHost || linked || loginActive;
   el("change-space").hidden = !addingSpace;
   text("footer-note", finished ? "Closing this window keeps your connection running." : "You choose when to connect this computer.");
   const stages: Stage[] = ["welcome", "sign-in", "connect", "finished"];
@@ -893,6 +895,10 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   buttons();
 }
+/** Before the first sign-in no service is set up, which is not a problem; a stopped one is. */
+function notSetUpYet(error: unknown): boolean {
+  return error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && error.detail?.installed !== true;
+}
 function startStatusWatch(): void {
   if (!isTauri() || watchActive || watchStarting) return;
   watchStarting = true;
@@ -948,7 +954,7 @@ function startStatusWatch(): void {
     if (!busy && !loginActive && !setupActive) {
       ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
       if (!(problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING")) {
-        if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
+        if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in"))) refusal(error, true);
       }
       buttons();
     }
@@ -968,7 +974,7 @@ async function refresh(): Promise<void> {
     selectionPending = false;
     ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
     if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
-    if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
+    if (!(notSetUpYet(error) && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
 }
@@ -1021,6 +1027,7 @@ function nextAfterSignIn(): void {
 }
 el<HTMLInputElement>("provider").value = COTAL_CLOUD_IDP;
 el("other-host").addEventListener("click", () => { customHost = true; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("provider").focus(); });
+el("cloud-host").addEventListener("click", () => { customHost = false; el<HTMLInputElement>("provider").value = ""; showStage(stage); el("login").focus(); });
 el("login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   void action(async () => {
@@ -1167,10 +1174,8 @@ function openSettings(): void {
   const select = el<HTMLSelectElement>("space");
   for (const option of select.options) { option.hidden = false; option.disabled = false; }
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
-  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
-    listOpened = true; showStage("finished");
-    settingsOpen = true; renderSettings(); el("settings-title").focus();
-  }
+  if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") { listOpened = true; showStage("finished"); }
+  settingsOpen = true; renderSettings(); el("settings-title").focus();
   if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
   void refresh();
 }
