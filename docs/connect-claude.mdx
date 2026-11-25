@@ -223,6 +223,7 @@ cotal spawn --harness claude --model sonnet
 `--model` overrides the persona's model pin.
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
+The list marks the model Claude runs when a launch names none.
 A logged-out `claude` reports `claude is not logged in; run claude to log in`.
 An alias such as `opus` is listed with the model it currently resolves to, for example `Opus 5.5 (claude-opus-5-5)`.
 The Claude connector rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
@@ -237,9 +238,27 @@ cotal spawn --harness claude --model opus --variant high
 ```
 
 Claude accepts `low`, `medium`, `high`, `xhigh` and `max`, and the connector refuses any other value before launch.
-`cotal models --harness claude` lists the levels each model supports as its variants.
+`cotal models --harness claude` lists the levels each model supports as its variants, and marks the level Claude runs when a launch names none.
 Claude does not run a model at a level that model lacks, so pick one from that list.
 A launch option `--opt effort=<level>` wins over `--variant`, and the seat's roster entry then shows no variant.
+
+### Choose a mode
+
+Claude offers two modes, which `--mode` turns on or off:
+
+- `fast` runs Claude's fast mode on a model that supports it.
+- `ultracode` lets Claude orchestrate subagents for the whole session, on a model that can run it.
+
+```bash
+cotal spawn --harness claude --model opus --mode ultracode=true
+```
+
+`cotal models --harness claude` lists the modes each model offers your login, and both are off by default.
+It lists `fast` only when your organization allows fast mode, which the connector asks your `claude` before listing.
+The connector passes the chosen modes to Claude in one `--settings` flag.
+A mode set to `false` is passed as off, so a fast mode you saved with `/fast` does not turn it back on.
+Claude keeps only the last `--settings` flag, so a launch with a mode refuses `--opt settings=`.
+Your organization can turn fast mode off after the list was read. The agent then runs at standard speed.
 
 ### Choose a permission mode
 

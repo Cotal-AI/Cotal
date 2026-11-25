@@ -125,6 +125,38 @@ for (const variant of ["extreme", "minimal", "HIGH"]) {
   );
 }
 
+// ---- MODES: fast and ultracode are claude settings, rendered in its one `--settings` flag ---------
+// claude keeps only the last `--settings` it is given, and reads `--effort ultracode` as xhigh plus
+// ultracode that a later `--effort` cancels (measured on 2.1.332), so modes ride one settings flag.
+{
+  const flagValues = (args: string[], flag: string) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
+  check("the connector declares mode support", claudeConnector.supportsModes === true);
+  const uc = launch({ model: "opus", variant: "high", modes: { ultracode: true } }) as { args: string[] };
+  check(
+    "ultracode renders one --settings turning it on, beside the variant's --effort, and never as an effort",
+    JSON.stringify(flagValues(uc.args, "--settings")) === JSON.stringify(['{"ultracode":true}']) && JSON.stringify(flagValues(uc.args, "--effort")) === JSON.stringify(["high"]),
+    uc.args,
+  );
+  const both = launch({ model: "opus", modes: { fast: false, ultracode: true } }) as { args: string[] };
+  const rendered = flagValues(both.args, "--settings");
+  check(
+    "two modes render in one --settings, and a mode turned off is written as false",
+    rendered.length === 1 && JSON.stringify(JSON.parse(rendered[0]!)) === JSON.stringify({ fastMode: false, ultracode: true }),
+    both.args,
+  );
+  check("no modes, or none chosen, render no --settings", !(launch({ model: "opus" }) as { args: string[] }).args.includes("--settings") && !(launch({ model: "opus", modes: {} }) as { args: string[] }).args.includes("--settings"));
+  for (const validateOnly of [false, true]) {
+    const msg = refusalFor({ model: "opus", modes: { fast: true }, launchOptions: { settings: '{"theme":"dark"}' }, validateOnly });
+    check(`modes with --opt settings= are refused${validateOnly ? " by launch validation" : ""}, since claude would drop one of them`, msg !== null && /--opt settings=/.test(msg), msg);
+  }
+  const raw = launch({ model: "opus", launchOptions: { settings: '{"theme":"dark"}' } }) as { args: string[] };
+  check("--opt settings= without modes still passes through as written", JSON.stringify(flagValues(raw.args, "--settings")) === JSON.stringify(['{"theme":"dark"}']), raw.args);
+  const unknown = refusalFor({ model: "opus", modes: { turbo: true } });
+  check("a mode claude does not have is refused, naming the ones it has", unknown !== null && unknown.includes('"turbo"') && /fast and ultracode/.test(unknown), unknown);
+  const choice = refusalFor({ model: "opus", modes: { fast: "on" } });
+  check("a toggle given anything but true or false is refused", choice !== null && /true or false/.test(choice), choice);
+}
+
 // ---- The cell count itself, because three cells above are conditional ------------------------
 // The argv and COTAL_MODEL checks only run when the launch was accepted, so a regression that makes
 // the guard refuse EVERYTHING does not fail them - it DELETES them. Six assertions stop existing
@@ -133,7 +165,7 @@ for (const variant of ["extreme", "minimal", "HIGH"]) {
 //
 // A count is the only thing that sees a cell that is not there. It is a real assertion and it is
 // allowed to fail on a legitimate edit: change the cases above and change this number deliberately.
-const EXPECTED = 35;
+const EXPECTED = 44;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   passed() + failed() === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it

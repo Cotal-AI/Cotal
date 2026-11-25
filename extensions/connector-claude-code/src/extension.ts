@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchModes, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
@@ -156,6 +156,27 @@ function assertServableModel(model: string): void {
  *  runs at its default effort, so a variant outside this list is refused at launch. */
 const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 
+/** The setting each of the catalog's modes turns on or off. Ultracode is a setting, never an effort:
+ *  claude reads `--effort ultracode` as xhigh plus ultracode, and a later `--effort` cancels it. */
+const CLAUDE_MODE_SETTINGS: Readonly<Record<string, string>> = { fast: "fastMode", ultracode: "ultracode" };
+
+/** The `--settings` flag that sets the launch's modes, none when it chose none. A mode turned off is
+ *  written as false, so a setting the operator saved, such as fast mode, does not turn it back on. */
+function modesFlag(modes: LaunchModes | undefined, passthrough: readonly (readonly [string, string])[]): string[] {
+  const settings: Record<string, boolean> = {};
+  for (const [id, on] of Object.entries(modes ?? {})) {
+    const key = Object.hasOwn(CLAUDE_MODE_SETTINGS, id) ? CLAUDE_MODE_SETTINGS[id]! : undefined;
+    if (key === undefined) throw new Error(`claude connector: claude has no mode ${JSON.stringify(id)}; its modes are ${Object.keys(CLAUDE_MODE_SETTINGS).join(" and ")}`);
+    if (typeof on !== "boolean") throw new Error(`claude connector: mode ${JSON.stringify(id)} is a toggle, so it takes true or false, not ${JSON.stringify(on)}`);
+    settings[key] = on;
+  }
+  if (Object.keys(settings).length === 0) return [];
+  // claude keeps only the last `--settings` it is given, so one of the two would be dropped unseen.
+  if (passthrough.some(([k]) => k === "settings"))
+    throw new Error("claude connector: modes are claude's --settings, which --opt settings= also sets, and claude keeps only the last one; choose the modes or --opt settings=, not both");
+  return ["--settings", JSON.stringify(settings)];
+}
+
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -183,6 +204,7 @@ export const claudeConnector: Connector = {
   requires: ["claude"],
   listModels: (o) => listClaudeModels(o ?? {}, launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS })),
   supportsModelVariant: true, // variant = claude's `--effort` level
+  supportsModes: true, // fast and ultracode, rendered as claude's `--settings`
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
@@ -327,6 +349,7 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
+    const modes = modesFlag(opts.modes, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
@@ -382,6 +405,7 @@ export const claudeConnector: Connector = {
         args.push("--effort", opts.variant);
         env.COTAL_VARIANT = opts.variant;
       }
+      args.push(...modes);
 
       // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
       // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
