@@ -284,7 +284,10 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // This folder's stack cut off with no recorded outcome is named under the selected space, and
     // Next names the step that finishes or settles it. One that neither blocks nor stays part way
     // settles from its members' processes when it starts.
-    if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
+    if (journal) {
+      const step = journal.remedy === undefined ? journal.message : journal.code === "TARGET_UNAVAILABLE" ? `${journal.message}. ${journal.remedy}` : journal.remedy;
+      if (!hints.includes(step)) hints.push(step);
+    }
     else if (instances) hints.push(instances.remedy ?? instances.message);
     else if (writeProblem) hints.push(`${d.stopped ? "Restart" : "First start"} blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);

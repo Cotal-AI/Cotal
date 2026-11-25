@@ -102,6 +102,10 @@ On a stopped local stack, `ps` reports an unreadable or invalid stack journal an
 when no `--server` is passed or when it matches the saved broker address. A different address does
 not use the local journal to diagnose the refusal.
 
+If a regular file occupies a prepared project's `.cotal` path, `ps --space <name>` refuses with
+`TARGET_UNAVAILABLE`, exit 2. It names the file and tells you to move it aside and restore the
+original `.cotal` directory. It leaves both entries untouched.
+
 A raw `--creds` file is refused as `UNSUPPORTED` before dialing by `status <agent>`, `ps`, `stop`, `attach`, `input` and `models`, because
 that route mints no endpoint-caller triple. Run the command without `--creds` from the project folder, or pass `--space` against its registry
 entry, so the CLI mints the one-shot caller itself.
