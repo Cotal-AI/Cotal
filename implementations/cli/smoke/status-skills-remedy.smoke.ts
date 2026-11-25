@@ -86,6 +86,7 @@ exit 0
       XDG_RUNTIME_DIR: join(home, "runtime"),
       TMPDIR: tmpdir(),
       COTAL_SKIP_CONNECTOR_SEED: "1",
+      DO_NOT_TRACK: "1",
       NO_COLOR: "1",
       PATH: join(home, "bin"),
     },
@@ -160,6 +161,7 @@ try {
   assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/, "refusal names the --skills combination fence");
   const refusedDemo = await run(["setup", "--skills", "--demo"], first.env, first.cwd);
   assert.notEqual(refusedDemo.code, 0, "setup --skills --demo is refused");
+  assert.equal(existsSync(join(cotalHome, "telemetry.json")), false, "the fixture does not create a reporting identity");
 
   const setupSource = readFileSync(join(repoRoot, "implementations", "cli", "src", "commands", "setup.ts"), "utf8");
   const skillsOnly = setupSource.slice(setupSource.indexOf("async function runSkillsOnly"), setupSource.indexOf("\n}\n", setupSource.indexOf("async function runSkillsOnly")) + 2);
