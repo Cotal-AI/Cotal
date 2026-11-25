@@ -881,6 +881,16 @@ try {
     check("remove-persona deletes an owned 69-character legacy entry that cannot be spawned",
       rRemoveInvalid.reply.ok === true && !existsSync(invalidPath), rRemoveInvalid.reply);
 
+    // A legacy filename remains readable and removable under the catalog's ownership rules.
+    const dashPath = join(workspaceRoot, ".cotal", "agents", "-legacydash.md");
+    writeFileSync(dashPath, `---\nname: -legacydash\nowner: ${A.principal}\nsubscribe: []\n---\nkept from an earlier release\n`);
+    const rShowDash = await A.call("show-persona", { name: "-legacydash" });
+    check("show-persona reads an owned stored file whose name begins with \"-\"",
+      rShowDash.reply.ok === true && (rShowDash.reply.data as { persona?: string }).persona?.includes("kept from an earlier release") === true, rShowDash.reply);
+    const rRemoveDash = await A.call("remove-persona", { name: "-legacydash" });
+    check("…and remove-persona deletes it",
+      rRemoveDash.reply.ok === true && !existsSync(dashPath), rRemoveDash.reply);
+
     const rModels = await A.call("models", {});
     const catalogs = (rModels.reply.data as { catalogs: Array<{ agent: string; supported: boolean }> })?.catalogs;
     check("models answers the NORMALIZED catalog list (stub connector: supported=false)",
