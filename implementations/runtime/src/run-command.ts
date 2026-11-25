@@ -827,6 +827,11 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       target: { space: t.space },
       remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
     });
+  if (command === "run-start" && t.mode === "open")
+    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission", {
+      target: { space: t.space },
+      remedy: "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
@@ -1172,7 +1177,7 @@ function journalIdRemedy(verb: string, values: RunValues): string {
   return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
 }
 
-function localResumeInventory(values: RunValues): string {
+function localRunInventory(values: RunValues): string {
   if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
     return "run `cotal run list --local` with the original target options";
   const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
@@ -1199,8 +1204,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertIdToken(first, "run id"); } catch {
       const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
       if (verb === "journal") usage(message, journalIdRemedy(raw, values));
-      if (verb === "resume" && values.local === true)
-        usage(message, `${localResumeInventory(values)}. Then replace only the run ID in the original command`);
+      if (values.local === true && (verb === "resume" || verb === "answer" || verb === "amend"))
+        usage(message, `${localRunInventory(values)}. Then replace only the run ID in the original command`);
       usage(`${message}; \`cotal run\` lists them`);
     }
   }
@@ -1227,7 +1232,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   } else if (verb === "revoke" && first === undefined) {
     usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
   } else if (verb === "resume" && !first && values.local === true) {
-    usage("run resume takes one identifier", `${localResumeInventory(values)}. Then add a run ID after \`run resume\` in the original command`);
+    usage("run resume takes one identifier", `${localRunInventory(values)}. Then add a run ID after \`run resume\` in the original command`);
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],

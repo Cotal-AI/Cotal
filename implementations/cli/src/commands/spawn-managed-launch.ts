@@ -121,9 +121,11 @@ export interface ManagedLaunchObserver {
   ready(result: ManagedLaunchResult, warnings: readonly OutputWarning[]): void;
 }
 
-export function managedLaunchView(r: ManagedLaunchResult): Report {
+export function managedLaunchView(r: ManagedLaunchResult, server?: string): Report {
   const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
-  const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
+  const explicitServer = server === undefined ? undefined : brokerAddressForDisplay(server);
+  const broker = explicitServer === undefined ? "" : ` --server ${shellWord(explicitServer)}`;
+  const target = concrete ? `${r.name} --space ${r.space}${broker} --on ${r.managerInstanceId}` : `<name> --space <space>${broker} --on <manager-instance>`;
   const noStream = r.streamsTerminal === false;
   return { sections: [
     { title: "Agent joined", blocks: [
@@ -357,7 +359,7 @@ export async function launchManagedPersona(
   if (observer) {
     try { observer.ready(result, warnings); }
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
-  } else writeResult(presentation, { command: "spawn", target, result, warnings }, managedLaunchView);
+  } else writeResult(presentation, { command: "spawn", target, result, warnings }, (r) => managedLaunchView(r, values.server));
   if (values.detach) return;
   // A runtime that streams no terminal has none to attach, so this launch does not ask for one: the
   // seat is up, the receipt above says where it runs and what reaches it, and the command is done.

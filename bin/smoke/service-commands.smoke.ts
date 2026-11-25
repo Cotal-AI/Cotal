@@ -196,7 +196,7 @@ check("supervise is hidden", command("supervise")?.hidden === true);
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
 Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", COLUMNS: "200" });
-const cotal = (args: string[]) => spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const cotal = (args: string[], commandEnv = env) => spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env: commandEnv, encoding: "utf8", timeout: 120_000 });
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
 const definitions = () => {
   const run = cotal(["service", "--space", SPACE, "--json"]);
@@ -261,7 +261,24 @@ try {
   check("service add --exec with a pipe refuses and saves nothing", piped.status === 1 && out(piped).includes("an unquoted | would not work") && JSON.stringify(definitions()) === "[]", out(piped));
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
-  const added = cotal(["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE]);
+  const addExec = ["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE];
+  for (const args of [addExec, ["service", "list"], ["svc", "rm", "hello"], ["manager", "status"]]) {
+    const unknown = cotal([...args, "--wibble"]);
+    check(`cotal ${args.slice(0, 2).join(" ")} tells you to drop an unknown option when no operand fits`,
+      unknown.status === 1 && unknown.stdout === "" && /Unknown option '--wibble'\n  drop the unknown option\n/.test(unknown.stderr), out(unknown));
+  }
+  const unknownJson = cotal([...addExec, "--json", "--wibble"]);
+  const { error: unknownError } = JSON.parse(unknownJson.stdout);
+  check("service add gives the same remedy in JSON and saves nothing",
+    unknownJson.status === 1 && unknownJson.stderr === "" && unknownError?.code === "USAGE_INVALID"
+      && unknownError.message === "Unknown option '--wibble'" && unknownError.remedy === "drop the unknown option"
+      && JSON.stringify(definitions()) === "[]", out(unknownJson));
+  const managerUnknown = cotal(["--json", "mgr", "--space", SPACE, "logs", "--tail", "1", "--wibble=3"]);
+  const { error: managerUnknownError } = JSON.parse(managerUnknown.stdout);
+  check("mgr logs gives the same remedy in JSON with its implicit service name",
+    managerUnknown.status === 1 && managerUnknown.stderr === "" && managerUnknownError?.code === "USAGE_INVALID"
+      && managerUnknownError.message === "Unknown option '--wibble'" && managerUnknownError.remedy === "drop the unknown option", out(managerUnknown));
+  const added = cotal(addExec);
   check("service add <name> --exec saves a program of your own in one command", added.status === 0 && JSON.stringify(definitions()) === '["hello"]', out(added));
   const show = cotal(["service", "show", "hello", "--space", SPACE, "--json"]);
   let launch: { type?: string; executable?: string; argumentCount?: number; cwd?: string } = {};
@@ -347,6 +364,16 @@ try {
     brokerStartHelp.status === 0 && brokerHelpCommand.status === 0 && brokerStartHelp.stdout === brokerHelpCommand.stdout
     && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file>/m.test(brokerStartHelp.stdout)
     && examplePreview?.status === 0, { help: out(brokerStartHelp), preview: examplePreview && out(examplePreview) });
+  const badGlobalLeading = cotal(["--no-color=false", "service", "start", "broker"]);
+  const badGlobalTrailing = cotal(["service", "start", "broker", "--no-color=false"]);
+  check("a malformed global before or after broker start refuses with the full preset help",
+    [badGlobalLeading, badGlobalTrailing].every((run) => run.status === 1 && run.stdout === ""
+      && run.stderr.includes("--no-color takes no value") && run.stderr.endsWith(brokerStartHelp.stdout)),
+    { leading: out(badGlobalLeading), trailing: out(badGlobalTrailing) });
+  const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
+  check("explicit broker start help keeps preset options when passed startup flags",
+    brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
+    out(brokerHelpWithOptions));
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));
@@ -459,6 +486,19 @@ try {
   check("the printed confirmation returns a JSON receipt, forgets that space's service and keeps this folder's",
     confirmed?.status === 0 && JSON.parse(confirmed.stdout).result?.kind === "service-definition-removed"
       && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, confirmed && out(confirmed));
+
+  const colorEnv: NodeJS.ProcessEnv = { ...env, FORCE_COLOR: "1" };
+  delete colorEnv.NO_COLOR;
+  const addedPlain = cotal(["service", "add", "plain-retry", "--exec", "/bin/true", "--space", PREPARED, "--json"]);
+  const refusedPlain = cotal(["service", "remove", "plain-retry", "--space", PREPARED, "--plain", "--no-input"], colorEnv);
+  const confirmPlain = /confirm with `(?:pnpm )?cotal ([^`]+)`/.exec(refusedPlain.stderr)?.[1];
+  check("service remove with --plain keeps the definition until confirmed and prints a plain confirmation",
+    addedPlain.status === 0 && refusedPlain.status === 1 && serviceDefinitionStore(PREPARED).read("plain-retry") !== undefined
+      && confirmPlain === `svc remove plain-retry --space ${PREPARED} --yes --plain`, out(refusedPlain));
+  const removedPlain = confirmPlain ? cotal(confirmPlain.split(" "), colorEnv) : undefined;
+  check("the copied plain confirmation removes the definition and writes no ANSI even with color forced",
+    removedPlain?.status === 0 && removedPlain.stdout.includes("Service definition forgotten") && !removedPlain.stdout.includes("\x1b")
+      && serviceDefinitionStore(PREPARED).read("plain-retry") === undefined, removedPlain && out(removedPlain));
 
   const definitionFile = join(prepared, "service definition.json");
   writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));

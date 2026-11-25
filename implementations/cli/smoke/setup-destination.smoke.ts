@@ -68,7 +68,7 @@ symlinkSync(natsServer, join(bin, process.platform === "win32" ? "nats-server.ex
 // Do not expose ambient POSIX tools: `/usr/bin/orca` can be the GNOME screen reader.
 if (process.platform !== "win32") {
   symlinkSync(process.execPath, join(bin, "node"));
-  for (const name of ["npm", "sh", "ps", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
+  for (const name of ["npm", "sh", "ps", "mkdir", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
     const executable = resolveOnPath(name);
     if (!executable) throw new Error(`setup fixture requires ${name} on the host PATH`);
     symlinkSync(executable, join(bin, name));
@@ -216,6 +216,7 @@ if (seeded.status !== 0) {
 // to the newest fails. Every other package is not found. Set after the seed, so only the runtime
 // installs read it.
 const REPO = join(import.meta.dirname, "..", "..", "..");
+const installationDocs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
 const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
 const NEWER = "99.0.0";
 const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
@@ -419,6 +420,23 @@ if (process.platform !== "win32") {
 }
 
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
+if (process.platform !== "win32") {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("bash\n") && /^cotal setup --destination local .* --no-input$/m.test(block))
+    ?.slice("bash\n".length);
+  const dir = join(home, "scripted-research");
+  check("the documented local example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const runExample = spawnSync("sh", ["-ec", `node=$1; cli=$2
+cotal() { "$node" "$cli" "$@"; }
+${example.replaceAll("research", "scripted-research")}`, "setup-example", process.execPath, BIN],
+    { cwd: home, env, encoding: "utf8", timeout: 180_000 });
+    check("the documented local example creates its folder and saves preparation before reporting missing Claude",
+      runExample.status === 4 && /saved scripted-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
+}
+
 {
   const dir = project("p-claude");
   const partial = await json(FULL("claudespace", dir, "claude"));
@@ -536,8 +554,7 @@ if (process.platform !== "win32") {
   const help = await run(["setup", "--help"]);
   check("setup help labels the self-hosted connection-file example as prompting in a terminal",
     help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
-  const docs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
-  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(docs)?.[0];
+  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(installationDocs)?.[0];
   check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
   const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
   const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);

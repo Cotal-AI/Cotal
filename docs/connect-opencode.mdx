@@ -60,7 +60,7 @@ cotal models --harness opencode
 ```
 
 On 1.x, add `--refresh` to refresh OpenCode's provider cache first.
-On 2.x, the connector runs `opencode api --standalone GET /api/model`, which starts a private OpenCode server for that one request.
+On 2.x, the connector starts a private OpenCode server and reads `GET /api/model` once the server's plugins have loaded.
 
 Choose a `provider/model` ID and, when the model offers variants, a variant from that listing:
 

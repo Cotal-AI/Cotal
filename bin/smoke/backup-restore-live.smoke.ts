@@ -982,7 +982,8 @@ async function missingCustomSourceScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-custom-source-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-custom-source-home-")));
   const artifact = join(root, "space-backup");
-  const store = join(root, "registry-target");
+  const store = join(root, "custom store");
+  const saved = join(root, "saved-source");
   const server = `nats://127.0.0.1:${await freePort()}`;
   const space = "backup_missing_custom_source";
   const { run } = sandboxRun(root, home);
@@ -995,7 +996,7 @@ async function missingCustomSourceScenario(): Promise<void> {
     must("down --preserve-state", run("down", "--preserve-state"));
     must("backup create", run("backup", "create", artifact));
     assertOverlappingRestoreTarget(root, artifact, run, join(store, "new"), "preserved source store");
-    renameSync(store, join(root, "saved-source"));
+    renameSync(store, saved);
     const elsewhere = run("backup", "restore", artifact, "--accept-missing-source", "--store-dir", join(root, "elsewhere"), "--json");
     assert.equal(elsewhere.status, 1, `another --store-dir is a usage refusal\n${elsewhere.stdout}${elsewhere.stderr}`);
     assert.match(elsewhere.stdout, /rebuilds it at its recorded path/);
@@ -1006,6 +1007,18 @@ async function missingCustomSourceScenario(): Promise<void> {
     const kept = JSON.parse(run("history", "preserved", "--space", space, "--json").stdout) as { result: { items: { text: string }[] } };
     assert.deepEqual(kept.result.items.map((item) => item.text), ["history-before-backup"], "the restored store serves the retained message");
     must("down", run("down", "--yes"));
+    const active = readMaintenanceJournal(root);
+    assert.equal(active?.state, "active");
+    assert.equal(active.restore.target.path, store);
+    const wrong = run("up", "--detach", "--store-dir", saved);
+    assert.notEqual(wrong.status, 0, wrong.stdout);
+    assert.ok(wrong.stderr.replace(/\s+/g, " ").includes(`ordinary startup after restore must use the recorded active target store ${store}`), wrong.stderr);
+    must("bare up before retiring the restore journal", run("up", "--detach"));
+    const history = run("history", "preserved", "--space", space, "--json");
+    must("history after bare up", history);
+    assert.deepEqual(JSON.parse(history.stdout).result.items, kept.result.items);
+    assert.equal(existsSync(join(root, ".cotal", "nats")), false, "the restart did not open the default store");
+    assert.deepEqual(readMaintenanceJournal(root), active, "the restart leaves the active journal unchanged");
   } finally {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });

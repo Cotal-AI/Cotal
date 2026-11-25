@@ -66,7 +66,10 @@ before anything is written; the refusal names the runs still activating, and the
 wait until one has activated and run it again. Any other refusal of `start`, `resume`, `answer` or
 `amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
-An unpinned hosted verb run by the operator reads the space's service registry first. When it
+Hosted `start` on a known open mesh refuses `UNSUPPORTED` (exit 2) before looking for a manager.
+Use `cotal r simulate <file>` to test the program offline. Use a static-auth mesh to host the run.
+
+Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
 (exit 2) before waiting for a reply. If this machine started the stack at the requested broker,
 the next step names its project folder. A machine that only registered the space points you to
@@ -246,9 +249,9 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`). If a local resume has a missing or malformed
-run ID, use `cotal run list --local` with the same target options. Then add or replace only the run
-ID in the original command.
+(`cotal run resume <runId> --local --file <program>`). If a local `resume`, `answer` or `amend` has a
+malformed run ID, use `cotal run list --local` with the same target options. Then replace only the run
+ID in the original command. For a local `resume` with no run ID, use the same list and add the ID.
 `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
@@ -360,7 +363,7 @@ before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
-If you requested JSON, the retry command includes `--json`.
+The retry command keeps `--json` or `--plain` when you pass either flag.
 For an exhausted list it names the needed result, counted
 from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
 journal entry matches the error code. That can be a different step from the one in the message,

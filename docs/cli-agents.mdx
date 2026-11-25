@@ -228,7 +228,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--harness <connector>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). `--agent` is the legacy spelling; giving both is refused |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
-| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers or Claude effort levels) |
+| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers, Claude effort levels or pi thinking levels) |
 | `--mode <id=value>` | the application's default | A model mode, repeatable: `true` or `false` for a toggle, or an option id for a choice. Refused on a connector that does not support modes |
 | `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. On a spawn in this terminal, a path that does not exist or is not a directory is refused with `TARGET_UNAVAILABLE` before provisioning. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
@@ -264,8 +264,9 @@ names what to remove: the `--variant` option, the `variant:` field in the person
 A launch with a variant or a mode is refused with `USAGE_INVALID` before provisioning unless the
 connector's model catalog lists it for the model, or for the catalog's default model when no
 `--model` is given. The refusal names the values the catalog lists. A spawn in this terminal reads
-the catalog from the application for that check. A managed launch is checked by its manager, against
-the catalog it read last.
+the catalog from the application for that check, and only after the connector's own launch check
+accepts the variant, so a level the connector rejects gets the preview's refusal and starts nothing.
+A managed launch is checked by its manager, against the catalog it read last.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch. On an open or static space, a managed
 preview refuses a `--on` value that cannot be a manager instance id with `USAGE_INVALID`
@@ -504,9 +505,8 @@ An empty or whitespace-only `--harness` or `-H` refuses with
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Claude Code lists the models its login can use, with their effort levels as variants and its `fast` and
 `ultracode` modes, and pi lists
-the models of providers it holds credentials for. Jcode reads providers that enable
-`model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
-and launch can still refuse one.
+the models of providers it holds credentials for, with their thinking levels as variants. Jcode lists
+the models `jcode model list` reports with an available route, without variants.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
 the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be

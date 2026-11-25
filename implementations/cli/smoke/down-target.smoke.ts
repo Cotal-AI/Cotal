@@ -363,6 +363,15 @@ try {
   check("...and its preview refuses the same way, naming the preview to run there",
     previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(meshA.root, 0o000);
+    try {
+      const inaccessible = await rejection(run([], { space: "teamA", yes: true }));
+      check("an inaccessible retained root advises restoring access instead of changing folders",
+        inaccessible?.code === "PERMISSION_DENIED" && inaccessible.message?.includes(`${meshA.root} could not be accessed`) === true &&
+        inaccessible.remedy === "restore access to the original project folder, then try again", inaccessible);
+    } finally { chmodSync(meshA.root, 0o700); }
+  }
   recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
   for (const preview of [false, true]) {
     const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));

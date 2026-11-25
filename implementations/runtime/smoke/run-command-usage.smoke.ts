@@ -212,6 +212,12 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
       usageRefusal(resume, message) && isCommandFailure(resume)
         && resume.remedy === `run \`cotal run list --local\` with the original target options. ${correction}`, resume);
   }
+  for (const verb of ["answer", "amend"]) {
+    const got = gate([verb, "bad/id", "/checkpoint:a#0"], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", by: "operator", value: "true" });
+    c(`the local ${verb} remedy keeps the original target without repeating a private broker URL`,
+      usageRefusal(got, idFormat) && isCommandFailure(got) && got.selfContained === true
+        && got.remedy === "run `cotal run list --local` with the original target options. Then replace only the run ID in the original command", got);
+  }
   const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
   c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
@@ -754,22 +760,29 @@ if (process.platform !== "win32") {
       && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
       && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
 
-    for (const handler of [undefined, "timer's $results file.json"]) for (const jsonMode of [false, true]) {
+    const colorEnv = Object.assign({}, env, { FORCE_COLOR: "1" });
+    delete colorEnv.NO_COLOR;
+    for (const handler of [undefined, "timer's $results file.json"]) for (const mode of ["rich", "plain", "json"]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
-      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]), ...(jsonMode ? ["--json"] : []));
+      const retryOptions = mode === "plain" ? { ...options, env: colorEnv } : options;
+      const args = ["run", "simulate", program, ...(handler === undefined ? [] : ["--handler", handler]), ...(mode === "rich" ? [] : [`--${mode}`])];
+      const missing = spawnSync(cli[0]!, [...cli.slice(1), ...args], retryOptions);
+      const jsonMode = mode === "json";
       const failure = jsonMode ? JSON.parse(missing.stdout) : undefined;
       const retry = /rerun with `([^`]+)`/.exec(jsonMode ? failure.error?.remedy ?? "" : missing.stderr ?? "")?.[1];
       writeFileSync(join(dir, handler ?? "results.json"), '{"checkpoints":{"expiry":{"status":"expired"}}}');
-      const replayed = retry?.startsWith("cotal run simulate ")
-        ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\n${retry}`], options)
+      const replayed = retry && /^(?:pnpm )?cotal run simulate /.test(retry)
+        ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\npnpm() { "$@"; }\n${retry}`], retryOptions)
         : undefined;
       const envelope = jsonMode && retry?.endsWith(" --json") && replayed?.status === 0 ? JSON.parse(replayed.stdout) : undefined;
-      c(`the printed simulation retry runs verbatim in ${jsonMode ? "JSON" : "human output"} with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
+      c(`the printed simulation retry runs verbatim in ${mode} mode with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
         missing.status === 5 && replayed?.status === 0 && (jsonMode
           ? missing.stderr === "" && failure.error?.code === "OPERATION_FAILED" && failure.error?.cause?.code === "L6001"
             && replayed.stderr === "" && envelope?.outcome === "ok" && envelope.completeness === "complete"
             && envelope.result?.outcome === "completed" && envelope.result.elapsedMs === 23000
-          : /Program outcome:\s+completed/.test(replayed.stdout) && /Virtual time:\s+23000 ms/.test(replayed.stdout)), { missing, replayed });
+          : /Program outcome:\s+completed/.test(replayed.stdout) && /Virtual time:\s+23000 ms/.test(replayed.stdout)
+            && (mode !== "plain" || (retry?.endsWith(" --plain") === true && missing.stdout === "" && !missing.stderr.includes("\x1b")
+              && replayed.stderr === "" && !replayed.stdout.includes("\x1b")))), { missing, replayed });
     }
     for (const [empty, named] of [["--admit-read", "--admit-publish"], ["--admit-publish", "--admit-read"]]) {
       const refused = run("start", program, "--local", "--server", "nats://127.0.0.1:1", empty!, " , , ", named!, "none");
