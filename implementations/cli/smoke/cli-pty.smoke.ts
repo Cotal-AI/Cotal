@@ -13,7 +13,8 @@
  *
  * Run: pnpm smoke:cli-pty
  */
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -40,6 +41,40 @@ function session(pty: Pty) {
 async function until(done: () => boolean, ms = 30_000): Promise<boolean> {
   for (const t0 = Date.now(); Date.now() - t0 < ms; await wait(50)) if (done()) return true;
   return done();
+}
+
+async function checkServiceRemovalFolders(ptys: Pty[]): Promise<void> {
+  const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "cotal-cli-pty-removal-")));
+  const cwd = join(sandbox, "outside");
+  mkdirSync(join(cwd, ".cotal"), { recursive: true });
+  const runtime = join(sandbox, "runtime");
+  mkdirSync(runtime, { mode: 0o700 });
+  const localEnv = { ...env, HOME: sandbox, USERPROFILE: sandbox, COTAL_HOME: join(sandbox, "store"), XDG_CONFIG_HOME: join(sandbox, "xdg"), XDG_RUNTIME_DIR: runtime };
+  const bin = join(repoRoot, "bin", "dist", "cotal.js");
+  const run = (args: string[]) => spawnSync(process.execPath, [bin, ...args], { cwd, env: localEnv, encoding: "utf8", timeout: 60_000 });
+  for (const [space, folder] of [["wrap-root", "has`tick-and-two  spaces in this folder"], ["plain-root", "east\u2013west`"]] as const) {
+    const path = join(sandbox, folder);
+    mkdirSync(path);
+    const project = realpathSync(path);
+    const prepare = run(["space", "create", space, "--root", project]);
+    const add = run(["service", "add", "stack-manager", "--preset", "manager", "--root", project, "--space", space]);
+    check(`control: the ${space} project has a saved stack definition`, prepare.status === 0 && add.status === 0, { prepare: prepare.stderr, add: add.stderr });
+    const args = ["service", "remove", "stack-manager", "--space", space, "--yes", "--plain"];
+    const pty = nodePty([bin, ...args], { cwd, env: localEnv, cols: 52, rows: 24 });
+    ptys.push(pty);
+    const seen = session(pty);
+    await until(() => seen.exitCode !== undefined);
+    const redirected = run(args);
+    const redirectedEnter = redirected.stderr.match(/`((?:cd |Set-Location )[^`\r\n]+)`/)?.[1];
+    check(`${space}: the 52-column terminal and redirected plain output preserve the same directory command`,
+      seen.exitCode === 2 && redirected.status === 2 && redirected.stderr.includes("UNSUPPORTED") && redirectedEnter !== undefined
+      && (await screen(seen.raw, 52, 24)).includes(redirectedEnter), { terminal: seen.text(), redirected: redirected.stderr });
+    if (process.platform !== "win32") {
+      const expected = `cd "$(printf '%b' '${project.replaceAll("\\", "\\\\").replaceAll("'", "'\\''").replaceAll("`", "\\0140")}')"`;
+      const entered = redirectedEnter === expected ? spawnSync("/bin/sh", ["-c", `${redirectedEnter} && pwd -P`], { cwd, env: { ...localEnv, LC_ALL: "C" }, encoding: "utf8", timeout: 10_000 }) : undefined;
+      check(`${space}: the printed command enters the exact project folder`, entered?.status === 0 && entered.stdout === `${project}\n`, redirected.stderr);
+    }
+  }
 }
 
 const ECHO = `
@@ -253,6 +288,7 @@ try {
       ].join("\n"),
     failLines,
   );
+  await checkServiceRemovalFolders(ptys);
 
   // A supervise refused before it connects fits the terminal: its deprecation notice wraps like any
   // other warning, keeping each command whole, and no manager boot line comes before the refusal.

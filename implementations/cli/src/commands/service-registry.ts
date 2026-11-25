@@ -114,16 +114,16 @@ function legacyProcesses(context: LocalProcessContext) {
 }
 
 function stackRemovalFolder(root: string): string {
-  if (oneLine(root) === root) return `from the project folder ${codeSpan(root)},`;
+  if (!root.includes("`") && oneLine(root) === root) return `from the project folder ${codeSpan(root)},`;
   if (process.platform === "win32") {
     const encoded = Buffer.from(root).toString("base64");
     const change = `Set-Location -LiteralPath ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))`;
     return `in PowerShell, change to the project folder with ${codeSpan(change)}, then`;
   }
-  // printf %b decodes UTF-8 bytes without relying on the shell locale.
+  // printf %b decodes UTF-8 bytes without relying on the shell locale or putting backticks inside the displayed span.
   const escaped = [...root].map((char) => {
     if (char === "\\") return "\\\\";
-    if (oneLine(char) === char) return char;
+    if (char !== "`" && oneLine(char) === char) return char;
     return Array.from(Buffer.from(char), (byte) => `\\0${byte.toString(8).padStart(3, "0")}`).join("");
   }).join("");
   return `change to the project folder with ${codeSpan(`cd "$(printf '%b' ${shellWord(escaped)})"`)}, then`;
