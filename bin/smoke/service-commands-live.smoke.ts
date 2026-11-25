@@ -4,7 +4,12 @@
  * `cotal manager start` with no flags saves the manager from its preset's defaults and starts it; a
  * second start starts nothing; `status` and `logs` read it; a start naming another runtime while it
  * runs refuses; `stop` stops it. A program of your own is added with one `service add --exec`, then
- * started, read and stopped by its name. In a sandbox of its own, the manager a plain `cotal up`
+ * started, read and stopped by its name. Started from a shell that stays, as an app's agent does, it
+ * outlives that shell: with no systemd user manager it leads a session and process group of its own,
+ * so the group signal an app sends its agent misses it, and with one it runs in a user scope of its
+ * own, so stopping the scope it was started from leaves it running. A retry under the IDs of an
+ * attempt whose leftover descendant still holds that attempt's scope gets a scope of its own. In a
+ * sandbox of its own, the manager a plain `cotal up`
  * starts has no saved service: `manager logs` and `service logs stack-manager` read its log, a
  * `--follow --json` writes one record per line and ends when `cotal down` stops it, a plain `--follow`
  * ends with a sentence instead of a JSON line, and `manager stop` and `install --dry-run` still refuse
@@ -20,12 +25,14 @@
  *
  * Run: pnpm smoke:service-commands:live
  */
-import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { readManagerSeatCap } from "@cotal-ai/workspace";
+import { inOwnScope } from "../../implementations/cli/src/lib/service-scope.js";
 
 const WT = join(import.meta.dirname, "..", "..");
 const TSX_LOADER = import.meta.resolve("tsx");
@@ -173,6 +180,95 @@ function inventory(): { services: Row[]; definitions: string[]; running: string[
   } catch { return { services: [], definitions: [out(run)], running: [] }; }
 }
 const row = (rows: readonly Row[], name: string) => rows.find((entry) => entry.name === name);
+
+/** The process group, session and cgroup of `pid`. */
+function processPlace(pid: number): { pgid: number; sid: number; cgroup: string } {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  return { pgid: Number(fields[2]), sid: Number(fields[3]), cgroup: readFileSync(`/proc/${pid}/cgroup`, "utf8").trim().split(":").at(-1) ?? "" };
+}
+type Started = { pid: number; instanceId: string; launchRequestId: string };
+/** Whether `outlive`'s recorded process still runs. */
+function outliveRuns(service: Started | undefined): boolean {
+  const status = cotal(["service", "status", "outlive", "--json"]);
+  try { return service !== undefined && JSON.parse(status.stdout).result?.observedProcess === "running" && process.kill(service.pid, 0); }
+  catch { return false; }
+}
+/** Run `service start outlive` from a shell that leads its own process group and stays after the
+ *  start, as an app's agent does, inside the user scope `scope` when given. Resolves once it runs. */
+async function startFromStarter(startEnv: NodeJS.ProcessEnv, scope?: string): Promise<{ starter: ChildProcess; service?: Started }> {
+  const shell = ["/bin/sh", "-c", '"$@"; exec sleep 120', "starter", process.execPath, "--import", TSX_LOADER, BIN, "service", "start", "outlive"];
+  const argv = scope ? ["systemd-run", "--user", "--scope", "--quiet", "--collect", `--unit=${scope}`, "--", ...shell] : shell;
+  const starter = spawn(argv[0]!, argv.slice(1), { cwd: root, env: startEnv, detached: true, stdio: "ignore" });
+  starters.push(starter);
+  for (let i = 0; i < 120; i++) {
+    await sleep(500);
+    try {
+      const result = JSON.parse(cotal(["service", "status", "outlive", "--json"]).stdout).result;
+      if (result?.recordedState === "running" && result.observedProcess === "running") return { starter, service: { pid: result.pid, instanceId: result.instanceId, launchRequestId: result.launchRequestId } };
+    } catch { /* not recorded yet */ }
+  }
+  return { starter };
+}
+const starters: ChildProcess[] = [];
+const STARTER_SCOPE = `cotal-smoke-starter-${process.pid}.scope`;
+let outliveUp = false;
+/** A background service outlives the app that started it. With no systemd user manager, as on macOS,
+ *  it leads a session and process group of its own, which the group signal T3 Code sends an agent
+ *  there does not reach. With one, it runs in a user scope of its own, which stopping the agent's
+ *  scope, as T3 Code does on Linux, leaves running. */
+async function checkServiceOutlivesStarter(): Promise<void> {
+  const added = cotal(["service", "add", "outlive", "--exec", "/bin/sleep 600"]);
+  check("service add outlive saves a program to start from an app's agent", added.status === 0, out(added));
+  const unmanaged: NodeJS.ProcessEnv = { ...env };
+  delete unmanaged.XDG_RUNTIME_DIR;
+  const plain = await startFromStarter(unmanaged);
+  outliveUp = plain.service !== undefined;
+  const pid = plain.service?.pid, placed = pid === undefined ? undefined : processPlace(pid), starter = processPlace(plain.starter.pid!);
+  check("with no user manager a background service leads a session and process group apart from its starter's, in no scope of its own",
+    placed?.pgid === pid && placed?.sid === pid && placed?.pgid !== starter.pgid && placed?.sid !== starter.sid && placed?.cgroup.includes("/cotal-") === false, { placed, starter });
+  try { process.kill(-plain.starter.pid!, "SIGTERM"); } catch { /* the starter already ended */ }
+  await sleep(1500);
+  check("  and the signal to the starter's process group does not reach it", outliveRuns(plain.service), plain.service);
+  check("  and it stops", cotal(["service", "stop", "outlive", "--yes"]).status === 0 && !outliveRuns(plain.service));
+  const answers = spawnSync("systemctl", ["--user", "show", "--property=Version", "--value"], { env, encoding: "utf8" });
+  if (!env.XDG_RUNTIME_DIR || answers.status !== 0 || !answers.stdout.trim()) console.log("  - SKIP the scope cells: no systemd user manager answers here");
+  else {
+    const scoped = await startFromStarter(env, STARTER_SCOPE);
+    outliveUp = scoped.service !== undefined;
+    const own = scoped.service && { ...scoped.service, ...processPlace(scoped.service.pid) };
+    check("with a user manager it runs in a user scope of its own, named for its space, instance and launch",
+      own !== undefined && /\/cotal-[0-9a-f]{12}-/.test(own.cgroup) && new RegExp(`-${own.instanceId}-${own.launchRequestId}-[0-9a-f]{8}\\.scope$`).test(own.cgroup), { own, starter: STARTER_SCOPE });
+    spawnSync("systemctl", ["--user", "stop", STARTER_SCOPE]);
+    await sleep(1500);
+    check("  and stopping the scope it was started from leaves it running", outliveRuns(scoped.service), scoped.service);
+    check("  and it stops", cotal(["service", "stop", "outlive", "--yes"]).status === 0 && !outliveRuns(scoped.service));
+  }
+  outliveUp = false;
+  check("  and its definition is removed", cotal(["service", "remove", "outlive", "--yes"]).status === 0);
+  if (env.XDG_RUNTIME_DIR && answers.status === 0 && answers.stdout.trim()) checkRetryScope();
+}
+
+/** The scope unit named in a launch `inOwnScope` wrapped. */
+const unitOf = (launch: { args: readonly string[] }) => launch.args.find((arg) => arg.startsWith("--unit="))?.slice("--unit=".length) ?? "";
+const retryScopes: string[] = [];
+/** A retry under the IDs a journal already names, after an attempt that failed but left a
+ *  descendant of its own running, as one that called setsid does: that descendant keeps the earlier
+ *  scope loaded, and the retry still gets a scope of its own. */
+function checkRetryScope(): void {
+  const ids = { space: "scope-retry", instanceId: randomUUID(), launchRequestId: randomUUID() };
+  const first = inOwnScope({ program: "/bin/sh", args: ["-c", "setsid sleep 60 </dev/null >/dev/null 2>&1 & exit 1"], cwd: root }, env, ids);
+  retryScopes.push(unitOf(first));
+  const failed = spawnSync(first.program, [...first.args], { cwd: first.cwd, env, encoding: "utf8" });
+  const held = spawnSync("systemctl", ["--user", "show", "--property=ActiveState", "--value", unitOf(first)], { env, encoding: "utf8" }).stdout.trim();
+  check("an attempt that exits and leaves a descendant keeps its scope loaded", failed.status === 1 && held === "active", { status: failed.status, held, unit: unitOf(first) });
+  const retry = inOwnScope({ program: "/bin/true", args: [], cwd: root }, env, ids);
+  retryScopes.push(unitOf(retry));
+  const again = spawnSync(retry.program, [...retry.args], { cwd: retry.cwd, env, encoding: "utf8" });
+  check("  and a retry under its instance and launch IDs starts in a scope of its own, named for the same IDs",
+    again.status === 0 && unitOf(retry) !== unitOf(first) && [first, retry].every((launch) => unitOf(launch).includes(`-${ids.instanceId}-${ids.launchRequestId}-`)), { status: again.status, stderr: again.stderr.trim(), first: unitOf(first), retry: unitOf(retry) });
+  spawnSync("systemctl", ["--user", "stop", ...retryScopes], { env, stdio: "ignore" });
+}
 
 let stackUp = false;
 let managerUp = false;
@@ -340,6 +436,7 @@ try {
     check("removing the definition deletes its stopped instance's log and rotation",
       removedHello.status === 0 && !existsSync(helloPath) && !existsSync(`${helloPath}.1`) &&
         out(removedHello).includes("Deleted logs:") && out(removedHello).includes(helloPath), out(removedHello));
+    await checkServiceOutlivesStarter();
 
     const refused = cotal(["manager", "stop", "--space", SPACE, "--with-agents", "--json"]);
     const refusal = JSON.parse(refused.stdout);
@@ -692,6 +789,9 @@ try {
       const stop = cotal(["service", "stop", "hello", "--yes"]);
       check("teardown stops hello", stop.status === 0, out(stop));
     }
+    if (outliveUp) check("teardown stops outlive", cotal(["service", "stop", "outlive", "--yes"]).status === 0);
+    spawnSync("systemctl", ["--user", "stop", STARTER_SCOPE, ...retryScopes], { stdio: "ignore" });
+    for (const starter of starters) try { process.kill(-starter.pid!, "SIGKILL"); } catch { /* already gone */ }
     if (managerUp) {
       const stop = cotal(["service", "stop", "manager", "--yes"]);
       check("teardown stops the manager", stop.status === 0, out(stop));
