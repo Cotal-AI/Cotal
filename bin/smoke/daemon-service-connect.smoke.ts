@@ -257,6 +257,9 @@ const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
 const accountOnly = process.argv.includes("--account-only");
+if (process.argv.includes("--account-custody-repro")) {
+  assert.ok(accountOnly && !process.argv.includes("--no-manager-only"), "custody cases require the hosted account-computer fixture");
+}
 let accountDesired = false;
 let accountRevision = 1;
 let accountRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
