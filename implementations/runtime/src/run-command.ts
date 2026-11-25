@@ -1204,7 +1204,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertIdToken(first, "run id"); } catch {
       const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
       if (verb === "journal") usage(message, journalIdRemedy(raw, values));
-      if (values.local === true && (verb === "resume" || verb === "answer" || verb === "amend"))
+      if (verb === "migrate" || (values.local === true && ["resume", "answer", "amend", "revoke"].includes(verb)))
         usage(message, `${localRunInventory(values)}. Then replace only the run ID in the original command`);
       usage(`${message}; \`cotal run\` lists them`);
     }
