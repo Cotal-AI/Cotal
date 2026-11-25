@@ -106,15 +106,7 @@ Add the same `export PATH="$HOME/.npm-global/bin:$PATH"` line to your shell star
 (such as `~/.bashrc` or `~/.zshrc`) so new terminals can find `cotal`.
 If an install fails with npm `EACCES`, use one of these routes instead of retrying with sudo.
 
-On Windows, or when your existing npm prefix is already user-writable and its executable directory is on PATH, run:
-
-```bash
-npm install -g cotal-ai
-```
-
-Use this route on Windows.
-The shell installer does not support Windows shells.
-You can also use the shell installer inside WSL.
+If your existing npm prefix on macOS or Linux is already user-writable and its executable directory is on PATH, run `npm install -g cotal-ai`.
 
 On Linux and macOS, a global npm install with lifecycle scripts enabled records the Node executable used to install Cotal.
 The `bin/cotal` link in the npm prefix points to a shell launcher. It prefers a supported Node on PATH.
@@ -132,6 +124,23 @@ See [Run a mesh](run-a-mesh.mdx#the-stack) before reusing an existing broker.
 
 The CLI sends usage telemetry by default. Run `cotal telemetry off` to disable it.
 [Telemetry](telemetry.mdx) lists the fields and other opt-outs.
+
+### Install on Windows
+
+Use npm in PowerShell, Command Prompt, or Git Bash. The shell installer does not support Windows shells, but you can use it inside WSL.
+
+Use a short, writable npm global prefix and put that directory on PATH. Run `npm.cmd prefix -g` to see the current prefix.
+A long prefix can stop npm from starting the install script even when Windows long paths are enabled.
+If npm does install successfully, PowerShell, Command Prompt, or Git Bash can still fail to run the generated `cotal` launcher.
+
+To install into a shorter prefix without changing npm's default, open a terminal in a short, writable folder and run:
+
+```text
+npm.cmd install -g --prefix . cotal-ai
+```
+
+Add that folder to your user PATH before the old prefix. Open a new terminal and run `cotal --version` to check the installation.
+Use the same prefix for later manual npm installs and removals of this copy.
 
 ### Switch from a shell installation
 
@@ -198,7 +207,17 @@ rm -rf "$(npm root -g)/../.cotal-generations"
 npm uninstall -g cotal-ai
 ```
 
-On Windows, run `npm uninstall -g cotal-ai`.
+On Windows, remove a default-prefix installation with:
+
+```text
+npm.cmd uninstall -g cotal-ai
+```
+
+If you installed with `--prefix .`, open a terminal in that same folder and run:
+
+```text
+npm.cmd uninstall -g --prefix . cotal-ai
+```
 
 For a shell installation with the default locations, remove `~/.local/bin/cotal` and the `cotal` directory under `${XDG_DATA_HOME:-~/.local/share}`.
 If you selected custom install locations, remove those locations instead.
