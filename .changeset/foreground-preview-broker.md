@@ -2,4 +2,4 @@
 "@cotal-ai/cli": patch
 ---
 
-Foreground manifest preview advice explains how to keep the broker address you passed with `--server`.
+Foreground manifest boot advice explains how to keep your requested broker address and auth settings when previewing or starting a team.

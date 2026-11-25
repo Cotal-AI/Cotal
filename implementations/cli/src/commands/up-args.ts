@@ -21,6 +21,7 @@ import {
   preparedSpaceAt,
   localMeshesForRoot,
   presentationOf,
+  isCommandFailure,
   parsePositiveIntegerFlag,
   meshesForRoot,
   userAuthSpacesOnDisk,
@@ -36,6 +37,8 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { idpUrlProblem } from "../lib/manifest/resolve.js";
+import { brokerListenAddress } from "../lib/broker-service.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { liveMeshProcesses } from "./clean.js";
@@ -126,7 +129,7 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   if (!args.values.file && args.values["tls-cert"] !== undefined && typeof args.values.server === "string" && /^nats:\/\//i.test(args.values.server))
     throw new CommandFailure("refused", "USAGE_INVALID", "--tls-cert serves the broker over TLS, so --server must be a tls:// address; nothing was started or written", { remedy: `pass --server ${tlsAddress(args.values.server)}`, selfContained: true });
   if (typeof args.values.file === "string" && args.values.foreground === true)
-    throw foregroundManifestRefusal(args.values.file, presentation, args.values["dry-run"] === true, args.values.server !== undefined);
+    throw foregroundManifestRefusal(args.values.file, presentation, args.values);
   if (args.values.foreground === true && (args.values.json === true || args.values.plain === true)) throw new CommandFailure("refused", "USAGE_INVALID", "foreground up keeps native terminal custody and cannot produce a finite JSON or plain receipt", { remedy: `omit ${args.values.json ? "--json" : "--plain"} to keep the stack in this terminal, or omit --foreground for a finite receipt from a controller-owned stack` });
   // Flag values and combinations are usage, so they refuse here, before any effect. The run keeps
   // its own checks for maintenance re-entries, which do not pass through this validation.
@@ -211,16 +214,51 @@ export function validateUpArguments(args: ParsedArgs, beforeRestore = false): vo
   }
 }
 
-function foregroundManifestRefusal(file: string, presentation: ReturnType<typeof presentationOf>, dryRun: boolean, serverOverride: boolean): CommandFailure {
-  const needsCopy = dryRun && serverOverride;
-  const manifest = needsCopy ? "<manifest-copy>" : shellWord(file.startsWith("-") ? `./${file}` : file);
+function foregroundManifestRefusal(file: string, presentation: ReturnType<typeof presentationOf>, values: ParsedArgs["values"]): CommandFailure {
+  const message = "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime";
+  const edits = foregroundBrokerEdits(values);
+  if (values["tls-cert"] !== undefined || values["tls-key"] !== undefined)
+    return new CommandFailure("refused", "UNSUPPORTED", message, { remedy: "team boot cannot take --tls-cert or --tls-key. To inspect those options, use up -f --dry-run without --foreground" });
+  const dryRun = values["dry-run"] === true;
+  const manifest = edits.length ? "<manifest-copy>" : shellWord(file.startsWith("-") ? `./${file}` : file);
   const boot = `${presentation === "json" ? "cotal" : displayCmd()} team boot ${manifest} --foreground`;
   const preview = codeSpan(`${boot} --dry-run${presentation === "rich" ? "" : ` --${presentation}`}`);
-  const remedy = needsCopy
-    ? `copy the manifest beside the original, set ${codeSpan("broker.servers")} in the copy to the URL from ${codeSpan("--server")} without credentials, then preview the copy with ${preview}`
-    : dryRun ? `preview with ${preview}`
+  const next = dryRun ? `preview with ${preview}`
     : `prepare the project if needed with \`cotal space create <space> --root .\`, then run ${codeSpan(boot)}`;
-  return new CommandFailure("refused", "UNSUPPORTED", "manifest boot has no native foreground custody path; a detached broker was not substituted for the requested terminal-bound lifetime", { remedy });
+  const remedy = edits.length ? `copy the manifest beside the original. In the copy, ${edits.join(". ")}. Then ${next}` : next;
+  return new CommandFailure("refused", "UNSUPPORTED", message, { remedy });
+}
+
+function foregroundBrokerEdits(values: ParsedArgs["values"]): string[] {
+  const { server, host, idp } = values;
+  const edits: string[] = [];
+  if (typeof server === "string") {
+    let protocol: string;
+    try { ({ protocol } = brokerListenAddress(server)); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      throw new FlagValueRefusal(`--server: ${error.message}; nothing was started or written`, "pass one valid local broker URL in --server, without credentials");
+    }
+    edits.push("set `broker.servers` to the URL from `--server`");
+    if (protocol === "tls:") edits.push("Starting at a TLS address requires a recorded TLS policy in the prepared project");
+  }
+  if (typeof host === "string") {
+    if (upHostProblem(host, typeof server === "string" ? server : undefined))
+      throw new FlagValueRefusal("--host must name a valid bind host that serves the --server address if one is given; nothing was started or written", "pass a local bind host without a scheme or port and make the broker URL agree");
+    edits.push("set `broker.host` to the bind host from `--host`");
+    if (server === undefined) edits.push("If `broker.servers` is unset, add a client URL for that host on port 4222 (use loopback for a wildcard bind)");
+  }
+  if (server !== undefined || host !== undefined) edits.push("Check that `broker.host` serves the client URL (the default bind is loopback)");
+  if (values.open === true && idp !== undefined)
+    throw new FlagValueRefusal("--open and --idp contradict because the IdP is only used with user auth; nothing was started or written", "drop --idp for an open mesh, or drop --open and use a user-auth manifest");
+  if (values.open === true) edits.push('set `broker.auth` to `false` for `--open`. If the manifest declares user auth, resolve that conflict before retrying');
+  if (values["user-auth"] === true || typeof idp === "string") edits.push('use a manifest that declares `broker.auth: "user"`');
+  if (typeof idp === "string") {
+    const problem = idpUrlProblem(idp, "--idp");
+    if (problem) throw new FlagValueRefusal(`${problem}; nothing was started or written`, "pass a valid auth base URL in --idp, without credentials");
+    edits.push("set `broker.idp` to the URL from `--idp`");
+  }
+  return edits;
 }
 
 function assertUpRootWritable(root: string): void {

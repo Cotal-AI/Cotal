@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; authMode?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -189,6 +189,65 @@ for (const { args, message } of cases) {
         && !advice.includes(`team boot ${original}`) && !advice.includes(server) && retry?.status === 0 && retry.stderr === "" && correctPreview
         && readFileSync(join(manifests, original), "utf8") === manifest && !existsSync(join(manifests, ".cotal")),
       { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
+  const foreground = ["up", "-f", original, "--foreground"];
+  for (const { label, value } of [
+    { label: "empty", value: "" },
+    { label: "malformed", value: "not-a-url" },
+    { label: "multiple URLs", value: `${originalServer},${server}` },
+    { label: "embedded credentials", value: "nats://fixture:fixture-secret@127.0.0.1:1" },
+  ]) {
+    for (const mode of [[], ["--dry-run"]]) {
+      const refusal = run([...foreground, ...mode, "--server", value, "--json"], manifests);
+      const error = refusal.envelope?.error;
+      check(`foreground ${mode.length ? "preview" : "apply"} rejects an invalid --server (${label}) before offering a retry`,
+        refusal.status === 1 && refusal.stderr === "" && error?.code === "USAGE_INVALID"
+          && error.remedy?.includes("one valid local broker URL") === true
+          && !/team boot|fixture-secret/.test(refusal.stdout)
+          && (value === "" || !refusal.stdout.includes(value)), shown(refusal));
+    }
+  }
+  const apply = run([...foreground, "--server", server, "--json"], manifests);
+  const applyAdvice = apply.envelope?.error?.remedy ?? "";
+  check("foreground apply puts the --server override in a manifest copy and offers a terminal-bound start without output flags",
+    apply.status === 2 && apply.envelope?.error?.code === "UNSUPPORTED"
+      && applyAdvice.includes("`broker.servers`") && applyAdvice.includes("`--server`")
+      && applyAdvice.includes("`cotal team boot <manifest-copy> --foreground`") && !applyAdvice.includes(`team boot ${original}`), shown(apply));
+
+  const host = "127.0.0.5", hostServer = `nats://${host}:4222`;
+  const hostRefusal = run(["up", "-f", "cotal.yaml", "--host", host, "--open", "--foreground", "--dry-run", "--json"], manifests);
+  const hostAdvice = hostRefusal.envelope?.error?.remedy ?? "";
+  writeFileSync(join(manifests, "host-copy.yaml"), `${readFileSync(authManifest, "utf8")}broker:\n  host: ${host}\n  servers: ${hostServer}\n  auth: false\n`);
+  const hostPreview = run(["team", "boot", "host-copy.yaml", "--foreground", "--dry-run", "--json"], manifests);
+  check("foreground preview carries the requested bind host and open auth into the manifest copy",
+    hostRefusal.status === 2 && hostRefusal.envelope?.error?.code === "UNSUPPORTED"
+      && hostAdvice.includes("`broker.host`") && hostAdvice.includes("`broker.servers`") && hostAdvice.includes("`broker.auth`")
+      && hostAdvice.includes("`cotal team boot <manifest-copy> --foreground --dry-run --json`")
+      && hostPreview.status === 0 && hostPreview.envelope?.result?.brokerCandidate === hostServer
+      && hostPreview.envelope.result.authMode === "open" && !existsSync(join(manifests, ".cotal")),
+    { refusal: shown(hostRefusal), preview: shown(hostPreview) });
+
+  const idp = "https://idp.example.test/api/auth";
+  const idpRefusal = run([...foreground, "--idp", idp, "--dry-run", "--json"], manifests);
+  const idpAdvice = idpRefusal.envelope?.error?.remedy ?? "";
+  writeFileSync(join(manifests, "idp-copy.yaml"), `${readFileSync(authManifest, "utf8")}broker:\n  auth: user\n  idp: ${idp}\n  servers: ${server}\n`);
+  const idpPreview = run(["team", "boot", "idp-copy.yaml", "--foreground", "--dry-run", "--json"], manifests);
+  check("foreground preview with --idp explains the user-auth prerequisite and does not echo the URL",
+    idpRefusal.status === 2 && idpRefusal.envelope?.error?.code === "UNSUPPORTED"
+      && idpAdvice.includes('`broker.auth: "user"`') && idpAdvice.includes("`broker.idp`") && idpAdvice.includes("`--idp`")
+      && idpAdvice.includes("`cotal team boot <manifest-copy> --foreground --dry-run --json`") && !idpRefusal.stdout.includes(idp)
+      && idpPreview.status === 0 && idpPreview.envelope?.result?.authMode === "user" && !existsSync(join(manifests, ".cotal")),
+    { refusal: shown(idpRefusal), preview: shown(idpPreview) });
+  for (const { args, code, remedy } of [
+    { args: ["--server", server, "--host", host], code: "USAGE_INVALID", remedy: "make the broker URL agree" },
+    { args: ["--open", "--idp", idp], code: "USAGE_INVALID", remedy: "drop --idp" },
+    { args: ["--tls-cert", "cert.pem", "--tls-key", "key.pem"], code: "UNSUPPORTED", remedy: "up -f --dry-run without --foreground" },
+  ]) {
+    const refusal = run([...foreground, ...args, "--dry-run", "--json"], manifests);
+    const error = refusal.envelope?.error;
+    check(`foreground preview does not offer a broker retry that cannot carry ${args[0]} (${remedy})`,
+      refusal.status === (code === "USAGE_INVALID" ? 1 : 2) && error?.code === code && error.remedy?.includes(remedy) === true
+        && !refusal.stdout.includes("team boot <manifest-copy>") && !existsSync(join(manifests, ".cotal")), shown(refusal));
   }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
