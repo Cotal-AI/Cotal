@@ -14,7 +14,8 @@
  *  - The command survives an upgrade: under the get.cotal.ai launcher it names the launcher's Node
  *    link rather than the version folder Node runs from, and it names the install's own entry rather
  *    than the generation this process loaded; status counts a link to this Node as this Node.
- *  - Thread links read back per space in the order they were stored, and a broken line is refused.
+ *  - Thread links read back per space in the order they were stored, with the title stored beside a
+ *    link, and a broken line is refused.
  *  - The launcher finds `cotal` on PATH or in `~/.local/bin`, runs `cotal acp <args>` and passes its
  *    exit status on; with no Cotal, or a Cotal without its ACP extension, it serves a stub agent that
  *    offers the terminal sign-in and asks for it on `session/new`.
@@ -185,8 +186,14 @@ links.add("b", { thread: "t1", lifecycleUid: "u9" });
 links.add("a", { thread: "t1", lifecycleUid: "u2" });
 check("links read back per space, in the order they were stored", JSON.stringify(links.read("a")) === JSON.stringify([{ thread: "t1", lifecycleUid: "u1" }, { thread: "t1", lifecycleUid: "u2" }]), links.read("a"));
 check("the link file is private", (statSync(join(linksDir, "threads")).mode & 0o077) === 0, statSync(join(linksDir, "threads")).mode.toString(8));
+links.add("a", { thread: "t1", lifecycleUid: "u2", title: "Login work" });
+check("a link stores the title the client's thread carried, and reads it back", JSON.stringify(links.read("a").at(-1)) === JSON.stringify({ thread: "t1", lifecycleUid: "u2", title: "Login work" }), links.read("a"));
 writeFileSync(join(linksDir, "threads"), "{\"space\":\"a\"}\n", { flag: "a" });
-check("a line that is not a link is refused, naming the file", throws(() => links.read("a"))?.includes("line 4 is not a thread link") === true);
+check("a line that is not a link is refused, naming the file", throws(() => links.read("a"))?.includes("line 5 is not a thread link") === true);
+const titled = join(home, "links-titled");
+mkdirSync(titled, { recursive: true });
+writeFileSync(join(titled, "threads"), "{\"space\":\"a\",\"thread\":\"t1\",\"lifecycleUid\":\"u2\",\"title\":7}\n");
+check("a link whose title is not a string is refused too", throws(() => threadStore(titled).read("a"))?.includes("line 1 is not a thread link") === true);
 
 // ── The launcher ──────────────────────────────────────────────────────────────────────────────────
 if (process.platform !== "win32") {

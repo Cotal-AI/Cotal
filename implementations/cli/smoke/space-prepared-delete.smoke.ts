@@ -285,20 +285,39 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const saved = `${control}.saved`;
   const before = readdirSync(control).sort();
   renameSync(control, saved);
-  writeFileSync(control, "sentinel\n");
+  writeFileSync(control, "sentinel\n", { mode: 0o600 });
+  const verdict = '"b4d" is prepared but not started';
+  const problem = `\`${control}\` is a regular file, not a directory`;
+  const repair = "move the file aside and restore the original .cotal directory";
+  const target = ["--space", "b4d", "--plain"];
   try {
-    const blocked = run(["doctor", "auth", "--plain", "--space", "b4d"]);
+    const blocked = run(["doctor", "auth", ...target]);
     const next = blocked.stderr.split("Next\n")[1] ?? "";
-    const repair = `\`${control}\` is a regular file, not a directory. First move the file aside and restore the original .cotal directory, then start it with`;
     check("doctor auth from another folder names the regular file and puts restoration before startup",
       blocked.status === 2 && /Code:\s+AUTH_REQUIRED/.test(blocked.stderr) &&
-      ["cotal", "pnpm cotal"].some((launcher) => next.includes(`${repair} \`${launcher} up --root `)), shown(blocked));
-    check("doctor leaves both the obstructing file and the saved directory intact",
+      ["cotal", "pnpm cotal"].some((launcher) => next.includes(`${problem}. First ${repair}, then start it with \`${launcher} up --root `)), shown(blocked));
+    const status = run(["status", ...target]);
+    check("status keeps the prepared verdict and gives the file repair in Next",
+      status.status === 0 && status.stdout.includes(verdict) && (status.stdout.split("Next\n")[1] ?? "").includes(`${problem}. ${repair}`) && !status.stdout.includes("start it with"), shown(status));
+    const ps = run(["ps", ...target]);
+    check("ps names the regular file and gives the repair without blaming permissions",
+      ps.status === 2 && /Code:\s+TARGET_UNAVAILABLE/.test(ps.stderr) && ps.stderr.includes(problem) && (ps.stderr.split("Next\n")[1] ?? "").includes(repair), shown(ps));
+    const components = run(["status", "--components", "--space", "b4d"]);
+    const health = components.stdout.split("Component Health")[1] ?? "";
+    check("component health still refuses and names the file and repair",
+      components.status === 3 && /target\s+refused/.test(health) && health.includes(problem) && health.includes(repair), shown(components));
+    check("diagnostics leave both the obstructing file and the saved directory intact",
       lstatSync(control, { throwIfNoEntry: false })?.isFile() === true && readFileSync(control, "utf8") === "sentinel\n" &&
       lstatSync(saved, { throwIfNoEntry: false })?.isDirectory() === true && JSON.stringify(readdirSync(saved).sort()) === JSON.stringify(before));
   } finally {
     rmSync(control);
     renameSync(saved, control);
+  }
+  for (const [command, code] of [["status", 0], ["ps", 2]] as const) {
+    const restored = run([command, ...target]);
+    const text = restored.stdout + restored.stderr;
+    check(`${command} returns to first-start guidance after the directory is restored`,
+      restored.status === code && text.includes(verdict) && ["cotal", "pnpm cotal"].some((launcher) => text.includes(`start it with \`${launcher} up\` in ${special}`)), shown(restored));
   }
 }
 

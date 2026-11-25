@@ -1150,11 +1150,13 @@ the source and receipt, so a delayed updated native child cannot publish after r
 
 The task's native entry writes its output to `daemon.log` in the daemon's state directory,
 replacing the previous launch's log and retaining at most 64 KiB of output. When the daemon does
-not answer on Windows and a scheduled task installation is recorded, `status` names that log and
-Task Scheduler's state and last result. If the entry cannot load at all, Task Scheduler's last
-result is the diagnostic and no new log exists. Without an installation record, `status` and
-`start` direct you to `cotal daemon install` for a scheduled task or `cotal daemon serve` to run
-in a terminal. Both commands keep the selected `--daemon-home` in their guidance.
+not answer on Windows and a scheduled task installation is recorded, `status` shows how to run
+`cotal daemon start` if the task is still registered. It names the log and directs you to Task
+Scheduler for the task's state and last result if no log was created. Without an installation
+record, `status` and `start` direct you to `cotal daemon install` for a scheduled task or
+`cotal daemon serve` to run in a terminal. These remedies keep the selected `--daemon-home` and
+quote a path with spaces for PowerShell and Command Prompt. If a path needs PowerShell quoting,
+the remedy names PowerShell.
 Install refuses before preparing a task if its launch entry is missing or is not a file.
 Task lookup imports ScheduledTasks and Microsoft.PowerShell.Utility by name before querying the
 task and serializing its result, avoiding automatic module discovery for those commands.

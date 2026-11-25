@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, findMesh, getCurrent, identityRecord, isCommandFailure, loadMeshes, localMeshesForRoot, loopbackListeners, oneLine, presentationOf, processesNaming,
+  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, findMesh, getCurrent, identityRecord, isCommandFailure, loadMeshes, localMeshesForRoot, loopbackListeners, oneLine, presentationOf, processesNaming,
   preparedRootRemedy, projectRootProblem, projectRootProblemText, readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
@@ -39,6 +39,13 @@ export function refuseInaccessibleDownRoot(root: string, space: string): void {
   throw new CommandFailure("refused", "PERMISSION_DENIED", `the project folder at ${oneLine(root)} ${projectRootProblemText(problem)}; nothing was stopped or changed`, {
     target: { root, space }, remedy: preparedRootRemedy(space, problem),
   });
+}
+
+/** The step for a recorded project root that something other than a folder now holds: `retry` cannot
+ *  run there until the original folder is back. Undefined for any other root. */
+export function blockedDownRootRemedy(root: string, retry: string): string | undefined {
+  if (projectRootProblem(root) !== "not-directory") return undefined;
+  return `${oneLine(root)} ${projectRootProblemText("not-directory")}; move what is there aside and restore the original project folder at that path, then run ${codeSpan(retry)} from it`;
 }
 
 /** The space and gone folder a whole-stack `down` names: `--space`, or else the space registered for

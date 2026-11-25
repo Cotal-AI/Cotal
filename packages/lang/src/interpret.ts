@@ -126,7 +126,7 @@ class Interpreter {
     // periodically never reached the ceiling however much it performed against the world, and the
     // fault text claimed a run-scoped fact from an activation-scoped counter.
     this.prng = new Prng(pins.seed);
-    this.effects = { journal: this.journal, options, ceiling: pins.effectCeiling, effectCount: this.journal.dispatchedEffects() };
+    this.effects = { journal: this.journal, options: { ...options, pins }, ceiling: pins.effectCeiling, effectCount: this.journal.dispatchedEffects(), kindCounts: new Map() };
     this.stepBudget = pins.stepBudget;
     this.yieldEvery = pins.yieldEvery;
     this.nextYield = this.yieldEvery;

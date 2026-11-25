@@ -77,14 +77,24 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
   if (!["list", "show", "members", "set", "defaults", "remove"].includes(action))
     throw usage("channel takes show, members, set, defaults or remove; run it bare to list saved channels");
   const named = ["show", "members", "set", "remove"].includes(action);
-  // `--replay` takes no value, so `--replay off` left `off` behind as a second channel name.
+  const replay = values.replay !== undefined ? "--replay" : values["no-replay"] !== undefined ? "--no-replay" : undefined;
+  const booleanWord = /^(on|off|true|false|yes|no)$/i;
   const stray = named ? (extra.length === 1 ? extra[0] : undefined) : rawName;
-  if ((values.replay !== undefined || values["no-replay"] !== undefined) && stray !== undefined && /^(on|off|true|false|yes|no)$/i.test(stray)) {
-    const flag = /^(off|false|no)$/i.test(stray) ? "--no-replay" : "--replay";
-    const word = named && rawName ? ` ${shellWord(rawName.startsWith("-") ? `#${rawName}` : rawName)}` : "";
+  const [firstIndex, secondIndex] = args.positionalIndices?.slice(1) ?? [];
+  const followsReplay = (index: number | undefined) => replay !== undefined && index !== undefined && args.raw[index - 1] === replay;
+  const valueFirst = named && extra.length === 1 && rawName !== undefined && booleanWord.test(rawName) && followsReplay(firstIndex);
+  const replayWord = valueFirst ? rawName : stray;
+  if (replay && replayWord !== undefined && booleanWord.test(replayWord)) {
     const output = values.json ? " --json" : values.plain ? " --plain" : "";
     const server = values.server === undefined ? undefined : checkServer(values.server, "--server");
     if (server && !server.ok) throw new CommandFailure("refused", "USAGE_INVALID", server.message.replace(/^✗ /, ""), { remedy: server.remedy });
+    if (named && ((!valueFirst && !followsReplay(secondIndex)) || (values.replay !== undefined && values["no-replay"] !== undefined))) {
+      const remedy = action === "set" ? "name one channel and use `--replay` or `--no-replay` without a value" : "name one channel and omit the replay flags";
+      throw new CommandFailure("refused", "USAGE_INVALID", `cotal channel ${action} takes one channel name`, { remedy });
+    }
+    const flag = /^(off|false|no)$/i.test(replayWord) ? "--no-replay" : "--replay";
+    const retryName = valueFirst ? stray : named ? rawName : undefined;
+    const word = retryName ? ` ${shellWord(retryName.startsWith("-") ? `#${retryName}` : retryName)}` : "";
     if (action !== "set" && action !== "defaults") {
       const follow = action === "members" && values.follow ? " --follow" : "";
       const retry = action === "remove" ? "remove the replay flag and its value from this command"
@@ -95,7 +105,7 @@ export function channelArguments(args: ParsedArgs): { action: string; name?: str
       const value = values[key];
       return value === undefined ? "" : ` --${key}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
     }).join("");
-    throw new CommandFailure("refused", "USAGE_INVALID", `--replay takes no value, so "${stray}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${edits}${targetWords(values)}${output}`)}` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${replay} takes no value, so "${replayWord}" was read as a channel name; --replay turns replay on and --no-replay turns it off`, { remedy: `run ${codeSpan(`cotal channel ${action}${word} ${flag}${edits}${targetWords(values)}${output}`)}` });
   }
   if (extra.length || (named ? !rawName : rawName !== undefined))
     throw usage(named ? `cotal channel ${action} takes one channel name` : `cotal channel ${action} takes no channel name`);

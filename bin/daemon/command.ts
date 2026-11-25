@@ -196,7 +196,7 @@ async function status(args: ParsedArgs): Promise<void> {
       const recorded = receipt?.mechanism === "scheduled-task" && receipt.daemonHome === home;
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
         remedy: recorded
-          ? `if the recorded task is still registered, start it with ${windowsDaemonRemedy("start", home)}. Read ${nativeDaemonLog(paths.state)} for its last launch output or check Task Scheduler for the task's state and last result`
+          ? `if the recorded task is still registered, start it with ${windowsDaemonRemedy("start", home)}. Read ${nativeDaemonLog(paths.state)} for its last launch output. If no log was created, inspect the task's state and last result in Task Scheduler`
           : `no scheduled task installation is recorded for this daemon. To start it, ${windowsDaemonFirstStart(home)}`,
         native: { code: e.code },
       });
