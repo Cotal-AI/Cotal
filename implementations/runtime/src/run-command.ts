@@ -754,8 +754,9 @@ const localJournal = (args: Record<string, unknown> | undefined): string => `cot
 
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
- *  recorded it. `on` is the caller's explicit manager pin, which a suggested command keeps. */
-export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, on?: string): CommandFailure {
+ *  recorded it. */
+export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, values: RunValues = {}): CommandFailure {
+  const { on } = values;
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
   // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
@@ -769,6 +770,7 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   const missingRun = err?.message?.endsWith(": no run is recorded under that id") === true;
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
     : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
+    : err?.code === "not-found" && command === "run-status" ? { remedy: journalIdRemedy("show", { ...values, space }) }
     : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}\`` };
   if (code) {
     const problems = err?.details?.filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
@@ -867,7 +869,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
       if (!values.json) for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      throw managerRefusal(command, t.space, args, err, values.on);
+      throw managerRefusal(command, t.space, args, err, values);
     }
     return r.reply.data;
   } catch (e) {

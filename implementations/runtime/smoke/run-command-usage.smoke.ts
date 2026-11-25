@@ -1132,13 +1132,17 @@ if (process.platform !== "win32") {
   const finished = { code: "failed-precondition", message: "run run-1 is already completed, so there is nothing to resume; a resume continues a run that is running or released" };
   const blocked = managerRefusal("run-resume", "s", { runId: "run-1" }, finished);
   for (const amend of [false, true]) {
-    const missing = managerRefusal("run-answer", "beta", { runId: "run-missing", amend }, { code: "not-found", message: "run run-missing: no run is recorded under that id" }, "mgr-1");
+    const missing = managerRefusal("run-answer", "beta", { runId: "run-missing", amend }, { code: "not-found", message: "run run-missing: no run is recorded under that id" }, { on: "mgr-1" });
     c(`a missing run on ${amend ? "amend" : "answer"} lists the same space and manager`, missing.remedy === "list the recorded runs with `cotal run --space beta --on mgr-1`", missing);
-    const step = managerRefusal("run-answer", "beta", { runId: "run-1", endpoint: "other", amend }, { code: "not-found", message: "no step is recorded under that key" }, "mgr-1");
+    const step = managerRefusal("run-answer", "beta", { runId: "run-1", endpoint: "other", amend }, { code: "not-found", message: "no step is recorded under that key" }, { on: "mgr-1" });
     c(`a missing step on ${amend ? "amend" : "answer"} reads the run on the same target`, step.remedy === `read the run's ${amend ? "answers" : "open requests"} with \`cotal run show run-1 --space beta --on mgr-1 --endpoint other\``, step);
   }
   c("a resume of a completed run is LIFECYCLE_BLOCKED with the manager's sentence, and Next reads the run", blocked.code === "LIFECYCLE_BLOCKED" && blocked.message === finished.message && blocked.remedy === "read the run's recorded state with `cotal run show run-1 --space s`", blocked);
-  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, "mgr-1").remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
+  const notFound = { code: "not-found", message: "run run-1: no record on endpoint manager" };
+  const missing = managerRefusal("run-status", "beta", { runId: "run-1" }, notFound, { on: "mgr-1", endpoint: "manager", server: "nats://127.0.0.1:4321", json: true });
+  const selection = "--space beta --server 'nats://127.0.0.1:4321' --endpoint manager --on mgr-1 --json";
+  c("a hosted missing journal lists and reads on the selected broker and manager in JSON", missing.code === "TARGET_NOT_FOUND" && missing.remedy === `\`cotal run ${selection}\` lists the runs; run \`cotal run show <run-id> ${selection}\``, missing);
+  c("the Next keeps an explicit --on", managerRefusal("run-resume", "s", { runId: "run-1" }, finished, { on: "mgr-1" }).remedy === "read the run's recorded state with `cotal run show run-1 --space s --on mgr-1`");
   c("a start refused as a precondition gets no run show Next", managerRefusal("run-start", "s", { source: "log(1)" }, { code: "failed-precondition", message: "no" }).remedy === undefined);
 }
 
