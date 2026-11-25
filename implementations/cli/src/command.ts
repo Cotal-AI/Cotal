@@ -194,9 +194,14 @@ function routeCollisionWarnings(warnings: OutputWarning[], cmd: Command | undefi
       finiteJson = values?.follow !== true && values?.wait !== true;
     }
   }
+  const end = words.indexOf("--");
+  const plain = !takesWordsRaw(cmd) && (end === -1 ? words : words.slice(0, end)).includes("--plain");
   for (const warning of warnings) {
     if (finiteJson) recordOperationWarning(warning, { echo: false });
-    else console.error(c.red(`! ${warning.message}`));
+    else {
+      const line = `! ${warning.message}`;
+      console.error(plain ? line : c.red(line));
+    }
   }
 }
 
