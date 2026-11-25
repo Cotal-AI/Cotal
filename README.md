@@ -152,8 +152,8 @@ Resume, events and tool-sharing support differ by application. The
 [connector matrix](docs/connectors.mdx) lists the details and maturity levels.
 
 Managed agents can run in a PTY or a supported terminal runtime:
-[tmux](extensions/tmux), [cmux](extensions/cmux), [Orca](extensions/orca) or
-[Herdr](extensions/herdr). See [runtimes](https://docs.cotal.ai/api-reference/cli-agents/#runtimes) for installation and availability.
+[tmux](extensions/tmux), [cmux](extensions/cmux), [Orca](extensions/orca),
+[Herdr](extensions/herdr) or [Paseo](extensions/paseo). See [runtimes](https://docs.cotal.ai/api-reference/cli-agents/#runtimes) for installation and availability.
 
 Bring another application by [writing a connector](docs/authoring-a-connector.mdx), or
 [vote for the next one](https://github.com/Cotal-AI/Cotal/discussions/80).

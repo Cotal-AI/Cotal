@@ -25,6 +25,7 @@
     "extensions/connector-opencode",
     "extensions/herdr",
     "extensions/orca",
+    "extensions/paseo",
     "extensions/pi",
     "extensions/tmux"
   ],

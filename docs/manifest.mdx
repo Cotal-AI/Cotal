@@ -31,7 +31,7 @@ The manifest must be UTF-8. A UTF-16 file is refused with `SCHEMA_INVALID` and t
 | `kind` | yes | Must be `Mesh`. |
 | `space` | yes | One space name of 1 to 200 letters, digits, underscores, or hyphens. `spaces` is not supported in v1. `space create` and `up --space` accept at most 64 characters, so keep the name within that limit to prepare it. Fresh team boot requires a prepared local root and refuses a root that retains another space's account or local registration. See [Define a team](define-a-team.mdx#quickstart). |
 | `broker` | no | Broker address, bind interface, and auth settings. See [Broker settings](#broker-settings). |
-| `runtime` | no | Registered manager runtime name. `pty` is built in. Optional providers such as `tmux`, `cmux`, `orca`, and `herdr` are installed with `cotal ext add`. |
+| `runtime` | no | Registered manager runtime name. `pty` is built in. Optional providers such as `tmux`, `cmux`, `orca`, `herdr`, and `paseo` are installed with `cotal ext add`. |
 | `agent` | no | Default connector for agents without their own manifest `agent` setting. Each declared agent needs a per-agent or top-level choice; there is no implicit connector default. |
 | `personaPermissions` | no | `reject`, the default, uses manifest permissions only. `include` also inherits persona permissions under the rules in [How access is resolved](#how-access-is-resolved). |
 | `defaults` | no | Channel defaults for `replay`, `replayWindow`, and `deliveryClass`. A channel's value overrides its default. `deliveryClass` accepts `live` or `durable`. See [SPEC §7](../SPEC.md#7-channels). |
