@@ -254,11 +254,12 @@ cotal spawn --harness claude --model opus --mode ultracode=true
 ```
 
 `cotal models --harness claude` lists the modes each model offers your login, and both are off by default.
-It lists `fast` only when your organization allows fast mode, which the connector asks your `claude` before listing.
+It lists `fast` when your organization allows fast mode, as your `claude` reports it 2 seconds after it starts answering.
+Claude gives no sign that it has finished asking your organization, so on a slow network `fast` can be listed although your organization turns it off.
 The connector passes the chosen modes to Claude in one `--settings` flag.
 A mode set to `false` is passed as off, so a fast mode you saved with `/fast` does not turn it back on.
 Claude keeps only the last `--settings` flag, so a launch with a mode refuses `--opt settings=`.
-Your organization can turn fast mode off after the list was read. The agent then runs at standard speed.
+When your organization turns fast mode off, an agent launched with `fast` runs at standard speed.
 
 ### Choose a permission mode
 

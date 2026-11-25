@@ -10,11 +10,17 @@ import { join } from "node:path";
 import type { ModeInfo, ModelCatalog, ModelCatalogOpts, ModelInfo } from "@cotal-ai/core";
 import { claudeControl, type AskClaude } from "./claude-initialize.js";
 
-/** The probe asks for fast mode, so claude reports whether this account can run it. */
+/** The probe asks for fast mode, so claude reports whether this account can run it. Without the ask,
+ *  claude's only reason fast is off is `sdk_opt_in_required`. */
 const PROBE_SETTINGS = { fastMode: true };
-/** As it starts, claude asks whether the account's organization allows fast mode, and reports fast as
- *  on until the answer arrives: 0.3 to 0.5 s after its first answer, measured on 2.1.332. The state
- *  read once this window has passed is the account's. */
+/** As it starts, claude asks the API whether the account's organization allows fast mode. Claude
+ *  2.1.332 gives no signal that this check finished. While the check runs, after it fails, and once
+ *  the organization allows fast, claude reports fast on with no disabled reason, and no event marks
+ *  the answer. So the catalog trusts the state it reads this long after claude's first answer. The
+ *  check took 0.25 to 0.75 s on 2.1.332. The cost: when its answer comes later, on a slow network, or
+ *  never, because the check failed or claude skipped it at start, the catalog lists fast for an
+ *  organization that turns it off, and a seat launched with fast runs at standard speed with nothing
+ *  said. */
 const FAST_SETTLE_MS = 2_000;
 const FAST_POLL_MS = 200;
 
