@@ -70,7 +70,7 @@ export function rolledBackRuns(previous: ReadonlyMap<string, RunJournalView>, re
   return { runs: all.slice(0, MAX_LISTED_RUNS), more: Math.max(0, all.length - MAX_LISTED_RUNS) };
 }
 
-/** Read the stored value and headers without interpreting or rewriting the registry entry. */
+/** Read the stored value and headers of the one channel default key. */
 export async function readRegistryDefault(broker: IsolatedBroker, space: string): Promise<string | undefined> {
   try {
     const login = await broker.addLogin({ profile: "registry-read" });
@@ -78,14 +78,16 @@ export async function readRegistryDefault(broker: IsolatedBroker, space: string)
     try {
       const bucket = channelBucket(space);
       const subject = `$KV.${bucket}.${CHANNEL_DEFAULTS_KEY}`;
-      const reply = (await nc.request(`$JS.API.STREAM.MSG.GET.KV_${bucket}`, JSON.stringify({ last_by_subj: subject }), { timeout: 2_000 })).json() as {
-        error?: unknown;
-        message?: { subject?: unknown; data?: unknown; hdrs?: unknown };
-      };
-      const message = reply.message;
-      if (reply.error || message?.subject !== subject || typeof message.data !== "string" ||
-          (message.hdrs !== undefined && typeof message.hdrs !== "string")) return undefined;
-      return JSON.stringify([message.data, message.hdrs ?? ""]);
+      const reply = await nc.request(`$JS.API.DIRECT.GET.KV_${bucket}.${subject}`, new Uint8Array(0), { timeout: 2_000 });
+      const headers = reply.headers;
+      if (!headers || headers.code || headers.get("Nats-Stream") !== `KV_${bucket}` || headers.get("Nats-Subject") !== subject) return undefined;
+      // Direct get appends these four headers. A duplicate could be a stored header, so keep consent.
+      const entries = [...headers];
+      const metadata = /^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i;
+      const added = entries.filter(([key]) => metadata.test(key));
+      if (new Set(added.map(([key]) => key.toLowerCase())).size !== 4 || added.length !== 4 ||
+          added.some(([, values]) => values.length !== 1)) return undefined;
+      return JSON.stringify([Buffer.from(reply.data).toString("base64"), entries.filter(([key]) => !metadata.test(key))]);
     } finally {
       await nc.close();
     }

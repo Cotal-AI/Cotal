@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
+  CHANNEL_DEFAULTS_KEY,
   backupProfilePermissions,
   channelBucket,
   hardenPrivate,
@@ -274,9 +275,8 @@ function loginPermissions(space: string, connId: string, operation: IsolatedMain
   if (operation.profile === "backup") return backupProfilePermissions(space, connId, operation.scope);
   if (operation.profile === "restore") return restoreProfilePermissions(space, connId, operation.scope);
   if (operation.profile === "registry-read") {
-    // This private broker login reads only the registry stream and is not a live mint profile.
-    const stream = exactStreamName(`KV_${channelBucket(space)}`);
-    return { pub: { allow: [`$JS.API.STREAM.MSG.GET.${stream}`] }, sub: { allow: [`_INBOX_${connId}.>`] } };
+    const bucket = exactStreamName(channelBucket(space));
+    return { pub: { allow: [`$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.${CHANNEL_DEFAULTS_KEY}`] }, sub: { allow: [`_INBOX_${connId}.>`] } };
   }
   return infrastructureMaintenancePermissions(connId, operation.streams, operation.updateStreams);
 }

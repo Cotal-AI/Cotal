@@ -6,7 +6,8 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readd
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { hostname } from "node:os";
-import { chatStream, createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, probeConnect, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { aclBucket, channelBucket, chatStream, commitAcl, createSpaceAuth, eventPayloadStream, mintCreds, newIdentity, openAclRegistry, probeConnect, readAcl, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { connect } from "@nats-io/transport-node";
 import type { BackupManifest } from "../../implementations/cli/src/lib/backup-artifact.js";
 import {
   acquireMaintenanceLock,
@@ -1460,6 +1461,17 @@ async function emptyNewerCutScenario(): Promise<void> {
     };
     return result.streams.find(({ stream }) => stream === chatStream(space))?.holds;
   };
+  const fallbackGrant = async (write = false) => {
+    const nc = await connect({ servers: server, maxReconnectAttempts: 0 });
+    try {
+      const acl = await openAclRegistry(nc, space);
+      const principal = "local.fallback-only", uid = "a".repeat(26);
+      if (write) await commitAcl(acl, principal, uid, ["general"]);
+      return (await readAcl(acl, principal, uid))?.record.allowSubscribe;
+    } finally {
+      await nc.close();
+    }
+  };
   try {
     must("up", "--detach", "--open", "--server", server, "--space", space);
     const initialLimit = chatLimit();
@@ -1472,6 +1484,8 @@ async function emptyNewerCutScenario(): Promise<void> {
     assert.ok(cut?.state === "ready");
     const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8")) as BackupManifest;
     assert.ok(Date.parse(cut.cut.intentAt) > Date.parse(manifest.createdAt), "the empty cut is newer than its artifact");
+    assert.equal(manifest.streams.find(({ stream }) => stream === `KV_${channelBucket(space)}`)?.state.messages, 1, "the positive case compares the stored default");
+    assert.equal(manifest.streams.find(({ stream }) => stream === `KV_${aclBucket(space)}`)?.state.last_seq, 0, "the artifact has no grants");
 
     const restored = must("backup", "restore", artifact, "--store-dir", target, "--plain");
     assert.match(restored.stdout, /The previous store held no additional backed-up state for the restored space\./);
@@ -1492,6 +1506,11 @@ async function emptyNewerCutScenario(): Promise<void> {
     const limitCleanup = restoreWithConsentGuard(join(root, "restored-with-original-limit"));
     assert.deepEqual(chatLimit(), initialLimit, "the restored store holds the older policy");
     must(...limitCleanup, "--yes", "--discard-history");
+
+    assert.deepEqual(await fallbackGrant(true), ["general"], "the cut holds a grant written after the artifact");
+    const grantCleanup = restoreWithConsentGuard(join(root, "restored-without-new-grant"));
+    assert.equal(await fallbackGrant(), undefined, "the restored store has no such grant");
+    must(...grantCleanup, "--yes", "--discard-history");
 
     must("channel", "set", "fallback-only", "--desc", "setting created after backup", "--space", space);
     assert.match(must("channel", "--space", space).stdout, /#fallback-only/);
