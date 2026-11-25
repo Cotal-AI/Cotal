@@ -95,22 +95,23 @@ export function activeComputerAccount(account: ComputerAccount & { accounts?: Co
   return supported.length === 1 ? supported[0] : undefined;
 }
 
-interface CatalogCollision { space: string; origin: "manual" | "up" | "catalog"; idp: string }
+interface CatalogCollision { space: string; origin: "manual" | "up" | "catalog"; idp: string; unavailable?: string }
 
 function isCatalogCollision(item: unknown): item is CatalogCollision {
   return !!item && typeof item === "object" && "space" in item && typeof item.space === "string" && item.space.length > 0
     && "origin" in item && (item.origin === "manual" || item.origin === "up" || item.origin === "catalog")
-    && "idp" in item && typeof item.idp === "string";
+    && "idp" in item && typeof item.idp === "string" && (!("unavailable" in item) || typeof item.unavailable === "string" && item.unavailable.length > 0);
 }
 
-function catalogCollisionNotice({ space, origin }: CatalogCollision): string {
+function catalogCollisionNotice({ space, origin, unavailable }: CatalogCollision): string {
   const name = JSON.stringify(space);
+  const source = origin === "manual" ? "registered by hand" : origin === "up" ? "started on this computer" : "from another account's catalog";
+  if (unavailable) return `${name} was kept (${source}). The other catalog cannot provide it: ${JSON.stringify(unavailable)}. Keep the existing registration until the catalog offers a replacement.`;
   const arg = /^[A-Za-z0-9_-]{1,64}$/.test(space) ? `${space.startsWith("-") ? "-- " : ""}${space}` : undefined;
   if (origin === "catalog") {
     const lookup = arg ? ` See its login provider with “cotal space show ${arg}”.` : "";
     return `${name} is from another account's catalog.${lookup} To replace it, sign out of that account on this computer or ask its owner to remove the space from that catalog.`;
   }
-  const source = origin === "manual" ? "registered by hand" : "started on this computer";
   if (!arg) return `${name} was ${source}. Inspect it with “cotal space” before changing its registration.`;
   const stop = origin === "up" ? " If it is running, first run “cotal down” from its project folder." : "";
   return `${name} was ${source}.${stop} To replace it, run “cotal space forget ${arg}”.`;
@@ -134,7 +135,8 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
       throw new Error("The background service reported space name conflicts without their details. Run cotal sync to inspect them.");
     for (const { space, idp } of details) if (!provider || canonicalProvider(idp) === canonicalProvider(provider)) skipped.add(space);
     const conflicts = [...new Set(details.map(catalogCollisionNotice))];
-    notices.push("Some space names conflict with existing registrations. Leave them as they are to keep them.", ...conflicts, "After clearing a conflict, run “cotal sync” to refresh spaces.");
+    notices.push("Some space names conflict with existing registrations. Leave them as they are to keep them.", ...conflicts);
+    if (details.some(item => !item.unavailable)) notices.push("After clearing a conflict, run “cotal sync” to refresh spaces.");
   }
   if (failed?.length) notices.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
   return { message: notices.join(" "), skipped };

@@ -26,6 +26,13 @@ test("collision notices name the retained registration and the remedy for its or
   assert.match(notice, /cotal sync.*hack\.cotal\.ai/);
   assert.throws(() => catalogRefreshNotice({ ...result, failedProviders: [own] }, own), /cloud\.cotal\.ai/);
 });
+test("a collision with an unavailable catalog row cannot recommend removing a retained registration", () => {
+  const { message } = catalogRefreshNotice({ refresh: "partial", failedProviders: [], collisions: 1,
+    collisionDetails: [{ space: "held", origin: "manual", idp: own, unavailable: "maintenance window" }],
+  }, own);
+  assert.match(message, /"held" was kept \(registered by hand\).*maintenance window.*Keep the existing registration/);
+  assert.doesNotMatch(message, /space forget|sign out|cotal sync/);
+});
 test("account follows active provider or the only supported account, not the last saved account", () => {
   const good = { idpUrl: own, mode: "account", hostSupport: "supported", spaces: [] };
   const dead = { idpUrl: other, mode: "account", hostSupport: "unknown", spaces: [] };

@@ -36,7 +36,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-stop": { required: [], optional: [] },
   "managers-prepare-restart": { required: [], optional: [] },
   "managers-abort-restart": { required: [], optional: [] },
-  spaces: { required: [], optional: ["refresh"] },
+  spaces: { required: [], optional: ["refresh", "multipart"] },
   "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins"] },
   logout: { required: ["idp"], optional: [] },
   "login-cancel": { required: ["attempt"], optional: [] },
@@ -67,7 +67,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-stop" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-prepare-restart" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-abort-restart" }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean; readonly multipart?: true }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status-watch" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string } }
@@ -81,7 +81,7 @@ export type DaemonRequest =
 type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
   | "SCHEMA_INVALID" | "OPERATION_UNKNOWN" | "OPERATION_PARTIAL"
-  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
+  | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "SPACES_RESPONSE_TOO_LARGE" | "CATALOG_SYNC_BUSY" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
 
 export interface DaemonUpdateStatus {
   readonly restartEvidence?: { readonly prepared: boolean; readonly managers: readonly { readonly space: string; readonly seats: number; readonly fenced: boolean }[] };
@@ -110,6 +110,7 @@ export interface DaemonStatus {
   /** The local control listener is bound and verified. It does NOT mean connected to a mesh or Cloud. */
   readonly state: "ready";
   readonly protocol: typeof DAEMON_PROTOCOL_VERSION;
+  readonly spacesMultipart?: true;
   readonly version: string;
   readonly pid: number;
   readonly startedAt: string;
@@ -214,7 +215,7 @@ export interface DaemonSpaces {
   readonly refresh: "not-requested" | "not-signed-in" | "complete" | "partial" | "failed";
   readonly unreadable: number;
   readonly collisions: number;
-  readonly collisionDetails: readonly { readonly space: string; readonly origin: "manual" | "up" | "catalog"; readonly idp: string }[];
+  readonly collisionDetails: readonly { readonly space: string; readonly origin: "manual" | "up" | "catalog"; readonly idp: string; readonly unavailable?: string }[];
   readonly failedProviders?: readonly string[];
   readonly signedInProviders?: readonly string[];
   readonly spaces: readonly { readonly space: string; readonly label: string; readonly catalogId?: string; readonly kind?: string; readonly role?: string; readonly mode: "auth" | "open" | "user"; readonly idp?: string }[];
@@ -281,7 +282,8 @@ export function parseRequest(line: string): ParsedRequest {
   }
   if (op === "spaces") {
     if (obj.refresh !== undefined && typeof obj.refresh !== "boolean") return bad(id, "refresh must be a boolean");
-    return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}) } };
+    if (obj.multipart !== undefined && obj.multipart !== true) return bad(id, "multipart must be true when supplied");
+    return { ok: true, request: { v, id, op, ...(obj.refresh !== undefined ? { refresh: obj.refresh } : {}), ...(obj.multipart === true ? { multipart: true } : {}) } };
   }
   if (op === "daemon-stop") {
     if (obj.commit !== undefined && typeof obj.commit !== "boolean") return bad(id, "commit must be a boolean");

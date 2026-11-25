@@ -13,6 +13,8 @@ pub mod update_receipt;
 pub mod presence;
 pub mod first_paint;
 pub mod setup_state;
+#[cfg(any(feature = "desktop", test))]
+mod spaces_result;
 
 /// The bundled Node executable name, without the platform extension.
 pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" };

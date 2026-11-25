@@ -803,7 +803,12 @@ export async function prepareIdpSpaceCatalogs(opts: PrepareCatalogOpts): Promise
     return [];
   }
   // Each caller owns its validation and application. Waiting must let the current holder finish its HTTP work.
-  const lock = await acquireLockAsync(join(opts.dir, CATALOG_LOCK), { label: "space catalog sync", waitMs: 30_000 });
+  const lock = await acquireLockAsync(join(opts.dir, CATALOG_LOCK), {
+    label: "space catalog sync", waitMs: 30_000,
+    onTimeout: () => new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "Another process is still refreshing the space catalogs. This request did not refresh them.", {
+      native: { code: "CATALOG_SYNC_BUSY" }, remedy: "Wait for the other refresh to finish, then refresh spaces again.",
+    }),
+  });
   try {
     const current = readCatalogPreparationState(opts.dir);
     const sessions = current.sessions;

@@ -663,7 +663,8 @@ async function run(args: ParsedArgs): Promise<void> {
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
     catch (error) { throw asFailure(error, home); }
     if (!reply.ok) {
-      if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
+      if (reply.error.code === "DEPENDENCY_UNAVAILABLE" || reply.error.code === "CATALOG_SYNC_BUSY" || reply.error.code === "SPACES_RESPONSE_TOO_LARGE")
+        throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
       throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });
     }
     if ("event" in reply || !("kind" in reply.result) || reply.result.kind !== "spaces") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned an unsupported space response");

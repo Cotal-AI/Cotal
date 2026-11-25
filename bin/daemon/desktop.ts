@@ -1,6 +1,7 @@
 /** The desktop shell's bounded stdio adapter. It holds no login session or broker credentials. */
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { defaultComputerName } from "./computer-name.js";
 import { computerName } from "./name-validation.js";
 import { arch, platform, release, totalmem } from "node:os";
@@ -12,6 +13,7 @@ import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endp
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
+import { readSpacesReply, spacesFrames } from "./spaces-frames.js";
 import { runSetup } from "./setup.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
@@ -379,10 +381,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const status = await queryDaemon(client);
     if (!status.ok) { emit({ ...status, event: "result" }); return; }
     if (req.op === "status") { emit({ ...status, event: "result" }); return; }
-    if (req.op === "spaces" && !req.refresh && status.result.protocol === DAEMON_PROTOCOL_VERSION) {
-      emit({ ...await exchangeDesktopRequest(client, req), event: "result" }); return;
-    }
-    if (status.result.version !== opts.version) {
+    const compatibleListing = req.op === "spaces" && !req.refresh && status.result.protocol === DAEMON_PROTOCOL_VERSION;
+    if (!compatibleListing && status.result.version !== opts.version) {
       emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
       return;
     }
@@ -394,8 +394,10 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       emit({ v: 1, event: "result", ...result });
       return;
     }
-    const reply = await exchangeDesktopRequest(client, req);
-    emit({ ...reply, event: "result" });
+    const reply = await exchangeDesktopRequest(client, req, status.result.spacesMultipart === true);
+    if (req.op === "spaces") {
+      for (const line of spacesFrames(reply, "desktop")) if (!output.write(line)) await once(output, "drain");
+    } else emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const notAnswering = e instanceof CommandFailure && (req.op === "setup" || req.op === "install") && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING";
@@ -424,13 +426,19 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
 export async function exchangeDesktopRequest(
   opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">,
   request: Exclude<Extract<DesktopRequest, { readonly op: "name" } | { readonly op: "update-settings" } | { readonly op: "update-check" } | { readonly op: "spaces" } | { readonly op: "logout" } | { readonly space: string }>, { readonly op: "setup" }>,
+  multipart?: boolean,
 ): Promise<DaemonResponse> {
+  if (request.op === "spaces" && multipart === undefined) {
+    const status = await queryDaemon(opts);
+    if (!status.ok) return status;
+    multipart = status.result.spacesMultipart === true;
+  }
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     const id = randomUUID().replaceAll("-", "");
-    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request, ...(request.op === "spaces" && multipart ? { multipart: true } : {}) }));
     // Service connection includes the same cold-readiness exchange as the ordinary CLI client.
-    const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
+    const reply = request.op === "spaces" ? await readSpacesReply(sock, id, 160_000) : JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
     if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw new Error("mismatched daemon reply");
     return reply;
   } finally { sock.destroy(); }

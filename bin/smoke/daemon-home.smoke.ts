@@ -75,8 +75,9 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { acquireLock, getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { openVerified } from "../daemon/client.js";
+import { exchangeDesktopRequest } from "../daemon/desktop.js";
 import { DAEMON_PROTOCOL_VERSION, daemonPaths } from "../daemon/endpoint.js";
 import { encode, type DaemonResponse } from "../daemon/protocol.js";
 
@@ -582,6 +583,8 @@ try {
     let origin = "", idp = "", catalogHits = 0, unavailable = false;
     let slugs = ["catalog-new"], sub = "catalog-account", denied = false;
     let catalogGate: Promise<void> | undefined;
+    let unavailableNames = new Set<string>();
+    const maintenanceReason = "maintenance " + "東京 🌱".repeat(550);
     const session = "owned-catalog-session";
     const catalog = createHttpServer(async (req, res) => {
       for await (const _ of req) { /* drain */ }
@@ -602,10 +605,10 @@ try {
         v: 1, account: { idpUrl: idp, issuer: origin, sub },
         spaces: slugs.map((slug) => ({
           id: slug, slug, name: slug, kind: "team", role: "member",
-          registration: {
+          ...(unavailableNames.has(slug) ? { unavailable: maintenanceReason } : { registration: {
             space: slug, server: "nats://127.0.0.1:4222", tlsRequired: false, sentinelCreds: `fixture-sentinel-${slug}`,
             userAuth: { provider: "cotal", idp: { url: idp, issuer: origin, audience: origin }, endpoints: { url: `${origin}/exchange` } },
-          },
+          } }),
         })),
       });
     });
@@ -671,24 +674,24 @@ try {
       const recovered = await cli(["spaces", "--refresh", "--json"]);
       check("H6 duplicate fixture starts from a fully applied healthy catalog", recovered.status === 0 && recovered.doc.result?.refresh === "complete" && recovered.doc.result?.unreadable === 0, recovered.doc);
       const canonical = meshFile("catalog-kept");
-      const legacy = join(home, "meshes", "catalog-kept.json");
+      const legacyRecord = join(home, "meshes", "catalog-kept.json");
       const keptBytes = readFileSync(canonical, "utf8");
-      writeFileSync(legacy, keptBytes, { mode: 0o600 });
+      writeFileSync(legacyRecord, keptBytes, { mode: 0o600 });
       writeFileSync(canonical, damaged, { mode: 0o600 });
       setCurrent("catalog-kept");
       unavailable = true;
       const failedDuplicate = await cli(["spaces", "--refresh", "--json"]);
-      check("H6 provider failure preserves damaged canonical and usable legacy bytes", failedDuplicate.status === 4 && failedDuplicate.doc.result?.refresh === "failed" && failedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, failedDuplicate.doc);
+      check("H6 provider failure preserves damaged canonical and usable legacy bytes", failedDuplicate.status === 4 && failedDuplicate.doc.result?.refresh === "failed" && failedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacyRecord) && readFileSync(legacyRecord, "utf8") === keptBytes, failedDuplicate.doc);
       check("H6 failure metadata still reaches unrelated healthy registrations", Boolean(readMeshRegistry().entries.find((m) => m.space === "catalog-added")?.catalogError));
       unavailable = false;
       slugs = ["catalog-added"];
       const removedDuplicate = await cli(["spaces", "--refresh", "--json"]);
-      check("H6 catalog removal preserves damaged canonical, legacy and selection", removedDuplicate.status === 4 && removedDuplicate.doc.result?.refresh === "complete" && removedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes && getCurrent() === "catalog-kept", removedDuplicate.doc);
+      check("H6 catalog removal preserves damaged canonical, legacy and selection", removedDuplicate.status === 4 && removedDuplicate.doc.result?.refresh === "complete" && removedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacyRecord) && readFileSync(legacyRecord, "utf8") === keptBytes && getCurrent() === "catalog-kept", removedDuplicate.doc);
       slugs = ["catalog-kept", "catalog-added"];
       const appliedDuplicate = await cli(["spaces", "--refresh", "--json"]);
-      check("H6 application failure cannot rewrite damage from a usable legacy duplicate", appliedDuplicate.status === 4 && appliedDuplicate.doc.result?.refresh === "failed" && appliedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, appliedDuplicate.doc);
+      check("H6 application failure cannot rewrite damage from a usable legacy duplicate", appliedDuplicate.status === 4 && appliedDuplicate.doc.result?.refresh === "failed" && appliedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacyRecord) && readFileSync(legacyRecord, "utf8") === keptBytes, appliedDuplicate.doc);
       writeFileSync(canonical, keptBytes, { mode: 0o600 });
-      rmSync(legacy);
+      rmSync(legacyRecord);
       check("H6 no private registry or sentinel tree was created", !existsSync(join(managed, "meshes")) && !existsSync(join(managed, "catalog")));
 
       const subjects = (dir: string): string[] => Object.values(JSON.parse(readFileSync(join(dir, "space-catalogs.json"), "utf8")).accounts as Record<string, { sub: string }>).map((a) => a.sub).sort();
@@ -731,13 +734,34 @@ try {
       check("H6 a partial refresh names the registrations it kept with their origins", conflict.status === 4 && conflict.doc.result?.refresh === "partial" && conflict.doc.result?.collisions === 2 && JSON.stringify(conflict.doc.result?.collisionDetails) === JSON.stringify(details), conflict.doc);
       let releaseCatalog!: () => void;
       catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve; });
+      const hitsBeforeOverlap = catalogHits;
       const replies = await overlappingCatalogRefreshes(releaseCatalog);
       const summaries = replies.map(reply => reply.ok && !("event" in reply) && "collisionDetails" in reply.result
         ? { id: reply.id, refresh: reply.result.refresh, collisions: reply.result.collisions, details: reply.result.collisionDetails }
         : { id: reply.id, ok: reply.ok });
       const expected = ["refresh-a", "refresh-b"].map(id => ({ id, refresh: "partial", collisions: 2, details }));
       check("H6 overlapping refreshes both report the complete collision details", JSON.stringify(summaries) === JSON.stringify(expected), summaries);
+      check("H6 overlapping daemon refreshes share one catalog fetch", catalogHits === hitsBeforeOverlap + 1);
       check("H6 a collision leaves both registrations unchanged", retained.every(({ file, before }) => readFileSync(file).equals(before)));
+      const names = Array.from({ length: 14 }, (_, i) => `big-collision-${i.toString().padStart(2, "0")}`);
+      for (const space of names) recordMesh({ ...local, space });
+      slugs = [...names, "catalog-next-space"];
+      unavailableNames = new Set(names);
+      const client = { paths: legacy };
+      const request = { op: "spaces", refresh: true } as const;
+      const large = await exchangeDesktopRequest(client, request);
+      const received = large.ok && !("event" in large) && "collisionDetails" in large.result ? large.result.collisionDetails : [];
+      check("H6 a large reply keeps every unavailable collision name and full UTF-8 reason", received.length === names.length && received.every((row, i) => row.space === names[i] && row.unavailable === maintenanceReason));
+      const unsupported = await exchangeDesktopRequest(client, request, false);
+      check("H6 a client without multipart receives a typed refusal instead of a large line", !unsupported.ok && unsupported.error.code === "SPACES_RESPONSE_TOO_LARGE");
+      const held = acquireLock(join(home, "space-catalogs.lock"));
+      const hitsBeforeBusy = catalogHits;
+      try {
+        const busy = await exchangeDesktopRequest(client, request);
+        check("H6 a cross-process catalog lock timeout has its own refusal and does not fetch", !busy.ok && busy.error.code === "CATALOG_SYNC_BUSY" && catalogHits === hitsBeforeBusy);
+      } finally { held.release(); }
+      const retried = await exchangeDesktopRequest(client, request);
+      check("H6 a new request can refresh after the other process releases the lock", retried.ok && catalogHits === hitsBeforeBusy + 1);
     } finally {
       await new Promise<void>((r) => catalog.close(() => r()));
     }

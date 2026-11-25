@@ -850,9 +850,11 @@ listed, and listing without `--refresh` still works. Name collisions and unreada
 are reported rather than replaced.
 For each catalog row skipped because its name is taken, `collisionDetails` reports the space name,
 the retained registration's `origin` (`manual`, `up`, or `catalog`), and the `idp` URL of the
-catalog that could not register it. `collisions` remains the count of skipped rows.
-Overlapping refresh requests wait for the catalog lock and each report their own result. The
-daemon can still answer status requests while a catalog refresh is pending.
+catalog that could not register it. If that catalog has no replacement to offer, `unavailable`
+gives its reason. `collisions` remains the count of skipped rows.
+Overlapping refreshes on one daemon share the same complete result. The daemon can answer status
+while a refresh is pending. If another process holds the catalog lock past the wait limit, the
+refresh refuses with `CATALOG_SYNC_BUSY`.
 Names outside the daemon's 1-64 letters, digits, underscores or hyphens count as unreadable
 registrations and are not offered in its CLI list or the desktop space selector. Their records
 remain unchanged. Listing them reports a partial outcome (exit 4).
@@ -871,7 +873,8 @@ click, then offers Connect this computer. Its four steps are Welcome, Sign in, C
 If a catalog space name is already registered, sign-in continues and the app names the space and
 the source of the registration it kept. Leave it alone to keep that registration. To use the new
 catalog entry instead, remove the old registration as directed by the notice, then run `cotal sync`.
-A running local space must be stopped before it can be forgotten. A space from another account's
+A running local space must be stopped before it can be forgotten. Keep the existing registration
+if the catalog says its entry is unavailable. A space from another account's
 catalog must be removed from that catalog or the other account signed out on this computer.
 A connection link prefills its host and space without starting setup. The app selects the linked
 space, then the personal space, then an account's only space. Several team spaces without a
@@ -1261,6 +1264,14 @@ The daemon replies with a `status` event carrying the request `id` and the statu
 `result`. The daemon pushes another snapshot when its computer name, account state, hosted
 Manager state, hosted agent inventory, update status or pending generation changes. The stream
 ends when the connection closes.
+
+A daemon that advertises `spacesMultipart: true` in status accepts `multipart: true` on a `spaces`
+request. A reply that does not fit on one line arrives as ordered `result-part` frames with
+zero-based `index` and JSON text in `data`, followed by `result-end` with the number of `parts`.
+Every frame carries the request ID and fits within 64 KiB including the newline. The assembled
+reply is the same JSON object as a single-line reply, up to 8 MiB. A listing that cannot fit the
+negotiated limit refuses with `SPACES_RESPONSE_TOO_LARGE` without omitting any conflict names from
+a successful reply.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
