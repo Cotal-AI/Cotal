@@ -32,6 +32,13 @@
       "rationale": "The stop checks project directory access for a space, not agent presence or work progress."
     },
     {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "blockedDownRootRemedy(at, stop)",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names what blocks the stack root path and the stop to retry; a filesystem fact, not agent presence or work progress."
+    },
+    {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
       "anchor": "`extension set verification failed for ${request.pkg}: ${child.stderr || child.error?.message || child.status}`",
