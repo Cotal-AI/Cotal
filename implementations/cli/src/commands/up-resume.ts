@@ -779,8 +779,8 @@ export async function completeResumeActivation(
       "any",
       40_000,
     );
+    await waitForRestoreStop?.();
     if (!committed.ok) {
-      await waitForRestoreStop?.();
       const message = committed.error ?? "manager resume commit failed";
       markPendingResumeDegraded(attemptId, message, heldLock);
       throw new Error(message);
@@ -827,7 +827,6 @@ export async function completeResumeActivation(
       throw new Error(`replacement manager did not recover the durable commit token for attempt ${attemptId}`);
   }
 
-  await waitForRestoreStop?.();
   const finalized = await askManager(
     cliControl,
     pending.space,
@@ -838,7 +837,6 @@ export async function completeResumeActivation(
     "any",
     40_000,
   );
-  await waitForRestoreStop?.();
   if (!finalized.ok)
     throw new Error(finalized.error ?? `manager resume finalize failed for attempt ${attemptId}`);
   if (!isManagerFinalizeResult(finalized.data, attemptId))

@@ -34,9 +34,7 @@ export function holdForegroundListener({ child, server, space, executable, log, 
 
   // The manager must be able to spare its seats. If its guarded stop refuses, leave the rest
   // of the stack running so the operator can choose whether to stop it with its agents.
-  const stop = (signal: StopSignal) => {
-    if (stopSignal) return;
-    stopSignal = signal;
+  const beginTeardown = () => {
     // Once the broker has exited its handler already owns daemon cleanup.
     if (listenerExited()) return;
     teardown = (async () => {
@@ -55,6 +53,13 @@ export function holdForegroundListener({ child, server, space, executable, log, 
       await stopAuthService(space).catch((e: Error) => console.error(`! auth teardown: ${e.message}`));
       stoppedListener = child.kill("SIGTERM");
     })();
+  };
+  const stop = (signal: StopSignal) => {
+    if (stopSignal) return;
+    stopSignal = signal;
+    // A committed restore still needs its listener and manager to finalize the durable token.
+    if (restored?.managerCommit && !activationFinished) return;
+    beginTeardown();
   };
   const interrupt = () => stop("SIGINT"), terminate = () => stop("SIGTERM");
   process.on("SIGINT", interrupt);
@@ -103,7 +108,10 @@ export function holdForegroundListener({ child, server, space, executable, log, 
   return {
     isStopping: () => stopSignal !== undefined,
     listenerReady: () => { listenerReady = true; },
-    activationFinished: () => { activationFinished = true; },
+    activationFinished: () => {
+      activationFinished = true;
+      if (stopSignal && !teardown) beginTeardown();
+    },
     publishControlPlane<T>(publish: () => Promise<T>): Promise<T> {
       const ready = publish();
       if (restored) publishing = ready;
@@ -111,7 +119,7 @@ export function holdForegroundListener({ child, server, space, executable, log, 
     },
     // If startup also fails while our stop is in flight, let teardown prove who stopped the
     // listener before reporting the result. A refused stop leaves the original outcome in charge.
-    waitForRestoreStop: () => restored && stopSignal ? waitForRestoreStop() : undefined,
+    waitForRestoreStop: () => restored && stopSignal && teardown ? waitForRestoreStop() : undefined,
   };
 }
 
