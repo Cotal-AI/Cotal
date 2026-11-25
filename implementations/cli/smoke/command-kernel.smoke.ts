@@ -2220,7 +2220,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   try {
     await assert.rejects(
       ext({ values: {}, positionals: ["add", "https://example.invalid/ext.tgz"], raw: [] }),
-      /unsupported extension spec/,
+      (e: unknown) => isCommandFailure(e) && e.outcome === "refused" && e.code === "USAGE_INVALID" &&
+        e.message.includes("prefix a relative folder with ./") && !e.message.includes("example.invalid"),
     );
     process.env[EXT_UPDATE_PARENT_ENV] = "0";
     await assert.rejects(
