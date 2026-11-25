@@ -45,7 +45,7 @@ async function setEffort(client: Session, sessionId: string, variant: string, mo
   try {
     await client.setReasoningEffort(sessionId, variant);
   } catch (e) {
-    // The model has switched already, so a refused effort no longer leaves the seat unchanged.
+    // The model has switched already, so a refused effort leaves the seat changed.
     if (model !== undefined)
       throw new Error(`Jcode switched to model ${JSON.stringify(model)}, then did not take variant ${JSON.stringify(variant)}: ${(e as Error).message}`);
     throw refusedByJcode(e) ? refusal(e.message) : e;

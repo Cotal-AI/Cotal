@@ -342,7 +342,7 @@ try {
   else process.env.COTAL_HOME = prevHome;
 }
 
-const EXPECTED = 31;
+const EXPECTED = 32;
 const ran = ok + fail;
 console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {

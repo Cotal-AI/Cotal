@@ -1369,7 +1369,8 @@ let openInventory: ManagerResumeAgent;
       ep.getRoster = () => [{ card: { id: seat.id, name: "worker", meta: { "ai.cotal.model-set": mark } }, lifecycleUid, status: "idle" }];
       (first as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
     };
-    check("the resumed seat runs its launch model", resumed.ok && committed.ok && seat.launch.model === "test-model", { resumed: resumed.error, committed: committed.error, model: seat.launch.model });
+    check("the resumed seat runs the model its launch named, none here", resumed.ok && committed.ok && seat.launch.model === undefined,
+      JSON.stringify({ resumed: resumed.error, committed: committed.error, model: seat.launch.model }));
     marks({ model: "big-model", variant: "high" });
     check("the seat keeps the model and variant its own presence marks as set-model's switch", seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
     const rows = (first as unknown as { list: () => { name: string; model?: string; variant?: string }[] }).list();
