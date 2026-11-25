@@ -5,9 +5,11 @@
  * agent under their owner, so no admin grant is needed.
  */
 import {
+  AGENT_CMD_SET_LABEL,
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
   AGENT_ENDPOINT,
+  AGENT_LABEL_META_KEY,
   AGUI_FRAME_KIND,
   chatSubject,
   DEV_OWNER,
@@ -30,13 +32,15 @@ import {
   type PresenceCondition,
   type PresenceEvent,
   type Profile,
+  type SetLabelIO,
   type SetNameIO,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, managerMachineId, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, presenceMachine, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
-import { startManager } from "./manager-start.js";
+import { recordedManager, startManager } from "./manager-start.js";
+import { defaultManager } from "./options.js";
 import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatCondition, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
@@ -65,26 +69,32 @@ export function namesDeregister(op: string, instanceId: string | undefined, own:
   return instanceId !== undefined && own.has(instanceId) && READS.has(op) && !reply.ok && reply.unanswered === true;
 }
 
-/** A manager as a choice, read from the roster's current row for it. It is local when the row names
- *  `here`, this machine's {@link managerMachineId}; `here` is undefined when that could not be read,
- *  and then none is. Its host is shown and decides nothing, since a machine's name can change while
- *  its manager runs. On a space where people sign in, `owner` is the person's, and only their own
- *  manager's row counts: another member may name an agent after it. An offline row says nothing about
- *  where the manager runs now, so it is not live and not local. */
-export function managerChoice(instanceId: string, roster: readonly Presence[], here: string | undefined, owner?: string): ManagerChoice {
+/** Whether a manager runs on this machine. One that names a machine does when it names `here`, this
+ *  machine's {@link managerMachineId}; `here` is undefined when that could not be read, and then none
+ *  does. One that names no machine, as a manager an older release started, does when it is
+ *  `recorded`, the instance this machine's manager service record says runs here. */
+const runsHere = (instanceId: string, machine: string | undefined, here: string | undefined, recorded: string | undefined): boolean =>
+  machine === undefined ? recorded === instanceId : here !== undefined && machine === here;
+
+/** A manager as a choice, read from the roster's current row for it. It is local when
+ *  {@link runsHere} says so. Its host is shown and decides nothing, since a machine's name can change
+ *  while its manager runs. On a space where people sign in, `owner` is the person's, and only their
+ *  own manager's row counts: another member may name an agent after it. An offline row says nothing
+ *  about where the manager runs now, so it is not live and not local. */
+export function managerChoice(instanceId: string, roster: readonly Presence[], here: string | undefined, owner?: string, recorded?: string): ManagerChoice {
   const actor = remoteManagerActors(instanceId).supervisor;
   const row = roster.find((p) => (owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`) && p.status !== "offline");
   const seen = managerCandidate(instanceId, row).host;
   const machine = row ? presenceMachine(row) : undefined;
-  return { instanceId, ...(seen ? { host: seen } : {}), local: here !== undefined && machine === here, live: row !== undefined };
+  return { instanceId, ...(seen ? { host: seen } : {}), local: row !== undefined && runsHere(instanceId, machine, here, recorded), live: row !== undefined };
 }
 
 /** What a manager's own `status` reported about where it runs. */
 type Reported = { host?: string; machine?: string };
 
 /** A manager whose rail is not gone as a choice, from what it reported. */
-const railChoice = (instanceId: string, seen: Reported, here: string | undefined): ManagerChoice =>
-  ({ instanceId, ...(seen.host ? { host: seen.host } : {}), local: here !== undefined && seen.machine === here, live: seen.host !== undefined });
+const railChoice = (instanceId: string, seen: Reported, here: string | undefined, recorded?: string): ManagerChoice =>
+  ({ instanceId, ...(seen.host ? { host: seen.host } : {}), local: runsHere(instanceId, seen.machine, here, recorded), live: seen.host !== undefined });
 
 /** Why this machine's identity could not be read, undefined when it could. Without it no manager is
  *  known to run here, and the host name is no stand-in. */
@@ -100,10 +110,21 @@ const thisMachine = (): string | undefined => (machineUnreadable() === undefined
 /** A signed-in person's listed manager as a choice. `seen` is what its rail reported, undefined when
  *  the rail is gone. A manager with no current row under the person's principal, such as the space's
  *  own, is described by its rail's report. */
-export function listedChoice(instanceId: string, seen: Reported | undefined, roster: readonly Presence[], here: string | undefined, owner: string): ManagerChoice | undefined {
+export function listedChoice(instanceId: string, seen: Reported | undefined, roster: readonly Presence[], here: string | undefined, owner: string, recorded?: string): ManagerChoice | undefined {
   if (!seen) return undefined;
-  const row = managerChoice(instanceId, roster, here, owner);
-  return row.live ? row : railChoice(instanceId, seen, here);
+  const row = managerChoice(instanceId, roster, here, owner, recorded);
+  return row.live ? row : railChoice(instanceId, seen, here, recorded);
+}
+
+/** The listed managers as choices, from `choose`. When none is this machine's but one is live, this
+ *  machine's manager service record is read, and the choices are made again with the instance it
+ *  says runs here: a manager that an older release started names no machine. */
+async function choicesHere(space: string, choose: (recorded?: string) => (ManagerChoice | undefined)[]): Promise<(ManagerChoice | undefined)[]> {
+  const first = choose();
+  const listed = first.filter((m): m is ManagerChoice => m !== undefined);
+  if (defaultManager(listed) || !listed.some((m) => m.live)) return first;
+  const recorded = await recordedManager(space);
+  return recorded === undefined ? first : choose(recorded);
 }
 
 /** One connector row of a manager's `status`. */
@@ -203,6 +224,13 @@ export function frameOf(msg: CotalMessage, plane: SeatFrame["plane"] = "events")
     events: (part.events as unknown[]).filter((e): e is AguiEventLike => typeof e === "object" && e !== null && typeof (e as { type?: unknown }).type === "string"),
     ts: msg.ts,
   };
+}
+
+/** The name a presence card shows: the label the agent took from its first message, else its name
+ *  (SPEC 13.22). */
+function shownOf(card: Presence["card"]): string {
+  const label = card.meta?.[AGENT_LABEL_META_KEY];
+  return typeof label === "string" && label.trim() ? label : card.name;
 }
 
 /** A workspace failure as one plain error, or {@link SignInRequired} when the client's sign-in fixes
@@ -419,7 +447,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
         const here = thisMachine();
-        const checked = await Promise.all(plan.launch.map(async (instanceId) => listedChoice(instanceId, await railCheck(p, instanceId), observer.getRoster(), here, started.owner)));
+        const seen = await Promise.all(plan.launch.map((instanceId) => railCheck(p, instanceId)));
+        const checked = await choicesHere(target.space, (recorded) => plan.launch.map((instanceId, i) => listedChoice(instanceId, seen[i], observer.getRoster(), here, started.owner, recorded)));
         return runningManagers(target.space, plan.launch, checked);
       }
       const t = await resolve("control-caller-privileged");
@@ -428,10 +457,8 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
         throw new NoLaunchManager(`The broker for ${t.space} is reachable, but no manager is registered. To open a thread, ${startStackManagerRemedy(t.space, t.server)}`);
       });
       const here = thisMachine();
-      const checked = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
-        const seen = await railCheck(p, instanceId);
-        return seen && railChoice(instanceId, seen, here);
-      }));
+      const seen = await Promise.all(ids.map((instanceId) => railCheck(p, instanceId)));
+      const checked = await choicesHere(target.space, (recorded) => ids.map((instanceId, i) => seen[i] && railChoice(instanceId, seen[i]!, here, recorded)));
       return runningManagers(t.space, ids, checked);
     },
 
@@ -514,7 +541,7 @@ function agentCalls(c: Connected): Pick<Mesh, "agentCall" | "promptCounter" | "s
 }
 
 /** The agent list and the commands sent to one agent. */
-function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "relabel" | "spawnNameError"> {
   const { started, observer, target } = c;
   const { ctx, client, ask, seatCommand, yourManagers } = p;
   return {
@@ -553,8 +580,9 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
         rows.map((row): SeatRow => {
           const r = row as unknown as { name: string; id: string; lifecycleUid: string; agent: string; model?: string; cwd?: string; status: string; uptimeMs?: number };
           const principal = principalOf(r.id);
-          // `set-name` changes the name the agent shows, never the name its manager lists.
-          const shown = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card.name;
+          // A label and `set-name` change the name the agent shows, never the name its manager lists.
+          const card = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card;
+          const shown = card && shownOf(card);
           return {
             name: r.name,
             ...(shown && shown !== r.name ? { display: shown } : {}),
@@ -591,6 +619,10 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
       return ((await agent.agentCall(seat, AGENT_CMD_SET_NAME, { name })) as SetNameIO).name;
     },
 
+    async relabel(seat: SeatRef, label: string) {
+      return ((await agent.agentCall(seat, AGENT_CMD_SET_LABEL, { label })) as SetLabelIO).label;
+    },
+
     spawnNameError(name: string) {
       return spawnNameError(name, { userMode: target.mode === "user" });
     },
@@ -601,7 +633,7 @@ const sameCondition = (a: PresenceCondition, b: PresenceCondition): boolean =>
   a.code === b.code && a.source === b.source && a.message === b.message && a.since === b.since;
 
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
-function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "condition" | "roster" | "channels" | "close"> {
+function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "condition" | "shownName" | "followRoster" | "roster" | "channels" | "close"> {
   const { observer, caller, events, payloads, started } = c;
   // Each seat's current condition with when it arrived here, so a failed turn takes only one that
   // arrived during it. A condition shown before the space opened counts as older than any turn.
@@ -651,6 +683,17 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
       const id = principalKey(seat.owner, seat.actor).key;
       const status = observer.getRoster().find((p) => p.card.id === id)?.status;
       return status === "offline" ? undefined : status;
+    },
+
+    shownName(seat: SeatRef) {
+      const id = principalKey(seat.owner, seat.actor).key;
+      const card = observer.getRoster().find((p) => p.card.id === id && p.lifecycleUid === seat.lifecycleUid && p.status !== "offline")?.card;
+      return card && shownOf(card);
+    },
+
+    followRoster(onChange) {
+      observer.on("roster", onChange);
+      return () => void observer.off("roster", onChange);
     },
 
     condition(seat: SeatRef, since: number): SeatCondition | undefined {

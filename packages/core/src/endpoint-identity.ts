@@ -4,6 +4,9 @@ import type { DmOnlyOptions } from "./endpoint-options.js";
 import type { AgentCard } from "./types.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 
+export const OBSERVER_CONN_NAME_PREFIX = "cotal:observer/";
+export const OBSERVER_INBOX_NONCE_PREFIX = "ibx_observer_";
+
 /** Written only by the `CotalEndpoint` constructor; every part takes it as `Readonly`. A part must not
  *  read it in its own constructor, because the endpoint's constructor fills it after the parts are
  *  constructed. */
@@ -36,6 +39,7 @@ export interface EndpointIdentity {
   heartbeatMs: number;
   ttlMs: number;
   doRegister: boolean;
+  omitFromLiveMembership: boolean;
   doWatch: boolean;
   doWatchChannels: boolean;
   readOnce: boolean;

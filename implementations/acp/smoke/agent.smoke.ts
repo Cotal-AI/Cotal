@@ -38,6 +38,8 @@
  *  - the selects hold the chosen machine's applications: choosing a machine whose manager reports an
  *    application unavailable offers it in neither select, moves the selection to that machine's
  *    default, refuses the application with the manager's reason, and a prompt starts the default;
+ *  - `cotal manager status` output names the native instance of this machine's running manager
+ *    service, and names none when it is gone, never started or refused;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
  *  - a persona catalog or channel list longer than a client select offers a short select holding the
  *    caller's own personas, or the described and busiest channels, and `/persona` and `/join` pick
@@ -49,6 +51,21 @@
  *    refuses in a thread that already drives one, and names the choices when two seats match;
  *  - a linked thread is listed under its own id with the seat's shown name, and loads and deletes
  *    through its link;
+ *  - the thread is titled with the name its seat shows once the seat starts, after `/name`, on `/open`
+ *    and on a load, not marked as replay, and whenever its presence shows another name, as a label or
+ *    a rename made elsewhere; a refused rename, an unchanged name or a seat the roster stops showing
+ *    sends no title;
+ *  - where the session lists a thread server (a stand-in for T3 Code's `t3-code` MCP server), the
+ *    bridge starts it with only the variables the client gave and sets the client's own title through
+ *    it too, and a listed server without the thread tools is listed once and never called; a rename in
+ *    the client labels the agent before the next prompt reaches it, keeps its name, and is not written
+ *    back; a title the bridge wrote is not read back as a rename; a read the server fails, or a label
+ *    the agent refuses, is said in the thread and logged, and the prompt still runs; a refused title
+ *    goes back to the agent's name; each title the bridge wrote or read is stored with the thread's
+ *    link; a second session of the same bridge starts the server with its own variables and lists
+ *    no server again; and a load in a new bridge labels the agent with a title the person gave the
+ *    thread while no bridge ran, and otherwise titles the thread with the name the agent shows, as it
+ *    does when the link stored no title;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
  *    permission request, without options ACP cannot answer and only when its digest matches, and the
  *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
@@ -67,15 +84,16 @@
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { client, methods, ndJsonStream, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
+import { fileURLToPath } from "node:url";
+import { client, methods, ndJsonStream, PROTOCOL_VERSION, type McpServerStdio, type NewSessionResponse, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { MAX_CHOICES } from "../src/options.js";
 import { promptParts } from "../src/turns.js";
-import { startFailure, startLine } from "../src/manager-start.js";
+import { recordedInstance, startFailure, startLine } from "../src/manager-start.js";
 import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -213,6 +231,15 @@ class FakeMesh implements Mesh {
     this.renamed.push({ seat: seat.name, name });
     return name;
   }
+  relabelled: { seat: string; label: string }[] = [];
+  /** Why the agent refuses a label, when it does. */
+  labelRefusal: string | undefined;
+  async relabel(seat: SeatRef, label: string) {
+    if (this.labelRefusal) throw new Error(this.labelRefusal);
+    this.relabelled.push({ seat: seat.name, label });
+    this.show(seat.actor, label);
+    return label;
+  }
   spawnNameError(name: string) { return /^[a-z0-9_]+$/.test(name) ? undefined : `unsafe name ${JSON.stringify(name)}`; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
@@ -231,6 +258,18 @@ class FakeMesh implements Mesh {
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
   presence(seat: SeatRef) { return this.present.get(seat.actor); }
+  /** The name each seat's presence shows, by actor. */
+  shown = new Map<string, string>();
+  private rosterListeners: (() => void)[] = [];
+  /** Show `name` in a seat's presence, as a label it takes or a rename made elsewhere does. Undefined:
+   *  the roster no longer shows the seat. */
+  show(actor: string, name: string | undefined): void {
+    if (name === undefined) this.shown.delete(actor);
+    else this.shown.set(actor, name);
+    for (const l of this.rosterListeners) l();
+  }
+  shownName(seat: SeatRef) { return this.shown.get(seat.actor); }
+  followRoster(on: () => void) { this.rosterListeners.push(on); return () => (this.rosterListeners = this.rosterListeners.filter((l) => l !== on)); }
   condition(seat: SeatRef, since: number) {
     const held = this.conditions.get(seat.actor);
     return held && held.at >= since ? held.condition : undefined;
@@ -253,7 +292,7 @@ class BigMesh extends FakeMesh {
 
 class MemoryLinks implements ThreadLinks {
   readonly rows: (ThreadLink & { space: string })[] = [];
-  read(space: string) { return this.rows.filter((row) => row.space === space).map(({ thread, lifecycleUid }) => ({ thread, lifecycleUid })); }
+  read(space: string) { return this.rows.filter((row) => row.space === space).map((row) => ({ thread: row.thread, lifecycleUid: row.lifecycleUid, ...(row.title !== undefined ? { title: row.title } : {}) })); }
   add(space: string, link: ThreadLink) { this.rows.push({ space, ...link }); }
 }
 
@@ -488,6 +527,12 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   check("a start that printed nothing is named by its exit code", startFailure(null, "", "") === "it exited with code null");
   check("a start that launched the manager says it started it", startLine("x", JSON.stringify({ outcome: "ok" })) === "Started this machine's manager for x. It stops itself after 10 minutes with no agents.");
   check("a start that found it already running, as a second thread's does, says it is running", startLine("x", JSON.stringify({ outcome: "no-op" })) === "This machine's manager for x is running. It stops itself after 10 minutes with no agents.");
+  const status = (result: unknown) => JSON.stringify({ outcome: "ok", result });
+  check("a manager status whose recorded process runs names its native instance", recordedInstance(status({ kind: "service-status", observedProcess: "running", nativeEndpoint: { instanceId: "abc" } })) === "abc");
+  check("one whose process is gone names none", recordedInstance(status({ kind: "service-status", observedProcess: "gone", nativeEndpoint: { instanceId: "abc" } })) === undefined);
+  check("one never started names none", recordedInstance(status({ kind: "service-status", instanceId: null, recordedState: "not started" })) === undefined);
+  check("a refused status names none", recordedInstance(refused) === undefined);
+  check("output that is not a result names none", recordedInstance("") === undefined);
 }
 
 // An application whose models the manager could not read is refused with the read's reason.
@@ -1447,6 +1492,8 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
     await within(c.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] }));
     return c.updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
   };
+  const titles = (updates: SessionNotification[], sessionId: string) =>
+    updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "session_info_update").map((u) => (u.update as { title?: string | null }).title);
   const named = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
   await tick();
   const announced = c.updates.find((u) => u.sessionId === named.sessionId && u.update.sessionUpdate === "available_commands_update")?.update as { availableCommands?: { name: string; input?: { hint?: string } }[] } | undefined;
@@ -1457,10 +1504,26 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: named.sessionId, prompt: [{ type: "text", text: "go" }] }));
   check("the first prompt after /name spawns the seat under that name", space.spawned[0]?.name === "scout", space.spawned);
   check("and stores the thread's link to the seat's run", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: named.sessionId, lifecycleUid: "life-scout" }), c.links.rows);
+  check("once the agent starts, the thread is titled with its name", titles(c.updates, named.sessionId).at(-1) === "scout", titles(c.updates, named.sessionId));
   check("/name on a running seat changes the name it shows", (await say(named.sessionId, "/name Scout Two")).includes("now shows as Scout Two") && space.renamed.at(-1)?.name === "Scout Two", space.renamed);
+  check("and retitles the thread with it", titles(c.updates, named.sessionId).at(-1) === "Scout Two", titles(c.updates, named.sessionId));
   space.renameRefusal = "no responder for agent.set-name";
   check("a refused rename says why in the thread", (await say(named.sessionId, "/name other")).includes("Could not rename scout: no responder for agent.set-name"));
+  check("and keeps the title", titles(c.updates, named.sessionId).length === 0, titles(c.updates, named.sessionId));
   space.renameRefusal = undefined;
+  c.updates.length = 0;
+  space.show("actor-scout", "Login fix");
+  await tick();
+  check("a label the agent takes from its first message retitles the thread", JSON.stringify(titles(c.updates, named.sessionId)) === '["Login fix"]', titles(c.updates, named.sessionId));
+  space.show("actor-scout", "Scout Three");
+  await tick();
+  check("so does a rename made elsewhere that its presence shows", titles(c.updates, named.sessionId).at(-1) === "Scout Three", titles(c.updates, named.sessionId));
+  c.updates.length = 0;
+  space.show("actor-scout", "Scout Three");
+  space.show("actor-scout", undefined);
+  await tick();
+  check("an unchanged name, or a seat the roster stops showing, sends no title", titles(c.updates, named.sessionId).length === 0, titles(c.updates, named.sessionId));
+  space.show("actor-scout", "Scout Three");
 
   const scout: SeatRow = { name: "scout", display: "Scout Two", owner: "local", actor: "actor-scout", lifecycleUid: "life-scout", managerInstanceId: "m1", agent: "claude", model: "haiku", cwd: dir, status: "running" };
   const helper: SeatRow = { name: "helper", display: "Helper Bee", owner: "local", actor: "actor-helper", lifecycleUid: "life-helper", managerInstanceId: "m1", agent: "pi", cwd: dir, status: "running" };
@@ -1478,6 +1541,7 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const opened = await say(opener.sessionId, "/open helper bee");
   check("/open finds a seat by the name it shows and replays what the space retains", opened.includes("earlier work") && opened.includes("now drives Helper Bee"), opened);
   check("/open sets its line apart from the replayed messages", /earlier work[^]*\n\nThis session now drives/.test(opened), opened);
+  check("/open titles the thread with the name the agent shows", titles(c.updates, opener.sessionId).at(-1) === "Helper Bee", titles(c.updates, opener.sessionId));
   check("/open stores the thread's link", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: opener.sessionId, lifecycleUid: "life-helper" }), c.links.rows);
   space.onInput = (seat) => { space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: opener.sessionId, prompt: [{ type: "text", text: "next step" }] }));
@@ -1496,6 +1560,9 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   await again.init;
   const reloaded = await again.agent.request(methods.agent.session.load, { sessionId: named.sessionId, cwd: dir, mcpServers: [] }).catch((e: unknown) => e);
   check("a thread whose seat has another name loads through its link", (reloaded as { configOptions?: unknown }).configOptions !== undefined, reloaded);
+  await tick();
+  const loadedTitles = again.updates.filter((u) => u.sessionId === named.sessionId && u.update.sessionUpdate === "session_info_update");
+  check("a loaded thread is titled with the name its agent shows now, not as replay", titles(loadedTitles, named.sessionId).at(-1) === "Scout Three" && loadedTitles.every((u) => u._meta?.isReplay !== true), loadedTitles);
   again.updates.length = 0;
   space.emit(scout, [{ type: "TEXT_MESSAGE_START", messageId: "s2", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "s2", delta: "still here" }], "r9");
   await tick();
@@ -1504,6 +1571,124 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   check("deleting a linked thread hides its seat's run", again.hidden.ids.has("life-helper"), [...again.hidden.ids]);
   again.conn.close();
   c.conn.close();
+}
+
+// The client's thread server: a stand-in for T3 Code's `t3-code`, listed in session/new.
+{
+  const space = new FakeMesh();
+  const c = connect(async () => space);
+  await c.init;
+  const at = (name: string) => join(dir, name);
+  const state = at("thread.json");
+  const setThread = (t: { title: string; failRead?: string }, file = state, threadId = "t3-thread-1") => writeFileSync(file, JSON.stringify({ threadId, ...t }));
+  setThread({ title: "New thread" });
+  const fixture = fileURLToPath(new URL("./fake-thread-server.mjs", import.meta.url));
+  const server = (name: string, env: Record<string, string>, tools?: string): McpServerStdio =>
+    ({ name, command: process.execPath, args: tools ? [fixture, tools] : [fixture], env: Object.entries(env).map(([key, value]) => ({ name: key, value })) });
+  // With servers in the list the SDK types session/new's answer as unknown, so it is typed here.
+  const newThread = (mcpServers: McpServerStdio[]) => c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers }) as Promise<NewSessionResponse>;
+  const servers = (calls: string, file = state) =>
+    [server("other", { THREAD_STATE: file, THREAD_CALLS: at("other-calls.jsonl") }, "t3_thread_read"), server("t3-code", { THREAD_STATE: file, THREAD_CALLS: calls })];
+  type Event = { start?: string[]; list?: true; tool?: string; args?: { title?: string } };
+  const events = (file: string): Event[] => {
+    try {
+      return readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Event);
+    } catch {
+      return [];
+    }
+  };
+  const kinds = (file: string) => events(file).map((e) => (e.start ? "start" : e.list ? "list" : e.tool));
+  const title = (file = state) => (JSON.parse(readFileSync(file, "utf8")) as { title: string }).title;
+  const writes = (file: string) => events(file).filter((e) => e.tool === "t3_thread_update").map((e) => e.args?.title);
+  const until = async (done: () => boolean, ms = 10_000) => {
+    for (const end = Date.now() + ms; !done() && Date.now() < end; ) await tick(50);
+    return done();
+  };
+  const calls = at("thread-calls.jsonl");
+  const s = await newThread(servers(calls));
+  const said = (): string => c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  await until(() => title() === "acp-s1");
+  check("once the agent starts, the client's thread server titles the thread with its name", title() === "acp-s1" && JSON.stringify(writes(calls)) === '["acp-s1"]', { title: title(), writes: writes(calls) });
+  check("the bridge starts the thread server with only the variables the client gave it", JSON.stringify(events(calls)[0]?.start) === '["THREAD_CALLS","THREAD_STATE"]', events(calls)[0]);
+  check("a listed server without the thread tools is started and listed once, and never called", JSON.stringify(kinds(at("other-calls.jsonl"))) === '["start","list"]', kinds(at("other-calls.jsonl")));
+  let labelledAtInput = -1;
+  space.onInput = (seat) => { labelledAtInput = space.relabelled.length; space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
+  const prompt = (text: string, sessionId = s.sessionId) => within(c.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] }));
+  setThread({ title: "Login work" });
+  await prompt("next");
+  check("a rename in the client labels the agent before the next prompt reaches it, and keeps its name",
+    JSON.stringify(space.relabelled) === '[{"seat":"acp-s1","label":"Login work"}]' && space.renamed.length === 0 && labelledAtInput === 1 && space.typed.at(-1)?.text === "next",
+    { relabelled: space.relabelled, renamed: space.renamed, labelledAtInput, typed: space.typed.at(-1) });
+  check("and is not written back to the client", !writes(calls).includes("Login work"), writes(calls));
+  space.show("actor-acp-s1", "Fixing login");
+  await until(() => title() === "Fixing login");
+  await prompt("again");
+  check("a name the agent shows is written to the client, and is not read back as a rename",
+    title() === "Fixing login" && JSON.stringify(writes(calls)) === '["acp-s1","Fixing login"]' && space.relabelled.length === 1 && space.typed.at(-1)?.text === "again",
+    { title: title(), writes: writes(calls), relabelled: space.relabelled });
+  setThread({ title: "Fixing login", failRead: "the thread store is down" });
+  c.updates.length = 0;
+  await prompt("still");
+  check("a read the client's server fails is said in the thread and logged, and the prompt still runs",
+    said().includes("the thread store is down") && c.logs.some((l) => l.includes("the thread store is down")) && space.typed.at(-1)?.text === "still", { said: said(), typed: space.typed.at(-1) });
+  setThread({ title: "Other/name" });
+  space.labelRefusal = 'invalid name "Other/name": "/" is reserved (the owner/name separator)';
+  c.updates.length = 0;
+  await prompt("onward");
+  check("a label the agent refuses is said in the thread, the title goes back to the agent's name, and the prompt still runs",
+    said().includes('Could not rename acp-s1 to "Other/name": invalid name') && title() === "Fixing login" && space.typed.at(-1)?.text === "onward", { said: said(), title: title(), typed: space.typed.at(-1) });
+  space.labelRefusal = undefined;
+  const stored = c.links.rows.filter((r) => r.thread === s.sessionId && r.title !== undefined);
+  check("each title the bridge wrote or read is stored with the thread's link to the seat's run",
+    JSON.stringify(stored.map((r) => r.title)) === '["New thread","acp-s1","Login work","Fixing login","Other/name","Fixing login"]' && stored.every((r) => r.lifecycleUid === "life-acp-s1"),
+    stored);
+
+  const state2 = at("thread-2.json");
+  setThread({ title: "New thread" }, state2, "t3-thread-2");
+  const calls2 = at("thread-calls-2.jsonl");
+  const s2 = await newThread(servers(calls2, state2));
+  await prompt("go", s2.sessionId);
+  await until(() => title(state2) === "acp-s2");
+  check("a second session starts the thread server with its own variables, and the bridge lists no server again",
+    title(state2) === "acp-s2" && title() === "Fixing login" && kinds(calls2)[0] === "start" && !kinds(calls2).includes("list") && JSON.stringify(kinds(at("other-calls.jsonl"))) === '["start","list"]',
+    { title: title(state2), calls: kinds(calls2), other: kinds(at("other-calls.jsonl")) });
+  c.conn.close();
+  await tick(50);
+
+  // A load in a new bridge, as a client starts one per thread.
+  space.rows = [{ name: "acp-s1", owner: "local", actor: "actor-acp-s1", lifecycleUid: "life-acp-s1", managerInstanceId: "m1", agent: "claude", cwd: dir, status: "running" }];
+  const loadIn = async (links: ThreadLink[], calls: string) => {
+    const b = connect(async () => space);
+    b.links.rows.push(...links.map((link) => ({ space: space.space, ...link })));
+    await b.init;
+    await b.agent.request(methods.agent.session.load, { sessionId: s.sessionId, cwd: dir, mcpServers: [server("t3-code", { THREAD_STATE: state, THREAD_CALLS: calls })] });
+    return b;
+  };
+  const labels = space.relabelled.length;
+  space.show("actor-acp-s1", "Login v2");
+  const first = await loadIn(c.links.rows, at("load-1.jsonl"));
+  await until(() => title() === "Login v2");
+  check("a load in a new bridge titles the client's thread with the name the agent shows now, when the thread kept the title its link stored",
+    title() === "Login v2" && space.relabelled.length === labels, { title: title(), relabelled: space.relabelled });
+  first.conn.close();
+  await tick(50);
+  setThread({ title: "Signup flow" });
+  const second = await loadIn(first.links.rows, at("load-2.jsonl"));
+  await until(() => space.relabelled.length > labels);
+  await tick(200);
+  check("a load in a new bridge labels the agent with a title the person gave the thread while no bridge ran, and keeps that title",
+    JSON.stringify(space.relabelled.slice(labels)) === '[{"seat":"acp-s1","label":"Signup flow"}]' && title() === "Signup flow" && writes(at("load-2.jsonl")).length === 0,
+    { relabelled: space.relabelled, title: title(), writes: writes(at("load-2.jsonl")) });
+  second.conn.close();
+  await tick(50);
+  setThread({ title: "Picked elsewhere" });
+  const third = await loadIn(c.links.rows.filter((r) => r.title === undefined), at("load-3.jsonl"));
+  await until(() => title() !== "Picked elsewhere");
+  check("with no title stored with the link, a load titles the client's thread with the name the agent shows",
+    title() === "Signup flow" && space.relabelled.length === labels + 1, { title: title(), relabelled: space.relabelled });
+  third.conn.close();
 }
 
 // A space whose persona catalog and channel list are longer than a client select shows.

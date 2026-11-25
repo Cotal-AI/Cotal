@@ -254,7 +254,7 @@ export async function resetStoreApply(space: string, args: ParsedArgs): Promise<
   const presentation = presentationOf(args.values);
   const yes = args.values.yes === true;
   if (!yes && (!canPrompt() || presentation === "json")) {
-    const format = presentation === "json" ? " --json" : "";
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
     throw new ConfirmationRequired("reset store needs a terminal confirmation or --yes with an exact space name in a script", { target: { space }, remedy: `inspect \`cotal reset store ${space} --dry-run${format}\` first, then run \`cotal reset store ${space} --yes${format}\`` });
   }
   const selected = selectResetTarget(space, "reset store", false, presentation === "json" ? "cotal" : displayCmd());

@@ -140,6 +140,8 @@ export interface EndpointOptions {
   ttlMs?: number;
   /** Publish our own presence (default true). */
   registerPresence?: boolean;
+  /** Mark native subscriptions as observer taps, not live membership. Does not change access. */
+  omitFromLiveMembership?: boolean;
   /** Track the roster of peers with a live watch (default true). Every watcher receives every
    *  member's heartbeat, so a space of K watching members moves K² deliveries per heartbeat. An
    *  endpoint that only needs the roster when it acts sets this false and calls

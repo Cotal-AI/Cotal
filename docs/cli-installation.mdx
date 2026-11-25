@@ -65,10 +65,11 @@ mkdir -p -m 700 ~/research
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
 
-To register a self-hosted space from a connection bundle without questions, name the harness, the
-project folder and the space from the bundle:
+To register a self-hosted space from a connection bundle without questions, create the project
+folder if it does not exist, then run setup with the harness and the space name from the bundle:
 
 ```bash
+mkdir -p -m 700 ~/research
 cotal setup --destination self-hosted --harness claude --project ~/research --space research --connection-file ./research.json --no-input
 ```
 
