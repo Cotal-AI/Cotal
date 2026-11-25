@@ -1042,6 +1042,35 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     discardLaunchArtifacts(artifacts);
     throw e;
   }
+  const signals = foregroundChildSignals(child, agentType);
+  try {
+    await new Promise<void>((resolve) => {
+      child.on("error", (e) => {
+        signals.clearTimer();
+        // The exec never started, so the just-provisioned static-auth identity is orphaned; roll it
+        // back. (User-mode revoke runs unconditionally once this promise settles, below.)
+        stderrLine("✗ ", `failed to launch ${spec.command}: ${e.message}`, (line) => line);
+        void retireProvision("exec failed").finally(() => {
+          process.exitCode = 1;
+          resolve();
+        });
+      });
+      child.on("exit", (code, signal) => {
+        signals.clearTimer();
+        const exitSignal = signals.received() ?? signal;
+        process.exitCode = exitSignal ? 128 + osConstants.signals[exitSignal] : (code ?? 0);
+        resolve();
+      });
+    });
+    await retireProvision("agent exited");
+    if (userCleanup) await userCleanup().catch((e) => stderrLine("✗ ", `cleaning up after ${name}: ${(e as Error).message}`, c.red));
+    discardLaunchArtifacts(spec.artifacts);
+  } finally {
+    signals.close();
+  }
+}
+
+function foregroundChildSignals(child: ReturnType<typeof spawnProcess>, agentType: string) {
   const FORWARDED_SIGNALS = ["SIGTERM", "SIGHUP"] as const;
   type ForwardedSignal = (typeof FORWARDED_SIGNALS)[number];
   let receivedSignal: ForwardedSignal | undefined;
@@ -1066,43 +1095,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const keepForegroundOnInterrupt = process.platform === "win32" && agentType === "hermes";
   const waitForHermes = (): void => {};
   if (keepForegroundOnInterrupt) process.on("SIGINT", waitForHermes);
-  try {
-    await new Promise<void>((resolve) => {
-      child.on("error", (e) => {
-        if (killTimer !== undefined) { clearTimeout(killTimer); killTimer = undefined; }
-        // The exec never started, so the just-provisioned static-auth identity is orphaned; roll it
-        // back. (User-mode revoke runs unconditionally once this promise settles, below.)
-        stderrLine("✗ ", `failed to launch ${spec.command}: ${e.message}`, (line) => line);
-        void retireProvision("exec failed").finally(() => {
-          process.exitCode = 1;
-          resolve();
-        });
-      });
-      child.on("exit", (code, signal) => {
-        if (killTimer !== undefined) { clearTimeout(killTimer); killTimer = undefined; }
-        // A child killed by a signal, or stopped after this foreground spawn received SIGTERM or
-        // SIGHUP, exits 128 plus the signal's number.
-        const exitSignal = receivedSignal ?? signal;
-        process.exitCode = exitSignal ? 128 + osConstants.signals[exitSignal] : (code ?? 0);
-        resolve();
-      });
-    });
-    // STATIC MODE: the departure half of the run-scoped identity; the agent is gone and no future
-    // spawn reuses this identity, so retire its creds + broker footprint now (the manager's despawn
-    // deprovision, foregrounded). Best-effort: a SIGKILLed CLI can't run it, and that residue is the
-    // same class a crashed manager leaves.
-    await retireProvision("agent exited");
-    // USER MODE: the runtime-grant invariant applies to the foreground departure too; the agent is
-    // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
-    // (a SIGKILLed CLI can't run this; its retained grant needs operator recovery), loud
-    // on failure, never blocking the exit code already set above.
-    if (userCleanup) await userCleanup().catch((e) => stderrLine("✗ ", `cleaning up after ${name}: ${(e as Error).message}`, c.red));
-    // The child has exited or never started, so nothing reads the launch's private files any more
-    // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
-    discardLaunchArtifacts(spec.artifacts);
-  } finally {
-    if (keepForegroundOnInterrupt) process.off("SIGINT", waitForHermes);
-    if (killTimer !== undefined) clearTimeout(killTimer);
-    for (const sig of FORWARDED_SIGNALS) process.off(sig, onTerminate);
-  }
+  const clearTimer = (): void => { clearTimeout(killTimer); killTimer = undefined; };
+  return {
+    received: () => receivedSignal,
+    clearTimer,
+    close() {
+      if (keepForegroundOnInterrupt) process.off("SIGINT", waitForHermes);
+      clearTimer();
+      for (const sig of FORWARDED_SIGNALS) process.off(sig, onTerminate);
+    },
+  };
 }
