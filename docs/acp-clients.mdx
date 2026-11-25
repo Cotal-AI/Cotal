@@ -107,6 +107,13 @@ A later prompt sent as a `turn` joins the agent's queue, as one of the agent's o
 If the agent does not start working on a later prompt within 30 seconds of taking it, or of having it typed in, the turn ends with a note saying so.
 The agent still has the prompt, and answers it when it gets to it.
 
+When the agent's turn fails, the prompt fails with the application's own error text and, in parentheses, its error kind, such as `acp_x's turn failed: You've hit your usage limit. ... (usageLimitExceeded)`.
+The text and kind come from the agent's presence condition ([SPEC §6](../SPEC.md#6-presence-and-discovery)), because the run error on its event channel carries only the fixed text `run failed`.
+The error's `data.condition` holds the condition's `code`, `source` and `message`.
+The thread waits up to 2 seconds for the condition after the run fails.
+An application that reports no text, such as Hermes for a message it could not process, fails the prompt with `<agent>'s turn failed` alone.
+Hermes shows its own error reply, such as a provider failure, as the agent's message instead.
+
 A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls.
 A tool call shows its arguments and its result, and a file edit shows as a diff.
 They come from the agent's payload rail ([SPEC 13.19](../SPEC.md#1319-private-tool-results)), so a call shows by name and status until its payload arrives, and a result over the rail's size limit is replaced by a note.

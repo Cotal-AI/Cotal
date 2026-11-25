@@ -15,7 +15,10 @@
  *    and a tool call left open is closed;
  *  - an application whose catalog lists a model with id `default` spawns naming that model, with the
  *    chosen variant; without one, `<agent>/default` spawns naming no model;
- *  - a failed run fails the prompt with the seat's message;
+ *  - a failed run fails the prompt with the seat's message; with each connector's failure condition,
+ *    one that arrives after the run's error too, the error carries the harness's own text and kind,
+ *    and with none it still says the turn failed; a condition from before the prompt or an approval
+ *    condition is not the turn's failure;
  *  - a later prompt is a direct message, and answers once the seat stopped working and the runs it
  *    started ended, or once the seat did not start on it in time;
  *  - a cancel interrupts the seat through its manager and answers `cancelled` however the run ends,
@@ -94,6 +97,9 @@ const CATALOGS: AgentCatalog[] = [
   { agent: "pi", available: true, eventPlane: true, models: [] },
 ];
 
+/** A presence condition (SPEC §6) as a connector writes it. */
+type Condition = { code: string; source?: string; message?: string; since?: number };
+
 /** A space held in memory. A test scripts what a seat publishes with `script`. */
 class FakeMesh implements Mesh {
   readonly space = "fake";
@@ -133,6 +139,10 @@ class FakeMesh implements Mesh {
   serving: AgentEndpointServes | undefined;
   /** Frames a spawned seat publishes: `before` ahead of the spawn reply, `after` once it answered. */
   script: { before: AguiEventLike[][]; after: AguiEventLike[][] } = { before: [], after: [] };
+  /** The condition each seat's presence carries, by actor, with when this process saw it arrive. */
+  conditions = new Map<string, { condition: Condition; at: number }>();
+  /** A condition a spawned seat's presence takes `ms` after its spawn reply. */
+  failWith: { condition: Condition; ms: number } | undefined;
   private listeners: ((f: SeatFrame) => void)[] = [];
   private seq = 0;
 
@@ -192,6 +202,8 @@ class FakeMesh implements Mesh {
     for (const e of this.script.before) this.emit(seat, e);
     const after = this.script.after;
     setTimeout(() => { for (const e of after) this.emit(seat, e); }, 10);
+    const failWith = this.failWith;
+    if (failWith) setTimeout(() => this.conditions.set(seat.actor, { condition: failWith.condition, at: Date.now() }), failWith.ms);
     return seat;
   }
   async seats() { return { rows: this.rows, silent: this.silent, removable: this.removable }; }
@@ -221,6 +233,10 @@ class FakeMesh implements Mesh {
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
   presence(seat: SeatRef) { return this.present.get(seat.actor); }
+  condition(seat: SeatRef, since: number) {
+    const held = this.conditions.get(seat.actor);
+    return held && held.at >= since ? held.condition : undefined;
+  }
   async roster() { return [{ name: "alice", status: "idle", role: "reviewer" }]; }
   async channels() { return [{ channel: "general", messages: 3 }, { channel: "ops", messages: 1 }]; }
   async close() { this.closed = true; }
@@ -265,8 +281,8 @@ function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async (
   const init = conn.agent.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: terminal ? { auth: { terminal: true } } : {} });
   return { agent: conn.agent, conn, updates, hidden, links, init, asked, answers, logs };
 }
-const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string } | undefined> => {
-  try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string }; }
+const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string; data?: unknown } | undefined> => {
+  try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string; data?: unknown }; }
 };
 
 // initialize and sign-in
@@ -912,6 +928,65 @@ updates.length = 0;
 const failed = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: second.sessionId, prompt: [{ type: "text", text: "go" }] })));
 check("a failed run fails the prompt with the seat's message", failed?.code === -32603 && failed.message?.includes("rate limited") === true, failed);
 check("its open tool call is closed as failed", updates.some((u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status: string }).status === "failed"), updates);
+
+// A failed run with the harness's own error. Every connector publishes RUN_ERROR with only the fixed
+// text "run failed"; the harness's text and kind are on the seat's presence condition, written as each
+// connector's failure-condition code writes it, sometimes after the RUN_ERROR arrives.
+const failedTurn = async (failWith: FakeMesh["failWith"], replyFirst?: string) => {
+  const s = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const reply = replyFirst ? [[{ type: "TEXT_MESSAGE_START", messageId: "e", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "e", delta: replyFirst }, { type: "TEXT_MESSAGE_END", messageId: "e" }]] : [];
+  mesh.script = { before: [], after: [[{ type: "RUN_STARTED", runId: "r1" }], ...reply, [{ type: "RUN_ERROR", message: "run failed" }]] };
+  mesh.failWith = failWith;
+  updates.length = 0;
+  const error = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })));
+  mesh.failWith = undefined;
+  return { seat: s.sessionId, error, said: updates.filter((u) => u.sessionId === s.sessionId).map((u) => JSON.stringify(u.update)).join("\n") };
+};
+const conditionOf = (error: { data?: unknown } | undefined) => (error?.data as { condition?: Condition } | undefined)?.condition;
+const usage = "You've hit your usage limit. Upgrade to Pro or try again at Nov 28th, 2026 9:00 AM.";
+const harnesses: { name: string; condition: Condition; ms: number }[] = [
+  // codexCondition: the app-server's turn error, its codexErrorInfo as the source.
+  { name: "Codex", condition: { code: "billing", source: "usageLimitExceeded", message: usage }, ms: 300 },
+  // Claude Code's StopFailure hook: `error` as the source, `error_details` as the message.
+  { name: "Claude Code", condition: { code: "rate_limit", source: "rate_limit", message: "API Error: 429 rate_limit_error: This request would exceed your rate limit." }, ms: 0 },
+  // OpenCode 1.x `session.error`: its error name and `data.message`.
+  { name: "OpenCode 1.x", condition: { code: "auth", source: "ProviderAuthError", message: "Invalid API key for provider anthropic" }, ms: 150 },
+  // OpenCode 2.x `session.execution.failed`: its error type and message.
+  { name: "OpenCode 2.x", condition: { code: "auth", source: "provider.auth", message: "Missing API key" }, ms: 150 },
+  // Pi: the assistant message's errorMessage, under its stop reason.
+  { name: "Pi", condition: { code: "failed", source: "error", message: "No API key found for anthropic" }, ms: 50 },
+  // Jcode: the Harness API error's code and message.
+  { name: "Jcode", condition: { code: "rate_limit", source: "rate_limit", message: "provider returned 429 Too Many Requests" }, ms: 50 },
+];
+for (const h of harnesses) {
+  const { seat, error } = await failedTurn({ condition: { ...h.condition, since: Date.now() }, ms: h.ms });
+  const kept = conditionOf(error);
+  check(`${h.name}: a failed turn fails the prompt with the harness's own text and kind, not "run failed"`,
+    error?.code === -32603 && error.message === `${seat}'s turn failed: ${h.condition.message} (${h.condition.source})`, error);
+  check(`${h.name}: the error's data carries the condition's code, source and message`,
+    kept?.code === h.condition.code && kept.source === h.condition.source && kept.message === h.condition.message, error?.data);
+}
+{
+  // Hermes writes no condition. The gateway's own error reply arrives as the agent's text, and the
+  // failure still says the turn failed, without the fixed "run failed".
+  const { seat, error, said } = await failedTurn(undefined, "API call failed after 3 retries: HTTP 402 insufficient credits");
+  check("Hermes: the gateway's own error reply reaches the thread as the agent's text", said.includes("insufficient credits"), said);
+  check("a failed turn with no text from the harness still says it failed, without \"run failed\"",
+    error?.code === -32603 && error.message === `${seat}'s turn failed` && error.data === undefined, error);
+}
+{
+  // A condition the seat showed before the prompt is not this turn's.
+  const s = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  mesh.conditions.set(`actor-${s.sessionId}`, { condition: { code: "auth", source: "old", message: "an earlier failure" }, at: Date.now() - 1000 });
+  mesh.script = { before: [], after: [[{ type: "RUN_STARTED", runId: "r1" }], [{ type: "RUN_ERROR", message: "run failed" }]] };
+  const error = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })));
+  check("a condition from before the prompt is not given as the turn's failure", error?.message === `${s.sessionId}'s turn failed`, error);
+}
+{
+  // A seat waiting on an approval is not failing for that reason.
+  const { seat, error } = await failedTurn({ condition: { code: "approval", message: "Allow Bash?" }, ms: 0 });
+  check("an approval condition is not given as the turn's failure", error?.message === `${seat}'s turn failed`, error);
+}
 
 // cancel
 const cancel = (sessionId: string) => conn.agent.notify(methods.agent.session.cancel, { sessionId });
