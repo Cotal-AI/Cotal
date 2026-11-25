@@ -202,5 +202,18 @@ FunctionEnd
       SetErrorLevel 21
       Quit
     ${EndIf}
+    ; With the service gone, end what still runs from here: the app and any status reader it started.
+    ; Its own running-app check would end only the app, and a reader left holding node.exe keeps it.
+    nsExec::ExecToStack /TIMEOUT=120000 '"$INSTDIR\cotal-desktop.exe" --close-app'
+    Pop $0
+    Pop $1
+    ${If} $0 != "0"
+      DetailPrint "$1"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP|MB_OK "Cotal removed its background service but could not close its running programs, so its files were not removed.$\r$\n$\r$\n$1"
+      ${EndIf}
+      SetErrorLevel 21
+      Quit
+    ${EndIf}
   ${EndIf}
 !macroend
