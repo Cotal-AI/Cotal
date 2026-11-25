@@ -24,7 +24,7 @@ export function createRunEffectHost(
   const pinned = structuredClone(binding);
   const pauses = createRunPauseHost(broker, pinned, authority);
   const waits = createRunWaitHost(broker, authority, admission, cancellationObserved);
-  const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, new EpfSettleWatcher((ref) => pauses.readSettle(ref.token)), Date.now, { pauses, waits, authority, admission, ...(cancellationObserved !== undefined ? { cancellationObserved } : {}) });
+  const handler = new MeshHandler(broker.nc, broker.kv, broker.js, broker.jsm, pinned, new EpfSettleWatcher((ref) => pauses.pollSettle(ref.token)), Date.now, { pauses, waits, authority, admission, ...(cancellationObserved !== undefined ? { cancellationObserved } : {}) });
 
   async function dispatch<R, T>(kind: string, req: R, ctx: EffectContext, call: (request: R, context: EffectContext) => Promise<T>): Promise<T> {
     const request = structuredClone(req);

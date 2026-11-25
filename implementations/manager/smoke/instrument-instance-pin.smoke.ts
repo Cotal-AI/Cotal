@@ -96,7 +96,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  describe plus the contract-store reads behind it) and invokes again, so it is many. Read before
  *  and after a call, compare the delta. */
 const pubs = (ep: CotalEndpoint): number =>
-  (ep as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  (ep as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
 
 /** REQUESTS this endpoint published on one command's request rail, counted by decoding each
  *  published subject with the SHIPPED parser rather than a hand-rolled match.
@@ -116,7 +116,7 @@ const pubs = (ep: CotalEndpoint): number =>
  *  and none for attempts; this is the second one. */
 const requestsSent = (ep: CotalEndpoint): ((endpoint: string, command: string) => number) => {
   const sent = new Map<string, number>();
-  const nc = (ep as unknown as { nc: { publish: (s: string, ...rest: unknown[]) => unknown } }).nc;
+  const nc = (ep as unknown as { conn: { nc: { publish: (s: string, ...rest: unknown[]) => unknown } } }).conn.nc;
   const orig = nc.publish.bind(nc);
   nc.publish = (subject: string, ...rest: unknown[]): unknown => {
     const p = parseEpSubject(subject);
@@ -161,7 +161,7 @@ const readTolerant = async (
 ): Promise<{ ok: boolean; tries: number; last?: unknown; perAttempt: ReadTolerantAttempt[] }> => {
   let last: unknown;
   const perAttempt: ReadTolerantAttempt[] = [];
-  const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+  const cache = (ep as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string } }> } }).controlPlane.resolvedServices;
   for (let i = 1; i <= attempts; i++) {
     const cacheBefore = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
     try {
@@ -447,7 +447,7 @@ try {
     try {
       const warm = await readTolerant(ep, "warm-up");
       check("the probe can invoke ps before the split is forced", warm.ok, warm.last);
-      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+      const cache = (ep as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string } }> } }).controlPlane.resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
       const ghost = `${"q".repeat(4)}${IID1.slice(4)}`;
       check("the cached resolve is reachable and the forced id is neither live instance",
@@ -537,8 +537,8 @@ try {
       try { readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
       // Recovery drops the full handle and resolves only the command being retried.
       const readCache = (ep as unknown as {
-        resolvedCommandServices: Map<string, Map<string, ResolvedService>>;
-      }).resolvedCommandServices;
+        controlPlane: { resolvedCommandServices: Map<string, Map<string, ResolvedService>> };
+      }).controlPlane.resolvedCommandServices;
       const afterRead = (cache.get(MANAGER_ENDPOINT)
         ?? readCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
@@ -630,7 +630,7 @@ try {
       // Resolve for real, then doctor the cached responder id (identical to cell 6, because the
       // point is that the COMMAND changed the outcome, nothing else).
       const warm = await readTolerant(ep, "admin warm-up");
-      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+      const cache = (ep as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string } }> } }).controlPlane.resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
       check("the admin probe resolved the manager (without this the cell grades nothing)",
         warm.ok && cached !== undefined, warm.last);

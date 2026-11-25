@@ -88,7 +88,7 @@
     },
     {
       "name": "every fire-read failure is read as 'the timer has not fired yet'",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "        if ((e as { code?: unknown })?.code === 10037) return null;\n        throw e;",
       "replace": "        void e;\n        return null;",
       "expectRed": "the broker's refusal reaches the caller instead of reading as an unfired timer",
@@ -97,7 +97,7 @@
     },
     {
       "name": "a refused cancellation is swallowed as if it had settled underneath",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-pause-timers.ts",
       "find": "      const settledAlready = e instanceof EpEnvelopeError\n        && (e.code === \"conflict\" || e.code === \"failed-precondition\");",
       "replace": "      const settledAlready = true\n        || (e instanceof EpEnvelopeError && (e.code === \"conflict\" || e.code === \"failed-precondition\"));",
       "expectRed": "and the refused claim is REPORTED, naming the pause and what it will do unread",

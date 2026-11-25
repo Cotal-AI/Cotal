@@ -11,7 +11,7 @@
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
  *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
  *  I. an agent that exits at once fails OPERATION_FAILED (exit 5) with the manager's reason.
- *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
+ *  E. `start` refuses, and its catalog and file retries launch through the manager.
  *  F. `--foreground --creds` fails loud (subprocess).
  *  H. a spawn in this terminal refuses a missing persona or connector with its code and Next, before
  *     it prints that it is starting the application (subprocess).
@@ -19,12 +19,13 @@
  * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
  */
-import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { assertScratchHeld, makeScratch } from "./_scratch.js";
 
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
@@ -34,12 +35,15 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
     setTimeout(r, ms).unref?.();
   });
 
+// Every temp folder below comes from this scratch, which no `.cotal` above can capture: the CLI
+// finds its folder by walking up to the nearest one, and a home holding `.cotal` would answer.
+const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
-const { recordMesh, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
+const { recordMesh, recordPreparedSpace, getCurrent, setCurrent, clearCurrent, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
 const { Manager } = await import("@cotal-ai/manager");
 import type { AgentHandle, Command, Connector, ControlReply, LaunchOpts, LaunchSpec, RuntimeProvider, SessionGrant } from "@cotal-ai/core";
@@ -69,7 +73,7 @@ const SPACE = "detach-e2e";
 
 // Workspace: a persona with a file ACL (so the override test proves flags WIN), plus config.json
 // declaring shareable MCP servers for the e2e connector.
-const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-detach-ws-"));
+const workspaceRoot = mkdtempSync(join(tmpdir(), `cotal-detach-ws-${"long-workspace-".repeat(14)}`));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 writeFileSync(
   join(workspaceRoot, ".cotal", "agents", "poet.md"),
@@ -193,17 +197,20 @@ const cmd = (name: string): Command => {
 };
 /** Run a REAL CLI command exactly as the dispatcher would: kernel-parsed argv → run(). */
 const run = (name: string, argv: string[]) => cmd(name).run(parseCommandArgs(cmd(name), argv));
-/** Capture what a run writes on stdout (ps prints a report, or one envelope under --json). */
-async function capture(fn: () => Promise<void>): Promise<string> {
+/** Capture stdout and optionally collect progress written through console.error. */
+async function capture(fn: () => Promise<void>, onError?: (line: string) => void): Promise<string> {
   let out = "";
   const real = console.log;
+  const realError = console.error;
   const write = process.stdout.write;
   console.log = (...a: unknown[]) => void (out += a.join(" ") + "\n");
+  if (onError) console.error = (...a: unknown[]) => onError(a.join(" "));
   process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
   try {
     await fn();
   } finally {
     console.log = real;
+    console.error = realError;
     process.stdout.write = write;
   }
   return out;
@@ -225,6 +232,100 @@ try {
 
   mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
+
+  // Exercise the real wrapper connectors through the CLI, manager and PTY, without provider calls.
+  const fakeBin = join(workspaceRoot, "fake-bin");
+  mkdirSync(fakeBin);
+  const previousPath = process.env.PATH;
+  const previousUv = process.env.COTAL_HERMES_UV_BIN;
+  const previousAdoptHome = process.env.COTAL_HERMES_ADOPT_HOME;
+  try {
+    await import("../../extensions/connector-hermes/dist/index.js");
+    process.env.PATH = fakeBin;
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
+    const hermesWithoutUv = async (extra: string[] = []): Promise<unknown> => {
+      try { await run("spawn", ["poet", "--harness", "hermes", "--space", SPACE, ...extra]); }
+      catch (error) { return error; }
+    };
+    const noModel = await hermesWithoutUv();
+    ok("foreground Hermes without uv or a model reports both and gives a basic launch example",
+      isCommandFailure(noModel) && noModel.code === "DEPENDENCY_UNAVAILABLE" && noModel.message.includes("needs uv on PATH")
+        && noModel.message.includes("needs a model") && noModel.remedy?.includes("spawn --harness hermes --model <model>") === true
+        && !noModel.remedy.includes("then retry:"), noModel);
+    const hasModel = await hermesWithoutUv(["--model", "test-model"]);
+    ok("foreground Hermes with a model retains the missing-uv retry",
+      isCommandFailure(hasModel) && hasModel.code === "DEPENDENCY_UNAVAILABLE" && !hasModel.message.includes("needs a model")
+        && hasModel.remedy?.includes("then retry:") === true
+        && hasModel.remedy.includes(`spawn poet --harness hermes --space ${SPACE} --model test-model`), hasModel);
+    process.env.COTAL_HERMES_ADOPT_HOME = fakeBin;
+    const adopt = await hermesWithoutUv();
+    ok("missing uv with profile adoption points to profile requirements without demanding a model or promising a retry",
+      isCommandFailure(adopt) && adopt.code === "DEPENDENCY_UNAVAILABLE" && adopt.remedy?.includes("adopted Hermes profile") === true
+        && !adopt.message.includes("needs a model") && adopt.remedy?.includes("https://docs.cotal.ai/docs/connect-hermes/") === true
+        && !adopt.remedy.includes("then retry:"), adopt);
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
+    const fixture = (name: string, body: string): void => writeFileSync(join(fakeBin, name), `#!${process.execPath}\n${body}\n`, { mode: 0o755 });
+    const errorLines = "console.error('harness error line 1: invalid provider key');console.error('harness error line 2: run auth login to reauthenticate');process.exit(1);";
+    for (const name of ["codex", "opencode", "jcode", "hermes"]) fixture(name, errorLines);
+    fixture("uv", "if(process.argv.includes('python')){console.log('0.19.0');process.exit(0)}const {spawnSync}=await import('node:child_process');const r=spawnSync('hermes',[],{stdio:'inherit'});process.exit(r.status??1);");
+    process.env.PATH = `${fakeBin}:${previousPath ?? ""}`;
+    process.env.COTAL_HERMES_UV_BIN = join(fakeBin, "uv");
+    await import("../../extensions/connector-codex/dist/index.js");
+    await import("../../extensions/connector-opencode/dist/index.js");
+    await import("../../extensions/connector-jcode/dist/index.js");
+    const failedLaunch = async (harness: string, name: string, extra: string[] = []): Promise<unknown> => {
+      try {
+        await capture(() => run("spawn", ["poet", "--detach", "--agent", harness, "--space", SPACE, "--name", name, ...extra]));
+      } catch (error) { return error; }
+      return undefined;
+    };
+    for (const harness of ["codex", "opencode"]) {
+      const error = await failedLaunch(harness, `failed_${harness}`);
+      ok(`${harness} immediate failure returns its own stderr`, isCommandFailure(error) && error.message.includes("run auth login to reauthenticate"), String(error));
+    }
+    fixture("opencode", "if(process.argv[2]==='--version'){console.log('1.2.0');process.exit(0)}" + errorLines);
+    const serveFailure = await failedLaunch("opencode", "failed_serve");
+    ok("OpenCode serve failure returns child stderr rather than wrapper prose", isCommandFailure(serveFailure) && serveFailure.message.includes("run auth login to reauthenticate"), String(serveFailure));
+    const originalCwd = process.cwd();
+    const jcodeFailure = await (async () => {
+      process.chdir(fakeBin);
+      try {
+        return await failedLaunch("jcode", "failed_jcode", ["--cwd", fakeBin, "--model", "gpt-6.2-sol"]);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    })();
+    const jcodeMessage = isCommandFailure(jcodeFailure) ? jcodeFailure.message : "";
+    const logPath = [...jcodeMessage.matchAll(/workspace log: ([^;\n]*?\/logs\/connector-[\w-]+\.log)/g)].at(-1)?.[1];
+    ok("Jcode startup failure in a nested directory reports the full absolute path for a long workspace",
+      !!logPath && isAbsolute(logPath) && logPath.startsWith(join(workspaceRoot, ".cotal", "jcode") + "/")
+        && logPath.length > 240 && jcodeMessage.includes("startup_failed"), String(jcodeFailure));
+    const jcodeErrors = ["invalid provider key", "run auth login to reauthenticate"];
+    const privateOutput = readFileSync(logPath!, "utf8");
+    ok("Jcode retains both child errors in its owner-only log and not in the refusal",
+      (statSync(logPath!).mode & 0o777) === 0o600 && jcodeErrors.every((line) => privateOutput.includes(line) && !jcodeMessage.includes(line)), jcodeMessage);
+    const hermesFailure = await failedLaunch("hermes", "failed_hermes", ["--model", "test-model"]);
+    ok("Hermes gateway exit fails instead of reporting joined", isCommandFailure(hermesFailure) && hermesFailure.message.includes("run auth login to reauthenticate"), String(hermesFailure));
+    // The stand-in gateway subscribes as the plugin does: with the bridge token derived from the
+    // launch material's control key, HMAC-SHA256 over `cotal-hermes-bridge/<version>`.
+    fixture("hermes", "const fs=await import('node:fs');const net=await import('node:net');const {createHmac}=await import('node:crypto');const m=JSON.parse(fs.readFileSync(process.env.COTAL_LAUNCH_MATERIAL,'utf8'));const token=createHmac('sha256',Buffer.from(m.controlKey,'utf8')).update('cotal-hermes-bridge/'+m.controlVersion,'utf8').digest('base64url');const s=net.connect(process.env.COTAL_BRIDGE_SOCKET,()=>s.write(JSON.stringify({t:'subscribe',token})+'\\n'));setInterval(()=>{},60000);");
+    const hermesJoined = await capture(() => run("spawn", ["poet", "--detach", "--agent", "hermes", "--space", SPACE, "--name", "ready_hermes", "--model", "test-model"]));
+    ok("Hermes joins after its authenticated bridge subscribes without --no-events", joinedAs(hermesJoined, "ready_hermes"), hermesJoined);
+    await capture(() => run("stop", ["--name", "ready_hermes", "--space", SPACE]));
+    const missingBinary = { ...e2eCon, name: "missing-binary", requires: ["missing-application-binary"] };
+    registry.register(missingBinary);
+    let dependency: unknown;
+    try { await run("spawn", ["poet", "--foreground", "--agent", "missing-binary", "--space", SPACE]); }
+    catch (error) { dependency = error; }
+    ok("foreground missing dependency names installation and exact retry", isCommandFailure(dependency) && dependency.remedy?.includes("https://docs.cotal.ai/") === true && dependency.remedy.includes("spawn poet --foreground --agent missing-binary --space detach-e2e"), String(dependency));
+    fixture("codex", "console.log('codex stub v1.0 banner: ready');setInterval(()=>{},60000);");
+    const timeout = await failedLaunch("codex", "failed_listen");
+    ok("Codex listen timeout fails before the manager reports starting", isCommandFailure(timeout) && timeout.message.includes("did not report a listen address"), String(timeout));
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousUv === undefined) delete process.env.COTAL_HERMES_UV_BIN; else process.env.COTAL_HERMES_UV_BIN = previousUv;
+    if (previousAdoptHome === undefined) delete process.env.COTAL_HERMES_ADOPT_HOME; else process.env.COTAL_HERMES_ADOPT_HOME = previousAdoptHome;
+  }
 
   // A — detached spawn with the FULL override set (incl. identity: `--name bard` beside the
   // positional ref — the review-1 fix), through the real kernel parse + control plane.
@@ -285,6 +386,49 @@ try {
   const jsonRow = psEnvelope?.result?.items?.find((row) => row.name === "bard");
   ok("ps --json is one envelope whose items carry the manager's row verbatim",
     psEnvelope?.outcome === "ok" && psJson.trim().split("\n").length === 1 && jsonRow !== undefined && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
+
+  const outside = mkdtempSync(join(scratch, "unregistered-client-"));
+  const file = "./repeat.md";
+  writeFileSync(join(workspaceRoot, file), "---\nname: bard\n---\nYou write verse.\n");
+  const pin = String(jsonRow?.instanceId);
+  const portFlags = ["--space", SPACE, "--server", SERVER];
+  const outsideEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+  const fromOutside = (args: string[]) => new Promise<{ status: number | string | null; stdout: string; stderr: string }>((resolve) => execFile(process.execPath, [join(import.meta.dirname, "..", "dist", "cotal.js"), ...args], {
+    cwd: outside, env: { ...outsideEnv, HOME: outside, COTAL_HOME: join(outside, "home"), XDG_CONFIG_HOME: join(outside, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000,
+  }, (error, stdout, stderr) => resolve({ status: error ? error.code ?? null : 0, stdout, stderr })));
+  const remotePs = async () => {
+    const row = await fromOutside(["ps", ...portFlags, "--on", pin, "--json"]);
+    if (row.status !== 0) throw new Error(row.stdout + row.stderr);
+    return (JSON.parse(row.stdout).result.items as Record<string, unknown>[]).filter((item) => item.name === "bard");
+  };
+  const beforeRepeat = await remotePs();
+  ok("ps from an unregistered home sees the exact manager and seat", beforeRepeat.length === 1 && beforeRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid, beforeRepeat);
+  const repeat = ["spawn", "--file", file, "--detach", "--no-events", "--harness", "e2e", "--name", "bard", "--cwd", ".", ...portFlags];
+  const pinned = await fromOutside([...repeat, "--on", pin, "--plain"]);
+  const attachArgs = `attach bard --space ${SPACE} --server ${SERVER} --on ${pin}`;
+  ok("pinned duplicate spawn keeps the explicit broker, space and manager in its attach command",
+    pinned.status === 0 && pinned.stdout.includes(`bard is already running on ${pin}`) && pinned.stdout.includes(attachArgs), pinned.stdout + pinned.stderr);
+  const unpinned = await fromOutside([...repeat, "--json"]);
+  const noOp = unpinned.status === 0 ? JSON.parse(unpinned.stdout) : undefined;
+  ok("unpinned duplicate spawn reports the same manager and attach command without launching another seat",
+    noOp?.outcome === "no-op" && noOp?.result?.managerInstanceId === pin && noOp?.result?.attach?.endsWith(attachArgs), unpinned.stdout + unpinned.stderr);
+  const afterRepeat = await remotePs();
+  ok("the original lifecycle and process remain after both duplicate spawns", afterRepeat.length === 1 && afterRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid && afterRepeat[0]?.pid === jsonRow?.pid, afterRepeat);
+
+  const staleServer = `nats://127.0.0.1:${await freePort()}`;
+  const registered = await fromOutside(["meshes", "add", SPACE, "--root", outside, "--mode", "open", "--server", staleServer, "--force"]);
+  ok("the caller registers an offline broker for the space", registered.status === 0, registered.stderr);
+  const joined = await fromOutside([...repeat, "--plain"].map((arg) => arg === "bard" ? "joined-broker" : arg));
+  const joinedTarget = `joined-broker --space ${SPACE} --server ${SERVER} --on ${pin}`;
+  const printedCommand = (verb: string) => joined.stdout.split("\n").map((line) => line.trim().split(/\s{2,}/)[0] ?? "")
+    .find((command) => ["cotal", "pnpm cotal"].some((cli) => command.startsWith(`${cli} ${verb} `)));
+  ok("the joined receipt keeps the live broker and manager pin in both shortcuts despite the stale registration",
+    joined.status === 0 && joinedAs(joined.stdout, "joined-broker") && printedCommand("attach")?.endsWith(`attach ${joinedTarget}`) === true
+    && printedCommand("status")?.endsWith(`status ${joinedTarget}`) === true, joined.stdout + joined.stderr);
+  const joinedStatus = await fromOutside(printedCommand("status")!.replace(/^(?:pnpm )?cotal /, "").split(" "));
+  ok("the printed status command reaches the running agent from the stale registration",
+    joinedStatus.status === 0 && /Agent:\s+joined-broker/.test(joinedStatus.stdout) && /Process:\s+running/.test(joinedStatus.stdout), joinedStatus.stdout + joinedStatus.stderr);
+  await capture(() => run("stop", ["joined-broker", "--space", SPACE]));
 
   // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
   // continuation must not repeat it now that provenance lives in the identity row.
@@ -412,6 +556,49 @@ try {
     ok("...and ps is still empty", NO_AGENTS.test(psRefused), psRefused);
   }
 
+  if (process.platform !== "win32") {
+    for (const [path, target, selector] of [
+      [join(workspaceRoot, "broken.md"), "./missing-persona.md", ["--file", "./broken.md"]],
+      [join(workspaceRoot, ".cotal", "agents", "broken-catalog.md"), "../../missing-persona.md", ["broken-catalog"]],
+    ] as const) {
+      symlinkSync(target, path);
+      try {
+        const failure = await capture(() => run("spawn", [...selector, "--detach", "--no-events", "--agent", "e2e", "--space", SPACE]))
+          .then(() => undefined, (error: unknown) => isCommandFailure(error) ? error : undefined);
+        ok(`managed spawn identifies the dangling link selected by ${selector.join(" ")}`,
+          failure?.code === "LIFECYCLE_BLOCKED" && failure.native?.outcome === "not-executed" &&
+          failure.message.includes(path) && failure.message.includes(`symbolic link to a missing target: ${target}`) &&
+          failure.message.includes("Restore the link's target on the manager's host") &&
+          failure.message.includes("put a regular persona file in its place") &&
+          !failure.remedy?.includes("create that file") && lastOpts === undefined && readlinkSync(path) === target, failure);
+      } finally { rmSync(path); }
+    }
+  }
+
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const folder = join(workspaceRoot, "no-traverse");
+    const file = join(folder, "sample.md");
+    mkdirSync(folder, { mode: 0o700 });
+    writeFileSync(file, "---\nname: path-check\n---\nA sample persona.\n", { mode: 0o600 });
+    const args = ["--file", "./no-traverse/sample.md", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE];
+    for (const [path, label] of [[folder, "its parent cannot be traversed"], [file, "the file cannot be read"]] as const) {
+      const mode = statSync(path).mode & 0o777;
+      chmodSync(path, path === folder ? 0o600 : 0o000);
+      try {
+        const failure = await capture(() => run("spawn", args))
+          .then(() => undefined, (error: unknown) => isCommandFailure(error) ? error : undefined);
+        ok(`managed spawn explains the persona permission problem when ${label}`,
+          failure?.outcome === "refused" && failure.code === "LIFECYCLE_BLOCKED" && exitCode(failure.outcome, failure.code) === 2 &&
+          failure.native?.code === "failed-precondition" && failure.native.outcome === "not-executed" &&
+          failure.message.includes(`cannot read persona: ${file} (EACCES) on the manager's host`) &&
+          failure.message.includes("the manager's account can read the file and traverse its parent directories") &&
+          lastOpts === undefined, failure);
+      } finally { chmodSync(path, mode); }
+    }
+    const psRefused = await capture(() => run("ps", ["--space", SPACE]));
+    ok("managed spawn permissions refusals leave ps empty", NO_AGENTS.test(psRefused), psRefused);
+  }
+
   // I — an agent whose process exits at once is a launch the manager reports failed. The CLI says so
   // with the manager's reason, OPERATION_FAILED, exit 5, never as an unknown outcome.
   {
@@ -440,13 +627,94 @@ try {
   // connectors together).
   const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-  // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
-  const tomb = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
-    encoding: "utf8",
-    env: subEnv,
-  });
-  ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
-  ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
+  {
+    const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };
+    registry.register(retryConnector);
+    const file = join(workspaceRoot, "sample $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "-keep `text`\non another line";
+    writeFileSync(file, "---\nname: file-agent\nagent: e2e-exit\nrole: writer\n---\nExplicit persona.\n");
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    const instance = /instance:\s+([a-z0-9]{26,32})/.exec(ps)?.[1];
+    ok("ps names the live manager instance for a spawn retry", instance !== undefined, ps);
+    const refused = spawnSync(process.execPath, [cli, "--no-color", "spawn", "--file", file,
+      "--detach", "--no-events", "--harness", "retry-e2e", "--name", "retry-agent", `--prompt=${prompt}`,
+      "--subscribe", "", "--opt", "one=a b", "--opt", "two=c", "--on=not-a-pin", "--space", SPACE, "--server", SERVER],
+    { cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000 });
+    const retry = /rerun it as (`+)(cotal spawn [^\n]+)\1\r?$/m.exec(refused.stderr)?.[2];
+    ok("an invalid pin is refused with a single replaceable manager selector",
+      refused.status === 1 && retry?.match(/--on <instance>/g)?.length === 1 && !retry.includes("not-a-pin"), refused.stderr);
+    const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry!.replace("--on <instance>", `--on ${instance}`)}`], { encoding: "utf8" });
+    const [bin, verb, ...args] = shell.stdout.split("\0").slice(0, -1);
+    ok("the printed retry is a shell command", shell.status === 0 && bin === "cotal" && verb === "spawn", shell.stderr);
+    const launched = await capture(() => run("spawn", args));
+    ok("following the retry launches the explicit file, harness and seat with events off",
+      joinedAs(launched, "retry-agent") && /Application:\s+retry-e2e/.test(launched) && lastOpts?.role === "writer"
+      && lastOpts?.events === false && lastOpts?.prompt === prompt && JSON.stringify(lastOpts?.subscribe) === "[]"
+      && JSON.stringify(lastOpts?.launchOptions) === JSON.stringify({ one: "a b", two: "c" }), { launched, lastOpts });
+    await capture(() => run("stop", ["retry-agent", "--space", SPACE, "--on", instance!]));
+  }
+
+  {
+    const agents = join(workspaceRoot, ".cotal", "agents");
+    writeFileSync(join(agents, "review.md.md"), "---\nname: reviewer\nagent: e2e\n---\nCatalog persona.\n");
+    writeFileSync(join(workspaceRoot, "review.md"), "---\nname: file-reviewer\nagent: e2e\n---\nExplicit file.\n");
+    const listed = await capture(() => run("persona", ["--plain", "--space", SPACE]));
+    ok("persona lists the dotted catalog key", /\breview\.md\s+/.test(listed), listed);
+    for (const [selector, name] of [[["review.md"], "reviewer"], [["--file", "review.md"], "file-reviewer"]] as const) {
+      const launched = await capture(() => run("spawn", [...selector, "--detach", "--no-events", "--space", SPACE]));
+      ok(`detached ${selector.join(" ")} joins as ${name}`, joinedAs(launched, name), launched);
+      const stoppedOut = await capture(() => run("stop", ["--name", name, "--space", SPACE]));
+      ok(`stopped ${name}`, stopped(stoppedOut, name), stoppedOut);
+    }
+  }
+
+  {
+    const defaultPath = join(workspaceRoot, ".cotal", "agents", "default.md");
+    const launch = ["--detach", "--no-events", "--harness", "e2e", "--space", SPACE];
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    let failure: unknown;
+    try { await capture(() => run("spawn", launch)); } catch (error) { failure = error; }
+    const refused = isCommandFailure(failure) ? failure : undefined;
+    const remedy = refused?.remedy ?? "";
+    const repair = ["persona", "create", "default", "--space", SPACE, "--prompt", "You are an agent on the Cotal mesh.", "--subscribe", ""];
+    ok("missing default names the manager project and gives a complete creation command without launching",
+      refused?.code === "LIFECYCLE_BLOCKED" && exitCode(refused.outcome, refused.code) === 2 && refused.message.includes(defaultPath)
+        && remedy.includes("on the manager's host")
+        && remedy.includes(`\`cotal persona create default --space ${SPACE} --prompt 'You are an agent on the Cotal mesh.' --subscribe ''\``), failure);
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    ok("a missing default leaves no seat", NO_AGENTS.test(ps), ps);
+    const created = spawnSync(process.execPath, [cli, ...repair], { cwd: workspaceRoot, env: subEnv, encoding: "utf8" });
+    ok("the command from the refusal writes the default persona", created.status === 0 && statSync(defaultPath).isFile(), created.stdout + created.stderr);
+    const retried = await capture(() => run("spawn", launch));
+    ok("the same manager launches the restored default", joinedAs(retried, "default"), retried);
+    const stoppedOut = await capture(() => run("stop", ["--name", "default", "--space", SPACE]));
+    ok("stopped the restored default seat", stopped(stoppedOut, "default"), stoppedOut);
+  }
+
+  {
+    const file = join(workspaceRoot, "start $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "Review the first draft.";
+    writeFileSync(file, "---\nname: file-agent\nrole: writer\n---\nExplicit persona.\n");
+    for (const config of ["default", file]) {
+      const name = config === file ? "file-example" : "example";
+      const tomb = spawnSync(process.execPath, [cli, "start", "--config", config, "--name", name,
+        "--no-events", "--harness", "e2e", "--space", SPACE, "--prompt", prompt], {
+        cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000,
+      });
+      const retry = tomb.stderr.split("\n").find(line => line.startsWith("  "))?.trim();
+      ok("start refuses and names a detached replacement", tomb.status === 1 && tomb.stdout === "" && retry?.includes("--detach") === true, tomb.stderr);
+      const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry}`], { encoding: "utf8" });
+      const words = shell.stdout.split("\0").slice(0, -1);
+      const spawn = words.indexOf("spawn");
+      ok("the replacement is a shell command without --config", shell.status === 0 && spawn >= 1 && !words.includes("--config"), shell.stderr);
+      const launched = await capture(() => run("spawn", words.slice(spawn + 1)));
+      ok(`the ${config === file ? "file" : "catalog"} replacement launches and retains the name and prompt`,
+        joinedAs(launched, name) && lastOpts?.prompt === prompt && (config !== file || lastOpts?.role === "writer"), launched);
+      await capture(() => run("stop", [name, "--space", SPACE]));
+    }
+  }
 
   // H — a spawn in this terminal checks its persona and connector before it says it is starting the
   // application, and refuses each with the full block: code, Next and exit 2.
@@ -497,6 +765,22 @@ try {
       const managerOwn = attachCalls - beforeDetached;
       const paneResult = (JSON.parse(fgJson) as { result: { runtime: string; streamsTerminal: boolean | null } }).result;
       ok("--json names the runtime and that it streams no terminal", paneResult.runtime === "e2e-nostream" && paneResult.streamsTerminal === false, paneResult);
+      const alternate = mkdtempSync(join(scratch, "alternate-"));
+      recordPreparedSpace({ space: "alternate", root: alternate, ts: new Date().toISOString() });
+      const selected = getCurrent();
+      setCurrent("alternate");
+      try {
+        const duplicate = plain(await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane2", "--on", on2])));
+        const words = /Attach to it: `[^`]*\battach ([^`]+)`/.exec(duplicate)?.[1]?.split(" ") ?? [];
+        ok("duplicate spawn is a no-op and prints an attach pinned to its space and manager", duplicate.includes("Already running")
+          && words.join(" ") === `pane2 --space ${SPACE} --on ${on2}`, duplicate);
+        let retry: unknown;
+        try { await run("attach", [...words, "--no-reconnect"]); } catch (error) { retry = error; }
+        ok("the printed attach reaches the existing seat's runtime in the requested space",
+          isCommandFailure(retry) && retry.code === "UNSUPPORTED" && retry.message.includes('runtime: watch this agent where it runs'), String(retry));
+      } finally {
+        if (selected === undefined) clearCurrent(); else setCurrent(selected);
+      }
       const before = attachCalls;
       // Forcing `isTTY` also turns the report's color on, so the receipt is read without it.
       const fgOut = plain(await atTerminal(() => capture(() => run("spawn", ["poet", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "pane", "--on", on2]))));
@@ -578,8 +862,12 @@ try {
       }
     };
     try {
-      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]));
-      ok("the stand-in reports no terminal answer, so the CLI reads null", (JSON.parse(reportJson) as { result: { streamsTerminal: unknown } }).result.streamsTerminal === null, reportJson);
+      const progress: string[] = [];
+      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]), (line) => progress.push(line));
+      const { result } = JSON.parse(reportJson) as { result: { streamsTerminal: unknown; readiness: string } };
+      ok("the stand-in reports no terminal answer, so the CLI reads null", result.streamsTerminal === null, reportJson);
+      ok("a detached spawn reports waiting on stderr without promising a time limit",
+        result.readiness === "joined" && plain(progress.join(" ")).replace(/\s+/g, " ").includes("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits …"), progress);
 
       // Its refusal carries the marker: the seat's runtime streams no terminal.
       process.exitCode = undefined;
@@ -648,6 +936,8 @@ try {
     const callerRoot = join(resumeRoot, "caller");
     const transcriptRoot = join(resumeRoot, "claude");
     mkdirSync(callerRoot);
+    // The implicit cases need a caller folder that is no project, so no `.cotal` may sit above it.
+    assertScratchHeld(callerRoot, "resume probe caller");
     mkdirSync(join(resumeRoot, "offline"));
     mkdirSync(join(transcriptRoot, "projects", "synthetic"), { recursive: true });
     const heldId = "11111111-2222-4333-8444-555555555555";
@@ -659,16 +949,18 @@ try {
     await new Promise<void>((resolve) => tarpit.listen(0, "127.0.0.1", resolve));
     const address = tarpit.address();
     if (!address || typeof address === "string") throw new Error("resume probe listener has no TCP address");
-    const childRun = (args: string[]): Promise<{ status: number | null; out: string }> => new Promise((resolve) => {
+    const childRun = (args: string[]): Promise<{ status: number | null; out: string; stdout: string; stderr: string }> => new Promise((resolve) => {
       const child = spawnProc(TSX, [join(import.meta.dirname, "..", "cotal.ts"), ...args], {
         cwd: callerRoot, env: { ...subEnv, CLAUDE_CONFIG_DIR: transcriptRoot }, stdio: ["ignore", "pipe", "pipe"],
       });
       kids.push(child);
       let out = "";
-      child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
-      child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (data: Buffer) => { const text = data.toString(); stdout += text; out += text; });
+      child.stderr.on("data", (data: Buffer) => { const text = data.toString(); stderr += text; out += text; });
       const timeout = setTimeout(() => child.kill("SIGKILL"), 60_000);
-      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out }); });
+      child.once("close", (status) => { clearTimeout(timeout); resolve({ status, out, stdout, stderr }); });
     });
     try {
       const added = await childRun(["space", "add", "resume-offline", "--server", `nats://127.0.0.1:${address.port}`, "--mode", "open", "--root", join(resumeRoot, "offline"), "--force"]);
@@ -676,6 +968,13 @@ try {
       const cleared = await childRun(["use", "--clear"]);
       ok("resume probe leaves the target to registry resolution", cleared.status === 0, cleared.out);
       const on = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
+      for (const [harness, status, code] of [["claude", 1, "USAGE_INVALID"], ["no-such-connector", 2, "DEPENDENCY_UNAVAILABLE"]] as const) {
+        const result = await childRun(["spawn", "--detach", "--harness", harness, "--space", SPACE, "--resume", heldId, "--json"]);
+        const envelope = JSON.parse(result.stdout || "null");
+        ok(`detached ${harness} resume writes a refusal envelope before sending a launch`,
+          result.status === status && result.stderr === "" && envelope?.outcome === "refused" && envelope.error?.code === code
+          && envelope.target?.requestId === undefined && (harness !== "claude" || envelope.error?.remedy === "pass --on <instance>"), result);
+      }
       for (const [label, id, explicit, expected] of [
         ["held implicit", heldId, false, 2],
         ["unheld implicit", unheldId, false, 2],
@@ -706,5 +1005,6 @@ try {
     return awaitExit(k);
   }));
   releaseBroker?.();
+  rmSync(scratch, { recursive: true, force: true });
   console.log("spawn-detach:live finally-complete");
 }

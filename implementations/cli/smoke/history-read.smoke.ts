@@ -19,18 +19,25 @@
  * Run: pnpm smoke:history-read
  */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { encodeUser } from "@nats-io/jwt";
+import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
+  CHANNEL_DEFAULTS_KEY,
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   channelBucket,
   chatStream,
+  chatSubject,
   createSpaceAuth,
+  credsClaims,
+  credsFromJwt,
   dialerFor,
   dmStream,
   idFromCreds,
@@ -38,15 +45,20 @@ import {
   mintCreds,
   mintLifecycleUid,
   newIdentity,
+  openChannelRegistry,
+  openServerConfig,
   provisionAgent,
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
   standaloneConnectOpts,
+  unicastSubject,
+  type ChannelRegistryRead,
 } from "@cotal-ai/core";
-import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { awaitBrokerReady, createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { execWords } from "../src/lib/exec-words.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
 import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
@@ -80,12 +92,15 @@ const broker = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { std
 const releaseBroker = teardownOnSignal(broker, storeDir);
 // An open broker for the retention gap, so the auth space's channels stay small.
 const openSpace = `histgap-${randomUUID().slice(0, 8)}`;
+const dottedSpace = `histdotted-${randomUUID().slice(0, 8)}`;
 // A space on the open broker that nothing has set up, so it has no channel registry bucket.
 const bareSpace = `histbare-${randomUUID().slice(0, 8)}`;
 const openPort = await pickFreePort();
 const openServers = `nats://127.0.0.1:${openPort}`;
 const openStore = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const openBroker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(openPort), "-sd", join(openStore, "js")], { stdio: "ignore" });
+const openConfig = join(openStore, "server.conf");
+writeFileSync(openConfig, openServerConfig({ transport: { kind: "plaintext" }, port: openPort, storeDir: join(openStore, "js") }));
+const openBroker = spawn("nats-server", ["-c", openConfig], { stdio: "ignore" });
 const releaseOpenBroker = teardownOnSignal(openBroker, openStore);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-history-home-"));
@@ -105,9 +120,9 @@ for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key ===
 // Usage telemetry is off: in a fresh home on a terminal it would also print its one-time notice.
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 
-const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}, timeout = 120_000): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [BIN, ...args], { cwd, env: { ...isolatedEnv, ...extra }, timeout }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -115,6 +130,182 @@ const run = (args: string[], cwd = shell, extra: NodeJS.ProcessEnv = {}): Promis
   });
 const shown = (r: { status: number; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 600) });
 const texts = (r: { envelope?: Envelope }) => (r.envelope?.result?.items ?? []).map((i) => i.text);
+
+async function checkDottedHistory(): Promise<void> {
+  const dotted = "a.".repeat(2047) + "bc";
+  const writer = await connect({ servers: openServers });
+  try {
+    const js = jetstream(writer);
+    const post = (actor: string, channel: string, text: string) => js.publish(chatSubject(dottedSpace, "local", actor, channel), JSON.stringify({
+      id: `${actor}-${text}`, ts: Date.now(), space: dottedSpace, from: { id: `local.${actor}`, name: actor },
+      channel, parts: [{ kind: "text", text }],
+    }));
+    await post("seed", "ordinary", "first");
+    await post("seed", dotted, "dotted");
+    await Promise.all(Array.from({ length: 4 }, async (_, sender) => {
+      for (let i = 0; i < 500; i++) await post(`audit${sender}`, "ordinary", String(i));
+    }));
+  } finally {
+    await writer.close();
+  }
+  const history = (limit: string, ...selection: string[]) =>
+    run(["history", ...selection, "--space", dottedSpace, "--limit", limit, "--json"], shell, {}, 25_000);
+  const named = await history("3000", "ordinary");
+  check("named history reads the ordinary backlog", named.status === 0 && texts(named).length === 2001, shown(named));
+  const all = await history("3000");
+  const rows = all.envelope?.result?.items ?? [];
+  check("all-channel history returns a deep dotted post and the backlog in stream sequence order",
+    all.status === 0 && rows.length === 2002 && rows.every((item, i) => item.seq === i + 1)
+      && rows[1]?.channel === dotted && rows[1]?.text === "dotted", shown(all));
+  const tail = await history("2000", "--dms");
+  const tailRows = tail.envelope?.result?.items ?? [];
+  check("history with DMs selects the newest rows across the split channel windows",
+    tail.status === 0 && tailRows.length === 2000 && tailRows.every((item, i) => item.seq === i + 3)
+      && tail.envelope?.result?.window.olderRetained === true, shown(tail));
+}
+
+async function checkChannelReplayRetry(): Promise<void> {
+  const name = "remedy.probe";
+  const scope = ["--space", openSpace, "--json"];
+  const set = ["channel", "set", name];
+  const seeded = await run([...set, "--desc", "Old note", "--window", "6h", "--replay", ...scope]);
+  const changed = { replay: false, replayWindow: "48h", description: "New note", instructions: "-Owner's instructions", deliveryClass: "live" };
+  const refused = await run([...set, "--desc", changed.description, "--window", changed.replayWindow,
+    `--instructions=${changed.instructions}`, "--delivery", changed.deliveryClass, "--replay", "off", ...scope]);
+  const readback = () => run(["channel", "show", name, ...scope]);
+  const before = await readback();
+  const entry = (r: Awaited<ReturnType<typeof readback>>) =>
+    (r.envelope?.result as unknown as { registry?: ChannelRegistryRead } | undefined)?.registry?.channels?.[name];
+  check("a replay usage refusal leaves the channel unchanged",
+    seeded.status === 0 && refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID"
+      && before.status === 0 && entry(before)?.replay === true && entry(before)?.description === "Old note" && entry(before)?.replayWindow === "6h",
+    { refused: shown(refused), before: shown(before) });
+  const command = /^run `(.+)`$/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+  const retried = command ? await run(execWords(command).slice(1)) : undefined;
+  const after = await readback();
+  const saved = entry(after);
+  check("the replay retry keeps the settings, target and JSON output",
+    retried?.status === 0 && retried.envelope?.outcome === "ok" && after.status === 0
+      && Object.entries(changed).every(([key, value]) => saved?.[key as keyof typeof changed] === value),
+    { command, retried: retried && shown(retried), after: shown(after) });
+  const show = await run(["channel", "show", name, "--replay", "off", ...scope]);
+  const read = /^run `(.+)`$/.exec(show.envelope?.error?.remedy ?? "")?.[1];
+  const shownAgain = read ? await run(execWords(read).slice(1)) : undefined;
+  check("a channel show replay refusal suggests a read without replay flags and keeps JSON",
+    show.status === 1 && show.stderr === "" && show.envelope?.error?.code === "USAGE_INVALID"
+      && read === `cotal channel show ${name} --space ${openSpace} --json`
+      && shownAgain?.status === 0 && entry(shownAgain)?.replay === false,
+    { show: shown(show), shownAgain: shownAgain && shown(shownAgain) });
+}
+
+async function checkFollowUsageRefusals(): Promise<void> {
+  let connections = 0;
+  const listener = createServer((socket) => { connections++; socket.destroy(); });
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("expected a loopback TCP listener");
+    const server = `nats://127.0.0.1:${address.port}`;
+    const historyTarget = { space: null, channel: "general", dms: false };
+    const membershipTarget = { space: "triage", channel: "volume.posts" };
+    for (const { base, invalid, stream, target, followAfter } of [
+      { base: ["history", "--json"], invalid: ["--limit", "0"], stream: "history", target: { ...historyTarget, channel: null } },
+      { base: ["history", "general", "--json"], invalid: ["--limit"], stream: "history", target: historyTarget, followAfter: true },
+      { base: ["history", "general", "-j"], invalid: ["--unknown-option"], stream: "history", target: historyTarget },
+      { base: ["channel", "members", "#volume.posts", "--space", "triage", "--json"], invalid: ["--purge"], stream: "membership", target: membershipTarget },
+      { base: ["ch", "members", "volume.posts", "--space", "triage", "-j"], invalid: ["--creds"], stream: "membership", target: membershipTarget },
+    ]) {
+      const args = [...base, "--server", server];
+      const finite = await run([...args, ...invalid]);
+      const followed = await run(followAfter ? [...args, ...invalid, "--follow"] : [...args, "--follow", ...invalid]);
+      const records = followed.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+        schemaVersion?: number; stream?: string; type?: string; target?: Record<string, unknown>;
+        data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+      });
+      const error = finite.envelope?.error;
+      check(`${stream} ${invalid.join(" ")} refuses with a receipt for finite reads and error then end for follows`,
+        finite.status === 1 && finite.stderr === "" && finite.envelope?.command === (stream === "history" ? "history" : "channel")
+          && finite.envelope.outcome === "refused" && error?.code === "USAGE_INVALID"
+          && followed.status === 1 && followed.stderr === "" && connections === 0
+          && records.map((record) => record.type).join() === "error,end"
+          && records.every((record) => record.schemaVersion === 1 && record.stream === stream
+            && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+          && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
+          && records[1]?.data?.reason === "setup-failed" && (stream !== "membership" || records[1].data.lastAsOf === null),
+        { follow: shown(followed), finite: shown(finite), connections });
+    }
+    for (const args of [["history", "--json", "--limit", "--", "--follow"], ["history", "clear", "--json", "--follow", "--limit"],
+      ["channel", "show", "volume.posts", "--json", "--follow", "--creds"]]) {
+      const result = await run(args);
+      check(`${args.join(" ")} is not a follow stream`, result.status === 1 && result.stderr === ""
+        && result.envelope?.outcome === "refused" && result.envelope.error?.code === "USAGE_INVALID", shown(result));
+    }
+  } finally {
+    await new Promise<void>((resolve) => listener.close(() => resolve()));
+  }
+}
+
+async function checkMembershipSetupRefusal(targetSpace: string, channel: string, code: string, ...targetFlags: string[]): Promise<void> {
+  const args = ["channel", "members", channel, "--space", targetSpace, "--json", ...targetFlags];
+  const finite = await run(args);
+  const stream = await run([...args, "--follow"]);
+  const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    schemaVersion?: number; stream?: string; type?: string; target?: { space?: string; channel?: string };
+    data?: { code?: string; message?: string; remedy?: string; reason?: string; lastAsOf?: number | null };
+  });
+  const error = finite.envelope?.error;
+  check(`membership follow frames ${code} as an error and end with the space and channel, exit 2`,
+    finite.status === 2 && finite.envelope?.command === "channel" && finite.envelope?.outcome === "refused"
+      && error?.code === code && Boolean(error.remedy) && stream.status === 2 && stream.stderr === ""
+      && records.map((r) => r.type).join() === "error,end" && records.every((r) =>
+        r.schemaVersion === 1 && r.stream === "membership" && r.target?.space === targetSpace && r.target?.channel === channel)
+      && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message && records[0]?.data?.remedy === error.remedy
+      && records[1]?.data?.reason === "setup-failed" && records[1]?.data?.lastAsOf === null,
+    { finite: shown(finite), stream: shown(stream) });
+}
+
+async function checkUnreachableHistoryFollow(server: string): Promise<void> {
+  const finite = await run(["history", "review", "--server", server, "--json"]);
+  const error = finite.envelope?.error;
+  for (const [scope, channel, dms] of [["review", "review", false], ["--dms", null, true]] as const) {
+    const stream = await run(["history", scope, "--follow", "--server", server, "--json"]);
+    const records = stream.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      schemaVersion: number; stream: string; type: string;
+      target: { space: string; root?: string; channel: string | null; dms: boolean };
+      data: { code?: string; message?: string; remedy?: string; reason?: string };
+    });
+    check(`unreachable history ${scope} follow retains its requested scope and connection target, exit 2`,
+      finite.status === 2 && error?.code === "TARGET_UNAVAILABLE" && stream.status === 2 && stream.stderr === ""
+        && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === "history"
+          && record.target?.space === "main" && record.target?.root === shell
+          && record.target?.channel === channel && record.target?.dms === dms)
+        && records[0]?.data.code === error.code && records[0]?.data.message === error.message && records[0]?.data.remedy === error.remedy
+        && records[1]?.data.reason === "setup-failed", shown(stream));
+  }
+}
+
+async function checkEventShapedChannelHistory(): Promise<void> {
+  const channel = "events.team.standup";
+  const text = "Standup marker";
+  const target = ["--space", openSpace, "--server", openServers, "--json"];
+  const saved = await run(["channel", "set", channel, "--desc", "Ordinary team chat", ...target]);
+  const sent = await run(["send", "-c", channel, text, ...target]);
+  check("fixture: an ordinary channel with an event-shaped name accepts a post", saved.status === 0 && sent.status === 0,
+    { saved: shown(saved), sent: shown(sent) });
+  for (const args of [[channel, "--limit", "1"], ["--limit", "2200"]]) {
+    const history = await run(["history", ...args, "--grep", text, ...target]);
+    const { envelope } = history;
+    check(`history ${args.join(" ")} reads ordinary chat from an event-shaped channel`,
+      history.status === 0 && history.stderr === "" && envelope?.completeness === "complete" && envelope.warnings.length === 0
+        && envelope.result !== null && envelope.result.channels.includes(channel) && envelope.result.window.olderRetained === false
+        && envelope.result.items.length === 1 && envelope.result.items[0]?.channel === channel && envelope.result.items[0]?.text === text,
+      shown(history));
+  }
+}
 
 /** A follow child: its stdout lines as they arrive, and a way to wait for one. */
 function follow(args: string[]) {
@@ -129,7 +320,7 @@ function follow(args: string[]) {
     lines.push(...parts.filter(Boolean));
   });
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
-  const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+  const exited = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
   const until = async (pred: (line: string) => boolean, ms = 30_000) => {
     const deadline = Date.now() + ms;
     while (Date.now() < deadline) {
@@ -139,6 +330,76 @@ function follow(args: string[]) {
     return false;
   };
   return { child, lines, exited, until, stderr: () => stderr };
+}
+
+async function checkWatchHistoryHint(watchedSpace: string): Promise<void> {
+  const channel = "general";
+  const scope = ["--space", watchedSpace];
+  const text = "x".repeat(16_384) + "END OF LONG POST";
+  const file = join(shell, "long.txt");
+  writeFileSync(file, text);
+  const set = await run(["channel", "set", channel, "--replay", "--delivery", "live", ...scope]);
+  const sent = await run(["send", "-c", channel, "--file", file, ...scope]);
+  check("watch history fixture stores a long post in the observed space", set.status === 0 && sent.status === 0, { set: shown(set), sent: shown(sent) });
+
+  const observer = follow(["watch", "--plain", ...scope]);
+  const marker = /\[16 text code units not shown; `((?:pnpm )?cotal history [^`]+)` carries the whole text\]$/;
+  let hint: string | undefined;
+  try {
+    const isHint = (line: string) => line.startsWith(`[${watchedSpace}]`) && marker.test(line);
+    await observer.until(isHint);
+    hint = observer.lines.find(isHint)?.match(marker)?.[1];
+    check("the truncated watch line prints a history command", hint !== undefined, observer.stderr());
+  } finally {
+    await killAndAwaitExit(observer.child, "SIGINT");
+  }
+  const unscoped = await run(["history", `#${channel}`, "--json"]);
+  const targetSpace = (r: typeof unscoped) => (r.envelope?.target as { space?: string } | null)?.space;
+  check("positive control: unscoped history targets the saved selection", targetSpace(unscoped) === space, shown(unscoped));
+  if (!hint) return;
+  const history = await run(execWords(hint.replace(/^(?:pnpm )?cotal /, "")));
+  check("the printed history command returns the full post from the watched space",
+    history.status === 0 && targetSpace(history) === watchedSpace && texts(history).includes(text), shown(history));
+}
+
+async function checkFollowResume(alice: CotalEndpoint, bob: CotalEndpoint, timestamp: string) {
+  const args = ["history", "general", "--follow", "--json", "--grep", "resume boundary"];
+  const parse = (line: string) => JSON.parse(line) as { type: string; data: Item & { items?: Item[] } };
+  const original = follow(args);
+  let events: Item[] = [];
+  try {
+    const ready = await original.until((line) => parse(line).type === "snapshot");
+    const send = (sender: CotalEndpoint, text: string) => {
+      const now = Date.now;
+      Date.now = () => Date.parse(timestamp);
+      try { return sender.multicast(text, { channel: "general" }); }
+      finally { Date.now = now; }
+    };
+    await send(alice, "resume boundary one");
+    await send(bob, "resume boundary two");
+    const received = await original.until((line) => parse(line).data.text === "resume boundary two");
+    events = original.lines.map(parse).filter((record) => record.type === "event").map((record) => record.data);
+    check("the original follow emits both messages with the same timestamp and different IDs",
+      ready && received && events.length === 2 && events.every((item) => item.ts === timestamp)
+        && events.every((item) => Boolean(item.id)) && events[0]?.id !== events[1]?.id, events);
+  } finally {
+    await killAndAwaitExit(original.child, "SIGINT");
+  }
+  const [processed, unprocessed] = events;
+  if (!processed || !unprocessed) return;
+
+  const since = new Date(Date.parse(processed.ts) - 1).toISOString();
+  const resumed = follow([...args, "--since", since]);
+  try {
+    const ready = await resumed.until((line) => parse(line).type === "snapshot");
+    const items = resumed.lines.map(parse).find((record) => record.type === "snapshot")?.data.items ?? [];
+    const unseen = items.filter((item) => item.id !== processed.id);
+    check("a 1 ms overlap replays both boundary events and deduplication by ID keeps only the unread one",
+      ready && items.length === 2 && items.every((item) => item.ts === processed.ts)
+        && items.some((item) => item.id === processed.id) && unseen.length === 1 && unseen[0]?.id === unprocessed.id, items);
+  } finally {
+    await killAndAwaitExit(resumed.child, "SIGINT");
+  }
 }
 
 const endpoints: CotalEndpoint[] = [];
@@ -152,21 +413,48 @@ try {
     }
     check(`control: the owned broker at ${s} is ready`, ready, s);
   }
-  const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner");
+  // Nothing has provisioned history on the open broker yet.
+  const empty = await run(["history", "clear", "--server", openServers, "--yes", "--plain"]);
+  check("history clear on a fresh open broker reports zero and names the absent chat stream",
+    empty.status === 0 && empty.stdout.includes("0 messages purged") && empty.stderr.includes(chatStream("main")), shown(empty));
+  const emptyDms = await run(["history", "clear", "--server", openServers, "--yes", "--dms", "--json"]);
+  const emptyReceipt = emptyDms.envelope?.result as { acknowledged?: unknown[] } | null | undefined;
+  check("history clear --dms on a fresh open broker reports a complete no-op with both stream names",
+    emptyDms.status === 0 && emptyDms.envelope?.outcome === "no-op" && emptyDms.envelope.completeness === "complete"
+      && emptyReceipt?.acknowledged?.length === 0 && emptyDms.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream("main")) && w.message.includes(dmStream("main"))), shown(emptyDms));
+
+  // A provisioner credential lives five minutes by default and this one stays connected for the
+  // whole suite, which runs longer than that on a loaded machine.
+  const provisionerCreds = await mintCreds(auth, newIdentity(), "provisioner", { expiresInSeconds: 3600 });
   await setupSpaceStreams({ servers, space, creds: provisionerCreds });
   await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" }, ops: { replay: false } } } });
   await setupSpaceStreams({ servers: openServers, space: openSpace });
+  await setupSpaceStreams({ servers: openServers, space: dottedSpace });
+  const watchedSpace = `histwatch-${randomUUID().slice(0, 8)}`;
+  await setupSpaceStreams({ servers: openServers, space: watchedSpace });
   saveSpaceAuth(authDir(meshRoot), auth);
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: dottedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: bareSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: watchedSpace, server: openServers, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;
+  }
+  await checkDottedHistory();
+  try { await checkWatchHistoryHint(watchedSpace); }
+  finally {
+    process.env.COTAL_HOME = isolatedEnv.COTAL_HOME;
+    try { removeMesh(watchedSpace); }
+    finally {
+      if (priorHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = priorHome;
+    }
   }
   provisioner = new CotalEndpoint({ space, servers, creds: provisionerCreds, card: { name: "history-provisioner", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false });
   await provisioner.start();
@@ -188,8 +476,8 @@ try {
   await wait(1_100);
   const midpoint = new Date().toISOString();
   await wait(100);
-  await alice.multicast("deploy finished", { channel: "general" });
   await bob.multicast("paging ops", { channel: "ops" });
+  await alice.multicast("deploy finished", { channel: "general" });
   const bobId = `${bob.principal.owner}.${bob.principal.actor}`;
   await alice.unicast(bobId, "a private note");
   await wait(600);
@@ -205,7 +493,7 @@ try {
   check("a DM is not in channel history", !texts(general).includes("a private note"), texts(general));
 
   const all = await run(["history", "--json"]);
-  check("history with no channel reads every channel, newest last", JSON.stringify(texts(all)) === JSON.stringify(["deploy started", "looks good", "deploy finished", "paging ops"]) && all.envelope?.result?.items.at(-1)?.channel === "ops", texts(all));
+  check("history with no channel reads every channel, newest last", JSON.stringify(texts(all)) === JSON.stringify(["deploy started", "looks good", "paging ops", "deploy finished"]) && all.envelope?.result?.items[2]?.channel === "ops", texts(all));
 
   const two = await run(["history", "general", "--limit", "2", "--json"]);
   check("--limit 2 keeps the two newest and says older ones are retained", JSON.stringify(texts(two)) === JSON.stringify(["looks good", "deploy finished"]) && two.envelope?.result?.window.olderRetained === true, two.envelope?.result);
@@ -218,6 +506,11 @@ try {
   check("a sequence --since is named in the report", seqPlain.stdout.includes(`--since ${items[0]?.seq} is chat stream sequence ${items[0]?.seq}; only messages after it are shown\n`), shown(seqPlain));
   check("a bare number past the newest sequence is refused USAGE_INVALID with that sequence and how to write a date",
     yearJson.status === 1 && /^--since 2026 is past the chat stream's newest sequence, \d+, so it names no message$/.test(yearJson.envelope?.error?.message ?? "") && /^give a sequence up to \d+, or write a date in full, such as 2026-01-01$/.test(yearJson.envelope?.error?.remedy ?? ""), shown(yearJson));
+  const futureSeq = String(Number(all.envelope?.result?.items.at(-1)?.seq) + 2);
+  const futureRead = await run(["history", "general", "--limit", "1", "--since", futureSeq, "--json"]);
+  check("a future sequence cutoff returns a complete empty window even with older retained messages",
+    futureRead.status === 0 && futureRead.envelope?.result?.items.length === 0
+      && futureRead.envelope.result.window.olderRetained === true && futureRead.envelope.result.window.reachesSince === true, shown(futureRead));
   const byTime = await run(["history", "general", "--since", midpoint, "--json"]);
   check("--since a time keeps only messages after it", JSON.stringify(texts(byTime)) === JSON.stringify(["deploy finished"]), texts(byTime));
   // A bare date is local midnight. ECMAScript reads it as UTC, so east of UTC it dropped the day's
@@ -228,6 +521,14 @@ try {
     dayJson.envelope?.result?.window.since === "2026-01-14T10:00:00.000Z" && dayPlain.stdout.includes("--since 2026-01-15 is ") && dayPlain.stdout.includes("local time (2026-01-14T10:00:00.000Z); only messages after it are shown"), { json: dayJson.envelope?.result?.window, plain: shown(dayPlain) });
   const narrow = await run(["history", "general", "--limit", "1", "--since", String(items[0]?.seq), "--json"]);
   check("a window that does not reach back to --since says so", narrow.envelope?.result?.window.reachesSince === false, narrow.envelope?.result?.window);
+  const interleavedArgs = ["history", "general", "--limit", "1", "--since", String(items[1]?.seq)];
+  const [interleaved, interleavedPlain] = await Promise.all([run([...interleavedArgs, "--json"]), run([...interleavedArgs, "--plain"])]);
+  const interleavedWindow = interleaved.envelope?.result?.window;
+  check("an intervening post on another channel does not leave a gap after a sequence cutoff",
+    interleaved.status === 0 && texts(interleaved).join() === "deploy finished"
+      && interleavedWindow?.read === 1 && interleavedWindow.olderRetained === true && interleavedWindow.reachesSince === true
+      && interleavedPlain.status === 0 && interleavedPlain.stdout.includes("older retained messages are not shown")
+      && !interleavedPlain.stdout.includes("the window does not reach back"), { json: shown(interleaved), plain: shown(interleavedPlain) });
   const hashed = await run(["history", "#general", "--json"]);
   check("#general reads the same channel as general", JSON.stringify(texts(hashed)) === JSON.stringify(texts(general)) && hashed.envelope?.result?.channels[0] === "general", shown(hashed));
   // A channel the space lacks used to report the space's replay default as if it existed.
@@ -236,11 +537,19 @@ try {
     lacking.status === 0 && lacking.envelope?.completeness === "complete" && lacking.envelope.warnings.some((w) => w.code === "CHANNEL_NOT_FOUND") && lacking.envelope.result?.replay.length === 0, shown(lacking));
   const fromBob = await run(["history", "--from", "bob", "--json"]);
   check("--from keeps one sender's messages", JSON.stringify(texts(fromBob)) === JSON.stringify(["looks good", "paging ops"]), texts(fromBob));
+  for (const flag of ["--from", "--grep"]) {
+    for (const value of ["", "   "]) {
+      const empty = await run(["history", "general", flag, value, "--json"]);
+      check(`history ${flag} ${JSON.stringify(value)} refuses USAGE_INVALID, exit 1`, empty.status === 1 && empty.envelope?.error?.code === "USAGE_INVALID", shown(empty));
+    }
+  }
   const grep = await run(["history", "--grep", "DEPLOY", "--json"]);
   check("--grep matches text case-insensitively within the window", JSON.stringify(texts(grep)) === JSON.stringify(["deploy started", "deploy finished"]) && grep.envelope?.result?.window.read === 4, { texts: texts(grep), window: grep.envelope?.result?.window });
 
   const dms = await run(["history", "--dms", "--json"]);
-  check("--dms adds DMs, each naming its recipient", dms.status === 0 && (dms.envelope?.result?.items ?? []).some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
+  const dmItems = dms.envelope?.result?.items ?? [];
+  check("--dms reads both channels and adds DMs, each naming its recipient", dms.status === 0 && JSON.stringify(dmItems.filter((i) => i.channel !== null).map((i) => i.text).sort()) === JSON.stringify(texts(all).sort())
+    && dmItems.some((i) => i.text === "a private note" && i.channel === null && i.to === bobId), shown(dms));
   // A DM to a recipient that had sent nothing used to show its principal; the roster names it.
   const erin = await agent("erin");
   await alice.unicast(`${erin.principal.owner}.${erin.principal.actor}`, "for erin");
@@ -255,24 +564,49 @@ try {
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
-  for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
+  const help = await run(["history", "--help"]);
+  check("history help lists a channel and --dms as alternatives and names the scope of --dms",
+    help.status === 0 && help.stdout.includes("cotal history [<channel> | --dms]")
+      && help.stdout.includes("read all accessible channels and DMs"), help.stdout);
+  for (const args of [["general", "--dms"], ["--limit", "9007199254740992"], ["--since", "yesterday-ish"], ["--since=-5"], ["--since", "10/23/2026"], ["--since", "2026-02-30"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
     const r = await run(["history", ...args, "--json"]);
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  await checkFollowUsageRefusals();
 
   const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
+  await checkUnreachableHistoryFollow(unavailable);
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const root = mkdtempSync(join(home, "mode-read-"));
+    const dir = join(root, ".cotal", "auth");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const args = ["history", "general", "--json", "--space", space, "--server", unavailable, "--creds", join(root, "absent.creds")];
+    try {
+      chmodSync(dir, 0);
+      const refused = await run(args, root);
+      check("an unreadable local authentication mode refuses before reading the missing credential",
+        refused.status === 2 && refused.envelope?.error?.code === "PERMISSION_DENIED" && refused.envelope.error.message.includes("authentication mode")
+          && (refused.envelope.target as { root?: string })?.root === realpathSync(root) && Boolean(refused.envelope.error.remedy), shown(refused));
+    } finally { chmodSync(dir, 0o700); }
+    const missing = await run(args, root);
+    check("a readable empty mode directory reaches the missing credential refusal", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND", shown(missing));
+  }
   const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
   check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
   // A value that starts with a dash used to be refused by the parser as "ambiguous", and a channel
   // with `*` or a leading `#` got the subject grammar's reason.
   const [negLimit, negSince, starred] = await Promise.all([["--limit", "-1"], ["--since", "-5"], ["gen*"]].map((args) => run(["history", ...args, "--server", unavailable, "--json"])));
   check("a negative --limit or --since gets the flag's own rule, before connecting",
-    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a whole number from 1 to 1000, not "-1"'
+    negLimit.status === 1 && negLimit.envelope?.error?.message === '--limit takes a positive whole number this client can represent without rounding, not "-1"'
       && negSince.status === 1 && negSince.envelope?.error?.message === '--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "-5"', { negLimit: shown(negLimit), negSince: shown(negSince) });
   check("a channel holding * is refused with the wildcard sentence, before connecting",
     starred.status === 1 && starred.envelope?.error?.message === "name one concrete channel, without wildcards", shown(starred));
   const notADay = await run(["history", "--since", "2026-02-30", "--server", unavailable, "--json"]);
   check("a --since date that is not on the calendar is a usage error before connecting", notADay.status === 1 && notADay.envelope?.error?.message === "--since 2026-02-30 is not a calendar date", shown(notADay));
+  for (const [badIso, badDate] of [["2026-02-30T00:00:00Z", "2026-02-30"], ["2026-02-29T12:00:00+01:00", "2026-02-29"], ["2026-02-30 00:00:00", "2026-02-30"]] as const) {
+    const bad = await run(["history", "--since", badIso, "--server", unavailable, "--json"]);
+    check(`an impossible ISO date-time (${badIso}) is refused as USAGE_INVALID before connecting`, bad.status === 1 && bad.envelope?.error?.code === "USAGE_INVALID" && bad.envelope.error.message === `--since ${badDate} is not a calendar date`, shown(bad));
+  }
   const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
   check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
 
@@ -388,23 +722,53 @@ try {
   }
 
   // ── --follow ────────────────────────────────────────────────────────────────────────────────────
-  const f = follow(["history", "general", "--follow", "--json"]);
+  const f = follow(["history", "general", "--since", "0", "--follow", "--json"]);
   const snap = await f.until((l) => l.includes('"type":"snapshot"'));
   const records = () => f.lines.map((l) => JSON.parse(l) as { schemaVersion: number; stream: string; type: string; data: { text?: string; reason?: string; items?: Item[] } });
   check("--follow --json starts with one snapshot record of the window", snap && records()[0]?.type === "snapshot" && records()[0]?.stream === "history" && records()[0]?.schemaVersion === 1 && records()[0]?.data.items?.length === 3, { lines: f.lines.slice(0, 2), stderr: f.stderr() });
-  await alice.multicast("live one", { channel: "general" });
+  const future = follow(["history", "general", "--since", futureSeq, "--follow", "--json"]);
+  try {
+    const ready = await future.until((line) => line.includes('"type":"snapshot"') || line.includes('"error"'));
+    await alice.multicast("live one", { channel: "general" });
+    const liveFuture = await future.until((line) => line.includes('"text":"live one"') || line.includes('"error"'));
+    const [window, event] = future.lines.map((line) => JSON.parse(line) as { type?: string; data?: { items?: Item[]; text?: string } });
+    check("a future sequence cutoff starts with an empty snapshot and still emits a live message before the cutoff",
+      ready && liveFuture && window?.type === "snapshot" && window.data?.items?.length === 0
+        && event?.type === "event" && event.data?.text === "live one", future.lines);
+  } finally {
+    await killAndAwaitExit(future.child, "SIGINT");
+  }
   await bob.multicast("not this channel", { channel: "ops" });
   const event = await f.until((l) => l.includes("live one"));
   check("a message sent while following is one event record", event && records().filter((r) => r.type === "event").map((r) => r.data.text).join() === "live one", f.lines);
   // The snapshot's items carry their stream sequence. A live event has no `seq` field: the live feed
   // carries none, and a null would read as a message that has no sequence.
   const live = records().find((r) => r.type === "event");
-  check("the snapshot items carry their stream sequence and a live event carries no seq field",
+  check("a sequence cutoff applies only to the snapshot, whose items carry their sequence",
     records()[0]?.data.items?.every((item) => typeof item.seq === "number") === true && live !== undefined && !("seq" in live.data), { snapshot: records()[0]?.data.items?.map((item) => item.seq), event: live?.data });
   f.child.kill("SIGINT");
   const code = await f.exited;
   check("an interrupted follow ends with an end record and exit 130", code === 130 && records().at(-1)?.type === "end" && records().at(-1)?.data.reason === "interrupted", { code, last: f.lines.at(-1), stderr: f.stderr() });
   check("every follow line is one parseable stream record", f.lines.every((l) => { try { const r = JSON.parse(l); return r.schemaVersion === 1 && r.stream === "history"; } catch { return false; } }), f.lines);
+
+  const timed = follow(["history", "general", "--since", midpoint, "--follow", "--json"]);
+  const timedSnap = await timed.until((l) => l.includes('"type":"snapshot"'));
+  // Stamp only the outgoing envelope with the cutoff, then send a later event on the same channel.
+  const now = Date.now;
+  const atCutoff = (() => {
+    Date.now = () => Date.parse(midpoint);
+    try { return alice.multicast("at the cutoff", { channel: "general" }); }
+    finally { Date.now = now; }
+  })();
+  await atCutoff;
+  await alice.multicast("after the cutoff", { channel: "general" });
+  const timedEvent = await timed.until((l) => l.includes('"text":"after the cutoff"'));
+  timed.child.kill("SIGINT");
+  await timed.exited;
+  const timedEvents = timed.lines.map((l) => JSON.parse(l) as { type: string; data: { text?: string } }).filter((r) => r.type === "event");
+  check("a live follow excludes an event at the time cutoff and emits a later event",
+    timedSnap && timedEvent && timedEvents.map((r) => r.data.text).join() === "after the cutoff", timed.lines);
+  await checkFollowResume(alice, bob, midpoint);
 
   const fp = follow(["history", "--follow", "--plain", "--grep", "plain"]);
   await fp.until((l) => /replay to new members/.test(l));
@@ -421,6 +785,51 @@ try {
   prefill.child.kill("SIGINT");
   await prefill.exited;
   check("a follow prints its window in the same form as its live lines", prefilled && prefill.lines.some((l) => scriptShape(l, "\\S+", "#general", ".+")) && !prefill.lines.some((l) => /^TIME\s+WHERE/.test(l)), prefill.lines);
+
+  const scopedAll = follow(["history", "--follow", "--json", "--creds", agentCreds]);
+  const scopedNamed = follow(["history", "general", "--follow", "--json", "--creds", agentCreds]);
+  try {
+    const hasSnapshot = (line: string) => line.includes('"type":"snapshot"');
+    const snapshots = await Promise.all([scopedAll, scopedNamed].map((f) => f.until(hasSnapshot)));
+    await bob.multicast("outside scoped follow", { channel: "ops" });
+    await alice.multicast("inside scoped follow", { channel: "general" });
+    await Promise.all([scopedAll, scopedNamed].map((f) => f.until((line) => line.includes('"text":"inside scoped follow"') || line.includes('"type":"error"'))));
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+    const codes = await Promise.all([scopedAll.exited, scopedNamed.exited]);
+    for (const [i, f] of [scopedAll, scopedNamed].entries()) {
+      const records = f.lines.map((line) => JSON.parse(line) as { type: string; data: { text?: string; reason?: string } });
+      check(`a scoped credential follows ${i === 0 ? "all granted channels" : "a named channel"} without subscription errors or out-of-scope events`,
+        snapshots[i] && codes[i] === 143 && records.map((r) => r.type).join() === "snapshot,event,end" && records[1]?.data.text === "inside scoped follow" && records[2]?.data.reason === "terminated", f.lines);
+    }
+  } finally {
+    await Promise.all([scopedAll, scopedNamed].map((f) => killAndAwaitExit(f.child, "SIGTERM")));
+  }
+  const noFollow = await run(["history", "--follow", "--json", "--creds", ungranted]);
+  const noFollowRecords = noFollow.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; data: { code?: string; reason?: string } });
+  check("an all-channel follow with no channel read grant refuses without opening a feed",
+    noFollow.status === 2 && noFollowRecords.map((r) => r.type).join() === "error,end" && noFollowRecords[0]?.data.code === "PERMISSION_DENIED" && noFollowRecords[1]?.data.reason === "setup-failed", shown(noFollow));
+
+  // A raw credential can have a broader retained read than live read. The broker's live denial
+  // must still end the all-channel follow, rather than leave an apparently running feed.
+  const retainedReader = newIdentity();
+  const { pub, sub } = credsClaims(await mintCreds(auth, retainedReader, "observer")).nats!;
+  const signer = fromSeed(new TextEncoder().encode(auth.account.signingSeed));
+  const restricted = join(home, "retained-reader.creds");
+  try {
+    const chat = chatSubject(space, "*", "*", "general");
+    const jwt = await encodeUser("observer", fromPublic(retainedReader.id), fromPublic(auth.account.pub), {
+      pub,
+      sub: { allow: [...(sub?.allow ?? []).filter((row) => !row.startsWith(`cotal.${space}.chat.`)), chat] },
+    }, { signer, exp: Math.floor(Date.now() / 1000) + 600 });
+    writeFileSync(restricted, credsFromJwt(jwt, retainedReader), { mode: 0o600 });
+  } finally { signer.clear(); }
+  const refusedFollow = follow(["history", "--follow", "--json", "--creds", restricted]);
+  try {
+    const ended = await refusedFollow.until((line) => line.includes('"type":"end"'));
+    const records = refusedFollow.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; remedy?: string; reason?: string } });
+    check("a broker denial of the live wildcard ends the follow and says to name a channel",
+      ended && await refusedFollow.exited === 2 && records.map((r) => r.type).join() === "error,end" && records[0]?.data.code === "PERMISSION_DENIED" && records[0]?.data.remedy?.includes("name a channel") === true && records[1]?.data.reason === "setup-failed", refusedFollow.lines);
+  } finally { await killAndAwaitExit(refusedFollow.child, "SIGTERM"); }
 
   // A follow whose credential expires ends on its own, with the refusal a one-shot read of that file gets.
   const brief = join(home, "brief.creds");
@@ -467,6 +876,9 @@ try {
   check("a rejected raw credential ends a follow PERMISSION_DENIED without claiming a local identity change", given?.code === "PERMISSION_DENIED" && given.failure().message === `credentials rejected at ${servers}` && given.failure().remedy === "check your creds, or the broker wants different auth", given?.failure());
   check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
     minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
+  const expiredSelfMinted = await credentialEnded({ server: servers, space, tls: false, creds: await mintCreds(auth, newIdentity(), "observer", { expiresAt: Math.floor(Date.now() / 1000) - 10 }), auth });
+  check("an expired self-minted credential ends AUTH_REQUIRED telling the caller to run the command again, not doctor auth or re-mint",
+    expiredSelfMinted?.code === "AUTH_REQUIRED" && /run the command again/.test(expiredSelfMinted.failure().remedy ?? "") && !/doctor auth|re-mint/i.test(expiredSelfMinted.failure().remedy ?? ""), expiredSelfMinted?.failure());
 
   // A followed line is drawn for the terminal it is shown in, as the window above it is.
   const tty = nodePty([BIN, "history", "--follow", "--grep", "wrapped"], { cwd: shell, env: isolatedEnv as Record<string, string>, cols: 60, rows: 30 });
@@ -492,6 +904,57 @@ try {
       && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
 
+  // Payload times can disagree with broker arrival order across publishers.
+  {
+    const nc = await connect({ servers: openServers });
+    const js = jetstream(nc);
+    const now = Date.now();
+    const publish = (subject: string, actor: string, id: string, ts: number, target: { channel: string } | { to: string }) =>
+      js.publish(subject, JSON.stringify({ id, ts, space: openSpace, from: { id: `local.${actor}`, name: actor }, ...target, parts: [{ kind: "text", text: id }] }));
+    try {
+      const first = await publish(chatSubject(openSpace, "local", "alice", "volume"), "alice", "arrived-first", now, { channel: "volume" });
+      const second = await publish(chatSubject(openSpace, "local", "bob", "volume"), "bob", "arrived-second", now - 2_000, { channel: "volume" });
+      const args = ["--space", openSpace, "--json"];
+      const channel = await run(["history", "volume", ...args]);
+      const emptyDms = await run(["history", "--dms", ...args]);
+      const sequences = (r: typeof channel) => r.envelope?.result?.items.filter((item) => item.channel === "volume").map((item) => item.seq).join();
+      const expected = [first.seq, second.seq].join();
+      check("--dms with no DMs keeps the same broker sequence as channel history",
+        channel.status === 0 && emptyDms.status === 0 && sequences(channel) === expected && sequences(emptyDms) === expected,
+        { channel: shown(channel), mixed: shown(emptyDms) });
+
+      const cutoff = new Date(now - 2_000).toISOString();
+      const timeArgs = ["history", "volume", "--since", cutoff, "--space", openSpace];
+      const limited = await run([...timeArgs, "--limit", "1", "--json"]);
+      const complete = await run([...timeArgs, "--limit", "2", "--json"]);
+      const plain = await run([...timeArgs, "--limit", "1", "--plain"]);
+      check("a time cutoff at the first row cannot bound unread rows in broker order",
+        limited.status === 0 && texts(limited).length === 0 && limited.envelope?.result?.window.read === 1
+          && limited.envelope.result.window.olderRetained === true && limited.envelope.result.window.reachesSince === false
+          && complete.status === 0 && texts(complete).join() === "arrived-first" && sequences(complete) === String(first.seq)
+          && complete.envelope?.result?.window.olderRetained === false && complete.envelope.result.window.reachesSince === true
+          && plain.status === 0 && plain.stdout.includes(`the window may omit retained messages after --since ${cutoff}`),
+        { limited: shown(limited), complete: shown(complete), plain: shown(plain) });
+
+      const dmSubject = unicastSubject(openSpace, "local", "bob", "local", "alice");
+      await publish(dmSubject, "alice", "older-direct", now - 3_000, { to: "local.bob" });
+      await publish(dmSubject, "alice", "direct", now - 1_000, { to: "local.bob" });
+      const mixed = await run(["history", "--dms", ...args]);
+      const narrow = await run(["history", "--dms", "--limit", "2", ...args]);
+      check("--dms preserves channel sequence with a DM present and retains the newest channel post in a two-row window",
+        mixed.status === 0 && texts(mixed).includes("direct") && sequences(mixed) === expected && narrow.status === 0
+          && texts(narrow).includes("direct") && sequences(narrow) === String(second.seq) && narrow.envelope?.result?.window.olderRetained === true,
+        { mixed: shown(mixed), narrow: shown(narrow) });
+      const byTime = await run(["history", "--dms", "--limit", "3", "--since", new Date(now - 1_500).toISOString(), ...args]);
+      check("a mixed window with unread rows cannot establish time cutoff coverage",
+        byTime.status === 0 && byTime.envelope?.result?.window.olderRetained === true
+          && byTime.envelope.result.window.reachesSince === false && texts(byTime).join() === "arrived-first,direct",
+        shown(byTime));
+    } finally {
+      await nc.close();
+    }
+  }
+
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
     const cap = CHAT_HISTORY_DEFAULT.perSubject;
@@ -515,16 +978,69 @@ try {
     const gapPlain = await run(["history", "general", "--space", openSpace, "--limit", "3", "--plain"]);
     check("the report names the gap as possible loss", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there may be gone`).test(gapPlain.stdout), gapPlain.stdout);
     check("...and the time of the oldest post the stream still holds", typeof r?.retention?.oldestAt === "string" && /the oldest post the chat stream still holds is from .+; posts sent before it are gone/.test(gapPlain.stdout), { oldestAt: r?.retention?.oldestAt, stdout: gapPlain.stdout });
-    // At the cap a larger --limit does not exist, and a filter finds only what the window read.
+    const expanded = await run(["history", "general", "--space", openSpace, "--limit", "1001", "--json"]);
+    check("a larger window reads every retained message without duplicates", expanded.status === 0 && texts(expanded).length === 1001 && new Set(expanded.envelope?.result?.items.map((item) => item.id)).size === 1001, shown(expanded));
+    check("the expanded window is ordered and reaches the oldest retained message", texts(expanded)[0] === "carol 3" && expanded.envelope?.result?.window.olderRetained === false && expanded.envelope.result.items.every((item, i, rows) => i === 0 || item.seq! > rows[i - 1]!.seq!), expanded.envelope?.result?.window);
+    const older = await run(["history", "general", "--space", openSpace, "--limit", "2000", "--since", "0", "--grep", "carol 3", "--json"]);
+    check("since and grep can reach past the newest thousand", older.status === 0 && texts(older).includes("carol 3") && older.envelope?.result?.window.reachesSince === true, shown(older));
+    const confined = await talker.channelHistoryPage("general", { limit: 2000 });
+    check("the lifecycle-confined reader also accepts a window beyond a thousand", confined.complete && confined.items.length === 1001, { complete: confined.complete, count: confined.items.length });
+    // Every bounded window tells the reader how to reach older retained messages.
     const [capPlain, fromCarol] = await Promise.all([
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--plain"]),
       run(["history", "general", "--space", openSpace, "--limit", "1000", "--from", "carol", "--plain"]),
     ]);
-    check("at --limit 1000 the report says history reads at most the newest 1000, and names no larger --limit",
-      capPlain.stdout.includes("older retained messages are not shown; history reads at most the newest 1000\n") && !capPlain.stdout.includes("raise --limit"), shown(capPlain));
-    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit (up to 1000) to read further back\n"), shown(gapPlain));
+    check("at --limit 1000 the report names a larger window",
+      capPlain.stdout.includes("older retained messages are not shown; raise --limit to read further back\n"), shown(capPlain));
+    check("below it the report still names the raise", gapPlain.stdout.includes("older retained messages are not shown; raise --limit to read further back\n"), shown(gapPlain));
     check("--from with older retained messages says it searched only the messages read",
       fromCarol.status === 0 && fromCarol.stdout.includes("--from carol searched only the 1000 read; older retained messages were not searched\n"), shown(fromCarol));
+  }
+
+  // Channel receipts and reads recommend scoped commands even when the channel name is a history verb.
+  {
+    const channels = ["clear", "limit", "ordinary"];
+    const scope = ["--space", openSpace, "--server", openServers];
+    const printedLines = (stdout: string) => stdout.split("\n").map((line) => line.trim().replace(/^pnpm cotal /, "cotal "));
+    for (const channel of channels) {
+      const saved = await run(["channel", "set", channel, "--desc", "History hint test", ...scope, "--plain"]);
+      const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
+      if (saved.status !== 0 || posted.status !== 0)
+        throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+      if (channel !== "clear") continue;
+      const suggestion = (verb: string) => printedLines(saved.stdout).find((line) => line.startsWith(`cotal ${verb} `))?.split(/  +/)[0];
+      const inventory = suggestion("ch");
+      const history = suggestion("history");
+      const target = scope.join(" ");
+      const listed = inventory === `cotal ch ${target}` ? await run([...execWords(inventory).slice(1), "--plain"]) : undefined;
+      const read = history === `cotal history '#clear' ${target}` ? await run([...execWords(history).slice(1), "--json"]) : undefined;
+      check("channel set receipt inventory keeps the explicit target when another space is selected",
+        listed?.status === 0 && listed.stdout.includes(`Mesh: ${openSpace}`) && listed.stdout.includes("#clear"), { receipt: shown(saved), listed });
+      check("channel set receipt history reads the quoted channel instead of the history verb",
+        read?.status === 0 && texts(read).includes("retained in clear"), { receipt: shown(saved), read });
+    }
+    for (const channel of channels) {
+      const card = await run(["channel", "show", channel, "--space", openSpace, "--plain"]);
+      const [, word, targetSpace] = card.stdout.match(/^\s+(?:pnpm )?cotal history '(#[\w.-]+)' --space (\S+)\s+Read retained messages within your grant$/m) ?? [];
+      // Only execute the quoted channel form. An unexpected administrative command is a test failure.
+      const read = word === `#${channel}` && targetSpace === openSpace ? await run(["history", word, "--space", targetSpace, "--json"]) : undefined;
+      const messages = read?.envelope?.result?.items;
+      check(`channel show #${channel} recommends a history read for that channel only`,
+        card.status === 0 && read?.status === 0 && messages?.length === 1
+          && messages[0]?.channel === channel && messages[0].text === `retained in ${channel}`,
+        { card: shown(card), read: read && shown(read) });
+    }
+    const writer = join(home, "channel writer.creds");
+    writeFileSync(writer, await mintCreds(auth, newIdentity(), "channel-writer"), { mode: 0o600 });
+    const credentialScope = ["--space", space, "--server", servers, "--creds", writer];
+    const saved = await run(["channel", "set", "receipt-test", "--desc", "Scoped credential", ...credentialScope, "--plain"]);
+    const commands = printedLines(saved.stdout).filter((line) => line.startsWith("cotal ")).map((line) => execWords(line.split(/  +/)[0]!));
+    check("both receipt commands retain the explicit credential path as one argument", saved.status === 0 &&
+      JSON.stringify(commands) === JSON.stringify([["cotal", "ch", ...credentialScope], ["cotal", "history", "#receipt-test", ...credentialScope]]), shown(saved));
+    if (saved.status === 0) {
+      const removed = await run(["channel", "remove", "receipt-test", "--space", space, "--yes", "--json"]);
+      check("the credential receipt fixture is removed", removed.status === 0, shown(removed));
+    }
   }
 
   // ── destructive clear accepts no selection or read mode ──────────────────────────────────────
@@ -555,6 +1071,32 @@ try {
       const after = await run(["history", "--space", openSpace, "--json"]);
       check(`history clear refuses ${label} before purging either channel`, refused.status === 1 && after.status === 0 && texts(after).length === 2 && sentinels.every((text) => texts(after).includes(text)), { refused: shown(refused), after: shown(after) });
     }
+
+    const before = await run(["history", "--space", openSpace, "--json"]);
+    for (const [path, force] of [["./absent store", false], ["./absent store", true], ["", true], ["~/store", true]] as const) {
+      const refused = await run(["clean", "history", "--store-dir", path, "--space", openSpace, ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --store-dir ${JSON.stringify(path)} ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history targets a running mesh")
+        && refused.stderr.includes("Only clean store and clean all take --store-dir")
+        && !/cotal clean history.*--force|omit --store-dir/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
+    }
+
+    for (const force of [false, true]) {
+      const refused = await run(["clean", "history", "--server", openServers, "--space", openSpace,
+        "--attempt", "restore-00000000-0000-4000-8000-000000000000", ...(force ? ["--force"] : [])]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`clean history refuses --attempt ${force ? "with" : "without"} --force and preserves live history`,
+        refused.status === 1 && refused.stderr.includes("clean history cannot be scoped by --attempt")
+        && refused.stderr.includes("selects a restore") && refused.stderr.includes("Nothing was purged")
+        && !/cotal clean history.*--force/.test(refused.stderr)
+        && before.status === 0 && texts(before).length === 2 && after.status === 0
+        && JSON.stringify(after.envelope?.result?.items) === JSON.stringify(before.envelope?.result?.items),
+        { refused: shown(refused), before: shown(before), after: shown(after) });
+    }
   }
 
   {
@@ -563,6 +1105,20 @@ try {
     const after = await run(["history", "--dms", "--json"]);
     check("explicit history clear with --dms still purges authorized channel and DM history", before.status === 0 && before.envelope?.result?.items.some((item) => item.channel !== null) === true && before.envelope?.result?.items.some((item) => item.to !== null) === true && cleared.status === 0 && after.status === 0 && after.envelope?.result?.items.length === 0, { before: shown(before), cleared: shown(cleared), after: shown(after) });
   }
+
+  await alice.unicast(bobId, "one retained DM");
+  const exact = await run(["history", "--dms", "--limit", "1", "--json"]);
+  const widest = await run(["history", "--dms", "--limit", String(Number.MAX_SAFE_INTEGER), "--json"]);
+  check("one DM fills a one-row window without omitting older history",
+    exact.status === 0 && exact.envelope?.result?.window.olderRetained === false && texts(exact).join() === "one retained DM", shown(exact));
+  check("the largest supported DM history limit still reads the available history",
+    widest.status === 0 && widest.envelope?.result?.window.olderRetained === false && texts(widest).join() === "one retained DM", shown(widest));
+
+  await alice.unicast(bobId, "second retained DM");
+  const more = await run(["history", "--dms", "--limit", "1", "--json"]);
+  check("two retained DMs read at limit one show the latest and report the omission",
+    more.status === 0 && more.envelope?.result?.window.olderRetained === true && texts(more).join() === "second retained DM", shown(more));
+  await run(["history", "clear", "--yes", "--dms"]);
 
   // ── a space with no channel registry ────────────────────────────────────────────────────────────
   {
@@ -596,9 +1152,27 @@ try {
     const again = await run(["channel", "remove", "ops", "--yes", "--space", space, "--json"]);
     check("removing it again is TARGET_NOT_FOUND, exit 2, listing the registered channels",
       again.status === 2 && again.envelope?.error?.code === "TARGET_NOT_FOUND" && /#ops has no saved entry and no retained messages; registered channels: #general$/.test(again.envelope.error.message), shown(again));
-    const cased = await run(["channel", "remove", "General", "--purge", "--yes", "--space", space, "--json"]);
-    check("another case of a registered channel is refused before any purge, naming the registered spelling",
-      cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND" && /channel names are case-sensitive, and the registered one is #general$/.test(cased.envelope.error.message), shown(cased));
+    const upper = "reports.Daily", lower = "reports.daily";
+    for (const channel of [upper, lower]) {
+      const saved = await run(["channel", "set", channel, "--desc", channel, "--space", openSpace]);
+      const posted = await run(["send", "-c", channel, `retained in ${channel}`, "--space", openSpace]);
+      if (saved.status !== 0 || posted.status !== 0) throw new Error(`could not seed #${channel}: ${JSON.stringify({ saved: shown(saved), posted: shown(posted) })}`);
+    }
+    const purge = ["channel", "remove", lower, "--purge", "--yes", "--space", openSpace, "--json"];
+    const purged = await run(purge);
+    const cased = await run(purge);
+    const remedy = cased.envelope?.error?.remedy;
+    const inspect = remedy === `inspect the registered spelling: \`cotal channel show ${upper} --space ${openSpace}\``
+      ? await run(["channel", "show", upper, "--space", openSpace, "--plain"]) : undefined;
+    const kept = await run(["history", `#${upper}`, "--space", openSpace, "--json"]);
+    check("repeating a confirmed purge suggests inspecting the differently cased channel and preserves its message",
+      purged.status === 0 && (purged.envelope?.result as { purged?: number } | null)?.purged === 1
+        && cased.status === 2 && cased.envelope?.error?.code === "TARGET_NOT_FOUND"
+        && cased.envelope.error.message.includes(`#${lower} has no saved entry and no retained messages`)
+        && inspect?.status === 0 && inspect.stdout.includes(`Channel - #${upper}`) && kept.status === 0 && texts(kept).join() === `retained in ${upper}`,
+      { purged: shown(purged), refused: shown(cased), inspect: inspect && shown(inspect), history: shown(kept) });
+    const removedReports = await run(["channel", "remove", upper, "--purge", "--yes", "--space", openSpace]);
+    check("the remaining case can be purged with its own exact confirmation", removedReports.status === 0, shown(removedReports));
     // A channel with retained messages and no saved entry is one the space has, so its remove is a no-op.
     const posted = await run(["send", "-c", "opz", "kept", "--space", space]);
     const typo = await run(["channel", "remove", "opz", "--yes", "--space", space, "--json"]);
@@ -614,10 +1188,10 @@ try {
       made.status === 0 && partial.status === 4 && partial.envelope?.outcome === "partial" && partial.envelope.error?.code === "OPERATION_PARTIAL"
         && /^The purge reported 0 messages removed, but channel metadata removal was not confirmed\./.test(partial.envelope.error.message) && cleaned.status === 0 && removedOf(cleaned) === true,
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
-    // The command a missing --yes names keeps the --space and --server it was given (#7564).
+    // The confirmation keeps the requested target, purge scope and output format.
     const asked = await run(["channel", "remove", "general", "--purge", "--space", space, "--server", servers, "--json"]);
-    check("channel remove without --yes names a confirming command that keeps --space and --server",
-      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes\``, shown(asked));
+    check("channel remove without --yes names a confirming command that keeps --space, --server, --purge and --json",
+      asked.envelope?.error?.remedy === `confirm with \`cotal channel remove general --space ${space} --server ${servers} --purge --yes --json\``, shown(asked));
   }
 
   // Channel policy labels describe each field's source, including explicit values equal to defaults.
@@ -632,7 +1206,7 @@ try {
     check("built-in replay, retained-history window and delivery are marked inherited",
       policyIs(builtIn, "on - inherited", "retained history - inherited", "durable - inherited")
         && policyIs(builtInDefaults, "on - inherited", "retained history - inherited", "durable - inherited"), { show: shown(builtIn), defaults: shown(builtInDefaults) });
-    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", "1h");
+    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", " 1h ");
     const created = await channel("set", "policy", "--desc", "Operations");
     check("control: channel policy defaults and metadata are saved through the CLI", defaults.status === 0 && created.status === 0, { defaults: shown(defaults), created: shown(created) });
     const inherited = await channel("show", "policy");
@@ -641,13 +1215,19 @@ try {
       policyIs(inherited, "off - inherited", "1h - inherited", "live - inherited"), shown(inherited));
     check("channel list uses inherited for replay and delivery as show does",
       listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
-    const structured = await run(["channel", "show", "policy", "--space", space, "--json"]);
-    const registry = (structured.envelope?.result as unknown as { registry?: { defaults?: object; channels?: Record<string, object> } })?.registry;
-    check("JSON keeps stored metadata without presentation marks or resolved overrides",
-      structured.status === 0 && JSON.stringify(registry?.channels?.policy) === JSON.stringify({ description: "Operations" })
-        && JSON.stringify(registry?.defaults) === JSON.stringify({ replay: false, replayWindow: "1h", deliveryClass: "live" }), shown(structured));
     const defaultsCard = await channel("defaults");
     check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    // The defaults report's Next command acts on the space it just inspected, keeping the broker
+    // it was read from, so running it as printed cannot edit another space.
+    const defaultsNext = await run(["channel", "defaults", "--space", space, "--server", servers, "--plain"]);
+    check("the channel defaults report names a Next command that keeps the inspected space and broker",
+      defaultsNext.status === 0 && defaultsNext.stdout.includes(`cotal ch defaults --replay --window 24h --space ${space} --server ${servers}`), shown(defaultsNext));
+    const observerDefaults = await run(["channel", "defaults", "--creds", observer, "--server", servers, "--space", space, "--json"]);
+    const observerRegistry = (observerDefaults.envelope?.result as { registry?: ChannelRegistryRead })?.registry;
+    check("channel defaults JSON scopes the registry read with an observer credential",
+      observerDefaults.status === 0 && observerDefaults.stderr === ""
+        && Object.keys(observerRegistry ?? {}).join() === "defaults" && observerRegistry?.defaults?.replay === false
+        && observerRegistry.defaults.replayWindow === "1h" && observerRegistry.defaults.deliveryClass === "live", shown(observerDefaults));
     const missing = await channel("show", "policy-unregistered");
     check("an unsaved channel marks every field inherited too", policyIs(missing, "off - inherited", "1h - inherited", "live - inherited"), shown(missing));
     const mixedSet = await channel("set", "policy", "--no-replay");
@@ -669,6 +1249,71 @@ try {
       sameSet.status === 0 && policyIs(same, "off", "1h", "live") && sameList.status === 0
         && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
   }
+
+  // Scoped channel reads return the raw defaults and only the entries they request.
+  {
+    const registrySpace = `histreg-${randomUUID().slice(0, 8)}`;
+    const json = (...args: string[]) => run(["channel", ...args, "--space", registrySpace, "--server", openServers, "--json"]);
+    const registryOf = (r: Awaited<ReturnType<typeof run>>) =>
+      (r.envelope?.result as { registry?: ChannelRegistryRead } | null | undefined)?.registry;
+    const absent = await json("defaults");
+    check("channel defaults JSON leaves absent defaults unset",
+      absent.status === 0 && absent.stderr === "" && JSON.stringify(registryOf(absent)) === "{}", shown(absent));
+    const defaults = await json("defaults", "--delivery", "live", "--no-replay", "--window", "2h");
+    const saved = await json("set", "__proto__", "--desc", "Operations");
+    const other = await json("set", "elsewhere", "--desc", "Elsewhere");
+    const inventory = await json();
+    const full = registryOf(inventory);
+    check("control: channel inventory JSON returns both saved entries and the raw defaults",
+      defaults.status === 0 && saved.status === 0 && other.status === 0 && inventory.status === 0
+        && full?.channels?.elsewhere?.description === "Elsewhere"
+        && Object.hasOwn(full?.channels ?? {}, "__proto__") && full?.channels?.__proto__?.description === "Operations"
+        && full?.defaults?.deliveryClass === "live" && full.defaults?.replay === false && full.defaults?.replayWindow === "2h",
+      { defaults: shown(defaults), saved: shown(saved), other: shown(other), inventory: shown(inventory) });
+    const savedDefaults = await json("defaults");
+    check("channel defaults JSON returns raw defaults without channel metadata",
+      savedDefaults.status === 0 && savedDefaults.stderr === ""
+        && JSON.stringify(registryOf(savedDefaults)) === JSON.stringify({ defaults: full?.defaults }), shown(savedDefaults));
+    const named = await json("show", "__proto__");
+    const missing = await json("show", "constructor");
+    check("channel show JSON returns only the named saved entry and raw defaults",
+      named.status === 0 && JSON.stringify(registryOf(named)?.channels) === '{"__proto__":{"description":"Operations"}}'
+        && JSON.stringify(registryOf(named)?.defaults) === JSON.stringify(full?.defaults), shown(named));
+    check("channel show JSON for an unsaved name keeps the defaults and returns an empty channel map",
+      missing.status === 0 && JSON.stringify(registryOf(missing)?.channels) === "{}"
+        && JSON.stringify(registryOf(missing)?.defaults) === JSON.stringify(full?.defaults), shown(missing));
+
+    const nc = await connect({ servers: openServers });
+    const badKeys = [CHANNEL_DEFAULTS_KEY, "bad.target", "bad.other"];
+    try {
+      const kv = await openChannelRegistry(nc, registrySpace);
+      for (const key of badKeys) await kv.put(key, new TextEncoder().encode("[]"));
+    } finally { await nc.close(); }
+    const bad = await json("show", "bad.target");
+    const badList = await json();
+    const entries = registryOf(badList)?.undecodable;
+    check("control: channel inventory JSON reports all undecodable registry keys",
+      badList.status === 0 && entries?.length === 3 && badKeys.every((key) => entries.some((entry) => entry.key === key)), shown(badList));
+    check("channel show JSON keeps decode errors for the requested channel and defaults only",
+      bad.status === 0 && registryOf(bad)?.defaults === undefined && JSON.stringify(registryOf(bad)?.channels) === "{}"
+        && JSON.stringify(registryOf(bad)?.undecodable) === JSON.stringify(entries?.filter(({ key }) => key !== "bad.other")), shown(bad));
+    const badDefaults = await json("defaults");
+    check("channel defaults JSON keeps only the defaults-key decode error",
+      badDefaults.status === 0 && badDefaults.stderr === ""
+        && JSON.stringify(registryOf(badDefaults)) === JSON.stringify({ undecodable: entries?.filter(({ key }) => key === CHANNEL_DEFAULTS_KEY) }), shown(badDefaults));
+  }
+
+  {
+    const saved = await run(["channel", "set", "wire.window", "--window", " 24h ", "--space", openSpace, "--json"]);
+    const readback = await run(["channel", "show", "wire.window", "--space", openSpace, "--json"]);
+    const patch = (saved.envelope?.result as unknown as { patch?: { replayWindow?: string } })?.patch;
+    const registry = (readback.envelope?.result as unknown as { registry?: { channels?: Record<string, { replayWindow?: string }> } })?.registry;
+    check("channel set trims the replay window in the receipt and the saved open-space registry",
+      saved.status === 0 && patch?.replayWindow === "24h" && readback.status === 0 && registry?.channels?.["wire.window"]?.replayWindow === "24h",
+      { saved: shown(saved), readback: shown(readback) });
+  }
+
+  await checkChannelReplayRetry();
 
   // Empty wire IDs are independent deliveries, including after a retained snapshot.
   {
@@ -698,6 +1343,11 @@ try {
       check("nonempty follow ID still deduplicates", await historyFeed.until((line) => line.includes("follow-nonempty")), historyFeed.lines);
       await wait(300);
       check("duplicate nonempty ID is not surfaced", !historyFeed.lines.some((line) => line.includes("duplicate-nonempty")) && !consoleFeed.lines.some((line) => line.includes("duplicate-nonempty")), { history: historyFeed.lines, console: consoleFeed.lines });
+      await killAndAwaitExit(consoleFeed.child, "SIGINT");
+      check("stopping the open mesh console exits 130 without reporting a broker outage",
+        await consoleFeed.exited === 130 && !/was lost|re-establishing/.test(consoleFeed.stderr()), consoleFeed.stderr());
+      const limits = await run(["history", "limit", "--plain", "--space", openSpace]);
+      check("the open broker still answers after the console stops", limits.status === 0 && limits.stdout.includes("History limits"), shown(limits));
     } finally {
       await killAndAwaitExit(consoleFeed.child);
       if (historyFeed) await killAndAwaitExit(historyFeed.child);
@@ -707,9 +1357,25 @@ try {
 
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
   {
-    const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
-    const remedy = (members.envelope?.error as { remedy?: string } | undefined)?.remedy ?? "";
-    check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
+    const openCard = await run(["channel", "show", "general", "--space", openSpace, "--plain"]);
+    check("channel show explains unavailable membership on an open mesh and still suggests history",
+      openCard.status === 0 && openCard.stdout.includes("Broker-observed channel membership is unavailable on open meshes.")
+      && !openCard.stdout.includes("cotal ch members") && openCard.stdout.includes("cotal history '#general'"), shown(openCard));
+    const authCard = await run(["channel", "show", "general", "--space", space, "--plain"]);
+    check("channel show still suggests membership on the auth mesh",
+      authCard.status === 0 && authCard.stdout.includes("cotal ch members general"), shown(authCard));
+    const selectedRoster = await run(["who", "--json"]);
+    check("the default roster targets the selected static-auth space", selectedRoster.status === 0 && spaceOf(selectedRoster) === space, shown(selectedRoster));
+    for (const serverFlags of [[], ["--server", openServers]]) {
+      const members = await run(["channel", "members", "general", "--space", openSpace, ...serverFlags, "--json"]);
+      const argv = ["who", "--space", openSpace, ...serverFlags];
+      const roster = members.envelope?.error?.remedy?.startsWith(`\`cotal ${argv.join(" ")}\` lists who is present`)
+        ? await run([...argv, "--json"]) : undefined;
+      check(`an open membership refusal keeps the space${serverFlags.length ? " and explicit broker" : ""} in the roster command`,
+        members.status === 2 && members.envelope?.outcome === "refused" && members.envelope.error?.code === "UNSUPPORTED"
+          && roster?.status === 0 && spaceOf(roster) === openSpace, { refused: shown(members), roster: roster && shown(roster) });
+    }
+    await checkMembershipSetupRefusal(openSpace, "general", "UNSUPPORTED");
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
@@ -862,8 +1528,8 @@ try {
     await drop(chatStream(space));
     const chatOnly = await run(["history", "clear", "--yes", "--json"]);
     const dmKept = await messages(dmStream(space));
-    check("history clear with only the chat stream gone refuses TARGET_NOT_FOUND and leaves direct messages",
-      chatOnly.status === 2 && chatOnly.envelope?.error?.code === "TARGET_NOT_FOUND" && chatOnly.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged" && before > 0 && dmKept === before,
+    check("history clear with only the chat stream gone is a no-op and leaves direct messages",
+      chatOnly.status === 0 && chatOnly.envelope?.outcome === "no-op" && chatOnly.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space))) && before > 0 && dmKept === before,
       { chatOnly: shown(chatOnly), before, dmKept });
     const cleared = await run(["history", "clear", "--yes", "--dms", "--json"]);
     const dmAfter = await messages(dmStream(space));
@@ -873,8 +1539,8 @@ try {
       { cleared: shown(cleared), before, dmAfter });
     await drop(dmStream(space));
     const none = await run(["history", "clear", "--yes", "--dms", "--json"]);
-    check("history clear --dms refuses TARGET_NOT_FOUND when the chat and direct-message streams are both gone",
-      none.status === 2 && none.envelope?.outcome === "refused" && none.envelope.error?.code === "TARGET_NOT_FOUND" && none.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged",
+    check("history clear --dms is a no-op when the chat and direct-message streams are both gone",
+      none.status === 0 && none.envelope?.outcome === "no-op" && none.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space)) && w.message.includes(dmStream(space))),
       shown(none));
   }
 
@@ -908,6 +1574,56 @@ try {
       shown(general),
     );
   }
+
+  // Keep the same follower and broker store across a short restart of a live channel.
+  for (const ep of endpoints) await ep.stop();
+  await provisioner.stop();
+  const publisher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "operator"),
+    card: { name: "restart-publisher", kind: "endpoint" }, consume: false, watchPresence: false, watchChannels: false, registerPresence: false });
+  publisher.on("error", () => {});
+  const liveChannel = await run(["channel", "set", "updates", "--delivery", "live", "--no-replay", "--json"]);
+  check("restart control: live channel saved", liveChannel.status === 0, shown(liveChannel));
+  const restarted = follow(["history", "updates", "--follow", "--json"]);
+  let replacement: ReturnType<typeof spawn> | undefined;
+  let releaseReplacement: (() => void) | undefined;
+  try {
+    const snap = await restarted.until((line) => line.includes('"type":"snapshot"'));
+    await killAndAwaitExit(broker);
+    await wait(2_000);
+    replacement = spawn("nats-server", ["-c", join(storeDir, "server.conf")], { stdio: "ignore" });
+    releaseReplacement = teardownOnSignal(replacement, storeDir);
+    await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 100 });
+    const gap = await restarted.until((line) => line.includes('"type":"gap"'), 10_000);
+    await publisher.start();
+    const text = "post after broker restart";
+    await publisher.multicast(text, { channel: "updates" });
+    const event = await restarted.until((line) => line.includes(`"text":"${text}"`));
+    const seen = restarted.lines.map((line) => JSON.parse(line) as { type: string; data: { code?: string; text?: string } });
+    check("a short broker restart reports one loss and one gap before resuming live history",
+      snap && gap && event && seen.map((row) => row.type).join() === "snapshot,error,gap,event"
+        && seen[1]?.data.code === "TARGET_UNAVAILABLE" && seen[3]?.data.text === text,
+      { lines: restarted.lines, stderr: restarted.stderr() });
+  } finally {
+    await killAndAwaitExit(restarted.child, "SIGINT");
+    await publisher.stop().catch(() => {});
+    if (replacement) await killAndAwaitExit(replacement);
+    releaseReplacement?.();
+  }
+  const stoppedRead = await run(["history", "updates", "--space", space, "--server", servers, "--json"]);
+  const stoppedFollow = await run(["history", "updates", "--space", space, "--server", servers, "--follow", "--json"]);
+  const stoppedRecords = stoppedFollow.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+    stream?: string; type?: string; schemaVersion?: number; data?: { code?: string; message?: string; remedy?: string; reason?: string };
+  });
+  const stoppedError = stoppedRead.envelope?.error;
+  check("a follow that cannot start writes the finite refusal as a history error followed by end",
+    stoppedRead.status === 2 && stoppedError?.code === "TARGET_UNAVAILABLE" && Boolean(stoppedError.remedy)
+      && stoppedFollow.status === 2 && stoppedRecords.map((r) => r.type).join() === "error,end"
+      && stoppedRecords.every((r) => r.schemaVersion === 1 && r.stream === "history")
+      && stoppedRecords[0]?.data?.code === stoppedError.code && stoppedRecords[0]?.data?.message === stoppedError.message
+      && stoppedRecords[0]?.data?.remedy === stoppedError.remedy && stoppedRecords[1]?.data?.reason === "setup-failed",
+    { read: shown(stoppedRead), follow: shown(stoppedFollow) });
+  await checkMembershipSetupRefusal(space, "updates", "TARGET_UNAVAILABLE", "--server", servers);
+  await checkEventShapedChannelHistory();
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

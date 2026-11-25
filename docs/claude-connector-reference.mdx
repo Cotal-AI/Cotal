@@ -32,12 +32,12 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
 
 - **Wake channel.** Claude Code binds the `server:cotal` channel only to a server its own
   configuration declares, the user config or the project's `.mcp.json`; the `--mcp-config` entry
-  alone does not count. `cotal setup` and `cotal update` register the plugin's server as the
-  user-scope entry `cotal`, the same command and arguments as the plugin's own server, so a plain
-  session runs one process and a managed launch's same-named entry replaces it. A carried seat's
-  private home declares it itself. A managed launch whose user config and project `.mcp.json`
-  declare no `cotal` server is refused with a message naming `cotal setup`, because a seat whose
-  channel did not bind joins the mesh, reports idle and never answers a turn or a direct message.
+  alone does not count. `cotal setup` and a daemon-hosted Manager install the plugin and register
+  its server as the user-scope entry `cotal`. `cotal update` only refreshes an existing installation.
+  The entry uses the plugin's own command and arguments, so a plain session runs one process and
+  a managed launch's same-named entry replaces it. A carried seat's private home declares it itself.
+  A managed launch with no declaration refuses instead of starting a seat that cannot wake. On a
+  daemon-connected computer, use `cotal daemon setup --space <space>` to retry registration.
   `cotal status` reports the entry under `Claude wake channel`.
 
 - `--prompt` is Claude's first turn. The connector passes it as Claude's leading argument after one
@@ -52,12 +52,17 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `--opt permission-mode=default` (or another mode); the connector adds the default only when the
   launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. A foreground
   `cotal spawn` runs in your terminal, so it keeps Claude's own permission mode and you answer its
-  prompts there. Claude refuses
+  prompts there. With a mode that asks, the agent's owner can also answer each
+  tool permission ([Tool permissions](#tool-permissions)). Claude refuses
   the bypass mode as root and under a policy that disables it; such a host must pass a mode.
   Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
   Cotal never answers it. A managed seat that stops on it fails at the startup bound, and the error
   names both ways forward: accept it yourself once with `claude --permission-mode bypassPermissions`
-  in a terminal, or launch with `--opt permission-mode=default`.
+  in a terminal, or launch with `--opt permission-mode=default`. A launch with `askPermissions`
+  ([opt-in launch fields](connectors.mdx#opt-in-launch-fields)) starts in `--permission-mode default`,
+  managed or foreground, and refuses a launch option that sets `permission-mode` or
+  `dangerously-skip-permissions` as well. Windows does not take `askPermissions`, because nothing
+  serves the prompts there.
 
 - **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
   CI there is no Keychain, so the connector forwards the documented credential set:
@@ -344,7 +349,9 @@ Already-issued identities keep their lifecycle record even if a later response c
 Retiring a request that is still pending drops it, and no identity is issued for it. An identity
 issued before connection approval keeps working, and its recovery stays exact. Another plugin server reuses that identity only after the process that held it no longer exists.
 `cotal_disconnect`, session end and a signal request retirement of that lifecycle only. Other
-conversations stay connected. When the mesh reports retirement pending or does not confirm it, the
+conversations stay connected. A disconnect waits at most 3 seconds for the conversation's event
+plane to finish publishing, then stops the connection. Events it did not publish stay in the
+transcript. When the mesh reports retirement pending or does not confirm it, the
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
 unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
 once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
@@ -471,7 +478,9 @@ delivers, the other only wakes:
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
   sends a receipt back down the control socket from that stdout write's callback, and only on a
   clean write (a runtime whose pipe has gone away fails it), and the connector treats that receipt,
-  not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
+  not its own socket write, as delivery. The receipt is a MAC over the reply it confirms (`Mk` in the
+  [control exchange](authoring-a-connector.mdx#control-exchange)), so a process that forwards the
+  socket without the key cannot confirm a reply it dropped. So a large injection killed mid-flush, or one written to a
   broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
   that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
   reported written the moment the kernel takes it. That residual is why the path errs toward
@@ -647,6 +656,11 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
+An interrupt, such as Escape in the session, fires no hook. Claude Code writes it to the transcript
+instead, so while a turn is open the connector watches the transcript for that record. The record
+ends the turn: presence returns to `idle` within about a second, and any `approval` or `input`
+condition clears.
+
 The connector also leaves gracefully when its stdin closes. An MCP client closes it to end the
 session, and a killed `claude` closes it with no `SessionEnd`, so a dead session drops off the
 roster instead of staying on it as a live peer.
@@ -656,19 +670,166 @@ roster instead of staying on it as a live peer.
 `model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
 `unknown` to `failed`. The native value remains in `condition.source`.
 
-Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
-socket + per-launch token, constant-time checked), so a local process that finds the path
-still can't drive presence or stop the agent. Claude Code's own
+Hooks are relayed over the connector's **authenticated** local control endpoint. The hook and the
+connector each prove they hold the launch's key without sending it, and the hook prints a reply only
+when its MAC verifies (see [the control exchange](authoring-a-connector.mdx#control-exchange)). A
+local process that finds the path, or takes it after the connector exits, cannot drive presence,
+stop the agent, or answer a hook. Off Windows the socket sits in a directory only the session's user
+can enter, and a hook that finds the directory open to others connects to nothing and warns once. Claude Code's own
 [hooks reference](https://code.claude.com/docs/en/hooks) lists every hook event. The hooks the
 plugin registers, with their matchers, are listed in the
 [adapter README](../extensions/connector-claude-code/README.md#claude-code-hooks).
+
+## Tool permissions [#tool-permissions]
+
+A seat that Cotal launched serves Claude's tool permissions on its own `agent`
+endpoint ([SPEC §13.22](../SPEC.md#1322-the-agent-endpoint)). The agent's owner can read and answer
+them from another session. No Manager has to run, and nothing is stored on the broker. A managed seat
+launches with `bypassPermissions` and asks nothing, so launch it with `askPermissions`, or pass
+`--opt permission-mode=default` or another mode that asks.
+
+The plugin registers `PermissionRequest` with a timeout of 2147483 seconds, the longest Claude
+accepts. The hook relay keeps its 2-second deadline for the dial and the connector's proof, and then
+waits for the reply with no deadline. Claude's own dialog stays open the whole time.
+
+Each permission opens a `permission` prompt. It shows the tool's name and input, the session's
+directory, and the MCP server of an `mcp__*` tool, and it offers `allow` and `deny` with an optional
+note. It is offered for 7 days. An answer reaches Claude as the hook's decision. A deny's message
+is its note, or `Permission denied.` when it has none. The relay's receipt for that decision moves the prompt to `delivered`.
+When the input would take the prompt over its 262144-byte content limit, the prompt shows the
+input as omitted with its size and offers only `deny`.
+
+An `AskUserQuestion` opens a `question` prompt with a form instead: one field per question, its
+header as the title and its text as the description. A single choice also takes an answer of your
+own in its `__other` field, which ACP clients such as T3 Code show as "Other". A submitted form
+allows the call with its input plus `answers`, which maps each question's text to the label chosen,
+a multiple choice's labels joined with `, `, or the answer typed. A question left unanswered is left
+out. Dismissing the form denies the call with `The user dismissed the question without answering.`
+A question with no labelled choices, or over the content limit, stays with Claude's dialog.
+
+Claude's dialog alone answers `ExitPlanMode`. It also answers a permission that arrives before the
+endpoint is served or while 32 prompts are open or sent.
+
+Claude's permission hook names no tool call, so nothing Claude sends later can be tied to one prompt.
+The seat keeps a match key for each prompt: its scope, which is the hook's `agent_id` and absent in
+the main thread, the tool name, and the SHA-256 of the RFC 8785 canonical JSON of the input. It
+reports only what that key can show:
+
+| Prompt | What the seat sees | Outcome |
+| --- | --- | --- |
+| open | the hook's connection closed | `withdrawn`, nothing seen |
+| open | a `PostToolBatch` of its scope lists a call with its key | `withdrawn`, a call with this subject seen |
+| open | `Stop`, `StopFailure` or `SubagentStop` ends its scope's turn | `withdrawn`, nothing seen |
+| answered | a `PostToolBatch` of its scope lists a call with its key | `unconfirmed`, a call with this subject seen |
+| answered | its scope's turn ended | `unconfirmed`, nothing seen |
+| answered | the hook's connection closed with no receipt | stays `sent` until a batch, a turn end or 15 minutes |
+
+Claude's batch also lists a call that a deny refused, with the deny's message as the call's result.
+An entry whose scope, key and result match a deny the seat handed over is that refused call, so it
+shows no call with this subject.
+
+A call with the same name and input can belong to another request, so the seat never says that a
+prompt's own call ran or did not run, and it never reports `confirmed` or `local`. A prompt that
+closes while Claude still waits gives the hook no decision, and Claude's dialog goes on alone.
+`SessionEnd` and the connector stopping close every prompt.
+
+On Windows the seat serves no tool permissions yet. The hook answers each one with no decision before
+it reads the control endpoint, the connector warns once at start, and the connector does not declare
+`prompts` to the Manager. The agent endpoint itself is still served for the agent's commands, so the
+seat's presence still carries `prompts`, with `open` at 0.
+
+## Agent commands [#agent-commands]
+
+A seat and a plain Claude Code session run
+[agent commands](connector-runtime-reference.mdx#agent-commands) through the plugin's command mod,
+`hooks/commands.js`. The mod needs Claude Code 2.1.330 or later with mods on. The session's MCP
+server serves a command socket for its Claude Code process, in a private directory under the
+system temp directory. The mod starts a reader that connects to it and says hello with its
+connector version and Claude Code's version, and each answer goes back through a one-shot helper.
+
+The list is Claude Code's own `/` list, without the entries it hides and the commands that do not
+run remotely. Claude does not say which entries are skills, and it runs a skill the same way as a
+command, so every entry has the target `command`. An entry carries Claude's argument hint as its
+`inputHint`. Claude describes its commands to the mod when the session starts, so the hints are there
+before anyone types `/`.
+
+A command runs as if the person typed `/<name> <args>`, and only under a name the list holds now.
+Claude itself resolves aliases, which could reach a refused command under another name, so an alias
+such as `/cost` ends `refused` with `not-found`. Commands that a person, a plugin or an MCP server
+added run. Claude Code's own commands run only when they print text or start a model turn without a
+panel or a settings write: `/context`, `/compact`, `/init`, `/security-review`, `/code-review`,
+`/simplify` and `/verify`. Any other built-in ends `refused` with `failed-precondition` and a reason:
+
+| Built-in | Why it does not run remotely |
+| --- | --- |
+| `/usage`, `/status`, `/help`, `/release-notes`, `/diff`, `/resume`, `/rewind`, `/hooks`, `/tasks`, `/mcp`, `/plugin` | It opens a panel, and the run does not end until someone at the seat closes it. |
+| `/model`, `/config`, `/effort`, `/theme`, `/fast`, `/autocompact`, `/output-style`, `/tui`, `/statusline`, `/permissions`, `/update-config`, `/fewer-permission-prompts` | It changes the Claude Code settings of the person at the seat. |
+| any other | It is a Claude Code command that does not run remotely. |
+
+The connector starts a queued command only while the seat runs no turn and waits on no dialog, as its
+presence shows. A command reads `started` once Claude started it: a prompt command or a skill once
+its turn started, and a command that prints text once it printed. One that Claude has not started
+within 30 s, such as one a panel or dialog at the seat holds, reads `unknown`, and it may still run
+once the panel closes. After the person at the seat stops a turn with Escape or Stop, Claude refuses
+commands from a mod until that person sends input, so a command then ends `refused` with
+`failed-precondition` and `waiting for local input`. A command Claude dropped from its queue at such a
+stop ends the same way with `dropped by a local Stop`. An organization's mod cannot run a command a
+person's mod registered, and Claude refuses that run too.
+
+`interrupt` stops the main turn with the mod's turn abort, then stops each tool the abort moved to
+the background, such as a running Bash command. It answers `interrupted`, or `idle` when no turn ran.
+When Claude refuses to stop such a tool, it still answers `interrupted`, and the seat's log says
+`a tool is still running`. Claude fires no hook when a mod stops a turn, so the connector ends the
+turn itself: presence reads idle and the next queued command can start. The mod has 10 s to answer.
+
+`turn` hands the owner's words to the mod, which submits them with `$.prompt.submit` as the person's
+own, so the model reads them without a plugin frame. The transcript records them under the plugin's
+origin, and the event plane shows the turn as the person's. A turn starts like a queued command, and
+reads `started` once Claude took the prompt. A prompt Claude drops, such as one sent after a local
+Stop, ends `refused` with `failed-precondition` and Claude's reason.
+
+A plugin's prompt carries text only, and Claude expands no `@file` mention in it. So each image of a
+turn is written to its own owner-only file in a folder the launch made for the seat, and the prompt
+names it on a line of its own, `[Image 1: <path>]`. The model reads the file with its Read tool. The
+launch lets it read that folder without a permission prompt, and removes the folder once the seat
+ends. A plain Claude Code session that Cotal did not launch has no such folder, so it
+takes no images.
+
+`usage` reports what Claude Code's status line shows: the input tokens of the last response over the
+model's context window, and the session's cost in US dollars as `/cost` totals it. Before the first
+response it reports the cost alone.
+
+The seat's presence shows `interrupt`, `turn`, `images` and `usage` served only while a mod serves
+the session, and it changes as the mod's reader connects or leaves. A client such as an ACP thread picks
+the endpoint or the Manager's interrupt key and `input` from it.
+
+While no mod serves the session, `commands` and `usage` answer `supported: false`, and `command`,
+`turn` and `interrupt` are `unimplemented` with the cause:
+
+- Claude Code is older than 2.1.330.
+- The seat runs on Windows. A Windows pipe lives in a namespace every account on the machine
+  shares, so another account could pose as the session's command pipe. Agent commands do not run
+  there yet.
+- Mods are off: `--bare`, `--safe-mode`, `disableAllHooks`, or an organization's
+  `allowManagedModsOnly` or `allowManagedHooksOnly`.
+- The plugin's mod comes from another connector version than its MCP server. Reload the plugin or
+  restart the session.
+- A host serving several sessions in one process ([below](#host-sessions-in-one-process)) names no
+  Claude Code process for a session.
+
+Claude Desktop runs no mods, so its server runs no commands.
 
 ## Event plane
 
 A connected native session publishes a structured account of its activity: the messages a person
 typed, assistant replies, run boundaries, and each tool call's start and end. Tool arguments and
 results publish by default on a separately authorized payload rail (below). A turn a peer message
-started opens a run without republishing that message. Reasoning is off by default. Programs can read these events directly. The launcher
+started opens a run without republishing that message. Native wake and inline prompts attributed
+to the Cotal plugin follow the same rule, including when they arrive during an open run.
+Reasoning is off by default. A launch with `reasoningEvents` publishes it as `REASONING_*` events,
+and passes `--settings '{"showThinkingSummaries":true}'`: without that setting Claude records each
+thinking block with empty text, and an empty block publishes nothing. Such a launch refuses a
+`settings` launch option. Programs can read these events directly. The launcher
 sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted
 space. A user-auth registration with `policy: { events: "required" }` carries `eventsRequired` in the
 private launch material, so the connector arms even without `COTAL_EVENTS`; `--no-events` is refused.
@@ -680,6 +841,32 @@ approval are not published.
 Its native lifecycle drives presence and recording for that session only; a subagent or another
 conversation cannot end its main run. The event channel keeps the space's normal read permissions.
 A personal connection makes manager calls only with its own selected grant.
+
+A seat Cotal launched streams its reply text while its command mod runs. The mod reads the lines
+Claude Code shows as a reply streams, its `MessageDisplay` event, and relays them to the seat at
+most once every 250 ms. The seat writes them to the thread's delta journal, and a client sees the
+reply grow in whole lines. Claude Code's transcript records neither the id a streamed message
+carries nor its turn, only the prompt it belongs to. So the tie is order: the mod numbers a prompt's
+messages in the order they stream, and the connector numbers that prompt's saved text blocks the
+same way. The saved text is always the text of record. Lines that arrive after their message was
+saved publish nothing. A saved text that does not begin with what streamed under its number ends
+the streamed message, and the saved text is then published as a message of its own. A turn's end
+also ends a stream no saved text closed. A subagent's reply does not stream, and neither does a
+reply while no mod serves the session.
+
+An assistant text that Claude Code's terminal shows nothing for publishes nothing. These are
+"No response requested.", which Claude Code writes when it closes a turn itself, as on a resume
+after a reply was cut off; "(no content)", its text for an empty message; and a text that is blank
+once Claude Code drops the analysis blocks and memory tags it does not show. Such a text still ends
+the reply that streamed under its number. An API error Claude Code writes as a reply shows in its
+terminal, so it publishes.
+
+Claude Code's terminal turns its to-do tools off for current models, so a seat on one keeps no task
+list and a client shows no plan for it. The connector leaves that as Claude Code sets it. An
+operator can opt in: set `CLAUDE_CODE_ENABLE_TODO_TOOLS=true` in the environment that starts the
+Manager, and name it on `spawn.env` ([Launcher variables](config.mdx#launcher-variables)). The
+seat's task tool calls, such as `TaskCreate` and `TaskUpdate`, then publish as tool calls, and an
+ACP client shows them as the thread's plan.
 
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
@@ -693,6 +880,12 @@ recovery a connector restart runs. A pending frame that the broker stored before
 acknowledgement was lost is settled as published when the broker's two-minute duplicate window
 still holds its id, or when the seat may read its own event channel and that frame is the newest
 one there. Otherwise the plane halts, because nothing proves the frame at the tip is that frame.
+Before a new thread publishes, it also settles pending frames in earlier thread logs under the
+same principal and state root. Their frozen ids and expectations are preserved. A new thread
+does not discard an ended session's pending frame or publish against its stale subject record.
+A local unacknowledged frame lets startup reach that recovery even when no acknowledgement has
+yet been recorded. A state root with no such frame and no acknowledged frontier still refuses
+when the broker retains this principal's events.
 A failed publish or a failed log write is never retried on the emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
 turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
 open is closed with that terminal, a failure as a failure, rather than left open for the next
@@ -714,6 +907,12 @@ written before that read, closes its own turn in the place of the finish that pr
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code
 restarted it on the next tool call.
 
+Claude Code can call `Stop` before writing its last assistant message to the transcript. If the
+hook supplies the text and prompt ID, the connector waits up to 750 milliseconds for the matching
+transcript entry before reporting `RUN_FINISHED`. If the entry does not arrive in time, the run
+closes with the records already available. `StopFailure` and stops without assistant text do not
+wait.
+
 A transcript line that is not a record does not stop the plane. Claude writes the transcript, and a
 write cut short by a full disk leaves part of one record glued to the next on a single line, which
 never becomes readable. The connector steps over that line, keeps the records after it, and writes
@@ -731,9 +930,13 @@ Claude starts each hook in its own process, so a prompt or stop relay can reach 
 `SessionStart` relay. The connector holds those event flushes and the terminal until `SessionStart`
 supplies the source, then enqueues adopt, flush, and close in that order.
 
-`SessionStart` can also run before the connector process has bound its local control socket. The hook
-the `SessionStart` relay retries only transient pre-connect listener errors, with capped backoff
-inside its existing two-second budget. Later hooks and permanent local faults still fail open
+`SessionStart` can also run before the connector process has bound its local control socket. Claude
+fires it at launch before the session's MCP servers are available, and on a busy host the connector
+can bind several seconds later. The `SessionStart` relay retries only transient pre-connect listener
+errors and a socket directory that does not exist yet, with capped backoff. At launch (`startup`,
+`resume` or `fork`) it keeps dialing for up to 30 seconds, the time Claude gives an MCP server to
+connect, and Claude holds the first prompt until it returns. A `SessionStart` from a clear or a
+compaction keeps the two-second budget. Later hooks and permanent local faults still fail open
 immediately. Once a socket has connected, a broken exchange is not retried: the connector may
 already have handled the frame, so replaying it could apply one lifecycle event twice.
 That retained `SessionStart` can itself arrive before Claude creates the transcript path. A genuinely
@@ -747,6 +950,7 @@ Tool arguments (`TOOL_CALL_ARGS`) and results (`TOOL_CALL_RESULT`) use the separ
 subject `cotal.<space>.evp.<owner>.<actor>` and stream `EVP_<space>`. The ordinary event channel
 still carries no tool inputs or outputs. It keeps tool boundaries and the `CUSTOM` event
 `cotal.toolResult` with `{ toolCallId, isError }`, so metadata-only readers keep completion status.
+A connector whose harness record does not say whether a call failed leaves `isError` out.
 
 On an older host, a missing payload stream or a publish permission refusal on
 `$JS.API.STREAM.INFO.EVP_<space>` keeps the emitter publishing names and times only.
@@ -782,7 +986,7 @@ than exposing them on the public channel. Enabling withholding with a frozen sib
 refused until it is settled under its prior policy. Old ordinary-channel readers still see only
 metadata. Combined channel history and backup support for the new rail remain deferred.
 
-This release covers the Claude and Jcode payload mappings. Other event connectors carry the safety
+This release covers the Claude, Jcode and Pi payload mappings. Other event connectors carry the safety
 controls, but their payload mappings and native acceptance remain separate work. The private
 [consent path](../SPEC.md#1319-private-tool-results) remains useful for a holder not admitted to the
 payload rail; its activation requirements are unchanged.
@@ -867,7 +1071,13 @@ reported nor its error kind is published there: both are upstream values that ca
 tool output, and the events channel has a different read ACL. The error kind still reaches presence
 as the agent's condition (`rate_limit`, `auth`, `billing` and the rest). A turn that ended normally still
 ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
-succeeded.
+succeeded. A turn you interrupt ends with a run-finished event whose outcome is `interrupt`, read
+from the interrupt record Claude Code writes to the transcript.
+
+**A tool call shows while it runs.** Claude Code writes its transcript on a 100 ms timer, so its
+`PreToolUse` hook runs before the call it announces is on disk, and no hook follows until the tool
+ends. While a turn is open the connector watches the transcript, and each time it grows the connector
+reads the new records. A call reaches the event plane within about a second of its start.
 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
@@ -1074,7 +1284,10 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
   stream must resume it as needed and keep its own stream error handlers.
 - **`fatalBind`.** Off by default: a control socket that cannot be bound rejects the call and the
   host keeps its other sessions. Only a process that is the session turns it on, as `mcp.cjs` does.
-- **Teardown.** `close()` closes the control socket, the wake policy, the AG-UI emitter, the mesh
+- **`claudePid`.** The pid of the Claude Code process the session's server runs under. Set, the
+  session serves that process's command socket and runs its [agent commands](#agent-commands).
+  Unset, as for a host whose sessions share no Claude Code process, the session runs none.
+- **Teardown.** `close()` closes the control socket, the command socket, the wake policy, the AG-UI emitter, the mesh
   endpoint and the MCP server, and is idempotent. It removes its input listeners without closing
   the caller's streams. The returned promise rejects if teardown fails. A startup failure closes
   what was started before the call rejects. A manager shutdown frame or input EOF or closure closes the
@@ -1158,8 +1371,9 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
   (and `cotal setup --skills` does only that):
   it installs/updates each Cotal skill, backs up a copy you have edited to `SKILL.md.bak` before
   replacing it, and removes a Cotal skill that is no longer shipped. Only skills Cotal owns are touched;
-  your own or third-party skills there are left alone. `cotal status` reports whether the drop is current,
-  stale, missing, or has a retired skill to reconcile, and names `cotal setup --skills` as the remedy. This is the working cross-vendor path.
+  your own or third-party skills there are left alone. Compact `cotal status` shows stale or retired
+  cross-vendor skills even when no agent application is set up and recommends `cotal setup --skills`.
+  `cotal status --wide` also shows whether the skills are current or not installed.
 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
 on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,

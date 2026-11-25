@@ -314,7 +314,7 @@ try {
     // server closed early and cannot express transfer-encoding without a declared length.
     const NO_BODY = Buffer.alloc(20_000_000, 0x61);
     const noBodyHead = (path: string, headers: string): string =>
-      `POST ${path} HTTP/1.1\r\nHost: h\r\n${COOKIE}Connection: keep-alive\r\n${headers}\r\n`;
+      `GET ${path} HTTP/1.1\r\nHost: h\r\n${COOKIE}Connection: keep-alive\r\n${headers}\r\n`;
 
     const declared = await raw(noBodyHead("/api/roster", `Content-Length: ${NO_BODY.length}\r\n`), Buffer.alloc(0));
     ok("7.0 an announced 20 MB body to a no-body route is refused at its zero-byte limit before it can be accepted",

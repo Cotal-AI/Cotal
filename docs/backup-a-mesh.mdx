@@ -68,6 +68,9 @@ Restore before the normal broker listener opens:
 cotal up --restore ./space-backup --detach
 ```
 
+On a legacy root, restore keeps the JetStream file storage cap recorded in the preserved state.
+To use a different cap, pass `--max-file-store <bytes>` to `cotal up --restore`.
+
 A full restore requires the same space and the current local trust continuity.
 It validates the complete space trust bundle before staging or changing the preserved store.
 That commitment includes the validated operator, system, and data-account root chain, plus the static or user-auth authority state.

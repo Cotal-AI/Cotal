@@ -1,9 +1,11 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { Kvm } from "@nats-io/kv";
 import { UserAuthenticationExpiredError, type NatsConnection } from "@nats-io/transport-node";
 import {
   accountFromCreds,
   credsClaims,
   contractArtifactCanonicalBytes,
+  contractArtifactDigestHex,
   contractRefToHex,
   contractStoreContext,
   dialerFor,
@@ -24,6 +26,21 @@ import {
   type EpIssuanceBarrier,
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, managerAuthorityContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
+
+async function registerAfterContention<T>(register: () => Promise<T>, deadline: number): Promise<T> {
+  for (let retries = 0; ; retries++) {
+    try {
+      return await register();
+    } catch (error) {
+      // A fresh attempt re-reads the governance head and validates the registration under its gate.
+      if (foreignSlotHeldFrom(error)?.condition !== "in-flight") throw error;
+      const wait = Math.random() * Math.min(15_000, 250 * 2 ** retries);
+      if (Date.now() + wait >= deadline) throw error;
+      await delay(wait);
+      if (Date.now() >= deadline) throw error;
+    }
+  }
+}
 
 /**
  * Run registration with host-issued prepare authority, scoped to one manager instance. Fresh
@@ -50,6 +67,7 @@ export async function registerRemoteManagerAuthority(args: {
   let prepareCreds = args.prepareCreds;
   const identity = credsClaims(prepareCreds).sub;
   const account = accountFromCreds(prepareCreds);
+  let contentionDeadline: number | undefined;
   let lastProgressAt = 0;
   const onRevocationProgress: NonNullable<EpIssuanceBarrier["onRevocationProgress"]> = ({ revoked, total }) => {
     const now = Date.now();
@@ -92,11 +110,17 @@ export async function registerRemoteManagerAuthority(args: {
       const store = await contractStoreContext(nc, args.space);
       const artifacts = managerClusterArtifacts();
       const all = [...managerAuthorityContractSource().artifacts, artifacts.document, artifacts.manifest];
-      console.error(`manager registration: publishing and verifying ${all.length} contract artifacts`);
-      // Settle every independent create-only CAS before closing a failed connection.
+      console.error(`manager registration: verifying ${all.length} contract artifacts and publishing any that are missing`);
+      // A restart usually finds the same immutable artifacts. Read and verify them instead of
+      // spending a failed create before each read. Publish only on an observed miss, using the
+      // same create-only fence in case another Manager publishes the artifact first.
       for (let offset = 0; offset < all.length; offset += 32) {
-        const results = await Promise.allSettled(all.slice(offset, offset + 32).map(value =>
-          publishContractArtifact(store, contractArtifactCanonicalBytes(value))));
+        // Settle all work in the batch before closing a failed connection.
+        const results = await Promise.allSettled(all.slice(offset, offset + 32).map(async value => {
+          const bytes = contractArtifactCanonicalBytes(value);
+          if (await fetchContractArtifact(store, contractArtifactDigestHex(bytes)) === undefined)
+            await publishContractArtifact(store, bytes);
+        }));
         for (const result of results) if (result.status === "rejected") throw result.reason;
       }
       console.error("manager registration: contract artifacts verified; acquiring the serving registration");
@@ -140,7 +164,8 @@ export async function registerRemoteManagerAuthority(args: {
       });
       let registered: Awaited<ReturnType<typeof register>>;
       try {
-        registered = await register();
+        contentionDeadline ??= Date.now() + 15_000;
+        registered = await registerAfterContention(register, Math.min(contentionDeadline, (expiry ?? Infinity) * 1000));
       } catch (error) {
         // Only a holder still at the slot stamp needs guarded host reconciliation.
         const held = foreignSlotHeldFrom(error);

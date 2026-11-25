@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { createSpaceAuth, isReachable, mintConnectionEvictorCreds, mintCreds, mintMembershipObserverCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
 import { readRecord, recordPath } from "@cotal-ai/seat";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, makeSeatRoot } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, makeSeatRoot, createSuite } from "@cotal-ai/smoke-kit";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 
 if (process.platform !== "linux") {
@@ -34,11 +34,7 @@ if (process.platform !== "linux") {
   process.exit(0);
 }
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async (read: () => boolean, timeoutMs: number): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs;
@@ -101,9 +97,9 @@ try {
   check("that lifecycle retires only after its process is proved gone", await until(() => /static reconcile completed: \d+ attempted, \d+ succeeded, 0 failed/.test(third.stderr()), 30_000), third.stderr().split("\n").filter((l) => /static reconcile completed/.test(l)).join("\n"));
 
   const EXPECTED = 5;
-  if (pass + fail !== EXPECTED) throw new Error(`expected ${EXPECTED} cells, ran ${pass + fail}; a cell was added or silently skipped`);
-  console.log(`\nORPHAN-SEAT SPAWN WINDOW SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
-  if (fail) process.exitCode = 1;
+  if (passed() + failed() !== EXPECTED) throw new Error(`expected ${EXPECTED} cells, ran ${passed() + failed()}; a cell was added or silently skipped`);
+  console.log(`\nORPHAN-SEAT SPAWN WINDOW SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"} (${passed()} passed, ${failed()} failed)`);
+  finish();
 } finally {
   const managerExits = managers.map((child) => child.exitCode === null ? new Promise<void>((resolve) => child.once("exit", () => resolve())) : Promise.resolve());
   for (const child of managers) if (child.exitCode === null) stopGroup(child.pid);

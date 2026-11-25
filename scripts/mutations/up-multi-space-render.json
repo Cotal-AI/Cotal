@@ -21,7 +21,7 @@
   "mutations": [
     {
       "name": "the render drops persisted sibling callout accounts",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-broker-auth.ts",
       "find": "  const enabled = userAuthSpacesOnDisk(dir);",
       "replace": "  const enabled = prepared ? [space] : [];",
       "expectRed": "the second render preloads EVERY sibling callout account",
@@ -31,7 +31,7 @@
     },
     {
       "name": "the render goes back to the one space being booted",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-broker-auth.ts",
       "find": "  const spaces = preloadSpaceAccounts(dir, auth);",
       "replace": "  const spaces = [auth];",
       "expectRed": "server.conf preloads the SIBLING tenant's account",

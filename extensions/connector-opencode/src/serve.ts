@@ -3,5 +3,9 @@
  *  2.x has no `attach` subcommand. */
 import { BIN, launch } from "./launch.js";
 
-void launch(({ url, session, line }) =>
-  line === 2 ? [BIN, "--server", url, "--session", session] : [BIN, "attach", url, "--session", session]);
+// A launch the launcher refuses ends in its one-line reason, not the bundle's source and a stack trace.
+launch(({ url, session, line }) =>
+  line === 2 ? [BIN, "--server", url, "--session", session] : [BIN, "attach", url, "--session", session]).catch((error: unknown) => {
+  process.stderr.write(`[cotal-connector] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(1);
+});

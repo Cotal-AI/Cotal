@@ -4,8 +4,7 @@
  * CLI: --event event.json --context context.json (context includes eventName).
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { isMainEntry } from "./main-entry.mjs";
 
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const platforms = ["linux", "darwin", "win32"];
@@ -243,6 +242,13 @@ export function boundedCells(plan) {
       "candidate-source-identity", "candidate-next-target", "next-hop-success", "native-service-manual", "independent-final-state",
       "other-home-auth-required", "other-home-manager-preserved", "other-home-loaded-graph-preserved", "other-home-update-notice", "other-home-cleanup"],
   });
+  add("linux", "npm", "candidate-next-foreign-config-recovery", null, {
+    sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+    targetVersion: syntheticNextVersion(plan.targetVersion), targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+    syntheticVersionRule: "candidate.patch+1000",
+    requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+      "foreign-snapshot-retained", "candidate-source-identity", "candidate-next-target", "next-hop-success"],
+  });
   return cells;
 }
 /** Convenience wrapper for workflow callers. */
@@ -301,7 +307,7 @@ export function verifyResults(expected, results, { knownRefusals = [] } = {}) {
   return { acceptance, upgradeAcceptance: acceptance && acceptedRefusals.length === 0, requiredCount, passed, knownRefusals: acceptedRefusals, excluded, failures };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isMainEntry(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
     requireValue(args.length === 2 || args.length === 4, "usage: --event file [--context file]");

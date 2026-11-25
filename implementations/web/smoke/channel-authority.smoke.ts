@@ -83,8 +83,9 @@ check("an anycast rest is the ROUTE, not a channel", svc?.rest === "someroute", 
 // a stale or wrong build would make all of it a statement about code nobody is editing, and the
 // gate's `smoke:dist-freshness` guard checks ORDERING only — a newer-but-wrong dist passes it.
 //
-// `subjects.ts` imports nothing first-party (only `node:crypto`, verified before relying on it), so
-// it loads standalone and the two can be driven side by side on the same vectors. If the artifact
+// `subjects.ts` imports only `@nats-io/nkeys`, a type-only `./types.js` and its own import-free
+// `subject-grammar.ts` (verified before relying on it), so it loads standalone and the two can be
+// driven side by side on the same vectors. If the artifact
 // and the source disagree, that reddens HERE instead of silently grading the wrong one.
 //
 // EVERY PLANE IS COVERED, not just chat. The kind-gate's whole job is what happens on `inst` and
@@ -125,8 +126,10 @@ for (const [label, subject] of PLANE_VECTORS) {
 // The server's derivation. Extracted from web.ts and run against the REAL parsed subjects above, so
 // this measures what the expression computes rather than how it is spelled.
 const webTs = read("../src/web.ts");
-const derivation = /const channel = parsed\?\.[^;]*;/.exec(webTs)?.[0];
-check("web.ts declares the channel derivation in one extractable statement", Boolean(derivation), { derivation });
+const webRequestTs = read("../src/web-request.ts");
+const webReadTs = read("../src/web-read.ts");
+const derivation = /const channel = parsed\?\.[^;]*;/.exec(webRequestTs)?.[0];
+check("web-request.ts declares the channel derivation in one extractable statement", Boolean(derivation), { derivation });
 
 // `const` inside a vm context is a lexical binding and never becomes a property of the context
 // object, so the result is copied out explicitly. Found by this cell failing rather than by
@@ -182,8 +185,8 @@ check("web.ts declares the forward in one extractable statement", Boolean(forwar
 // is therefore only half the claim; the other half is the derivation inside `multiChannelHistory`,
 // extracted and driven the same way further down. Checking only the mapper would leave the actual
 // trust decision unmeasured.
-const mapper = /\.map\(\(\{ channel, msg \}\) => \(\{[\s\S]*?\}\)\)/.exec(webTs)?.[0];
-check("web.ts declares the backfill mapper in one extractable expression", Boolean(mapper), { mapper });
+const mapper = /\.map\(\(\{ channel, msg \}\) => \(\{[\s\S]*?\}\)\)/.exec(webReadTs)?.[0];
+check("web-read.ts declares the backfill mapper in one extractable expression", Boolean(mapper), { mapper });
 {
   const expr = mapper!.replace(/^\.map\(/, "").replace(/\)$/, "").replace(/ as const/g, "");
   const ctx: { out?: Record<string, unknown> } = {};

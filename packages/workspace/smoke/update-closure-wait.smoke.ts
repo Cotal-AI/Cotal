@@ -17,6 +17,7 @@ const { acquireLock } = await import("../src/advisory-lock.js");
 const { waitForUpdateClosure } = await import("../src/update-closure.js");
 
 if (process.argv[2] === "wait") {
+  process.send!("waiting");
   const waitedForUpdate = waitForUpdateClosure();
   console.log(JSON.stringify({ waitedForUpdate }));
   process.exit(0);
@@ -27,20 +28,33 @@ const NOTICE = `waiting for another cotal command (pid ${process.pid}) to finish
 /** Runs the waiter as its own process while this one holds the closure lock for `holdMs`. */
 async function waiter(holdMs: number | undefined): Promise<{ code: number | null; stdout: string; stderr: string; ms: number }> {
   const lock = holdMs === undefined ? undefined : acquireLock(join(home, ".update-closure.lock"), { label: "fixture closure writer" });
-  const t0 = Date.now();
+  let t0: number | undefined;
+  let release: ReturnType<typeof setTimeout> | undefined;
   const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), "wait"], {
-    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_CLOSURE_WAIT_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_CLOSURE_WAIT_HOME: home }, stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   let stdout = "", stderr = "";
-  child.stdout.on("data", (d) => (stdout += d));
-  child.stderr.on("data", (d) => (stderr += d));
-  const release = lock && setTimeout(() => lock.release(), holdMs);
+  child.stdout!.on("data", (d) => (stdout += d));
+  child.stderr!.on("data", (d) => (stderr += d));
+  child.once("message", message => {
+    if (message !== "waiting") return;
+    t0 = Date.now();
+    if (lock) release = setTimeout(() => lock.release(), holdMs);
+  });
+  let deadline: ReturnType<typeof setTimeout> | undefined;
   try {
-    const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("exit", resolve); });
-    return { code, stdout, stderr, ms: Date.now() - t0 };
+    const code = await new Promise<number | null>((resolve, reject) => {
+      deadline = setTimeout(() => reject(new Error(`waiter did not finish within 60 seconds: ${stderr}`)), 60_000);
+      child.once("error", reject);
+      child.once("close", resolve);
+    });
+    assert.notEqual(t0, undefined, "the child reaches the closure wait before the hold is timed");
+    return { code, stdout, stderr, ms: Date.now() - t0! };
   } finally {
-    if (release) clearTimeout(release);
+    clearTimeout(deadline);
+    clearTimeout(release);
     lock?.release();
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   }
 }
 

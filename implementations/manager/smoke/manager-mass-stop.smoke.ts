@@ -85,9 +85,9 @@ try {
   // Whether each inventory found its lifecycle's ACL row narrowed to no reads when it reached the daemon.
   const fencedAtInventory: boolean[] = [];
   let aclKv: KV | undefined;
-  const d = daemon.ep as unknown as { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> };
-  const handle = d.handleDeliveryAdmin.bind(d);
-  d.handleDeliveryAdmin = async (req) => {
+  const d = daemon.ep as unknown as { deliveryPlane: { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> } };
+  const handle = d.deliveryPlane.handleDeliveryAdmin.bind(d.deliveryPlane);
+  d.deliveryPlane.handleDeliveryAdmin = async (req) => {
     if (req.op === "lifecycleMemberships" && aclKv)
       fencedAtInventory.push((await readAcl(aclKv, String(req.args?.principal), String(req.args?.lifecycleUid)))?.record.allowSubscribe.length === 0);
     const reply = await handle(req);

@@ -116,6 +116,17 @@ export class JcodeCursorStateUnreadable extends Error {
 }
 
 let diagnosticLogFd: number | undefined;
+let diagnosticLogPath: string | undefined;
+
+/** The private connector log containing startup diagnostics for this seat. */
+export function jcodeDiagnosticLogPath(): string | undefined {
+  return diagnosticLogPath;
+}
+
+/** Retain startup details privately without publishing provider or child bytes. */
+export function retainJcodeStartupError(error: unknown): void {
+  if (diagnosticLogFd !== undefined) writeSync(diagnosticLogFd, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+}
 
 /** Start the per-seat connector diagnostic log before any private Jcode process is launched. */
 export function installJcodeDiagnosticLog(home: string): string {
@@ -137,6 +148,7 @@ export function installJcodeDiagnosticLog(home: string): string {
     0o600,
   );
   hardenPrivate(path, "file");
+  diagnosticLogPath = path;
   return path;
 }
 

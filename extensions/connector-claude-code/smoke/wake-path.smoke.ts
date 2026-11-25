@@ -33,6 +33,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
+import { randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,7 +43,7 @@ import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parseP
 import { connect as rawConnect } from "@nats-io/transport-node";
 import { MeshAgent, startControlServer, cotalToolSpecs, type InboxItem } from "../../connector-core/dist/index.js";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, controlTranscriptMac, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** The real per-event hook entry Claude Code runs, and the loader that can execute its TS. */
@@ -117,33 +118,39 @@ const wake = createWakePolicy(
 // Wired to the wake policy as `mcp.ts` wires it: a frame that surfaces an item spends its nudge.
 const claude = createClaudeHandle({ surfaced: (items) => wake.surfaced(items) });
 const inboxSpec = cotalToolSpecs(agent.config, "claude-code", undefined, undefined, claude.inboxDeliveryNote).find((s) => s.name === "cotal_inbox")!;
-const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN }, claude.handle, {
+const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN, version: 1 }, claude.handle, {
   onReply: claude.onReply,
 });
 
 /**
- * Speak the real control-frame protocol the hook relay speaks.
+ * Speak the real control exchange the hook relay speaks, from its documented bytes.
  * `dropReply` reproduces a relay that gave up (its 2s timeout, or a killed hook process): the frame
  * IS delivered — we destroy only after the write flushes — but nothing ever reads the answer.
  */
 function fireHook(event: Record<string, unknown>, opts: { dropReply?: boolean } = {}): Promise<string | undefined> {
   return new Promise((resolve) => {
     const sock = connect(socketPath);
+    const nc = randomBytes(32).toString("base64url");
+    let ns: string | undefined;
     let buf = "";
     const finish = (out?: string) => {
       sock.destroy();
       resolve(out);
     };
     sock.setEncoding("utf8");
-    sock.on("connect", () => {
-      sock.write(JSON.stringify({ token: TOKEN, event }) + "\n", () => {
-        if (opts.dropReply) finish(undefined); // frame delivered; answer abandoned
-      });
-    });
+    sock.on("connect", () => sock.write(JSON.stringify({ v: 1, nonce: nc }) + "\n"));
     sock.on("data", (d) => {
       buf += d;
-      const nl = buf.indexOf("\n");
-      if (nl >= 0) finish(buf.slice(0, nl));
+      for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (ns !== undefined) return finish(line.slice(line.indexOf(" ") + 1));
+        ns = (JSON.parse(line) as { nonce: string }).nonce;
+        const body = JSON.stringify({ event });
+        sock.write(`${controlTranscriptMac(TOKEN, "client", nc, ns, body)} ${body}\n`, () => {
+          if (opts.dropReply) finish(undefined); // frame delivered; answer abandoned
+        });
+      }
     });
     sock.on("error", () => resolve(undefined));
     setTimeout(() => finish(undefined), 5_000).unref?.();
@@ -179,7 +186,8 @@ function fireHookViaRealRelay(
         ...clean,
         COTAL_NAME: "Otto", // hasIdentity() gate — the relay no-ops for an unmanaged session
         COTAL_CONTROL_SOCKET: socketPath,
-        COTAL_CONTROL_TOKEN: TOKEN,
+        COTAL_CONTROL_KEY: TOKEN,
+        COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["pipe", "pipe", "ignore"],
     });
@@ -834,7 +842,7 @@ try {
   // A material file readable by every local user: the reader refuses it, which is a configuration
   // fault the operator has to be able to see.
   const looseMaterial = join(relayDir, "loose.json");
-  writeFileSync(looseMaterial, JSON.stringify({ controlToken: "warn-leg-token" }), { mode: 0o644 });
+  writeFileSync(looseMaterial, JSON.stringify({ controlKey: "warn-leg-token", controlVersion: 1 }), { mode: 0o644 });
   chmodSync(looseMaterial, 0o644);
   const broken = await runRelay({
     COTAL_NAME: "Otto",
@@ -860,7 +868,7 @@ try {
   // Positive control: a resolvable endpoint warns about nothing, even though the socket is dead and
   // the relay still returns empty. Without this leg, a warn-on-every-run mutant would pass R1.
   const goodMaterial = join(relayDir, "good.json");
-  writeFileSync(goodMaterial, JSON.stringify({ controlToken: "warn-leg-token" }), { mode: 0o600 });
+  writeFileSync(goodMaterial, JSON.stringify({ controlKey: "warn-leg-token", controlVersion: 1 }), { mode: 0o600 });
   chmodSync(goodMaterial, 0o600);
   const resolvable = await runRelay({
     COTAL_NAME: "Otto",

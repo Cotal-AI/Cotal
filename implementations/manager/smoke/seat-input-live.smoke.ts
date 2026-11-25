@@ -33,6 +33,9 @@
  *      `enter:false` still presses nothing. Graded at the runtime write seam through a recording
  *      PASS-THROUGH (every byte still reaches the real child), because the sink is a concatenation
  *      and cannot tell `submit-me` + `\r` from `submit-me\r`.
+ *  12. `interrupt` writes the seat's connector-declared key as ONE keystroke (a lone Escape byte, no
+ *      paste markers), refuses a seat whose connector declares no key without typing anything, and
+ *      is broker-dropped for a spawn-only credential in both modes, like `input`.
  *   8. THE CLI PATH, end to end: the real binary as a subprocess runs
  *      `cotal input --name <seat> --text "/compact"`, exits 0, prints a receipt naming the seat and
  *      the acknowledged byte count, and the child receives `/compact\r`. A rejected or dropped
@@ -126,7 +129,7 @@ const sinkDir = join(dir, "sinks");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 mkdirSync(sinkDir, { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat", "menuseat"])
+for (const n of ["typist", "guarded", "opseat", "cliseat", "dropseat", "deadseat", "menuseat", "intseat", "nokeyseat"])
   // No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
@@ -181,6 +184,8 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
 const echoCon: Connector = { kind: "connector", name: "input-echo", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
 registry.register(echoCon);
 registry.register({ ...echoCon, name: "claude" });
+const keyedCon: Connector = { ...echoCon, name: "input-echo-key", interruptKey: "\x1b" };
+registry.register(keyedCon);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 type PrivHandle = { status: () => "running" | "exited"; kind: string; write?: (data: string) => Promise<number> };
@@ -295,7 +300,7 @@ try {
   // Where the row really comes from is graded separately, and adversarially, in cell 9.
   const A = await instrument([
     { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "spawn" },
-    { command: "despawn", owner: true }, { command: "input", owner: true },
+    { command: "despawn", owner: true }, { command: "input", owner: true }, { command: "interrupt", owner: true },
   ]);
   const B = await instrument([{ command: "inspect" }, { command: "input", owner: true }]);
 
@@ -683,6 +688,47 @@ try {
     } finally { handle.write = realWrite; }
   }
 
+  console.log("\n12. `interrupt` writes the connector's declared key as one keystroke, and refuses a connector that declares none");
+  {
+    const keyed = await spawnLive(A.call, { name: "intseat", agent: "input-echo-key", cwd: repoRoot, events: false });
+    const r = await A.call("interrupt", undefined, { actor: keyed.id, lifecycleUid: keyed.lifecycleUid });
+    check("interrupt is served and names the seat", r.reply.ok === true && (r.reply.data as { name?: string } | undefined)?.name === keyed.name, r.reply);
+    await sinkReaches(keyed.name, 1);
+    await wait(250);
+    check("THE CHILD RECEIVED EXACTLY ONE ESCAPE BYTE: a keypress, not a bracketed paste",
+      sinkBytes(keyed.name).equals(Buffer.from("\x1b")), sinkBytes(keyed.name).toString("hex"));
+    const plain = await spawnLive(A.call, { name: "nokeyseat", agent: "input-echo", cwd: repoRoot, events: false });
+    const n = await A.call("interrupt", undefined, { actor: plain.id, lifecycleUid: plain.lifecycleUid });
+    check("a seat whose connector declares no interrupt key is refused as unimplemented, naming the connector, not-executed",
+      n.reply.ok === false && n.reply.error?.code === "unimplemented" && String(n.reply.error?.message ?? "").includes("connector input-echo")
+      && n.reply.error?.outcome === "not-executed", n.reply);
+    await wait(250);
+    check("...and nothing was typed into it", sinkBytes(plain.name).length === 0, sinkBytes(plain.name).toString("hex"));
+    // `interrupt` rides the operator seat-write set with `input`: a spawn-only credential holds no row.
+    const S = await instrument([{ command: "inspect" }]);
+    for (const mode of ["owner", "any"] as const) {
+      let refused: string | undefined;
+      let detail = "";
+      try {
+        const q = await epCall(S.nc, space, { mode: "one" }, {
+          endpoint: MANAGER_ENDPOINT, command: "interrupt", contract: MANAGER_CONTRACTS.interrupt, caller: S.caller,
+          target: { mode, owner: DEV_OWNER, actor: keyed.id, lifecycleUid: keyed.lifecycleUid },
+        }, { deadlineMs: 3_000, currentEpoch: async () => 0 });
+        refused = q.reply.ok === false ? q.reply.error?.code : "SERVED-OK";
+        detail = q.reply.ok === false ? q.reply.error?.message ?? "" : "";
+      } catch (e) {
+        refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+        detail = (e as Error).message;
+      }
+      check(`a credential holding ONLY the spawn capability is refused by the broker on the ${mode}-mode interrupt subject`,
+        refused === "permission-denied" && /REFUSED BY THE BROKER/.test(detail), { mode, refused, detail: detail.slice(0, 200) });
+    }
+    const rOk = await S.call("inspect", { name: keyed.name });
+    check("...while the same credential's `inspect` is served, so the refusals above are the missing row", rOk.reply.ok === true, rOk.reply);
+    await S.nc.drain().catch(() => S.nc.close());
+    for (const seat of [keyed, plain]) await A.call("despawn", { graceful: false }, { actor: seat.id, lifecycleUid: seat.lifecycleUid });
+  }
+
   await A.nc.drain().catch(() => A.nc.close());
   await B.nc.drain().catch(() => B.nc.close());
   // WITH agents, and nothing less (#1712). `stop()` without the flag is the DETACHED mode: it
@@ -711,8 +757,8 @@ try {
 // tally has nothing to compare itself against, so a refactor that skips a block removes the
 // evidence without removing the green. Bumping this number is the deliberate edit that makes such
 // a drop impossible to miss. The count is read BEFORE this cell is tallied, so it is the number of
-// preceding cells (37), not 38.
-const EXPECTED_CELLS = 39;
+// preceding cells (46), not 47.
+const EXPECTED_CELLS = 46;
 check(`every cell ran (a silently skipped cell must not read as green): expected ${EXPECTED_CELLS}`,
   pass + fail === EXPECTED_CELLS, { ran: pass + fail, expected: EXPECTED_CELLS });
 

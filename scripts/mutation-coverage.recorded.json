@@ -267,10 +267,6 @@
     "sha256": "a59b7c597016d5f197c7424574734717cc9cc5c5fa63aa7d5d60de971b1a7d14",
     "refusal": "mutation \"omit membership credentials from stock daemon renewal\" targets packages/workspace/src/renewal.ts, which none of [implementations/auth/smoke/hosted-bootstrap-order.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/workspace that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
-  "implementations/auth/smoke/mutations/corrupt-member-inventory.json": {
-    "sha256": "a4a6c03b27e4a2951b04b5db71f9ac04d9174c2fd86d10bd0b40964941b481d4",
-    "refusal": "mutation \"restore defective listMembers complete inventory omission\" targets packages/core/src/endpoint.ts, which none of [implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
   "implementations/auth/smoke/mutations/managed-agent-runtime-transport.json": {
     "sha256": "75095ccade11d3c7263c25796be4605ee96c27e506c162667b5e524c8b1d914d",
     "refusal": "mutation \"shipped runtime client never posts to the transport\" targets implementations/auth/src/provider.ts, which none of [implementations/auth/smoke/remote-exchange.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/auth that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -350,10 +346,6 @@
   "implementations/cli/smoke/mutations/up-store-cap.json": {
     "sha256": "eae2cb72264afc384826131973e6823ba72c951b0e15be7399420c6f5be781a5",
     "refusal": "mutation \"detached boot accepts the flag but does not render it\" targets implementations/cli/src/commands/up.ts, which none of [implementations/cli/smoke/up-adopt-resume-lock-live.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/cli that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "implementations/delivery/smoke/mutations/delivery-startup-adoption.json": {
-    "sha256": "9bc32dac7fb8c1e9e261e20a9ccd2f71369550ea7bb12eb4575bf01e4f953168",
-    "refusal": "mutation \"the daemon reports start-up complete from the first instant\" targets implementations/delivery/src/delivery.ts, which none of [implementations/delivery/smoke/delivery-startup-adoption.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in implementations/delivery that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
   },
   "implementations/delivery/smoke/mutations/injected-tenancy-admission.json": {
     "sha256": "5c52b7b94ded12fec076fc44b373a7291703c8911c4f99387944f98ee29a7214",
@@ -478,10 +470,6 @@
   "packages/core/smoke/fixtures/core-boundary.mutations.json": {
     "sha256": "92e5c192fe8cbe8f83a3e68d28d9c1806224bb310b26a3fefda088ae76f97b1b",
     "refusal": "mutation \"a src file imports the test-only kit, which would compile here and be missing at install time\" targets packages/core/src/index.ts, which none of [packages/core/smoke/core-boundary.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in packages/core that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
-  },
-  "packages/core/smoke/fixtures/delivery-lease-holder.mutations.json": {
-    "sha256": "595adbe1c3c285109cba6e6af03eecbb1f90a65fc6a6370afaa6b4cd942ca713",
-    "refusal": "mutation \"the wait accepts ANY ready lease again, as it did before #837\" is missing \"cell\""
   },
   "packages/core/smoke/fixtures/event-channel-classify.mutations.json": {
     "sha256": "b48ec7ac2b7a489fa2806021230ca8862919c7f9c61fd8a1c921deed84c0652e",

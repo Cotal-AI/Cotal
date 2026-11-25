@@ -1,0 +1,59 @@
+{
+  "recorded": "claude 2.1.331 initialize, run in a project with one custom command and one skill; commands trimmed to a sample",
+  "response": {
+    "type": "control_response",
+    "response": {
+      "subtype": "success",
+      "request_id": "x",
+      "response": {
+        "commands": [
+          {
+            "name": "lane-skill",
+            "description": "Lane D custom skill (project)",
+            "argumentHint": ""
+          },
+          {
+            "name": "lane-cmd",
+            "description": "Lane D custom command (project)",
+            "argumentHint": "<topic>"
+          },
+          {
+            "name": "compact",
+            "description": "Free up context by summarizing the conversation so far",
+            "argumentHint": "<optional custom summarization instructions>",
+            "builtin": true
+          },
+          {
+            "name": "heapdump",
+            "description": "Dump the JS heap to the Desktop; on Linux with no Desktop folder, the home directory",
+            "argumentHint": "",
+            "builtin": true
+          },
+          {
+            "name": "init",
+            "description": "Initialize a new CLAUDE.md file with codebase documentation",
+            "argumentHint": "",
+            "builtin": true
+          },
+          {
+            "name": "model",
+            "description": "Set the AI model for Claude Code",
+            "argumentHint": "<model>",
+            "builtin": true
+          },
+          {
+            "name": "usage",
+            "description": "Show session cost, plan usage, and what's contributing to your limits",
+            "argumentHint": "",
+            "aliases": [
+              "cost",
+              "stats"
+            ],
+            "builtin": true
+          }
+        ],
+        "claude_code_version": "2.1.331"
+      }
+    }
+  }
+}

@@ -1,9 +1,12 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
 import { findCotalRoot, movedRootRemedy, spaceSegment, stackJournalRoot, userAuthStateDir } from "./auth-paths.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
+import { shellPath } from "./local-record-source.js";
 
 export { homeCotalDir, userCotalDir } from "./cotal-home.js";
 
@@ -74,6 +77,9 @@ export interface MeshEntry {
    *  `--store-dir` that disagrees is refused. Absent means the record was written before this field
    *  existed, and a repair then opens the root's default store and says so. */
   storeDir?: string;
+  /** Creation-pinned native members retained when the project folder is moved or deleted. */
+  nativeHost?: string;
+  nativeMembers?: { role: "manager" | "delivery" | "auth" | "broker"; process: { pid: number; token: string } }[];
   /** TLS-REQUIRED CLIENT INTENT: this broker serves TLS, so every first-party connection resolved
    *  through this record must REQUIRE it rather than merely tolerate it. Absent means no such
    *  decision was recorded (and is what any record written before this field means).
@@ -135,6 +141,10 @@ export interface MeshEntry {
   unchecked?: boolean;
   /** ISO timestamp of when the record was written. */
   ts: string;
+  /** This folder's completed legacy down kept the registration. The next up clears this receipt. */
+  stoppedByDown?: true;
+  /** The completed legacy down also confirmed the manager's shutdown with agent retirement. */
+  stoppedWithAgents?: true;
 }
 
 /** Non-secret user-auth metadata on a {@link MeshEntry}. TRUST PINS and CONVENIENCE ENDPOINTS are
@@ -356,6 +366,17 @@ export function brokerAddressKey(server: string): string | undefined {
   return `${address.hostname}:${address.port || "4222"}`;
 }
 
+/** Normalize harmless URL spelling without changing the broker's transport or TLS intent. */
+export function brokerUrlKey(server: string): string {
+  try {
+    const url = new URL(server);
+    if (url.pathname === "/") url.pathname = "";
+    return url.href;
+  } catch {
+    return server;
+  }
+}
+
 /** Canonicalize a project root for comparison. A recorded root is whatever spelling `cotal up` was
  *  run under, so the same directory reaches us by several names: a symlinked root (macOS `/var` →
  *  `/private/var`) or, on Windows, an 8.3 short name (`C:\Users\RUNNER~1\…`) — `process.cwd()` keeps
@@ -534,13 +555,26 @@ export class MeshRegistryError extends Error {
   readonly summary?: string;
   /** The step that clears it, when it is not the restore or remove a damaged record takes. */
   readonly remedy?: string;
-  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string }) {
+  /** Set when this account may not read the file, which is then intact as far as anyone knows. */
+  readonly refusal?: "PERMISSION_DENIED";
+  /** The record path is occupied by a directory, not a removable record file. */
+  readonly recordDirectory?: true;
+  constructor(file: string, message: string, options?: { cause?: unknown; summary?: string; remedy?: string; refusal?: "PERMISSION_DENIED"; recordDirectory?: true }) {
     super(message, options);
     this.name = "MeshRegistryError";
     this.file = file;
     this.summary = options?.summary;
     this.remedy = options?.remedy;
+    this.refusal = options?.refusal;
+    this.recordDirectory = options?.recordDirectory;
   }
+}
+
+/** A directory at a record path must be moved aside intact before restoring a record. */
+export function registryRecordDirectory(file: string, cause: unknown): MeshRegistryError {
+  const summary = `${file} is a directory, not a space record file`;
+  const remedy = `move the directory ${shellPath(file)} aside to an unused path, then restore the record from backup if available`;
+  return new MeshRegistryError(file, `${summary} - ${remedy}`, { cause, summary, remedy, recordDirectory: true });
 }
 
 /** Detect a {@link MeshRegistryError} without `instanceof`, which two installed copies of this
@@ -565,6 +599,9 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: catalogRoot is valid only as a non-empty absolute path on a catalog entry - restore the record or remove it`);
   if (entry.storeDir !== undefined && (typeof entry.storeDir !== "string" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))
     throw new MeshRegistryError(file, `${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
+  if (entry.nativeMembers !== undefined && (!Array.isArray(entry.nativeMembers) || entry.nativeMembers.length > 4 || entry.nativeMembers.some((member) =>
+    !member || !["manager", "delivery", "auth", "broker"].includes(member.role) || !member.process || !Number.isSafeInteger(member.process.pid) || member.process.pid <= 0 || typeof member.process.token !== "string" || member.process.token.length === 0)))
+    throw new MeshRegistryError(file, `${file} has invalid native stack process identities - restore the record before stopping its stack`);
   try {
     spaceSegment(entry.space);
   } catch (e) {
@@ -625,7 +662,14 @@ function readMeshFile(file: string): MeshEntry | undefined {
   try {
     entry = JSON.parse(readFileSync(file, "utf8")) as MeshEntry;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "EISDIR") throw registryRecordDirectory(file, e);
+    if (code === "EACCES" || code === "EPERM") {
+      const summary = `mesh registry file ${file} cannot be read by this account`;
+      const remedy = `restore read access to ${shellPath(file)}, then try again. The record is kept.`;
+      throw new MeshRegistryError(file, `${summary}. ${remedy}`, { cause: e, summary, remedy, refusal: "PERMISSION_DENIED" });
+    }
     // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
     // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
     throw new MeshRegistryError(file, `${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`, { cause: e });
@@ -673,21 +717,44 @@ export interface CurrentSelection {
   readonly source: "explicit" | "adopted";
 }
 
+const installCustodyRead = new AsyncLocalStorage<true>();
+
+/** Read install-wide Manager custody without making a damaged space selection a prerequisite. */
+export function withInstallCustodyRead<T>(read: () => T, installWide = true): T {
+  return installWide ? installCustodyRead.run(true, read) : read();
+}
+
 /** Read the bare-name pointer and its optional matching adoption marker. */
 export function readCurrentSelection(): CurrentSelection | undefined {
+  try { return readSavedSelection(); }
+  catch (error) {
+    if (installCustodyRead.getStore() && isMeshRegistryError(error)) return undefined;
+    throw error;
+  }
+}
+
+function readSavedSelection(): CurrentSelection | undefined {
+  const file = currentFile();
+  const remedy = "clear the selection with `cotal use --clear`, or select a known space again";
   let space: string;
   try {
-    space = readFileSync(currentFile(), "utf8").trim();
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
+    space = readFileSync(file, "utf8").trim();
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const summary = `${file} could not be read: ${(cause as Error).message}`;
+    throw new MeshRegistryError(file, summary, { cause, summary, remedy });
   }
-  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
+  if (!space) {
+    const summary = `${file} is empty - select a mesh with \`cotal use <space>\` or remove the file`;
+    throw new MeshRegistryError(file, summary, { summary, remedy });
+  }
+  const marker = `${file}.adopted`;
   try {
-    return { space, source: readFileSync(`${currentFile()}.adopted`, "utf8").trim() === space ? "adopted" : "explicit" };
+    return { space, source: readFileSync(marker, "utf8").trim() === space ? "adopted" : "explicit" };
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return { space, source: "explicit" };
-    throw new MeshRegistryError(`${currentFile()}.adopted`, `the selection source could not be read: ${(cause as Error).message}`, { cause });
+    const summary = `${marker} could not be read: ${(cause as Error).message}`;
+    throw new MeshRegistryError(marker, summary, { cause, summary, remedy });
   }
 }
 
@@ -704,12 +771,30 @@ export function setAdoptedCurrent(space: string): void {
 function writeCurrentSelection(space: string, source: CurrentSelection["source"]): void {
   if (!space.trim()) throw new Error("a selection needs a space name");
   prepareCotalHomeForWrite();
-  rmSync(`${currentFile()}.adopted`, { force: true });
-  writeSecretFile(currentFile(), space);
-  if (source === "adopted") writeSecretFile(`${currentFile()}.adopted`, space);
+  const file = currentFile();
+  removeSelectionRecord(`${file}.adopted`);
+  const prior = lstatSync(file, { throwIfNoEntry: false });
+  if (prior?.isDirectory()) removeSelectionRecord(file);
+  try { writeSecretFile(file, space); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EACCES" || source !== "explicit" || !prior?.isFile() ||
+        (process.getuid !== undefined && prior.uid !== process.getuid())) throw error;
+    writeSecretFileAtomic(file, space);
+  }
+  if (source === "adopted") writeSecretFile(`${file}.adopted`, space);
 }
 
 export function clearCurrent(): void {
-  rmSync(`${currentFile()}.adopted`, { force: true });
-  rmSync(currentFile(), { force: true });
+  removeSelectionRecord(`${currentFile()}.adopted`);
+  removeSelectionRecord(currentFile());
+}
+
+/** A directory at a record path belongs aside, not in a recursive deletion. */
+function removeSelectionRecord(file: string): void {
+  try { rmSync(file, { force: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ERR_FS_EISDIR" || !lstatSync(file, { throwIfNoEntry: false })?.isDirectory()) throw error;
+    prepareCotalHomeForWrite();
+    renameSync(file, `${file}.corrupt.${randomUUID()}`);
+  }
 }

@@ -18,7 +18,7 @@ registry.register({
   buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [seat, space, o.name], env: envFor(o) }),
 } as Connector);
 const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
-(manager as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = Number(process.env.REPRO_READINESS_MS);
+(manager as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = Number(process.env.REPRO_READINESS_MS);
 await manager.start();
 const managerInstanceId = (manager as unknown as { managerInstanceId: string }).managerInstanceId;
 process.stdout.write(`REPRO_MANAGER ${JSON.stringify({ managerPid: process.pid, managerInstanceId })}\n`);

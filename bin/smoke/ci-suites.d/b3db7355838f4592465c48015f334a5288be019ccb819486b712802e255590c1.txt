@@ -1,0 +1,3 @@
+# OpenCode 1.x and 2.x permission asks and questions on the shipped prompt desk: the prompt each opens,
+# each reply's request, and answers given at OpenCode's own dialog.
+smoke:opencode-prompts

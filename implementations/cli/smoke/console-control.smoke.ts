@@ -142,7 +142,7 @@ try {
 
   session = new ConsoleSession(["--space", space, "--server", servers], home, {}, { cols: 140, rows: 36 });
   const s = session;
-  check("console: the TUI paints", await s.waitFor(`${space} · #`, 40_000), clean(s.out).slice(-300));
+  check("console: the TUI paints", await s.waitFor(`${space} · all`, 40_000), clean(s.out).slice(-300));
 
   console.log("1. :ps merges both managers");
   let m = s.mark();

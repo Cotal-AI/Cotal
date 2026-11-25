@@ -5,6 +5,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { CommandFailure } from "@cotal-ai/workspace";
 import { personaReferences, resolveManifest } from "./resolve.js";
 import { missingPersona, preparePersonas, type PreparedManifest } from "./preflight.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -30,13 +31,26 @@ export function readManifestSource(abs: string): string {
   }
 }
 
+/** Classify an OS error on the manifest itself, without mistaking a referenced file for it. */
+export function manifestPathFailure(error: unknown, target: { path: string } | { file: string }): CommandFailure | undefined {
+  if (error instanceof UnusableFile) return error;
+  const path = resolve("file" in target ? target.file : target.path);
+  const { code, path: failedPath } = error as NodeJS.ErrnoException;
+  if (failedPath !== path) return;
+  if (code === "ENOENT" || code === "ENOTDIR") {
+    const reason = code === "ENOTDIR" ? "has a parent that is not a directory" : "was not found";
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} ${reason}; no broker was contacted`, { target, remedy: "check the file path and run the command again" });
+  }
+  if (code === "EACCES" || code === "EPERM") return new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot read the team manifest ${path}; no broker was contacted`, { target, remedy: "check that this account can read the file and enter its parent folders, then retry" });
+}
+
 /** Read + fully resolve a manifest file (absolute path recommended). Throws {@link ManifestError}
  *  with located problems, an {@link UnusableFile} for a directory, or a filesystem error if the
  *  manifest itself cannot be read. */
-export function loadManifest(path: string): PreparedManifest {
+export function loadManifest(path: string, logFileOverride?: string): PreparedManifest {
   const abs = resolve(path);
   const src = readManifestSource(abs);
-  try { return preparePersonas(resolveManifest(src, abs)); }
+  try { return preparePersonas(resolveManifest(src, abs, logFileOverride)); }
   catch (e) {
     if (e instanceof ManifestError) throw new ManifestError(e.file, withMissingPersonas(e.issues, src, abs));
     throw e;
@@ -49,8 +63,8 @@ function withMissingPersonas(issues: readonly ManifestIssue[], src: string, sour
   const out = [...issues];
   for (const ref of personaReferences(src, sourcePath)) {
     try { statSync(ref.persona); continue; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") continue; }
-    const issue: ManifestIssue = { message: missingPersona(ref.persona, sourcePath), path: ["agents", ref.name], line: ref.line, col: ref.col };
-    const named = out.findIndex((other) => other.message === issue.message && other.path?.join(".") === issue.path!.join("."));
+    const issue: ManifestIssue = { message: missingPersona(ref.persona, sourcePath), path: ref.path, line: ref.line, col: ref.col };
+    const named = out.findIndex((other) => other.message === issue.message && other.path?.[0] === "agents" && other.path[1] === ref.path[1]);
     if (named < 0) out.push(issue); else out[named] = issue;
   }
   return out;

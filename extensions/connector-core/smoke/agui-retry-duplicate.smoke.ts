@@ -75,6 +75,9 @@ import { aguiFrame, runFinished, runStarted } from "../src/agui.js";
 import { AguiEmitter, AguiEmitterHalted } from "../src/agui-emitter.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
+import { ensureEventWalDir } from "../src/agui-wal-path.js";
+import { FileSubjectFrontier } from "../src/subject-frontier.js";
+import { checkEventStartup } from "../src/event-startup.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 
 let ok = 0,
@@ -251,14 +254,41 @@ const frameBody = (epoch: string): Part[] => [
  */
 type Seed = "none" | "decoy" | "landed" | "landed-window-closed" | "moved-tip" | "landed-below-tip";
 
-/** Close the chat stream's duplicate window behind a stored frame: the broker purges its dedup
- *  cache at once when the window shrinks, which is what two minutes of waiting would do. */
-const closeDuplicateWindow = async (url: string, space: string): Promise<void> => {
+/** Set the short window before seeding so its expiry timer never uses the original two minutes.
+ *  Then poll with a publish that can only duplicate or refuse until the broker proves id expiry. */
+const seedAndCloseDuplicateWindow = async (url: string, space: string, ep: CotalEndpoint,
+  frame: { channel: string; id: string; parts: Part[] }): Promise<number> => {
   const nc = await connect({ servers: dial(url) });
   try {
     const jsm = await jetstreamManager(nc);
     await jsm.streams.update(chatStream(space), { duplicate_window: nanos(100) });
-    await wait(500);
+    const { ack: stored } = await ep.multicastExpecting({ ...frame, expectedLastSubjectSeq: 0 });
+    const before = await jsm.streams.info(chatStream(space));
+    const deadline = performance.now() + 10_000;
+    let closed = false;
+    while (performance.now() < deadline) {
+      try {
+        const { ack } = await ep.multicastExpecting({
+          channel: frame.channel, id: frame.id, parts: frame.parts,
+          expectedLastSubjectSeq: stored.seq,
+          expectedLastMsgId: randomUUID(),
+        });
+        if (!ack.duplicate || ack.seq !== stored.seq)
+          throw new Error(`duplicate-window probe returned an unexpected ack: ${JSON.stringify(ack)}`);
+      } catch (e) {
+        // Only the last-id guard's refusal proves the broker passed dedup without finding our id.
+        // A timeout, a moved tip or any other failure is not evidence of expiry.
+        if ((e as { code?: number }).code !== 10070) throw e;
+        closed = true;
+        break;
+      }
+      await wait(50);
+    }
+    const after = await jsm.streams.info(chatStream(space));
+    if (!closed || after.config.duplicate_window !== nanos(100) ||
+      after.state.last_seq !== before.state.last_seq || after.state.messages !== before.state.messages)
+      throw new Error(`duplicate window did not close without a stream write: ${JSON.stringify({ closed, before: before.state, after: after.state })}`);
+    return stored.seq;
   } finally {
     await nc.close();
   }
@@ -325,11 +355,12 @@ const arm = async (opts: { config: string; url: string; seed: Seed; read?: boole
     // The first publish of the frozen frame, stored by the broker, its ack never recorded: what a
     // connection lost between the publish and its ack leaves behind.
     let landedSeq: number | undefined;
-    if (opts.seed === "landed" || opts.seed === "landed-window-closed" || opts.seed === "landed-below-tip")
+    if (opts.seed === "landed" || opts.seed === "landed-below-tip")
       landedSeq = (await ep.multicastExpecting({ channel: events, parts: frameBody(wal.epoch), id: frozenId, expectedLastSubjectSeq: 0 })).ack.seq;
     if (opts.seed === "landed-below-tip") await foreign(landedSeq!);
     if (opts.seed === "moved-tip") await foreign(0);
-    if (opts.seed === "landed-window-closed") await closeDuplicateWindow(opts.url, space);
+    if (opts.seed === "landed-window-closed") landedSeq = await seedAndCloseDuplicateWindow(opts.url, space, ep,
+      { channel: events, id: frozenId, parts: frameBody(wal.epoch) });
 
     // The seat's endpoint, without the channel read when the credential would not hold it.
     const endpoint = opts.read === false ? withoutChannelRead(ep) : ep;
@@ -361,6 +392,56 @@ const arm = async (opts: { config: string; url: string; seed: Seed; read?: boole
   }
 };
 
+/** An ended thread left its stored frame unacknowledged before a new thread was launched. */
+const endedThread = async (url: string, seed: "landed" | "none" | "moved-tip" | "landed-below-tip" = "landed", read = true) => {
+  const space = `p${randomUUID().slice(0, 8).replace(/-/g, "")}`;
+  const loc = await ensureEventWalDir({ workspaceRoot: root, space, principal: PRINCIPAL_KEY, threadId: "thread-1" });
+  const ep = new CotalEndpoint({ space, servers: dial(url),
+    card: { name: "ended-thread", kind: "agent", owner: OWNER, actor: ACTOR, id: ACTOR }, lifecycleUid: mintLifecycleUid() });
+  ep.on("error", () => {});
+  try {
+    await ep.start();
+    const sf = await FileSubjectFrontier.open(loc.subjectPath, { space, principal: PRINCIPAL_KEY });
+    const old = await EventWal.open(loc.walPath, { space, principal: PRINCIPAL_KEY, threadId: "thread-1", subjectMayExist: false });
+    await old.bindSubjectFrontier(sf);
+    const id = randomUUID();
+    const body = frameBody(old.epoch);
+    await old.beginSend({ id, E: 0, seq: 1, sourceCursor: "ended", body, brackets: BR });
+    const channel = `events.${PRINCIPAL_KEY}`;
+    // Prove expiry while the seeded frame is still the tip. The other arms never stored its id.
+    let landed = 0;
+    if (seed === "landed" || seed === "landed-below-tip")
+      landed = await seedAndCloseDuplicateWindow(url, space, ep, { channel, parts: body, id });
+    if (seed === "moved-tip" || seed === "landed-below-tip")
+      await ep.multicastExpecting({ channel, parts: [{ kind: "text", text: "another writer" }], id: randomUUID(), expectedLastSubjectSeq: landed });
+    const next = await ensureEventWalDir({ workspaceRoot: root, space, principal: PRINCIPAL_KEY, threadId: "thread-2" });
+    const wal = await EventWal.open(next.walPath, { space, principal: PRINCIPAL_KEY, threadId: "thread-2", subjectMayExist: false });
+    const srcPath = join(next.threadDir, "session.jsonl");
+    writeFileSync(srcPath, "");
+    let err: Error | undefined;
+    let frames = 0;
+    try {
+      await checkEventStartup(ep, { COTAL_WORKSPACE_ROOT: root });
+      const em = await AguiEmitter.start({ endpoint: read ? ep : withoutChannelRead(ep), wal,
+        subjectFrontier: await FileSubjectFrontier.open(next.subjectPath, { space, principal: PRINCIPAL_KEY }),
+        source: new JsonlFileSource(srcPath),
+        map: () => ({ runId: "r2", events: [runStarted({ threadId: "thread-2", runId: "r2", timestamp: 3 }), runFinished({ threadId: "thread-2", runId: "r2", timestamp: 4 })] }),
+      });
+      await em.pump();
+      writeFileSync(srcPath, "{}\n");
+      frames = (await em.pump()).frames;
+    } catch (e) { err = e as Error; }
+    const oldDisk = await EventWal.open(loc.walPath, { space, principal: PRINCIPAL_KEY, threadId: "thread-1", subjectMayExist: true });
+    const rows = await ep.listChannels();
+    const count = rows.find(row => row.channel === `events.${PRINCIPAL_KEY}`)?.messages ?? 0;
+    const result = { error: err?.message, frames, count, landed, oldPending: oldDisk.pending?.state, oldTip: oldDisk.frontier.lastSubjectSeq };
+    return { ...result, err };
+  } finally {
+    await ep.stop().catch(() => {});
+    await loc.lock.release();
+  }
+};
+
 try {
   for (const [config, boot] of [
     ["standalone-R1", startStandalone],
@@ -374,6 +455,34 @@ try {
       continue;
     }
     c(`${config}: the broker came up on an ephemeral loopback port`, true);
+
+    try {
+      const r = await endedThread(url);
+      c(`${config}: a new thread settles its ended sibling before its first publish`, r.err === undefined && r.frames === 1 && r.oldPending === undefined && r.oldTip === r.landed, r);
+      c(`${config}: ended-thread recovery stores the old frame once and the new frame once`, r.count === 2, r);
+    } catch (e) {
+      c(`${config}: the ended-thread arm ran`, false, String(e));
+    }
+    try {
+      const r = await endedThread(url, "none");
+      c(`${config}: an ended thread's frame that never landed is published before the new thread`, r.err === undefined && r.frames === 1 && r.oldPending === undefined && r.oldTip > 0 && r.count === 2, r);
+    } catch (e) {
+      c(`${config}: the unlanded ended-thread arm ran`, false, String(e));
+    }
+    for (const seed of ["moved-tip", "landed-below-tip"] as const) {
+      try {
+        const r = await endedThread(url, seed);
+        c(`${config}: ended-thread ${seed} refuses without changing either frame`, r.err instanceof AguiEmitterHalted && r.err.reason === "cas-loss" && r.frames === 0 && r.oldPending === "sent_unacked" && r.oldTip === 0 && r.count === (seed === "moved-tip" ? 1 : 2), r);
+      } catch (e) {
+        c(`${config}: the ${seed} ended-thread arm ran`, false, String(e));
+      }
+    }
+    try {
+      const r = await endedThread(url, "landed", false);
+      c(`${config}: ended-thread recovery without an expired frame read still fails closed`, r.err instanceof AguiEmitterHalted && r.err.reason === "cas-loss" && r.frames === 0 && r.count === 1 && r.oldPending === "sent_unacked", r);
+    } catch (e) {
+      c(`${config}: the no-read ended-thread arm ran`, false, String(e));
+    }
 
     // ── THE PROBE: a pre-seeded frozen id, driven through recovery's retry ────────────────────
     try {

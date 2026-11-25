@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1090,
+    "total": 1146,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 868
+    "non-render/control": 924
   },
   "classRationales": {
     "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
@@ -24,6 +24,13 @@
     }
   ],
   "entries": [
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "refuseInaccessibleDownRoot(at, space)",
+      "class": "non-render/control",
+      "rationale": "The stop checks project directory access for a space, not agent presence or work progress."
+    },
     {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
@@ -78,33 +85,60 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-name.ts",
       "kind": "status-token",
-      "anchor": "tatus: PresenceStatus = \"idle\";\n  /** The turn relay's",
+      "anchor": "\"offline\"",
       "class": "non-render/control"
     },
     {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": "ingState =\n  | { phase: \"waiting\" }\n  | { phase: \"naming\"",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": " NamingState = { phase: \"waiting\" };\n  private readonly o",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": "f (this.state.phase !== \"waiting\") return;\n    const ms =",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
       "path": "extensions/connector-core/src/agent.ts",
+      "kind": "status-token",
+      "anchor": "\"idle\"",
+      "class": "non-render/control"
+    },
+    {
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "ry {\n      if (prev !== \"working\" && status === \"working\"",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "\"working\" && status === \"working\") await this.ep.setCondi",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "one.\n      if (prev === \"working\" && status === \"idle\") t",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
-      "anchor": "\"working\" && status === \"idle\") this.onTurnBoundary();",
+      "anchor": "\"idle\"",
       "class": "non-render/control"
     },
     {
@@ -261,28 +295,28 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`Couldn't yield: ${reply.error ?? \"manager refused\"}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`Turn yielded (${status}${to ? ` → ${to}` : \"\"}) — the run continues.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
       "class": "non-render/control",
       "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
       "class": "non-render/control",
@@ -317,35 +351,35 @@
       "rationale": "Passes the manager-reported process state to the same inventory row formatter for an agent left running; the formatter is the classified sink above."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`state for \"${mesh.space}\" is already preserved and offline`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation attempt ${attemptId} lost its manager mid-commit and ${stillLive.length} retained principal(s) are still live (${stillLive.join(\", \")}); the cut intent is PRESERVED for inspection - stop them, then rerun \\`cotal down --preserve-state\\``",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(\", \")}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`✓ preserved state for \"${mesh.space}\"`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`  resume inventory: ${join(root, \".cotal\", \"maintenance\", \"v1\", resume.file)}`",
       "class": "non-render/control",
@@ -502,21 +536,21 @@
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`${operation} child terminated by ${closed.signal}`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`Windows npm intermediary exited ${closed.status}; descendant completion is unproved`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`process exited ${result.status}`",
       "class": "non-render/control",
@@ -906,13 +940,13 @@
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
+      "anchor": "{status.space + \" · \" + (activeChannel === null ? \"all\" : \"#\" + activeChannel) + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
       "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
+      "anchor": "status.space + \" · \" + (activeChannel === null ? \"all\" : \"#\" + activeChannel) + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
       "class": "non-render/control"
     },
     {
@@ -1225,28 +1259,28 @@
       "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    } finally {\n      this._status = status;\n    }\n    });\n  }\n\n  p",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim. #2065 wrapped the body in inOrder, which added the closing });."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "tion(null);\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "agent.yieldTurn(status, { to, note, turn })",
       "class": "non-render/control",
@@ -1267,63 +1301,63 @@
       "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: snapshots seat state before stopping components; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(delivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(manager, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(retryDelivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "omponent)))\n      await stopLocalProcess(component, context);\n    // Wire-truth quie",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "processAlive(manager, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "stopLocalProcess(delivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "stopLocalProcess(retryDelivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "uiescence))\n      await stopLocalProcess(component, context);\n    // Fail-closed: a ",
       "class": "non-render/control",
@@ -1337,11 +1371,18 @@
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/update-recovery-state.ts",
+      "kind": "derived-output",
+      "anchor": "`reconciliation exited ${child.status ?? child.signal ?? \"without a result\"}`",
+      "class": "non-render/control",
+      "rationale": "The recovery error reports the reconciliation child's exit status or signal, not peer presence."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
@@ -3500,7 +3541,7 @@
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "yielded: status });\n    return r;\n  }\n\n  /** Drop an acti",
       "class": "non-render/control",
@@ -3642,14 +3683,14 @@
       "rationale": "Clean preview: names a registration the clean removes; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
       "class": "non-render/control",
@@ -3778,7 +3819,7 @@
       "rationale": "Persona editor failure: the editor process's exit status or interruption in a not-saved message; process state, not agent presence."
     },
     {
-      "path": "implementations/cli/src/commands/up.ts",
+      "path": "implementations/cli/src/commands/up-resume.ts",
       "kind": "derived-output",
       "anchor": "`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`",
       "class": "non-render/control",
@@ -3940,7 +3981,7 @@
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.ep.setStatus(status, activity)",
       "class": "non-render/control",
@@ -4047,6 +4088,18 @@
       "class": "non-render/control"
     },
     {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": " string, scope: \"all\" | \"waiting\" | \"agents\", shared: Rea",
+      "class": "non-render/control"
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "onst change = scope === \"waiting\" ? \"`--all` instead of `",
+      "class": "non-render/control"
+    },
+    {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
       "anchor": " text: \"unknown\", tone: \"waiting\" } : g === \"all\" ? \"all\"",
@@ -4088,9 +4141,9 @@
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
-      "anchor": "t: \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
+      "anchor": " : \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
       "class": "non-render/control",
-      "rationale": "Whoami server field: \"waiting\" is the color tone for a space not started, not any peer's presence."
+      "rationale": "Whoami server field: \"waiting\" is the color tone for a stopped or not-yet-started space, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
@@ -4119,57 +4172,57 @@
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "of date`} · ${remedy}`, \"waiting\");\n}\n\n/** The nats-serve",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "one = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "na here is launchable\", \"waiting\")]);\n  } else if (f.laun",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "lected.personas.root}`, \"waiting\")]);\n      rows.push([\"→",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "gin --idp ${l.idp}`)}`, \"waiting\")]);\n    if (l?.subject)",
       "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "{l.subject} --full`)}`, \"waiting\")]);\n      else if (l.ac",
       "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
       "class": "non-render/control",
       "rationale": "Turn-yield control flow: returns the manager's refusal to the caller early; the status is a request field, not a rendered presence status."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "ransition at all.\n      this._status = status;\n      this.turnStatus ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.turnStatus = status",
       "class": "non-render/control",
@@ -4485,7 +4538,7 @@
     {
       "path": "implementations/cli/src/chat/plain.ts",
       "kind": "status-token",
-      "anchor": "tate = addNotice(state, \"waiting\", `draft is at its ${MAX",
+      "anchor": "tate = addNotice(state, \"waiting\", `line not added: it wo",
       "class": "non-render/control",
       "rationale": "Plain chat draft-limit notice: \"waiting\" is the color tone; the text is about the local draft, not a peer's presence."
     },
@@ -5094,40 +5147,82 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
+      "anchor": "existsSync(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: tests whether the folder a registration records exists; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "canonicalRoot(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: compares the registration's recorded folder with this folder's root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the connection to space \"${space}\" is registered at ${at}; its registration does not identify the folder that started the stack`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the folder a manual or catalog registration records; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "readStackJournal(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: reads the stack journal at the registration's recorded folder to choose the stop command; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the stack of space \"${space}\" is recorded at ${at}, not at this folder's root, and \\`cotal down\\` stops only the stack recorded where it runs`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the folder where the space's stack is recorded; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`${stop}\\` in ${at}; to stop one saved service, run \\`cotal service stop <service-name> --space ${space}\\``",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the stop command and the folder to run it in; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
       "anchor": "`the broker for \"${mesh.space}\" runs on the store ${mesh.storeDir}, not ${resolvePath(storeOverride)}; nothing was stopped`",
       "class": "non-render/control",
       "rationale": "Down refusal text: the registered broker's store differs from --store-dir; mesh is a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
-      "anchor": "`omit --store-dir, or pass --store-dir ${mesh.storeDir}`",
+      "anchor": "`omit --store-dir, or pass --store-dir ${shellWord(mesh.storeDir)}`",
       "class": "non-render/control",
       "rationale": "Down refusal remedy: names the registration's recorded store; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "readStoreIdentity(storeDir)",
       "class": "non-render/control",
       "rationale": "Preserve control flow: reads the store's identity to compare it with the recorded cut; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`  source: ${storeDir}`",
       "class": "non-render/control",
       "rationale": "Preserve report line: prints the preserved source store path; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation attempt ${attemptId} no longer matches its manager's inventory (${(cause as Error).message}); the stale cut intent was aborted - rerun \\`cotal down --preserve-state\\``",
       "class": "non-render/control",
       "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`",
       "class": "non-render/control",
@@ -5276,7 +5371,7 @@
     {
       "path": "implementations/cli/src/commands/reset.ts",
       "kind": "derived-output",
-      "anchor": "assertResetEligible(mesh, \"reset store\")",
+      "anchor": "assertResetEligible(mesh, \"reset store\", true)",
       "class": "non-render/control",
       "rationale": "Reset preview control flow: checks the registration record is eligible for a store reset; no presence is rendered."
     },
@@ -5457,6 +5552,13 @@
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
+      "kind": "derived-output",
+      "anchor": "`this folder has ${spaces.length} registered spaces: ${spaces.join(\", \")}`",
+      "class": "non-render/control",
+      "rationale": "Space show reports matching local registry entries, not peer presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
       "anchor": "t: \"unreachable\", tone: \"waiting\", mark: \"●\" };\n  return ",
       "class": "non-render/control",
@@ -5493,9 +5595,16 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": " longer exists)`, tone: \"waiting\" } : { text: p.root, ton",
+      "anchor": "d from ${root})`, tone: \"waiting\" };\n  if (!problem) retu",
       "class": "non-render/control",
-      "rationale": "Space list root cell: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Space list root cell: the color tone describes a moved project, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "ot} (${reason})`, tone: \"waiting\" };\n}\n\nfunction spacesVi",
+      "class": "non-render/control",
+      "rationale": "Space list root cell: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -5507,9 +5616,16 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "o longer exists`, tone: \"waiting\" }, { text: `forget it w",
+      "anchor": "mText(problem)}`, tone: \"waiting\" },\n      { text: displa",
       "class": "non-render/control",
-      "rationale": "Prepared space view: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Prepared space view: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedP",
+      "class": "non-render/control",
+      "rationale": "Prepared space view: \"waiting\" is the color tone for a stack journal whose folder was moved, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -5535,7 +5651,14 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": ".space} --yes\\``, tone: \"waiting\" });\n  if (!s.modeChecke",
+      "anchor": "not-directory\")), tone: \"waiting\" });\n  else if (s.rootGo",
+      "class": "non-render/control",
+      "rationale": "Space detail hint: the color tone describes an obstructed project root, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "space} --yes`)}`, tone: \"waiting\" });\n  if (!s.modeChecke",
       "class": "non-render/control",
       "rationale": "Space detail hint: \"waiting\" is the color tone for a stack whose folder was moved or deleted, not any peer's presence."
     },
@@ -5598,14 +5721,21 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with \\`cotal up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`cotal up\\` again`",
+      "anchor": "`another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: names the stopped space whose registration reserves the broker address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`${retry !== undefined ? `${retry}, or ` : \"\"}${stopHolder} and retry this start`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare \\`cotal up\\` from ${root}; this stack keeps its recorded address`",
+      "anchor": "`${stopHolder}, then run bare \\`${displayCmd()} up\\` from ${root}; this stack keeps its recorded address`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -5617,98 +5747,105 @@
       "rationale": "Stack up report line: \"waiting\" is the color tone for listeners exposed in plaintext, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "nes = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
       "class": "non-render/control",
       "rationale": "Status machine overview: maps integration check states to color tones; \"waiting\" is a tone, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n    }\n  // A",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a connector whose binaries are not on PATH, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": " m.nats === \"missing\" ? \"waiting\" : m.natsProblem ? \"fail",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a missing broker executable, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "de this folder\" : \"\"}`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status brokers section: \"waiting\" is the color tone for an unrecorded selected space, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "teCell(\"not signed in\", \"waiting\")]);\n    else {\n      ro",
       "class": "non-render/control",
       "rationale": "Status selected-space account row: \"waiting\" is the color tone for a signed-out account, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "tor === \"not-granted\" ? \"waiting\" : \"hint\")]);\n    }\n  }\n",
       "class": "non-render/control",
       "rationale": "Status selected-space grant row: \"waiting\" is the color tone for a grant that was not given, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
-      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (r.folder.root",
+      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (servedStack(r",
       "class": "non-render/control",
       "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "s ${s.personas.root}.`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status selected-space note: \"waiting\" is the color tone for the unused-personas warning, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "finitions unavailable\", \"waiting\")] });\n  if (services.in",
       "class": "non-render/control",
       "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service definitions, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "topped state inferred\", \"waiting\")] });\n  if (services.in",
       "class": "non-render/control",
       "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service instances, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "ss === \"foreign-host\" ? \"waiting\" : \"hint\"),\n    readines",
       "class": "non-render/control",
       "rationale": "Status owned-services table: \"waiting\" is the color tone for a process observed on a foreign host, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-health.ts",
       "kind": "derived-output",
       "anchor": "`HTTP ${status}`",
       "class": "non-render/control",
       "rationale": "HTTP response plumbing: the dashboard readiness probe's status code in a component fact; no agent presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
+      "kind": "status-token",
+      "anchor": "(\"Startup in progress\", \"waiting\")] }];\n  const blocks: S",
+      "class": "non-render/control",
+      "rationale": "Status folder line: \"waiting\" selects the display tone for a verified controller startup; it is not displayed as a peer presence or work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "er.stackBlock.reason}`, \"waiting\")] });\n  const part = fo",
       "class": "non-render/control",
       "rationale": "Status folder line: \"waiting\" is the color tone for a blocked stack, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "re any member stopped\", \"waiting\")] });\n  return blocks;\n",
       "class": "non-render/control",
@@ -5857,12 +5994,19 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" } : available ? { text:",
+      "class": "non-render/control",
+      "rationale": "Self-update version field: \"waiting\" is the color tone for a registry version that could not be read, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
       "anchor": "ext: \"available\", tone: \"waiting\" } : \"no newer latest ta",
       "class": "non-render/control",
       "rationale": "Self-update version field: \"waiting\" is the color tone for an available update, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-continuity.ts",
       "kind": "derived-output",
       "anchor": "printLegacyReport(report, target.space, undefined, console.log, on, remedy)",
       "class": "non-render/control",
@@ -5997,21 +6141,21 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "tal down\", description: `Stop the stack${where}` });\n  else if (status.m",
+      "anchor": "md} down`, description: `Stop the stack${where}` });\n  else if (status.m",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "ve-state\", description: `Stop the stack${where}` });\n  else items.push({",
+      "anchor": "ve-state`, description: `Stop the stack${where}` });\n  else items.push({",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`cotal up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
+      "anchor": "`${cmd} up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
       "class": "non-render/control",
       "rationale": "Up result recovery command uses the recorded stack root, not agent presence or work progress."
     },
@@ -6403,9 +6547,23 @@
     {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
-      "anchor": " ${s.current}\\``, tone: \"waiting\" }\n    : s.preparedState",
+      "anchor": "ent, problem))}`, tone: \"waiting\" }\n    : s.preparedState",
       "class": "non-render/control",
-      "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Use report line: \"waiting\" is the color tone for an unavailable project root, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": ".lastOperation}`, tone: \"waiting\" });\n    lines.push(\n   ",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone describes the last recorded stack operation of a moved folder, not a peer's presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": "d.recordedRoot}`, tone: \"waiting\" },\n      { text: `  ${d",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone marks a stack journal moved from its recorded folder, not a peer's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/use.ts",
@@ -6604,6 +6762,13 @@
       "rationale": "ps presence fallback: \"waiting\" is the color tone for the no-manager notice, not any peer's presence."
     },
     {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "`${status} ${read(\"cotal endpoint describe manager\")} reads its commands.`",
+      "class": "non-render/control",
+      "rationale": "The status variable holds command guidance for inspecting the manager, not an agent's presence or reported progress."
+    },
+    {
       "path": "implementations/cli/src/commands/service-registry.ts",
       "kind": "status-token",
       "anchor": "w.state === \"stopped\" ? \"waiting\" : \"failed\" }, next: { t",
@@ -6611,7 +6776,7 @@
       "rationale": "Service inventory table: \"waiting\" is the color tone for a service that is not started or stopped, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "rsion}`).join(\" · \")}`, \"waiting\") : text;\n}\n\n/**\n * What",
       "class": "non-render/control",
@@ -6627,152 +6792,180 @@
     {
       "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "eer) => peer.status !== \"offline\");\n      const address =",
+      "class": "non-render/control",
+      "rationale": "Seat resolution excludes offline peers from live name lookup before deciding whether to offer a foreground remedy."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "ome((p) => p.status !== \"offline\" && p.card.kind === \"end",
+      "class": "non-render/control",
+      "rationale": "The seat ownership check uses live manager presence to qualify the census result, without rendering the status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeer(live, address)",
+      "class": "non-render/control",
+      "rationale": "The filtered roster is used to resolve the requested peer, not to render its status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "hasNoSeatOwner(census, roster, peer)",
+      "class": "non-render/control",
+      "rationale": "The ownership predicate determines whether foreground recovery advice applies without printing presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "meshRelease(mesh)",
       "class": "non-render/control",
       "rationale": "Spawn held-name release: passes the resolved mesh registry target to the release callback; `mesh` is a target, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "reportStarting({ name: startedName, managerInstanceId: reply.managerInstanceId, ...(typeof started?.waitingFor === \"string\" ? { waitingFor: started.waitingFor } : {}), ...(expected ? { expected } : {}) }, values, t.space, t.server, target)",
       "class": "non-render/control",
       "rationale": "Spawn start report: the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "indexed-map",
       "anchor": "refusal[reply.code]",
       "class": "non-render/control",
       "rationale": "Spawn refusal mapping: looks up the CLI refusal code for the manager's reply code; not a status map."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "if (on !== undefined && describeUnanswered(reply))\n      throw new Comman",
       "class": "non-render/control",
       "rationale": "Spawn control flow: tests whether a pinned launch drew no answer; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "if (on === undefined && describeUnanswered(reply)) throw unansweredClassL",
       "class": "non-render/control",
       "rationale": "Spawn control flow: tests whether an unpinned launch drew no answer; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "seatCapFrom(reply)",
       "class": "non-render/control",
       "rationale": "Spawn refusal shaping: reads the seat-cap marker from the manager's reply; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`nothing was launched; stop one of this owner's seats with \\`cotal stop --name <name>\\`, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
       "class": "non-render/control",
       "rationale": "Spawn seat-cap remedy: names the cap the manager admits per owner; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`no connector \"${absent}\" is installed on ${answered ? await managerNamed(seat ? undefined : flags, t, answered) : \"the manager\"}; nothing was launched`",
       "class": "non-render/control",
       "rationale": "Spawn refusal text: names the missing connector and the manager; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "managerNamed(seat ? undefined : flags, t, answered)",
       "class": "non-render/control",
       "rationale": "Spawn refusal shaping: names the manager that answered; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`add it where that manager runs, such as ${extAddFor(absent)}, then restart that manager; it reads its agent applications when it starts`",
       "class": "non-render/control",
       "rationale": "Spawn refusal remedy: how to add the missing connector; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "extAddFor(absent)",
       "class": "non-render/control",
       "rationale": "Spawn refusal remedy: builds the ext add command for the missing connector; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`nothing was launched; ${elsewhere.length === 1 ? \"this manager of yours has\" : \"these managers of yours have\"} ${ref === \"default\" ? \"a default persona\" : `persona \"${ref}\"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(\" or \")}`",
       "class": "non-render/control",
       "rationale": "Spawn refusal remedy: names the managers that hold the persona; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "observer.ready(result, warnings)",
       "class": "non-render/control",
       "rationale": "Spawn composite readiness: hands the launch result to the observing command; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "iginal lifecycle with ${codeSpan(ps)} before another startup",
       "class": "non-render/control",
       "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target)",
       "class": "non-render/control",
       "rationale": "Reads the manager's launch receipt with caller-held mesh coordinates; this call renders no peer presence or work-progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(result.managerInstanceId)}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the target flags for the ps command; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`${displayCmd()} ps ${where}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the ps command for the original lifecycle; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`the ${result.runtime} runtime has no terminal to attach, so none was opened; the agent runs in the manager's ${result.runtime} session`",
       "class": "non-render/control",
       "rationale": "Spawn attach note: says the runtime opens no terminal; it reports the launch's runtime, not the agent's work progress."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`check the original lifecycle with ${codeSpan(ps)} before another startup`",
       "class": "non-render/control",
       "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`${result.name} joined, but ${startupNotice}`",
       "class": "non-render/control",
       "rationale": "Spawn startup warning: names the launched seat and the manager's startup notice; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/up.ts",
+      "path": "implementations/cli/src/lib/up-broker-address.ts",
       "kind": "derived-output",
       "anchor": "reserved.add(key)",
       "class": "non-render/control",
@@ -7280,7 +7473,7 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "ecuted\");\n      }\n      return reply;\n    } catch (error) {\n ",
+      "anchor": "return reply;",
       "class": "non-render/control"
     },
     {
@@ -7461,7 +7654,7 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "joinedAgentRows(result)",
       "class": "non-render/control",
@@ -7484,9 +7677,16 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "  const releaseGlobal = rt.claimGlobalUpdate(root);\n      try {\n        if",
+      "anchor": "rt.claimGlobalUpdate(root)",
       "class": "non-render/control",
       "rationale": "Recovery claims installation mutation custody for a validated npm root, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "process.exitCode = result.status ?? 1",
+      "class": "non-render/control",
+      "rationale": "The resumed update inherits its child process exit status, not an agent presence or activity state."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
@@ -7498,7 +7698,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "version);\n          if (realpathSync(entry) !== realpathSync(entryS",
+      "anchor": "realpathSync(entry)",
       "class": "non-render/control",
       "rationale": "Paused recovery compares canonical executable paths to bind repair authority, not peer presence."
     },
@@ -7519,7 +7719,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "const installed = await rt.spawnGlobal(root, \"install\", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);\n          if (installe",
+      "anchor": "rt.spawnGlobal(root, \"install\", \"npm\", [\"install\", \"-g\", ...(prefix ? [\"--prefix\", prefix] : []), `cotal-ai@${record.previous}`], rt.env, true)",
       "class": "non-render/control",
       "rationale": "Interrupted recovery starts the npm reinstall process for the recorded previous package, not peer presence."
     },
@@ -7596,9 +7796,44 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "y {\n    releaseGlobal = rt.claimGlobalUpdate(root);\n  } catch (e) {\n    rt",
+      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting for another updater to release npm's global root\"))",
       "class": "non-render/control",
       "rationale": "Global installation custody is acquired before a package replacement begins, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.globalVersion?.(root)",
+      "class": "non-render/control",
+      "rationale": "The updater reads the installed package version after acquiring custody, not an agent work state."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "compareSemver(installed, current)",
+      "class": "non-render/control",
+      "rationale": "Release comparison detects another updater's completed replacement, not peer presence or activity."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "compareSemver(installed, targetVersion)",
+      "class": "non-render/control",
+      "rationale": "Release comparison prevents replacing a requested or newer installed package, not a presence claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "(rt.verifyUpdatedEntry ?? rt.verifyGlobalEntry)(root, installed)",
+      "class": "non-render/control",
+      "rationale": "The selected global CLI entry is verified against its package version before dispatch, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`Another update installed cotal-ai@${installed}; rechecking the installed CLI`",
+      "class": "non-render/control",
+      "rationale": "The notice reports a verified installed release and CLI recheck, not an agent's presence or work progress."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
@@ -7610,7 +7845,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    npmInstall.file,\n    npmInstall.args,\n    rt.env,\n    false,\n    npmInstall.windowsVerbatimArguments,\n  )",
+      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    \"npm\",\n    npmInstall,\n    rt.env,\n    false,\n  )",
       "class": "non-render/control",
       "rationale": "The legacy path starts a guarded npm installation process whose status is an exit code, not peer presence."
     },
@@ -7706,21 +7941,21 @@
       "rationale": "Sends the manager command to the manager that holds the seat; the reply is the manager's own answer, not a presence claim."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "managers.push(manager)",
       "class": "non-render/control",
       "rationale": "Collects the managers that answered status for the detached-launch refusal; a manager's own status reply is not agent presence."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`${manager}: ${connector.agent}: ${oneLine(connector.reason ?? \"unavailable at manager startup\")}`",
       "class": "non-render/control",
       "rationale": "Reports why an agent application is unavailable on a manager, as that manager recorded it at startup; not peer presence or activity."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "empty.push(manager)",
       "class": "non-render/control",
@@ -7732,6 +7967,160 @@
       "anchor": "`exit status ${run.status}`",
       "class": "non-render/control",
       "rationale": "Names the nats-server version probe's process exit status in a refusal, not agent presence or activity."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.turns.yieldTurn(status, opts)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's yield verdict (done, blocked or handoff) to the turn component; the argument is a turn-control token, not a peer's presence, and nothing is rendered here."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.setStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status to the presence component, which publishes it on the wire; the forwarder renders nothing."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.resetStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status reset to the presence component, which publishes it on the wire; the forwarder renders nothing."
+    },
+    {
+      "path": "implementations/cli/src/commands/ext.ts",
+      "kind": "derived-output",
+      "anchor": "`npm terminated by ${closed.signal}`",
+      "class": "non-render/control",
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "of wedging.\n            abortMaintenanceCut(lock);\n            clearPrese",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "eCut(lock);\n            clearPreservationPrepareIntent(lock);\n            throw new ",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "}\n          }\n          recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "reserved\" });\n          clearPreservationCommitIntent(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "Intent(lock);\n          clearPreservationPrepareIntent(lock);\n          managerCommi",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n            version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n            inventory: replan.inventory as JsonValue,\n            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, ...cap, mode: mesh.mode },\n          })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": " manager */ }\n          abortMaintenanceCut(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "nceCut(lock);\n          clearPreservationPrepareIntent(lock);\n          throw new Er",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationPrepareIntent(lock, {\n          attemptId, space: mesh.space, mode: mesh.mode, server: mesh.server, storeDir,\n        })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the prepare intent through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "he manager */ }\n        clearPreservationPrepareIntent(lock);\n        // The deliver",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n        version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n        inventory: plan.inventory as JsonValue,\n        launch: {\n          attemptId,\n          space: mesh.space,\n          server: mesh.server,\n          storeDir,\n          ...cap,\n          mode: mesh.mode,\n        },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "beginMaintenanceCut(lock, {\n        attemptId,\n        space: mesh.space,\n        mode: mesh.mode,\n        sourcePath: storeDir,\n        resume,\n        launch: { server: mesh.server, storeDir, ...cap },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: begins the maintenance cut through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ".cap },\n      });\n      clearPreservationPrepareIntent(lock);\n    }\n\n    // Stop the",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationCommitIntent(lock, { attemptId })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "process.exit(92);\n      recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n      clearPreservatio",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ": \"preserved\" });\n      clearPreservationCommitIntent(lock);\n      if (process.env.",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "completeMaintenanceCut(lock, {\n      attemptId,\n      observedAt: new Date().toISOString(),\n      managerCommit: { operation: \"commitPreservation\", attemptId, state: \"preserved\" },\n      stopped: { manager: true, broker: true, localProcesses: true },\n      listener: { endpoint: mesh.server, unreachable: true },\n    })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: completes the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "releaseMaintenanceLock(lock)",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: releases the maintenance lock; a local lock, not presence, and no rendering."
     }
   ]
 }

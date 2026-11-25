@@ -144,7 +144,7 @@ try {
       for await (const key of await kv.keys()) if ((await kv.get(key))?.operation === "PUT") return true;
       return false;
     };
-    const add = cotal("meshes", "add", DRIFT, "--server", proxyUrl, "--mode", "open");
+    const add = cotal("meshes", "add", DRIFT, "--server", proxyUrl, "--mode", "open", "--force");
     ok("drift space registered", (await within(add.exit, "meshes add")) === 0, add.out());
     const jsm = await jetstreamManager(nc);
     await jsm.streams.add({

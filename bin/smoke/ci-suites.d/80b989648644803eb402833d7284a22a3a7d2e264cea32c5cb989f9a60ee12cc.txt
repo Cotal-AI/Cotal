@@ -1,0 +1,3 @@
+# Streamed text on OpenCode 1.x: the plugin journals `message.part.delta` text, a part publishes under its stream id
+# before OpenCode saves it and its saved record ends it once, and a turn's end closes a stream no saved part closed.
+smoke:opencode1-stream

@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "the card always says the event plane is on",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-support.ts",
       "find": "  meta[EVENTS_META_KEY] = (eventsArmed ?? eventPlaneArmed(config)) ? \"on\" : \"off\";\n",
       "replace": "  meta[EVENTS_META_KEY] = \"on\";\n",
       "expectRed": "a session without COTAL_EVENTS reads off over the wire",
@@ -21,7 +21,7 @@
     },
     {
       "name": "an agent file's own ai.cotal.events survives the overlay",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-support.ts",
       "find": "  meta[EVENTS_META_KEY] = (eventsArmed ?? eventPlaneArmed(config)) ? \"on\" : \"off\";\n",
       "replace": "  if (!(EVENTS_META_KEY in meta)) meta[EVENTS_META_KEY] = (eventsArmed ?? eventPlaneArmed(config)) ? \"on\" : \"off\";\n",
       "expectRed": "an agent file declaring ai.cotal.events on cannot arm an unarmed session",

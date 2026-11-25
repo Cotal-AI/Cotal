@@ -56,7 +56,7 @@
     },
     {
       "name": "PARANOID: a SETTLED wait is re-armed too, narrow to `wait` so it grades on its own cell",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-support.ts",
       "find": ".filter((e) => e.state === \"pending\").flatMap(pauseTokens);",
       "replace": ".filter((e) => e.state === \"pending\" || e.kind === \"wait\").flatMap(pauseTokens);",
       "expectRed": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",

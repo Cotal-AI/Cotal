@@ -1,10 +1,10 @@
-import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { withIdpSessionDir } from "@cotal-ai/auth";
 import { homeCotalDir, resolveControlTarget, type UpdateAdmission } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { queryDaemon } from "./client.js";
 import { daemonPaths } from "./endpoint.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon } from "./install.js";
 import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { processBirth } from "./lifetime.js";
 
@@ -22,14 +22,18 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
   let admission: UpdateAdmission;
   const deferred = (reason: string): UpdateAdmission => ({ disposition: "deferred", occupied: null, hostedSpaces: [], reason: reason.slice(0, 2000) });
   try {
-    const paths = daemonPaths();
-    const owned = existsSync(unitReceiptFile(paths)) && preflightInstalledDaemon(paths, undefined, request.daemonArgv);
-    if (!owned || !installedDaemonIdentity(paths, undefined, request.daemonArgv).same) {
-      admission = deferred(daemon ? "the running daemon belongs to another installation or has no recorded service; it and its Managers were left running" : "no recorded service belongs to this installation; activation was not requested");
+    const state = { state: join(homeCotalDir(), "daemon") };
+    const recorded = preflightInstalledDaemon(state, undefined, request.daemonArgv);
+    if (!daemon) {
+      // No daemon runs, so nothing is hosted and nothing can be interrupted. The installed lifecycle
+      // goes on to start a recorded service, or to report why it stays stopped.
+      admission = { disposition: "restart-empty", occupied: 0, hostedSpaces: [] };
+    } else if (!recorded || !installedDaemonIdentity(state, undefined, request.daemonArgv).same) {
+      admission = deferred("the running daemon belongs to another installation or has no recorded service; it and its Managers were left running");
     } else {
-      const reply = await queryDaemon({ paths });
+      const reply = await queryDaemon({ paths: daemonPaths() });
       if (!reply.ok) throw new Error(`daemon custody is unavailable: ${reply.error.message}`);
-      if (!daemon || reply.result.pid !== daemon.pid) throw new Error("daemon status differs from its authenticated lifetime");
+      if (reply.result.pid !== daemon.pid) throw new Error("daemon status differs from its authenticated lifetime");
       if (!Array.isArray(reply.result.managers)) throw new Error("hosted Manager inventory is unknown");
       const active = reply.result.managers.filter(manager => manager.pid !== undefined);
       const inventory: Extract<UpdateAdmission, { disposition: "consent-stop" }>["inventory"][number][] = [];
@@ -59,8 +63,10 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
       admission = occupied === 0 ? { disposition: "restart-empty", occupied: 0, hostedSpaces } : { disposition: "consent-stop", occupied, hostedSpaces, inventory };
     }
   } catch (error) {
-    admission = deferred(`${error instanceof Error ? error.message : String(error)}; the daemon and its Managers were left running`);
+    admission = deferred(`machine daemon custody could not be checked: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!sameUpdateDaemon(daemon, await observeUpdateDaemon())) throw new Error("machine daemon lifetime changed during target admission");
-  return { daemon, hostedSpaces: admission.hostedSpaces, occupied: admission.occupied, admission };
+  // Released updaters (0.165.4 to 0.168.0) refuse a receipt whose `occupied` is not a non-negative
+  // integer and read nothing else from it. The admission carries the unknown count.
+  return { daemon, hostedSpaces: admission.hostedSpaces, occupied: admission.occupied ?? 0, admission };
 }

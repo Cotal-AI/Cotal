@@ -289,7 +289,7 @@ async function main() {
 
     mgr = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: WS_ROOT });
     const readinessBudgetMs = 10_000;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = readinessBudgetMs;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = readinessBudgetMs;
     await mgr.start();
     const mgrIid = (mgr as unknown as { managerInstanceId: string }).managerInstanceId;
     check("manager booted and registered instanceId", typeof mgrIid === "string" && mgrIid.length > 0);
@@ -365,10 +365,10 @@ async function main() {
     // Serve the legacy view through the public native boundary on the manager's own scoped
     // connection and grant. No caller cache or resolver result is replaced.
     const native = mgr as unknown as {
-      serviceServe: { nc: NatsConnection; grant: EpServeGrant; handle: EpServeHandle };
       managerServiceDefs(): EpCommandDef[];
+      servePlane: { serviceServe: { nc: NatsConnection; grant: EpServeGrant; handle: EpServeHandle }; };
     };
-    const state = native.serviceServe;
+    const state = native.servePlane.serviceServe;
     const defs = native.managerServiceDefs();
     let legacyView = true, hideSpawn = false, admissions = 0;
     const servedDefs = defs.map((def) => def.command === "spawn" ? {
@@ -386,7 +386,7 @@ async function main() {
     check("COMPAT: native descriptor exposes spawn but no goal-result", realService.commands.has("spawn") && !realService.commands.has("goal-result"), [...realService.commands.keys()]);
 
     let mutationSubmits = 0;
-    const compatNc = (epCompat as unknown as { nc: NatsConnection }).nc;
+    const compatNc = (epCompat as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const publish = compatNc.publish.bind(compatNc);
     const compatPublish: typeof publish = (subject, data, options) => {
       const request = parseEpSubject(subject);
@@ -483,10 +483,10 @@ async function main() {
     compatManager = new Manager({ space: SPACE, servers: SERVERS, runtime: "pty", workspaceRoot: compatRoot, secretStore: workspaceSecretStore(WS_ROOT) });
     await compatManager.start();
     const resolvedCurrent = await epRetryCompat.describeService(BASELINE_LIFECYCLE_ENDPOINT);
-    const second = compatManager as unknown as { serviceServe: { nc: NatsConnection; handle: EpServeHandle }; managerInstanceId: string };
+    const second = compatManager as unknown as { managerInstanceId: string; servePlane: { serviceServe: { nc: NatsConnection; handle: EpServeHandle }; } };
     if (resolvedCurrent.responder.instanceId !== second.managerInstanceId || !resolvedCurrent.commands.has("goal-result"))
       throw new Error("retry control did not resolve the actual modern second manager");
-    await second.serviceServe.handle.stop();
+    await second.servePlane.serviceServe.handle.stop();
     legacyView = true;
     state.handle = serveEndpoint(state.nc, SPACE, state.grant, servedDefs, {
       view: () => ({ commands: defs.map((def) => def.command).filter((command) => command !== "goal-result") }),
@@ -494,7 +494,7 @@ async function main() {
     await state.nc.flush();
     let splits = 0, retrySubmits = 0;
     epRetryCompat.on("split-recovered", () => { splits++; });
-    const retryNc = (epRetryCompat as unknown as { nc: NatsConnection }).nc;
+    const retryNc = (epRetryCompat as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const retryPublish = retryNc.publish.bind(retryNc);
     retryNc.publish = (subject, data, options) => {
       const parsed = parseEpSubject(subject);
@@ -706,7 +706,7 @@ async function main() {
     });
 
     await startEndpoint(ep2);
-    const initialNc = (ep2 as unknown as { nc: { isClosed: () => boolean } }).nc;
+    const initialNc = (ep2 as unknown as { conn: { nc: { isClosed: () => boolean } } }).conn.nc;
 
     const queryCallers: Array<{ owner: string; actor: string; uid: string }> = [];
     let queryIdentityMatches = true;
@@ -719,7 +719,7 @@ async function main() {
       15_000,
       {
         reconcile: async (goalId, attributed, context) => {
-          const nc = (ep2 as unknown as { nc: NatsConnection }).nc;
+          const nc = (ep2 as unknown as { conn: { nc: NatsConnection } }).conn.nc;
           const publish = nc.publish.bind(nc);
           nc.publish = (subject, data, options) => {
             const request = parseEpSubject(subject);
@@ -743,7 +743,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 7000));
 
     // WITNESS 1: Connection instance was replaced
-    const currentNc = (ep2 as unknown as { nc: unknown }).nc;
+    const currentNc = (ep2 as unknown as { conn: { nc: unknown } }).conn.nc;
     check("REBUILD: initial connection closed by broker wire expiry", initialNc.isClosed() === true);
     check("REBUILD: endpoint running on replaced NatsConnection instance", currentNc !== initialNc);
     check("REBUILD: self-heal rebuilds observed", rebuildsObserved >= 1, { rebuildsObserved, bearerMintCount });
@@ -788,7 +788,7 @@ async function main() {
     try {
       await startEndpoint(epNativeGap);
       await startEndpoint(epGapObserver);
-      const oldGapNc = (epNativeGap as unknown as { nc: NatsConnection }).nc;
+      const oldGapNc = (epNativeGap as unknown as { conn: { nc: NatsConnection } }).conn.nc;
       let gapGoalId: string | undefined;
       let gapSubmits = 0;
       let canonicalReadRecovered = false;
@@ -955,7 +955,7 @@ async function main() {
     const refusalAbort = new AbortController();
     let wireRefusal: EpAttributedReply | undefined;
     const refusalResult = await epAbort.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, async (signal) => {
-      wireRefusal = await invokeCommand((epAbort as unknown as { nc: NatsConnection }).nc, SPACE,
+      wireRefusal = await invokeCommand((epAbort as unknown as { conn: { nc: NatsConnection } }).conn.nc, SPACE,
         { ...realService, responder: { ...realService.responder, epoch: 999 } },
         "spawn", { name: "refused-before-effects", agent: "delayed-join" }, { signal, deadlineMs: 2000 });
       refusalAbort.abort();

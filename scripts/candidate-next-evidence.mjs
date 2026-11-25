@@ -193,7 +193,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     : hop.mode === 'source-0.164.10'
       ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? pair.sourceVersion
       : pair.sourceVersion;
-  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli)
+  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli || cell.scenario === 'candidate-next-foreign-config-recovery')
     ? {passed: true}
     : evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
   if (['npm', 'installer'].includes(followOnAction)) {
@@ -265,7 +265,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     stoppedDesktopBesideCli = archivedDesktopAfter.status?.exit === 2 && archivedDesktopAfter.status?.signal === null && archivedDesktopAfter.status?.timeout === false
       && archivedDesktopAfter.unitShowAfter?.exit === 0 && archivedDesktopAfter.unitShowAfter?.signal === null && archivedDesktopAfter.unitShowAfter?.timeout === false
       && /ActiveState=inactive/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? '')) && /MainPID=0/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? ''))
-      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update left it stopped.`)
+      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update did not start or stop it.`)
       && archivedDesktopAfter.updateNamesDesktopOwner === true
       && archivedDesktopAfter.remainsStopped === true;
   }
@@ -428,7 +428,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && typeof bareRuntimesRow?.error === 'string'
         && bareRuntimesRow.error.includes(`@cotal-ai/tmux is ${pair.targetVersion} and this cotal is ${pair.followOnVersion} - run \`cotal update --self\` to reconcile this installation`);
       const gateRefusal = archivedBare.launchGateRefusal;
-      const gateRefusalOk = gateRefusal?.command?.exit === 1
+      const gateRefusalOk = gateRefusal?.command?.exit === 2
         && gateRefusal.command.signal === null
         && gateRefusal.command.timeout === false
         && /run `cotal update --self` to reconcile this installation/.test(String(gateRefusal.command.stdout ?? '') + String(gateRefusal.command.stderr ?? ''))

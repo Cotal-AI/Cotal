@@ -23,7 +23,7 @@ import { clean, COTAL, cotalPty, nodePty, repoRoot, screen, wait, type Pty } fro
 const home = mkdtempSync(join(tmpdir(), "cotal-cli-pty-"));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_")) env[key] = value;
-Object.assign(env, { COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
+Object.assign(env, { COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", TERM: "xterm-256color" });
 const { version } = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")) as { version: string };
 const { check, finish } = createSuite();
 
@@ -229,8 +229,8 @@ try {
   const serviceAdd = await helpAt(["help", "service", "add"], 60);
   check("cotal help service add on a 60-column terminal fits every line", serviceAdd.exitCode === 0 && fit(serviceAdd.all.join("\n"), 60).length === 0, fit(serviceAdd.all.join("\n"), 60));
   check(
-    "on 60 columns cotal help service add breaks a compact group after its own |",
-    usageOf(serviceAdd.all).join("\n") === ['  cotal service add <name> --exec "<command>"', "  [--cwd <dir>] |", "  --preset <preset> [<options>] | --file <definition.json>"].join("\n"),
+    "wrapped service add help requires the name before the choice of source",
+    usageOf(serviceAdd.all).map((line) => line.trim()).join(" ") === 'cotal service add <name> (--exec "<command>" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>)',
     usageOf(serviceAdd.all),
   );
   const listing = await helpAt(["help"], 40);

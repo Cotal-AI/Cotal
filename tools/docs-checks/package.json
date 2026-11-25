@@ -12,6 +12,7 @@
     "@cotal-ai/docs-content": "workspace:*",
     "@types/node": "^22.20.0",
     "marked": "^18.0.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "^4.4.3"
   }
 }

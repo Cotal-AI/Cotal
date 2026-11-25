@@ -12,13 +12,9 @@ import {
   provisionAgentDurables, serverConfig, setupSpaceStreams, standaloneConnectOpts, credsClaims, credsFromJwt,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, ok: boolean, extra?: unknown) => {
-  if (ok) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const port = await pickFreePort(), servers = `nats://127.0.0.1:${port}`, space = "conditional-dlv";
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -143,5 +139,6 @@ try {
   rmSync(openDir, { recursive: true, force: true });
   releaseOpen();
 }
-console.log(`\nCONDITIONAL-DLV SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"} (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 && pass === 12 ? 0 : 1);
+console.log(`\nCONDITIONAL-DLV SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"} (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 && passed() === 12 ? 0 : 1);

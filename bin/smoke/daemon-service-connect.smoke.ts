@@ -75,6 +75,8 @@
  * Add --renewal-only for the two-access-lifetime service renewal observation.
  * Add --renewal-resume-only for shipped restarts with an expired or removed human sign-in.
  * Service-only setup: --hosting-only --no-manager-only, optionally --account-only.
+ * Claude Code host setup: --hosting-only --claude-wake-only (stock connector, stand-in executable).
+ * Late Claude Code install: --hosting-only --claude-wake-late-repro.
  * Add --hosting-only --updater-ownership-repro for two living updater clients' restart admission ownership.
  * Add --hosting-only --exchange-retry-repro for shipped updater outage and denial controls.
  * Manual empty-legacy admission: --hosting-only --update-repro --manual-admission-race-repro.
@@ -104,12 +106,13 @@ import {
   deleteIdpSession, deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadIdpSession, loadOwnerSecret, saveIdpSession,
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
-import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, meshFile, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../implementations/auth/src/lifecycle-registry.js";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
+import { processBirth } from "../daemon/lifetime.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -118,6 +121,7 @@ import { unitReceiptFile } from "../daemon/install.js";
 if (process.platform !== "linux") skipSuite(`daemon-service-connect smoke: Linux only; skipped on ${process.platform}`);
 const scratchParent = process.env.COTAL_DAEMON_SMOKE_TMP ?? tmpdir();
 const upgradeFixture = process.env.COTAL_DAEMON_UPGRADE_FIXTURE;
+const retiredAppRuntime = process.env.COTAL_DAEMON_RETIRED_APP_RUNTIME;
 const upgrading = ["--upgrade-repro", "--update-repro", "--setup-upgrade-repro"].some((flag) => process.argv.includes(flag));
 const manualAdmissionEmpty = process.argv.includes("--manual-admission-empty-repro");
 const manualAdmissionRace = manualAdmissionEmpty || process.argv.includes("--manual-admission-race-repro");
@@ -129,6 +133,8 @@ const desktopGapOnly = process.argv.includes("--desktop-gap-only");
 const desktopSetupOnly = process.argv.includes("--desktop-setup-only");
 const originalPath = process.env.PATH;
 const setupProgressOnly = process.argv.includes("--setup-progress-only");
+const claudeWakeLateRepro = process.argv.includes("--claude-wake-late-repro");
+const claudeWakeOnly = claudeWakeLateRepro || process.argv.includes("--claude-wake-only");
 // The CLI children get no mesh identity or connection material from whatever runs this suite.
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -175,7 +181,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
   if (process.argv.includes("--resume-only") && !/^(C1 |C2 |C15 |C6b )/.test(title)) return;
   if (cancelOnly && !/^(C1 |C2 |C15 |C6c |C10 )/.test(title)) return;
   if (setupHintsOnly && !["C1 ", "C2 ", "C17 "].some((prefix) => title.startsWith(prefix))) return;
-  if (process.argv.includes("--setup-session-only") && !title.startsWith("H2")) return;
+  if ((process.argv.includes("--setup-session-only") || process.argv.includes("--static-setup-only")) && !title.startsWith("H2")) return;
   if (process.argv.includes("--credential-expiry-only") && !/^C(1|2|7|10|15|18) /.test(title)) return;
   console.log(title);
   try { await body(); } catch (e) { fail++; console.log(`  ✗ FAIL: ${title} crashed: ${e instanceof Error ? e.message : String(e)}`.slice(0, 600)); }
@@ -196,6 +202,26 @@ async function ask(socket: string, req: Frame, ms = 40_000): Promise<Frame> {
       sock.once("error", (e) => { clearTimeout(t); reject(e); });
     });
   } finally { sock.destroy(); }
+}
+function pollStartupStatus(socket: string) {
+  let stopped = false;
+  let replies = 0, slowestMs = 0;
+  let failure: unknown;
+  const poll = (async () => {
+    while (!stopped) {
+      const started = performance.now();
+      const reply = await ask(socket, { op: "status" }, 1000);
+      assert.equal(reply.ok, true);
+      slowestMs = Math.max(slowestMs, performance.now() - started);
+      replies++;
+      await sleep(100);
+    }
+  })().catch(error => { failure = error; });
+  return async () => {
+    stopped = true;
+    await poll;
+    check("desktop Manager startup keeps new status connections responsive", failure === undefined && replies > 1 && slowestMs < 1000, { replies, slowestMs, failure: String(failure ?? "") });
+  };
 }
 const resultOf = (f: Frame) => (f.result ?? {}) as Record<string, any>;
 const errorOf = (f: Frame) => (f.error ?? {}) as Record<string, unknown>;
@@ -269,6 +295,9 @@ let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | u
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
 let custodyOldFails = false;
+const custodySubject = (host?: string) => process.argv.includes("--account-recovery-repro") && host !== new URL(idpOrigin).host
+  ? { sub: "replacement-owner" }
+  : {};
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/sign-out") {
@@ -329,10 +358,10 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
       return aliasRow;
     }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth`, sub: process.argv.includes("--account-recovery-repro") && req.headers.host !== new URL(idpOrigin).host ? "replacement-owner" : "machine-owner" } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth`, ...custodySubject(req.headers.host) } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth`, sub: process.argv.includes("--account-recovery-repro") && req.headers.host !== new URL(idpOrigin).host ? "replacement-owner" : "machine-owner" } } : catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth`, ...custodySubject(req.headers.host) } } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -372,9 +401,9 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     await tokenGate?.(res);
     if (res.destroyed) return;
-    if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
+    if (catalog) res.setHeader("link", `</catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject(process.argv.includes("--account-recovery-repro") && req.headers.host !== new URL(idpOrigin).host ? "replacement-owner" : "machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
+    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject(custodySubject(req.headers.host).sub ?? "machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -489,7 +518,9 @@ try {
   // C13: the BRK space's participant reaches the broker through a TCP pass-through the suite can cut,
   // so a broker loss is the daemon's alone; the auth services keep their own broker connections.
   let brokerPathUp = true;
-  let brokerReplyDelay = process.argv.includes("--cold-restart-repro") ? 100 : 0;
+  const coldRestart = process.argv.includes("--cold-restart-repro");
+  let brokerReplyDelay = coldRestart ? 100 : 0;
+  let contractPublishes = 0;
   const pathSockets = new Set<Socket>();
   const brokerPath: NetServer = createNetServer((inbound) => {
     if (!brokerPathUp) { inbound.destroy(); return; }
@@ -497,6 +528,23 @@ try {
     pathSockets.add(inbound); pathSockets.add(outbound);
     const drop = () => { inbound.destroy(); outbound.destroy(); pathSockets.delete(inbound); pathSockets.delete(outbound); };
     inbound.on("error", drop); outbound.on("error", drop); inbound.on("close", drop); outbound.on("close", drop);
+    if (coldRestart) {
+      let pending = Buffer.alloc(0);
+      inbound.on("data", (chunk: Buffer) => {
+        pending = Buffer.concat([pending, chunk]);
+        for (;;) {
+          const end = pending.indexOf("\r\n");
+          if (end === -1) return;
+          const line = pending.subarray(0, end).toString();
+          const pub = /^H?PUB (\S+) .*?(\d+)$/.exec(line);
+          // Skip the body by byte length. TCP chunks can split or coalesce NATS frames.
+          const next = end + 2 + (pub ? Number(pub[2]) + 2 : 0);
+          if (pending.length < next) return;
+          if (pub && /^cotal\.[^.]+\.epc\.[0-9a-f]{64}$/.test(pub[1]!)) contractPublishes++;
+          pending = pending.subarray(next);
+        }
+      });
+    }
     inbound.pipe(outbound);
     if (process.argv.includes("--hosted-latency")) {
       outbound.on("data", chunk => {
@@ -536,7 +584,7 @@ try {
   const filesUnder = (dir: string) => existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String) : [];
   /** A real unit and receipt in the fixture manager's reported directory. Operational native
    *  calls reach only an owned recorder; the default fixture admits directory reads only. */
-  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false): string => {
+  const seedUnitReceipt = (entry = join(repo, "bin/dist/cotal.js"), marked = false, node = process.execPath): string => {
     const native = join(root, "native"), config = join(root, "config");
     mkdirSync(native, { recursive: true, mode: 0o700 });
     mkdirSync(join(config, "systemd", "user"), { recursive: true, mode: 0o700 });
@@ -544,7 +592,7 @@ try {
     process.env.PATH = `${native}:${originalPath ?? ""}`;
     const unit = explicitHome ? `cotal-daemon-${createHash("sha256").update(explicitHome).digest("hex").slice(0, 16)}.service` : "cotal-daemon.service";
     const unitPath = join(config, "systemd", "user", unit);
-    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${process.execPath}" "${entry}" daemon serve${explicitHome ? ` --daemon-home "${explicitHome}"` : ""}\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
+    const unitBytes = `[Unit]\nDescription=Cotal machine daemon\n\n[Service]\nType=simple\nExecStart="${node}" "${entry}" daemon serve${explicitHome ? ` --daemon-home "${explicitHome}"` : ""}\n${marked ? "Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n" : ""}Restart=always\n\n[Install]\nWantedBy=default.target\n`;
     writeFileSync(unitPath, unitBytes, { mode: 0o600 });
     mkdirSync(paths.state, { recursive: true, mode: 0o700 });
     writeFileSync(unitReceiptFile(paths), `${JSON.stringify({ v: 1, unit, unitPath, unitSha256: createHash("sha256").update(unitBytes).digest("hex"), installedAt: new Date().toISOString(), ...(explicitHome ? { daemonHome: explicitHome } : {}) })}\n`, { mode: 0o600 });
@@ -706,12 +754,16 @@ try {
           d = await serveDaemon({ paths, version: fixtureVersion, peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
         }
         for (const space of [missing, OFF]) {
+          const known = space === OFF;
+          const expectedState = known ? "not-requested" : "not-registered";
+          const expectedCode = known ? "NOT_REQUESTED" : "NOT_REGISTERED";
+          const expectedNext = known ? `cotal daemon register --space ${space}` : "`cotal space`";
           const socket = await statusS(space);
-          check(`C0 ${phase}: socket status for ${space} is not-requested`, stateOf(socket) === "not-requested", socket);
+          check(`C0 ${phase}: socket status for ${space} is ${expectedState}`, stateOf(socket) === expectedState, socket);
           const json = await cli(["service-status", "--space", space]);
-          check(`C0 ${phase}: JSON status for ${space} refuses NOT_REQUESTED`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === "NOT_REQUESTED", json.doc);
+          check(`C0 ${phase}: JSON status for ${space} refuses ${expectedCode}`, json.status === 2 && json.doc?.error?.code === "TARGET_NOT_FOUND" && json.doc?.error?.cause?.code === expectedCode, json.doc);
           const plain = await cli(["service-status", "--space", space], "--plain");
-          check(`C0 ${phase}: text status for ${space} names the missing request`, plain.status === 2 && plain.err.includes("NOT_REQUESTED") && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes(`cotal daemon register --space ${space}`), plain.err);
+          check(`C0 ${phase}: text status for ${space} shows ${expectedCode} and the next step`, plain.status === 2 && plain.err.includes(expectedCode) && plain.err.includes("TARGET_NOT_FOUND") && plain.err.includes(expectedNext), plain.err);
         }
       }
       check("C0 status and refused connect never contact the space", hits.length === beforeHits, { beforeHits, afterHits: hits.length });
@@ -1759,7 +1811,7 @@ try {
       }
     });
 
-    await cell("H2 shipped setup recovers rejected cached sessions without relogin on outages", async () => {
+    await cell("H2 shipped setup checks local spaces and recovers rejected cached sessions", async () => {
       seedUnitReceipt();
       await d.close();
       const sessionSpace = spaces[4]!;
@@ -1790,6 +1842,61 @@ try {
       const otherIdp = `http://127.0.0.1:${(otherProvider.address() as AddressInfo).port}/api/auth`;
       recoverOnApproval = true;
       try {
+        const localSpace = "local-static";
+        const localRecord = meshFile(localSpace);
+        const legacyRecord = join(dirname(localRecord), `${localSpace}.json`);
+        const localState = join(home, "daemon", spaceSegment(localSpace));
+        const refusal = join(localState, "manager-refusal.json");
+        const localGuidance = (text: unknown) => /cotal up/.test(String(text)) && !/cotal daemon (setup|register)|cotal manager start/.test(String(text));
+        recordMesh({ space: localSpace, server: "nats://127.0.0.1:1", root, mode: "auth", ts: new Date().toISOString() });
+        try {
+          const setup = await cli("setup", "--space", localSpace);
+          check("H2 static setup refuses at the connection check without writing per-space state", setup.code === 2
+            && setup.doc.error?.code === "UNSUPPORTED" && setup.doc.error?.cause?.code === "NOT_USER_AUTH"
+            && localGuidance(setup.doc.error?.remedy) && !/turning on the space|starting the agent host/.test(setup.err)
+            && !existsSync(localState), setup);
+          const service = await cli("service-status", "--space", localSpace);
+          check("H2 static service-status recommends the local stack rather than registration", service.code === 2
+            && service.doc.error?.code === "UNSUPPORTED" && localGuidance(service.doc.error?.remedy), service.doc);
+          const registration = await cli("register", "--space", localSpace);
+          check("H2 static register preserves NOT_USER_AUTH and gives local guidance", registration.code === 2
+            && registration.doc.error?.cause?.code === "NOT_USER_AUTH" && localGuidance(registration.doc.error?.remedy), registration.doc);
+
+          await killAndAwaitExit(child, "SIGTERM");
+          child = await start();
+          const restarted = await cli("status", "--space", localSpace);
+          check("H2 restarting the daemon does not reveal a static setup refusal", restarted.code === 0 && !existsSync(localState), restarted.doc);
+
+          // Earlier versions persisted this refusal. Disconnect still has to clear it.
+          const seedRefusal = () => {
+            mkdirSync(localState, { recursive: true, mode: 0o700 });
+            writeFileSync(refusal, JSON.stringify({ space: localSpace, state: "refused", restarts: 0,
+              reason: "hosted Managers require a registered user-auth participant space",
+              next: "use `cotal manager start` from the folder that hosts the space" }), { mode: 0o600 });
+          };
+          renameSync(localRecord, legacyRecord);
+          seedRefusal();
+          const legacyStatus = await cli("service-status", "--space", localSpace);
+          const disconnected = await cli("service-disconnect", "--space", localSpace);
+          check("H2 legacy static registrations keep local guidance and disconnect clears the old refusal", legacyStatus.code === 2
+            && legacyStatus.doc.error?.code === "UNSUPPORTED" && localGuidance(legacyStatus.doc.error?.remedy)
+            && disconnected.code === 0 && localGuidance(disconnected.doc.result?.manager?.next) && !existsSync(refusal),
+          { status: legacyStatus.doc, disconnect: disconnected.doc });
+
+          seedRefusal();
+          writeFileSync(localRecord, "{", { mode: 0o600 });
+          const damaged = await cli("service-status", "--space", localSpace);
+          const overall = await cli("status");
+          const cleared = await cli("service-disconnect", "--space", localSpace);
+          check("H2 a damaged registration neither breaks daemon-wide status nor blocks cleanup", damaged.code === 2
+            && damaged.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && overall.code === 0
+            && cleared.code === 0 && !existsSync(refusal) && !/cotal daemon setup/.test(String(cleared.doc.result?.manager?.next)),
+          { status: damaged.doc, disconnect: cleared.doc });
+        } finally {
+          rmSync(localRecord, { force: true });
+          rmSync(legacyRecord, { force: true });
+        }
+        if (process.argv.includes("--static-setup-only")) return;
         deleteIdpSession(home, idpUrl);
         const mismatchBefore = deviceCodeRequests, postsBefore = posts(sessionSpace);
         for (const serviceOnly of [true, false]) {
@@ -1891,7 +1998,7 @@ const cmd=JSON.parse(process.env.COTAL_BEARER_CMD); const bearer=()=>new Promise
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();`);
       writeFileSync(join(pkg, "index.js"), `import {registry} from ${JSON.stringify(coreUrl)}; registry.register({kind:"connector",name:"daemon-smoke",requires:["node"],${process.argv.includes("--dashboard-shape-repro") ? 'eventChannel: p=>"events."+p.owner+"."+p.actor,' : ""}buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seatScript)}],env:{PATH:process.env.PATH,HOME:process.env.HOME,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
       writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "daemon-smoke-connector", version: "1.0.0", spec: "daemon-smoke-connector@1.0.0", provides: [{ kind: "connector", name: "daemon-smoke" }], commands: [], connectors: [{ name: "daemon-smoke", requires: ["node"], eventPlane: process.argv.includes("--dashboard-shape-repro") }] }] }));
-      const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
+      const cleanSeed = claudeWakeOnly || process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
       else if (!upgrading) {
         const seed = join(root, "config", "cotal", "seed");
@@ -1903,9 +2010,63 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
       if (process.argv.includes("--daemon-seed-repro")) env.COTAL_ALLOW_CHECKOUT_SEED = "1";
-      if (process.argv.includes("--hosted-seed-repro")) {
+      if (claudeWakeOnly || process.argv.includes("--hosted-seed-repro")) {
         delete env.COTAL_SKIP_CONNECTOR_SEED;
         env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+      }
+      if (claudeWakeOnly) {
+        const claudeBin = join(root, "claude-bin");
+        mkdirSync(claudeBin);
+        writeFileSync(join(claudeBin, claudeWakeLateRepro ? "claude.pending" : "claude"), `#!${process.execPath}
+const { existsSync, readFileSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const { spawn } = require('node:child_process');
+const [family, group, action, ...tail] = process.argv.slice(2);
+const home = ${JSON.stringify(home)};
+const plugin = join(home, 'claude-plugin', 'cotal');
+if (family === '--version') { console.log('2.1.327 (Claude Code)'); return; }
+if (family === 'plugin') {
+  const enabled = existsSync(join(home, 'claude-installed'));
+  if (group === 'marketplace' && action === 'list') console.log('[]');
+  else if (group === 'install') writeFileSync(join(home, 'claude-installed'), '');
+  else if (group === 'list') console.log(JSON.stringify(enabled ? [{ id: 'cotal@cotal-mesh', scope: 'user', enabled, readFromFolder: plugin }] : []));
+  else if (group !== 'marketplace' && group !== 'update') process.exit(99);
+  return;
+}
+if (family === 'mcp' && group === 'add') {
+  const delay = join(home, 'delay-claude-registration');
+  if (existsSync(delay)) {
+    writeFileSync(join(home, 'claude-registration-entered'), '');
+    const deadline = Date.now() + 15000;
+    const wait = new Int32Array(new SharedArrayBuffer(4));
+    while (existsSync(delay) && Date.now() < deadline) Atomics.wait(wait, 0, 0, 25);
+  }
+  if (existsSync(join(home, 'reject-claude-registration'))) { console.error('fixture registration blocked'); process.exit(1); }
+  const [command, ...args] = tail.slice(tail.indexOf('--') + 1);
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { cotal: { command, args } } }));
+  return;
+}
+const argv = process.argv.slice(2);
+writeFileSync(join(home, 'claude-launch-entered'), '');
+const config = JSON.parse(argv[argv.indexOf('--mcp-config') + 1]);
+const user = JSON.parse(readFileSync(join(home, '.claude.json'))).mcpServers.cotal;
+if (!user.args.some(arg => arg === join(plugin, 'dist', 'seat.cjs'))) process.exit(99);
+console.log('WARNING: Loading development channels');
+process.stdin.once('data', () => {
+  console.log('messages from server:cotal inject directly in this session');
+  console.log('(shift+tab to cycle)');
+  const { command, args } = config.mcpServers.cotal;
+  const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
+  seat.once('exit', code => process.exit(code ?? 1));
+});
+`, { mode: 0o700 });
+        writeFileSync(join(home, "reject-claude-registration"), "");
+        env.PATH = `${claudeBin}:${env.PATH}`;
+        if (claudeWakeLateRepro) assert.equal((spawnSync("claude", ["--version"], { env }).error as NodeJS.ErrnoException | undefined)?.code, "ENOENT");
+        env.COTAL_NO_UPDATE_CHECK = "1";
+        const seeded = spawnSync(process.execPath, [join(repo, "bin/dist/cotal.js"), "ext", "seed"], { cwd: root, env, encoding: "utf8", timeout: 180_000 });
+        assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
+        env.COTAL_SKIP_CONNECTOR_SEED = "1";
       }
       if (upgrading && !upgradeFixture) throw new Error("upgrade proofs require COTAL_DAEMON_UPGRADE_FIXTURE from build-daemon-upgrade-fixture.mjs");
       let npmRegistry: ReturnType<typeof createHttpServer> | undefined;
@@ -2028,6 +2189,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
       }
       let cliEntry = process.env.CUSTODY_RELEASE_ENTRY ?? join(repo, "bin", "dist", "cotal.js");
+      let cliNode = process.execPath;
       const npmRun = async (args: string[]) => {
         const child = spawn("npm", args, { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let output = "";
@@ -2052,6 +2214,24 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         seedUnitReceipt(cliEntry, true);
       }
       const connectorUpgrade = process.argv.includes("--upgrade-connectors-repro");
+      if (retiredAppRuntime) {
+        cliEntry = join(retiredAppRuntime, "dist/cotal.js");
+        cliNode = join(retiredAppRuntime, "../../MacOS/cotal-node");
+        seedUnitReceipt(cliEntry, true, cliNode);
+        const fixturePackage = join(root, "daemon-smoke-connector");
+        renameSync(pkg, fixturePackage);
+        const index = join(fixturePackage, "index.js");
+        writeFileSync(index, readFileSync(index, "utf8").replace(JSON.stringify(coreUrl), '"@cotal-ai/core"'));
+        rmSync(join(prefix, "extensions.json"));
+        const added = spawnSync(cliNode, [cliEntry, "ext", "add", fixturePackage], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+        assert.equal(added.status, 0, added.stdout + added.stderr);
+        console.log("  retired runtime: public ext add exited 0");
+        const version = JSON.parse(readFileSync(join(retiredAppRuntime, "package.json"), "utf8")).version;
+        for (const [file, data] of [["stamp.json", { generation: version }], ["witness.json", { initialized: true, firstGeneration: version }]] as const) {
+          writeFileSync(join(root, "config", "cotal", "seed", file), JSON.stringify(data));
+        }
+        saveIdpSession(home, idpUrl, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
+      }
       if (upgrading) {
         const fixturePackage = join(root, "daemon-smoke-connector");
         renameSync(pkg, fixturePackage);
@@ -2102,7 +2282,7 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("D1 setup frames contain no session or JWT", !out.includes(SESSION) && !/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./.test(out));
           return { code: frame.ok ? 0 : 2, doc: { result: frame.result, error: frame.error ? { ...frame.error, cause: frame.error.native } : undefined } as Record<string, any>, err: progress.join("\n") };
         }
-        const child = spawn(process.execPath, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(cliNode, [cliEntry, "daemon", ...args, ...(explicitHome ? ["--daemon-home", explicitHome] : []), "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
         let out = "", err = "";
         child.stdout.on("data", (b) => { out += String(b); }); child.stderr.on("data", (b) => { err += String(b); });
         const code = await new Promise<number | null>((resolve) => child.once("exit", resolve));
@@ -2119,9 +2299,11 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       };
       const startDaemon = async (managedHome = explicitHome) => {
         const socket = managedHome ? daemonPathsFor(managedHome, env).socket : paths.socket;
-        const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
+        // A mode that pins PATH in the unit runs the daemon with that PATH, as the native service does,
+        // so an application installed into a directory only the terminal has stays unseen until setup refreshes it.
+        const servicePath = process.argv.includes("--setup-path-repro") || process.argv.includes("--account-setup-journey") || process.argv.includes("--setup-no-connectors-repro") ? JSON.parse(/^Environment=PATH=(.+)$/m.exec(readFileSync(join(root, "config/systemd/user/cotal-daemon.service"), "utf8"))![1]!) as string : env.PATH;
         let recoveryRestarts = 0;
-        const launch = () => spawn(process.execPath, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
+        const launch = () => spawn(cliNode, [cliEntry, "daemon", "serve", ...(managedHome ? ["--daemon-home", managedHome] : [])], { cwd: root, env: { ...env, PATH: servicePath, COTAL_SKIP_CONNECTOR_SEED: "1", ...(!upgrading || !process.argv.includes("--generation-process-skew-repro") || process.argv.includes("--generation-marked-repro") ? { COTAL_DAEMON_NATIVE_SERVICE: "1" } : {}) }, stdio: ["ignore", "pipe", "pipe"] as const });
         let child = launch();
         const attach = () => {
           child.stdout.on("data", chunk => { if (process.argv.includes("--rollback-busy-repro")) console.log("RB DAEMON STDOUT", String(chunk)); });
@@ -2265,7 +2447,10 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             const again = await cli("setup", "--idp", idpUrl);
             check("J3 explicit provider reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId && again.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), again);
             const human = await plainCommand("setup", "--idp", idpUrl);
-            check("J4 human output names account computer and dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in the dashboard"), human);
+            check("J4 human output names account computer and provider dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in your provider's dashboard") && !human.out.includes("Account computers") && !human.out.includes("Machines page"), human);
+            check("J4a zero-space JSON explains launch state and carries setup Next", fresh.doc.result.spaces.length === 0 && fresh.doc.result.message === "No space uses this computer yet, so no agents can be launched on it until you connect a space." && fresh.doc.result.next?.command === `cotal daemon setup --space '<space>' --idp '${idpUrl}'` && fresh.doc.result.next?.description.includes("Replace <space>") && fresh.doc.result.dashboard === "You can also choose spaces for this computer in your provider's dashboard.", fresh);
+            check("J4b human Next matches JSON state command and dashboard", human.out.includes(fresh.doc.result.message) && human.out.includes(`\nNext\n  ${fresh.doc.result.next.command}`) && human.out.includes(fresh.doc.result.next.description) && human.out.includes(fresh.doc.result.dashboard), human);
+            check("J4c signed-in rerun retains zero-space guidance", again.doc.result?.message === fresh.doc.result.message && JSON.stringify(again.doc.result?.next) === JSON.stringify(fresh.doc.result.next) && again.doc.result?.dashboard === fresh.doc.result.dashboard, again);
             for (const flags of [["--no-manager"], ["--wait", "0"]]) {
               const invalid = await cli("setup", "--idp", idpUrl, ...flags);
               check("J5 space-only flag refuses without space", invalid.code !== 0 && invalid.doc.error?.message.includes("require --space"), invalid);
@@ -2303,7 +2488,9 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             }
             check("J9 enabled account space connects", ready.account?.spaces?.some((row: any) => row.space === ON && row.observed === "connected"), ready);
             const used = await plainCommand("setup");
-            check("J10 rerun names enabled spaces", used.code === 0 && used.out.includes(`Spaces using this computer: ${ON}`) && !used.out.includes("Turn on the spaces"), used);
+            check("J10 rerun names enabled spaces without zero-space guidance", used.code === 0 && used.out.includes(`Spaces using this computer: ${ON}`) && !used.out.includes("No space uses") && !used.out.includes("\nNext\n"), used);
+            const usedJson = await cli("setup");
+            check("J10a enabled-space JSON omits zero-space guidance", usedJson.code === 0 && usedJson.doc.result?.spaces.includes(ON) && usedJson.doc.result.message === undefined && usedJson.doc.result.next === undefined && usedJson.doc.result.dashboard === undefined, usedJson);
             const otherProvider = `${idpUrl}/other`;
             saveIdpSession(home, otherProvider, { token: SESSION, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "machine-owner" });
             const multiple = await cli("setup");
@@ -2511,7 +2698,6 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check("I6 intent authentication refusal preserves desired set and asks for sign-in", !refused.ok && JSON.stringify(refused).includes("Sign in again") && !accountDesired, refused);
             return;
           }
-          accountDesired = true;
           const observed = async () => resultOf(await ask(paths.socket, { op: "status" }, 25_000));
           const waitAccount = async (predicate: (s: Record<string, any>) => boolean, label: string) => {
             let value: Record<string, any> = {};
@@ -2519,10 +2705,14 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             check(label, predicate(value), value); return value;
           };
           const hostedShape = process.argv.includes("--account-hosted");
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
-          if (!hostedShape) await approve(host, ON, fixture.owner);
-          await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
-          await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          const stopStatusPoll = retiredAppRuntime ? pollStartupStatus(paths.socket) : undefined;
+          try {
+            accountDesired = true;
+            await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.lastRefusal === undefined && r.machineService === (hostedShape ? undefined : "approval-pending")), "A0 desired space is launch-ready and reports an unapproved machine service apart");
+            if (!hostedShape) await approve(host, ON, fixture.owner);
+            await waitAccount(s => s.account?.spaces?.some((r: any) => r.space === ON && r.observed === "connected" && r.machineService === undefined), "A1 desired 200 connects real broker service");
+            await waitAccount(s => s.managers?.some((r: any) => r.space === ON && r.state === "answering"), "A2 account desired starts answering Manager");
+          } finally { await stopStatusPoll?.(); }
           if (process.argv.includes("--account-custody-repro")) {
             const alias = idpUrl.replace("127.0.0.1", "[::ffff:127.0.0.1]");
             const session = loadIdpSession(home, idpUrl)!;
@@ -2546,43 +2736,40 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
               console.log("UNBLOCK AFTER\n" + (await plainCommand("status")).out);
               return;
             }
-            if (process.argv.includes("--account-recovery-repro")) {
-              const { signedInMachineAccounts } = await import("@cotal-ai/auth");
-              const candidate = signedInMachineAccounts(home).find(item => item.sub === "replacement-owner")!;
-              await waitAccount(s => s.account?.spaces?.some((row: any) => row.space === ON && row.custodyRecovery?.candidate === candidate.ownerKey), "failing holder exposes confirmed recovery through real daemon status");
-              const before = JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner;
-              check("different subject never silently takes custody", before !== candidate.ownerKey);
-              const moved = await ask(paths.socket, { op: "space-recover", space: ON, candidate: candidate.ownerKey, holder: idpUrl }, 100_000);
-              check("confirmed real daemon recovery request succeeds", moved.ok === true, moved);
-              check("confirmed real daemon recovery changes custody", JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === candidate.ownerKey);
-              return;
-            }
             const { signedInMachineAccounts } = await import("@cotal-ai/auth");
             const accounts = signedInMachineAccounts(home);
-            const current = accounts.find(account => account.idpUrl === idpUrl)!;
-            const aliasAccount = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
-            check("fixture presents matching issuer and subject at different addresses", current.issuer === aliasAccount.issuer && current.sub === aliasAccount.sub && current.ownerKey !== aliasAccount.ownerKey);
-            check("copied identity leaves custody and registry with the named holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal?.includes(idpUrl)) && custody.spaces[ON]?.owner === current.ownerKey && findMesh(ON)?.catalogOwner === current.ownerKey);
+            const holder = accounts.find(account => account.idpUrl === idpUrl)!;
+            const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            if (process.argv.includes("--account-recovery-repro")) {
+              assert.equal(current.sub, "replacement-owner");
+              const recoveryShown = (s: Record<string, any>) => s.account?.spaces?.some((row: any) => row.space === ON && row.custodyRecovery?.candidate === current.ownerKey);
+              const owner = () => JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner;
+              const recover = (expectedHolder: string) => ask(paths.socket, { op: "space-recover", space: ON, candidate: current.ownerKey, holder: expectedHolder }, 100_000);
+              await waitAccount(recoveryShown, "failing holder exposes confirmed recovery through real daemon status");
+              check("different subject never silently takes custody", owner() === holder.ownerKey);
+              check("CLI points to the explicit app action", (await plainCommand("status")).out.includes("choose Use signed-in account"));
+              const changed = await recover("https://changed.example/api/auth");
+              check("stale holder address refuses without moving custody", !changed.ok && JSON.stringify(changed).includes("holding account changed") && owner() === holder.ownerKey, changed);
+              custodyOldFails = false;
+              await waitAccount(s => !recoveryShown(s), "an answering holder clears the recovery action");
+              const answering = await recover(idpUrl);
+              check("a holder that answers again cannot be confirmed away", !answering.ok && owner() === holder.ownerKey, answering);
+              if (process.argv.includes("--account-recovery-signed-out")) deleteIdpSession(home, idpUrl);
+              else custodyOldFails = true;
+              await waitAccount(recoveryShown, "a signed-out or failing holder offers recovery again");
+              const moved = await recover(idpUrl);
+              check("confirmed real daemon recovery request succeeds", moved.ok === true, moved);
+              check("confirmed real daemon recovery changes custody", owner() === current.ownerKey);
+              check("confirmed recovery changes the registry owner", findMesh(ON)?.catalogOwner === current.ownerKey);
+              return;
+            }
+            check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
+            check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
+            check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);
+            check("registry ownership stays with the holder", findMesh(ON)?.catalogOwner === holder.ownerKey);
             check("same account computer is listed once", status.account.accounts.length === 1 && status.account.accounts[0].machineId === status.account.machineId, status.account);
             const human = await plainCommand("status");
-            check("CLI lists same account computer once", human.code === 0 && human.out.split("Account computer:").length === 2, human);
-            const { createAccountReconciler } = await import("../daemon/account-reconcile.js");
-            const desired = { v: 1, account: current, spaces: [{ id: ON, slug: ON, name: ON, kind: "team", role: "owner", unavailable: "fixture unavailable" }] } as any;
-            const recovery = createAccountReconciler(home, { status: () => ({ state: "not-requested" }) } as any, { status: () => ({ state: "stopped" }) } as any);
-            const replacement = { ...current, ownerKey: "b".repeat(64), sub: "replacement-owner" };
-            recovery.retainAccounts([current.ownerKey, replacement.ownerKey]);
-            recovery.accountHealth(current.ownerKey, true);
-            await recovery.apply(replacement, desired, 1, { [ON]: 1 });
-            await assert.rejects(() => recovery.transfer(ON, replacement, current.idpUrl), /still answering/);
-            check("answering foreign holder cannot be confirmed away", !recovery.view().find(row => row.space === ON)?.custodyRecovery);
-            recovery.accountHealth(current.ownerKey, false); recovery.accountHealth(current.ownerKey, false); recovery.accountHealth(current.ownerKey, false);
-            check("three failed account polls offer explicit recovery", !!recovery.view().find(row => row.space === ON)?.custodyRecovery);
-            recovery.accountHealth(current.ownerKey, true);
-            await assert.rejects(() => recovery.transfer(ON, replacement, current.idpUrl), /still answering/);
-            recovery.retainAccounts([replacement.ownerKey]);
-            await assert.rejects(() => recovery.transfer(ON, replacement, "https://changed.example/api/auth"), /holding account changed/);
-            await recovery.transfer(ON, replacement, current.idpUrl);
-            check("confirmed signed-out holder transfer persists replacement custody", JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner === replacement.ownerKey);
+            check("CLI lists same account computer once and names the holder", human.code === 0 && human.out.split("Account computer:").length === 2 && human.out.includes(`The local space connection is held by ${idpUrl}.`), human);
             return;
           }
           const onCatalogId = (catalog as { spaces: { id: string; slug: string }[] }).spaces.find(row => row.slug === ON)!.id;
@@ -2823,9 +3010,16 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           }
           return;
         }
+        if (process.argv.includes("--hosted-refusal-repro")) {
+          const refused = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000));
+          assert.equal(refused.state, "refused");
+          assert.match(refused.lastRefusal, /no longer registered/);
+          console.log("HOSTED_REFUSAL before setup", JSON.stringify(refused));
+        }
+        const stopStatusPoll = retiredAppRuntime && !explicitHome ? pollStartupStatus(paths.socket) : undefined;
         const setup = explicitHome
           ? { code: 0, doc: { result: { launchReady: true, manager: resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 100_000)) } } as Record<string, any>, err: "" }
-          : await cli("setup", "--space", ON, "--idp", idpUrl);
+          : await cli("setup", "--space", ON, "--idp", idpUrl).finally(() => stopStatusPoll?.());
         console.log("  H1 setup", JSON.stringify(setup));
         if (pathRecovery) {
           check("P1 initial setup refuses without applications", setup.code === 2 && setup.doc.error?.cause?.code === "NO_AVAILABLE_CONNECTOR", setup);
@@ -2891,13 +3085,125 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
           check("setup after application install restarts idle child and becomes launch-ready", recovered.code === 0 && recovered.doc.result?.launchReady === true && recovered.doc.result?.manager?.pid !== before?.pid && recovered.doc.result?.manager?.connectors?.some((connector: any) => connector.state === "available"), recovered);
           return;
         }
-        check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
-        if (!explicitHome) {
+        if (!claudeWakeOnly) check(explicitHome ? "Explicit-home manager-start returns answering hosted Manager" : "H1 setup exits 0 with answering hosted Manager", setup.code === 0 && setup.doc.result?.launchReady === true && setup.doc.result?.manager?.state === "answering", setup);
+        if (!explicitHome && !claudeWakeOnly && !retiredAppRuntime) {
           check("H0 fresh setup prints device URL and code on stderr", setup.err.includes(`${idpOrigin}/approve?code=DAEMON`) && setup.err.includes("Approval code") && setup.err.includes("DAEMON"));
           check("H0 fresh discovery preserves the signed-in step", setup.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"));
         }
+        if (claudeWakeOnly) {
+          const run = async (...args: string[]) => {
+            const command = spawn(process.execPath, [cliEntry, ...args], { cwd: participant, env, stdio: ["ignore", "pipe", "pipe"], timeout: 90_000 });
+            let out = "", err = "";
+            command.stdout.on("data", (chunk) => { out += String(chunk); });
+            command.stderr.on("data", (chunk) => { err += String(chunk); });
+            const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+            return { code, out, err };
+          };
+          const launch = (instance: string) => run("spawn", "--space", ON, "--on", instance, "--harness", "claude", "--name", "daemon_claude_wake", "--no-events", "--detach", "--json");
+          const status = async () => (await cli("status", "--space", ON)).doc.result.managers[0];
+          const view = await status();
+          const userConfig = join(home, ".claude.json");
+          const remedy = `cotal daemon setup --space ${ON}`;
+          if (claudeWakeLateRepro) {
+            const inventory = (manager: typeof view) => manager.connectors.find((row: any) => row.agent === "claude");
+            const sameManager = (manager: typeof view) => manager.state === "answering" && manager.pid === view.pid && manager.instanceId === view.instanceId;
+            const delayRegistration = join(home, "delay-claude-registration");
+            check("hosted Manager booted without claude or a user MCP entry", view.state === "answering" && inventory(view)?.state === "unavailable" && inventory(view)?.reason?.includes("claude harness needs claude on PATH") && !existsSync(userConfig), view);
+            writeFileSync(delayRegistration, "");
+            renameSync(join(root, "claude-bin", "claude.pending"), join(root, "claude-bin", "claude"));
+            await status();
+            const entered = join(home, "claude-registration-entered");
+            for (let i = 0; i < 100 && !existsSync(entered); i++) await sleep(50);
+            const pending = await status();
+            check("status starts wake setup and keeps answering while registration is pending", existsSync(entered) && sameManager(pending) && inventory(pending)?.state === "unavailable" && inventory(pending)?.reason?.includes("needs claude on PATH") && !existsSync(userConfig), pending);
+            rmSync(delayRegistration);
+            const refused = await launch(view.instanceId);
+            const failed = await status();
+            const row = inventory(failed);
+            check("failed wake registration leaves Claude unavailable with the cause and remedy", sameManager(failed) && row?.state === "unavailable" && row.reason?.includes("fixture registration blocked") && row.reason?.includes(remedy) && !existsSync(userConfig), failed);
+            check("pinned Claude spawn refuses with the cause and never starts a seat", refused.code !== 0 && refused.out.includes("fixture registration blocked") && refused.out.includes(remedy) && !existsSync(join(home, "claude-launch-entered")), refused);
+            rmSync(join(home, "reject-claude-registration"));
+            const repaired = await launch(view.instanceId);
+            check("the same Manager joins Claude after successful wake setup", repaired.code === 0 && JSON.parse(repaired.out).result?.readiness === "joined", repaired);
+            const ready = await status();
+            const registered = existsSync(userConfig) ? JSON.parse(readFileSync(userConfig, "utf8")).mcpServers.cotal : undefined;
+            check("the same Manager advertises Claude only with the installed user wake channel", sameManager(ready) && inventory(ready)?.state === "available" && registered?.args.includes(join(home, "claude-plugin", "cotal", "dist", "seat.cjs")) && existsSync(join(home, "claude-installed")) && !existsSync(join(participant, ".mcp.json")), ready);
+            if (repaired.code === 0) {
+              const stopped = await run("stop", "daemon_claude_wake", "--space", ON, "--on", view.instanceId, "--json");
+              check("the late-started Claude seat stops through its original Manager", stopped.code === 0, stopped);
+            }
+            return;
+          }
+          const reason = view.connectors.find((row: any) => row.agent === "claude" && row.state === "unavailable")?.reason;
+          check("Claude is unavailable when user MCP registration fails", reason?.includes("fixture registration blocked") && !existsSync(userConfig) && setup.code === 2, { view, setup });
+          const first = await launch(view.instanceId);
+          check("Claude spawn refusal names the daemon setup command", first.code !== 0 && first.out.includes(remedy), first);
+          const before = await run("status", "--plain");
+          check("status reports a missing wake entry with daemon guidance", before.out.includes("not registered") && before.out.includes("cotal daemon setup --space <space>"), before);
+          rmSync(join(home, "reject-claude-registration"));
+          const repaired = await cli("setup", "--space", ON);
+          const manager = repaired.doc.result?.manager;
+          check("daemon setup retries installation and reports Claude available", repaired.code === 0 && manager?.connectors.some((row: any) => row.agent === "claude" && row.state === "available"), repaired);
+          const registered = JSON.parse(readFileSync(userConfig, "utf8")).mcpServers.cotal;
+          check("Claude has the user-scope wake entry and installed plugin without a prepared project", registered.args.includes(join(home, "claude-plugin", "cotal", "dist", "seat.cjs")) && existsSync(join(home, "claude-installed")) && !existsSync(join(participant, ".mcp.json")), registered);
+          const second = await launch(manager.instanceId);
+          check("Claude launches and joins from the daemon-only computer", second.code === 0 && JSON.parse(second.out).result?.readiness === "joined", second);
+          if (second.code === 0) {
+            const stopped = await run("stop", "daemon_claude_wake", "--space", ON, "--on", manager.instanceId, "--json");
+            check("Claude seat stops through its hosted Manager", stopped.code === 0, stopped);
+          }
+          return;
+        }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--hosted-refusal-repro")) {
+          assert.equal(manager.lastRefusal, undefined, "a verified answering Manager supersedes its previous refusal");
+          assert.ok(!existsSync(join(home, "daemon", spaceSegment(ON), "manager-refusal.json")));
+          const refreshed = resultOf(await ask(paths.socket, { op: "manager-status", space: ON }, 25_000));
+          assert.equal(refreshed.state, "answering");
+          assert.equal(refreshed.lastRefusal, undefined);
+          const repeated = resultOf(await ask(paths.socket, { op: "manager-start", space: ON }, 25_000));
+          assert.equal(repeated.state, "answering");
+          assert.equal(repeated.lastRefusal, undefined);
+          const human = await plainCommand("status", "--space", ON);
+          assert.equal(human.code, 0);
+          assert.ok(!human.out.includes("Last refusal:"), "human status omits the superseded refusal");
+          return;
+        }
+        if (retiredAppRuntime) {
+          assert(manager.connectors?.some((connector: { agent: string; state: string }) => connector.agent === "daemon-smoke" && connector.state === "available"));
+          const observeCli = async (...args: string[]) => {
+            const command = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+            let out = "", err = "";
+            command.stdout.on("data", b => { out += String(b); });
+            command.stderr.on("data", b => { err += String(b); });
+            const code = await new Promise<number | null>((resolve, reject) => { command.once("error", reject); command.once("close", resolve); });
+            return { code, out, err };
+          };
+          const app = join(retiredAppRuntime, "../../..");
+          const birth = processBirth(manager.pid);
+          assert(birth);
+          renameSync(app, `${app}.retired`);
+          try {
+            assert(!existsSync(cliEntry) && !existsSync(cliNode));
+            const observe = await observeCli("ps", "--on", manager.instanceId, "--space", ON, "--json");
+            assert.equal(observe.code, 0, observe.out + observe.err);
+            assert(JSON.parse(observe.out).result.managers.some((row: any) => row.instanceId === manager.instanceId && row.state === "answered"), observe.out);
+            console.log(`  retired runtime: public ps answered on original instance ${manager.instanceId}`);
+            const launch = await observeCli("spawn", "--agent", "daemon-smoke", "--on", manager.instanceId, "--name", "retired_runtime_seat", "--detach", "--no-events", "--space", ON);
+            console.log(`  retired runtime: public spawn exited ${launch.code}\n${launch.out}${launch.err}`);
+            assert.equal(launch.code, 0, launch.out + launch.err);
+            const after = await observeCli("ps", "--on", manager.instanceId, "--space", ON, "--json");
+            assert.equal(after.code, 0, after.out + after.err);
+            const seats = JSON.parse(after.out).result;
+            check("retained hosted Manager joins a seat on first use of the installed connector",
+              processBirth(manager.pid) === birth && seats.managers.some((row: any) => row.instanceId === manager.instanceId && row.state === "answered")
+                && seats.items.some((row: any) => row.name === "retired_runtime_seat" && typeof row.lifecycleUid === "string"), seats);
+          } finally {
+            renameSync(`${app}.retired`, app);
+          }
+          return;
+        }
         if (process.argv.includes("--update-stop-agents-repro")) {
           const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
           const caller = { versionSkew: (text: string) => text, roster: async () => [] };
@@ -3218,10 +3524,12 @@ process.exit(result.status ?? 93);
           } finally { brokerReplyDelay = 0; }
           return;
         }
-        if (process.argv.includes("--cold-restart-repro")) {
+        if (coldRestart) {
           const client = { versionSkew: (text: string) => text, roster: async () => [] };
+          check("6267 first setup publishes missing Manager contracts", contractPublishes > 0, { contractPublishes });
           for (let run = 1; run <= 3; run++) {
             const started = Date.now();
+            const beforePublishes = contractPublishes;
             await killAndAwaitExit(child, "SIGTERM");
             child = await startDaemon();
             const daemonReadyMs = Date.now() - started;
@@ -3232,7 +3540,8 @@ process.exit(result.status ?? 93);
               await sleep(100);
             }
             const answeringMs = Date.now() - started;
-            check(`6267 restart ${run} answers within 30s without setup`, replacement.state === "answering" && answeringMs < 30_000, { answeringMs, replacement });
+            check(`6267 restart ${run} answers on the same instance within 30s without setup`, replacement.state === "answering" && replacement.instanceId === manager.instanceId && answeringMs < 30_000, { answeringMs, replacement });
+            check(`6267 restart ${run} does not republish verified Manager contracts`, contractPublishes === beforePublishes, { publishes: contractPublishes - beforePublishes });
             const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", replacement.instanceId, { onRefusal: "throw", readOnly: true });
             const resolves: number[] = [];
             for (const temperature of ["cold", "warm"]) {

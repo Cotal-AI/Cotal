@@ -9,7 +9,9 @@ import { authClusterDocument, AUTH_CONTRACTS } from '../../implementations/auth/
 const path = new URL('../../docs/mesh-commands.mdx', import.meta.url).pathname;
 assert(existsSync(path), 'built-in mesh command catalog is missing');
 const document = await readDocument(path);
+/** @type {Map<string, unknown[]>} */
 const sections = new Map();
+/** @type {unknown[] | undefined} */
 let section;
 for (const token of lexer(document.markdown)) {
   if (token.type === 'heading') {
@@ -23,6 +25,7 @@ for (const token of lexer(document.markdown)) {
     section.push(JSON.parse(token.text));
   }
 }
+/** @type {Array<[string, import('../../packages/core/dist/index.js').ClusterDocument, typeof MANAGER_CONTRACTS]>} */
 const sources = [
   ['manager', managerClusterDocument(), MANAGER_CONTRACTS],
   ['auth', authClusterDocument(), AUTH_CONTRACTS],
@@ -34,9 +37,12 @@ let schemas = 0;
 for (const [endpoint, cluster, contracts] of sources) {
   for (const command of cluster.commands) {
     const blocks = sections.get(`${endpoint} ${command.name}`);
+    assert(blocks, 'declaration, input and output');
     assert.equal(blocks.length, 3, 'declaration, input and output');
     assert.deepEqual(blocks[0], command, `registered shape: ${endpoint}/${command.name}`);
-    for (const [index, direction] of ['input', 'output'].entries()) {
+    /** @type {Array<'input' | 'output'>} */
+    const directions = ['input', 'output'];
+    for (const [index, direction] of directions.entries()) {
       const compiled = compileContract({ root: blocks[index + 1] });
       assert.equal(compiled.closureDigest, command[`${direction}Digest`], `rendered ${direction} digest`);
       assert.equal(compiled.closureDigest, contracts[command.name][direction].closureDigest, 'same contract used by serving code');
@@ -47,7 +53,7 @@ for (const [endpoint, cluster, contracts] of sources) {
 // A documented safe example must also be a call the CLI accepts and the input contract admits. With
 // no --args the CLI sends null, and --args must be one JSON object, so `--args 'null'` was refused (#7089).
 const example = lexer(document.markdown).find(token => token.type === 'code' && token.lang === 'sh');
-const call = example?.text.split('\n').find(line => line.startsWith('cotal invoke manager status '));
+const call = example && 'text' in example ? example.text.split('\n').find((/** @type {string} */ line) => line.startsWith('cotal invoke manager status ')) : undefined;
 assert(call, 'status example is present');
 const args = call.match(/--args '([^']+)'/)?.[1];
 const input = args === undefined ? null : JSON.parse(args);

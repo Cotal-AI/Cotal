@@ -251,7 +251,7 @@ async function runSeats(job: SeatJob): Promise<void> {
           await ep.readPresence();
           cost.ms.push(performance.now() - t);
         }
-        const entries = await lastKvEntries((ep as unknown as { kv: Parameters<typeof lastKvEntries>[0] }).kv);
+        const entries = await lastKvEntries((ep as unknown as { conn: { kv: Parameters<typeof lastKvEntries>[0] } }).conn.kv);
         cost.msgs.push(entries.length);
         cost.bytes.push(entries.reduce((a, e) => a + e.value.length + `$KV.${e.bucket}.${e.key}`.length, 0));
       }
@@ -273,7 +273,7 @@ async function runSeats(job: SeatJob): Promise<void> {
     const step = Math.max(1, Math.ceil(ages.length / 200_000));
     await ipcSend({ sample: { up, failed, errors, ages: ages.filter((_, i) => i % step === 0), missing, stale, cpuMs: (cpu.user + cpu.system) / 1000, rssMb: process.memoryUsage().rss / MB, mem: nodeMem(), loop: loopDelay(), ...(probe ? { put: probe.take() } : {}) } satisfies SeatSample });
   }
-  probe?.stop();
+  await probe?.stop();
   stopStallWatch();
   loop.disable();
   await Promise.all(eps.map(({ ep }) => ep.stop().catch(() => {})));

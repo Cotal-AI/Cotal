@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-core",
   "description": "Shared MCP-bridge runtime for Cotal connectors: the mesh agent, cotal_* tools, and hook relay.",
-  "version": "0.168.0",
+  "version": "0.179.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -27,6 +27,10 @@
     "./relay": {
       "types": "./dist/relay.d.ts",
       "import": "./dist/relay.js"
+    },
+    "./version": {
+      "types": "./dist/version.generated.d.ts",
+      "import": "./dist/version.generated.js"
     },
     "./seat-cache": {
       "types": "./dist/seat-compile-cache.d.ts",

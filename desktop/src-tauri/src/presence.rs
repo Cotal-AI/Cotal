@@ -116,9 +116,52 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     if result["launchReady"] == true { "Connected".into() } else { "Needs attention".into() }
 }
 
+/// Quote the executable path in a Windows `Run` command.
+#[cfg(any(windows, test))]
+pub fn windows_login_command(executable: &Path) -> String {
+    format!("\"{}\" --background", executable.display())
+}
+
+/// Match both the previous unquoted command and the current quoted command.
+#[cfg(any(windows, test))]
+pub fn windows_run_matches_executable(command: &str, executable: &Path) -> bool {
+    let Some(path) = command.trim().strip_suffix(" --background") else { return false; };
+    let path = path.strip_prefix('"').and_then(|path| path.strip_suffix('"')).unwrap_or(path);
+    let path = Path::new(path);
+    if !path.is_absolute() { return false; }
+    let Ok(recorded) = std::fs::canonicalize(path) else { return false; };
+    let Ok(current) = std::fs::canonicalize(executable) else { return false; };
+    recorded == current
+}
+
+/// The startup approval record ends in eight zero bytes when enabled.
+#[cfg(any(windows, test))]
+pub fn windows_startup_approved_enabled(bytes: &[u8]) -> bool {
+    bytes.len() < 8 || bytes.iter().rev().take(8).all(|&byte| byte == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_login_scope_matches_only_the_installed_executable() {
+        let dir = std::env::temp_dir().join(format!("cotal login scope {}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("cotal-desktop.exe");
+        let other = dir.join("another-cotal.exe");
+        std::fs::write(&exe, b"exe").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+        let quoted = windows_login_command(&exe);
+        assert_eq!(quoted, format!("\"{}\" --background", exe.display()));
+        assert!(windows_run_matches_executable(&quoted, &exe));
+        assert!(windows_run_matches_executable(&format!("{} --background", exe.display()), &exe));
+        assert!(!windows_run_matches_executable(&windows_login_command(&other), &exe));
+        assert!(!windows_run_matches_executable("cotal-desktop.exe --background", &exe));
+        assert!(!windows_run_matches_executable(&format!("\"{}\" --other", exe.display()), &exe));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(windows_startup_approved_enabled(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!windows_startup_approved_enabled(&[3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]));
+    }
     #[test]
     fn startup_recovers_invalid_preferences_without_overwriting_backups() {
         let directory = std::env::temp_dir().join(format!("cotal-preferences-{}", std::process::id()));

@@ -133,16 +133,29 @@ console.log("injection framing");
     metadata === '[sender_id="local.real" message_id="real-message"]', forged);
 }
 
-// A broker redelivery count is not a record of a prior context handoff. The first possible frame
-// after an unacked copy outlives its ack wait must preserve that handling is unknown, including
-// across process restarts where no local cache can answer it. Genuine at-least-once uncertainty
-// remains visible, and the broker-authenticated count remains intact.
+// A broker redelivery count is not a record of a prior context handoff. Without a local record, as
+// after a process restart, the frame keeps that handling unknown. With one, a message this session
+// never handed over carries no label, and one it handed over unconfirmed says so. The
+// broker-authenticated count remains intact.
 {
   const out = fmtItem(dm("retry", { deliveryCount: 2 }));
   check("a redelivery frame names the broker-derived delivery count", out.includes("broker redelivery, delivery 2"), out);
   check("a redelivery frame labels prior model handoff unknown", out.includes("prior model handoff unknown"), out);
   check("a broker count alone does not invent a prior run", !out.includes("may already have run"), out);
   check("a first delivery carries no redelivery warning", !fmtItem(dm("first", { deliveryCount: 1 })).includes("redelivery"));
+  const restarted = fmtItem(dm("restarted", { deliveryCount: 3, firstDeliveryCount: 2 }));
+  check("a first copy here that was already a redelivery keeps the handoff unknown",
+    restarted.includes("broker redelivery, delivery 3: prior model handoff unknown"), restarted);
+  const queued = fmtItem(dm("queued", { deliveryCount: 60, firstDeliveryCount: 1 }));
+  check("a message queued here and never handed over carries no redelivery label",
+    !queued.includes("redelivery") && !queued.includes("handoff"), queued);
+  const current = fmtItem(dm("current", { deliveryCount: 4, firstDeliveryCount: 1, handedOverAt: 4 }));
+  check("a frame built around its own handoff carries no redelivery label", !current.includes("redelivery"), current);
+  for (const handedOverAt of [0, 1, 3]) {
+    const earlier = fmtItem(dm("earlier", { deliveryCount: 4, firstDeliveryCount: 1, handedOverAt }));
+    check(`an earlier handoff at delivery ${handedOverAt} says it was not confirmed`,
+      earlier.includes("broker redelivery, delivery 4: an earlier handoff in this session was not confirmed"), earlier);
+  }
 }
 
 // 4. History is context, even when a caller explicitly includes it in a mixed batch.

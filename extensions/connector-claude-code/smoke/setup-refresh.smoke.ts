@@ -1,6 +1,6 @@
 /** Refresh reads absent integrations without mutating Claude's configuration. */
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -100,6 +100,49 @@ try {
       writeFileSync(f.records, JSON.stringify({ plugins: { [`${name}@cotal-mesh`]: [{ scope: "user", enabled: false }] } }));
       await assert.rejects(async () => refresh(), new RegExp(`${name}@cotal-mesh is installed, but Claude Code is unavailable`));
     }
+  });
+  if (process.platform !== "win32") await check("a protected Claude MCP entry warns while the local plugin refreshes", async () => {
+    const f = fixture("protected-mcp", true);
+    const config = join(f.config, ".claude.json");
+    const market = join(process.env.COTAL_HOME!, "claude-plugin");
+    const plugin = join(market, "cotal");
+    const executable = join(emptyBin, "claude");
+    mkdirSync(f.config, { recursive: true });
+    mkdirSync(f.plugins, { recursive: true });
+    writeFileSync(f.records, JSON.stringify({ plugins: { "cotal@cotal-mesh": [{ scope: "user" }] } }));
+    const bytes = JSON.stringify({ mcpServers: { cotal: { command: "/different/node", args: [join(plugin, "dist", "seat.cjs")] } } });
+    writeFileSync(config, bytes, { mode: 0o444 });
+    writeFileSync(executable, `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+switch (args.slice(0, 3).join(" ")) {
+  case "--version": console.log("2.0.0"); break;
+  case "plugin list --json": console.log(JSON.stringify([{ id: "cotal@cotal-mesh", scope: "user", enabled: true, readFromFolder: ${JSON.stringify(plugin)} }])); break;
+  case "plugin marketplace list": console.log(JSON.stringify([{ name: "cotal-mesh", source: "directory", path: ${JSON.stringify(market)} }])); break;
+  case "plugin marketplace add": case "plugin marketplace update": break;
+  case "mcp remove --scope": writeFileSync(${JSON.stringify(config)}, "{}"); break;
+  case "mcp add --scope": writeFileSync(${JSON.stringify(config)}, JSON.stringify({ mcpServers: { cotal: { command: args[6], args: args.slice(7) } } })); break;
+  default: process.exit(1);
+}
+`, { mode: 0o700 });
+    try {
+      const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+      const row = () => claudeSetupProvider.status!({ version, skillsRemedy: "" }).find((row) => row.label === "Claude wake channel")!;
+      const original = statSync(config);
+      const detail = await refresh();
+      assert.ok(detail.includes(config));
+      assert.match(detail, /run `cotal update`/);
+      assert.equal(row().state, "warn");
+      assert.ok(row().text.includes(config));
+      assert.equal(readFileSync(config, "utf8"), bytes);
+      assert.equal(statSync(config).ino, original.ino);
+      assert.equal(statSync(config).mode & 0o777, 0o444);
+      assert.ok(existsSync(join(plugin, "dist", "cli.json")));
+      chmodSync(config, 0o600);
+      assert.doesNotMatch(await refresh(), /read-only/);
+      assert.equal(row().state, "ok");
+      assert.ok(!row().text.includes(config));
+    } finally { rmSync(executable, { force: true }); }
   });
 } finally {
   for (const key of keys) {

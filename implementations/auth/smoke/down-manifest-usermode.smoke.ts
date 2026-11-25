@@ -36,7 +36,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE } from "@cotal-ai/workspace";
-import { assertSmokeSandboxDown, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, recordSmokeSandbox, createSuite } from "@cotal-ai/smoke-kit";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -60,11 +60,7 @@ const { agentCredsDir } = await import("@cotal-ai/workspace");
 const { buildLedger, buildLedgerAgentRow, hashManifestSource, writeLedger } = await import("../../cli/src/lib/manifest/ledger.js");
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await pickFreePort();
@@ -295,8 +291,8 @@ agents:
   const actors2 = await cotal(["actor", "list"], { timeoutMs: 30_000 });
   check("suspect: worker2 grant row IS revoked (no standing authority)", actors2.status === 0 && !/\bworker2\b/.test(actors2.out), actors2.out.slice(-400));
 
-  console.log(`\nDOWN-MANIFEST USER-MODE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-  if (fail) process.exitCode = 1;
+  console.log(`\nDOWN-MANIFEST USER-MODE SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+  finish();
 } catch (e) {
   console.error("repro threw:", e);
   process.exitCode = 1;

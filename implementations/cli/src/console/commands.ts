@@ -13,7 +13,7 @@ import type { ManagerReply, ControlOp, ManagedRow, PsReply } from "@cotal-ai/wor
 export interface CommandCtx {
   ep: CotalEndpoint;
   snapshot: MeshSnapshot;
-  activeChannel: string;
+  activeChannel: string | null;
   setMode: (m: "normal" | "dm" | "topo") => void;
   setActiveChannel: (c: string) => void;
   toggleRail: () => void;
@@ -98,12 +98,12 @@ export const COMMANDS: ConsoleCommand[] = [
     usage: "msg [#channel] <text>",
     write: true,
     run: async (ctx, rest) => {
-      let channel = ctx.activeChannel === "all" ? "general" : ctx.activeChannel;
+      let channel = ctx.activeChannel ?? "general";
       let text = rest;
-      const m = rest.match(/^#(\S+)\s+([\s\S]+)/);
+      const m = rest.match(/^#(\S+)(?:\s+([\s\S]*))?$/);
       if (m) {
         channel = m[1];
-        text = m[2];
+        text = m[2] ?? "";
       }
       if (!text.trim()) return ctx.notify("usage: msg [#channel] <text>");
       if (!(await ctx.ensureParticipant())) return;
@@ -258,8 +258,9 @@ export const COMMANDS: ConsoleCommand[] = [
 export function runCommand(line: string, ctx: CommandCtx, canWrite: boolean, canControl: boolean): void {
   const trimmed = line.trim();
   if (!trimmed) return;
-  const name = trimmed.split(/\s+/)[0].toLowerCase();
-  const rest = trimmed.slice(trimmed.indexOf(name) + name.length).trim();
+  const verb = trimmed.split(/\s+/)[0];
+  const name = verb.toLowerCase();
+  const rest = trimmed.slice(verb.length).trim();
   const cmd = COMMANDS.find((c) => c.name === name);
   if (!cmd) return ctx.notify(`unknown command: ${name}`);
   if (cmd.write && !canWrite) return ctx.notify("read-only - pass --creds to send");

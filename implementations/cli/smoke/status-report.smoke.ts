@@ -34,6 +34,7 @@ if (!existsSync(BIN)) {
 const { check, finish } = createSuite();
 const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "..", "..", "bin", "package.json"), "utf8")) as { version: string }).version;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
+HOST_ENV.DO_NOT_TRACK = "1";
 const roots: string[] = [];
 process.on("exit", () => {
   for (const dir of roots) rmSync(dir, { recursive: true, force: true });
@@ -57,7 +58,7 @@ type Envelope = {
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; remedy?: string };
 };
 
 /** A sandboxed home that is also the working directory and its own project root, so the project
@@ -95,6 +96,47 @@ const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
 const pidfileOnly = process.argv.includes("--pidfile-only");
+// A failed first-run seed is an installation blocker even when all extension pins match.
+if (!brokerDisplayOnly && !pidfileOnly) {
+  const { home, run } = sandbox();
+  chmodSync(join(home, ".cotal"), 0o700);
+  const seed = join(home, ".config", "cotal", "seed");
+  const prefix = join(home, ".config", "cotal", "extensions");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  mkdirSync(prefix, { recursive: true, mode: 0o700 });
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [
+    "connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi",
+  ].map(name => ({ pkg: `@cotal-ai/${name}`, version: VERSION, spec: "file:seed", source: "seeded", commands: [] })) }));
+  const cursor = join(seed, "reconcile.cursor.json");
+  const control = run(["status", "--json"]);
+  check("seed control: matching extension pins with no cursor need no seed repair", control.status === 0 && control.envelope?.result?.extensions?.items?.length === 6 && !control.envelope.result.hints.some(h => h.includes("ext seed --repair")), shown(control));
+  const componentFlags = ["status", "--components", "--space", "nosuch"];
+  const componentControl = run(componentFlags, { NO_COLOR: "1" });
+  const cause = `Request refused\n  ${join(home, ".config")} is group-writable and the private-group proof is unavailable: getfacl is not installed\n  Next\n    chmod g-w ${join(home, ".config")}, or install acl`;
+  const original = JSON.stringify({ nonce: "status-failed-seed", package: "web", phase: "add", failed: cause }) + "\n";
+  writeFileSync(cursor, original, { mode: 0o600 });
+  const json = run(["status", "--json"]);
+  const extensions = json.envelope?.result?.extensions;
+  check("a recorded seed failure does not change the JSON outcome, exit, or extension keys", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.error == null && !!extensions && Object.keys(extensions).sort().join(",") === "items,root", shown(json));
+  check("JSON hints carry the complete cause before repair and no blocked startup", json.envelope?.result?.hints[0]?.includes(cause) === true && json.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true && !/cotal (?:login|setup|up)\b/.test(json.envelope.result.hints.join("\n")), json.envelope?.result?.hints);
+  for (const format of [[], ["--plain"], ["--wide", "--verbose"]]) {
+    const text = run(["status", ...format], { NO_COLOR: "1" });
+    const next = text.stdout.slice(text.stdout.indexOf("\nNext\n"));
+    check(`status ${format.join(" ") || "human"} names the failure and puts the permission remedy before seed repair`, text.status === 0 && /Connector setup:.*incomplete.*web failed during add/.test(text.stdout) && /^ +chmod g-w /m.test(next) && next.indexOf("chmod g-w") < next.indexOf("cotal ext seed --repair") && !/cotal (?:login|setup|up)\b/.test(next) && !text.stdout.includes("cotal login"), shown(text));
+  }
+  const components = run(componentFlags, { NO_COLOR: "1" });
+  check("component health still owns its exit with a recorded seed failure", componentControl.status === 3 && components.status === componentControl.status && components.stdout.includes("cotal ext seed --repair"), shown(components));
+  const personas = join(home, ".cotal", "agents");
+  writeFileSync(personas, "");
+  const mixed = run(["status", "--space", "nosuch", "--json"]);
+  check("a recorded failure remains visible when another read makes status partial", mixed.status === 4 && mixed.envelope?.outcome === "partial" && mixed.envelope.completeness === "partial" && mixed.envelope.warnings.some(w => w.code === "PERSONAS_UNREADABLE") && mixed.envelope.result?.hints[0]?.includes(cause) === true && mixed.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true, shown(mixed));
+  rmSync(personas);
+  check("all diagnostic forms leave the seed cursor unchanged", readFileSync(cursor, "utf8") === original);
+  writeFileSync(cursor, "{broken\n");
+  const corrupt = run(["status", "--json"]);
+  check("a corrupt cursor names the unreadable file with the existing extension warning", corrupt.status === 4 && corrupt.envelope?.outcome === "partial" && corrupt.envelope.warnings.some(w => w.code === "EXTENSIONS_UNREADABLE" && w.message.includes(cursor)), shown(corrupt));
+  check("reading a corrupt cursor does not quarantine or repair it", readFileSync(cursor, "utf8") === "{broken\n");
+}
 // Component pidfile reads share the folder report's path-bearing diagnostics.
 if (!brokerDisplayOnly) {
   const { home, run } = sandbox();
@@ -227,9 +269,9 @@ if (!brokerDisplayOnly) {
   // A legacy static-auth stack started here whose broker or manager exited is restarted by a bare
   // `up` in this folder, so Next names it first, ahead of the conditional store reset.
   const cleanHint = "if the stored JetStream state is stale: `cotal clean store --force`, then `up` with your usual flags (`clean all` also resets identity)";
-  const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
+  const legacyNext = (exited: string[], opts: { mode?: string; pid?: number | null; detail?: string; origin?: string; root?: string; controllerStack?: boolean } = {}) => {
     const base = selected.envelope!.result!;
-    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? { name, state: "stopped", pid: opts.pid === undefined ? 4242 : opts.pid, detail: opts.pid === null ? "no pidfile" : "stale pidfile" } : { name, state: "running", pid: 4343, detail: null });
+    const processes = ["manager", "delivery", "nats"].map((name) => exited.includes(name) ? { name, state: "stopped", pid: opts.pid === undefined ? 4242 : opts.pid, detail: opts.detail ?? (opts.pid === null ? "no pidfile" : "stale pidfile") } : { name, state: "running", pid: 4343, detail: null });
     const legacy = { ...base, folder: { ...base.folder, root: opts.root ?? home, controllerStack: opts.controllerStack ?? false, processSpace: "alpha", processes, storedState: exited.includes("nats"), stackBlock: null, stackUnfinished: null },
       meshes: { ...base.meshes, items: base.meshes.items.map((m) => m.space === "alpha" ? { ...m, mode: opts.mode ?? "auth", origin: opts.origin ?? "up" } : m) },
       selected: { ...base.selected, resolved: true, space: "alpha", root: home, mode: opts.mode ?? "auth", connection: exited.includes("nats") ? "unreachable" : "reachable" },
@@ -240,6 +282,10 @@ if (!brokerDisplayOnly) {
   {
     const [command, description] = firstCommand(legacyNext(["manager"]));
     check("an exited legacy manager puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's manager, which exited; pass --runtime again if the manager ran on one", { command, description });
+  }
+  {
+    const [command, description] = firstCommand(legacyNext(["manager"], { pid: null, detail: "stopped" }));
+    check("a SIGTERM-stopped legacy manager with retained identity puts a bare up first under Next", /(^|\s)cotal up$/.test(command ?? "") && description === "Restart this folder's manager, which exited; pass --runtime again if the manager ran on one", { command, description });
   }
   {
     const next = legacyNext(["nats"]);
@@ -255,9 +301,9 @@ if (!brokerDisplayOnly) {
     // A clean down leaves every member stopped with no pidfile; spawn fails until up starts it (#7516).
     const next = legacyNext(["manager", "delivery", "nats"], { pid: null });
     const [command, description] = firstCommand(next);
-    check("a cleanly stopped legacy stack puts a bare up first under Next, ahead of ps and the store reset",
+    check("a cleanly stopped legacy stack puts a bare up first under Next without offering a live roster",
       /(^|\s)cotal up$/.test(command ?? "") && description === "Start this folder's stopped stack again; pass --runtime again if the manager ran on one"
-        && next.includes("cotal ps") && next.indexOf("cotal up") < next.indexOf("cotal ps") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
+        && !next.includes("cotal who") && next.indexOf("cotal up") < next.indexOf("clean store --force"), next);
   }
   for (const [label, next] of [
     ["a cleanly stopped open stack", legacyNext(["manager", "delivery", "nats"], { pid: null, mode: "open" })],
@@ -269,18 +315,22 @@ if (!brokerDisplayOnly) {
   ] as const)
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
+  // The rig registers its spaces with `meshes add --force`, so each mode is recorded and shown as not checked.
   const plain = run(["status", "--space", "alpha", "--plain"]);
+  const next = plain.stdout.split("\nNext\n")[1] ?? "";
+  check("an unreachable manual registration names its broker recovery instead of a live roster",
+    plain.status === 0 && next.includes(`start it where it runs, or \`${displayCmd()} space forget alpha\` to unregister it`) && !next.includes("See the live roster"), { status: plain.status, next, stderr: plain.stderr });
   const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
-    /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
+    /^ {2}beta +open, not checked$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
       (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
   check("the selected space is the first row, marked, with its own dialed state",
-    /^ {2}-> alpha +unreachable[^\n]* +open$/m.test(plain.stdout) &&
+    /^ {2}-> alpha +unreachable[^\n]* +open, not checked$/m.test(plain.stdout) &&
       plain.stdout.indexOf("-> alpha") < plain.stdout.indexOf("beta "), plain.stdout);
   const wide = run(["status", "--space", "alpha", "--plain", "--wide"]);
   check("--wide groups the spaces under their broker addresses again and keeps their origin",
     new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(wide.stdout) && new RegExp(`^ {2}nats://127.0.0.1:${b}$`, "m").test(wide.stdout) &&
-      /^ {2}-> alpha +unreachable[^\n]* +open - registered endpoint$/m.test(wide.stdout) && !wide.stdout.includes(NOT_DIALED), shown(wide));
+      /^ {2}-> alpha +unreachable[^\n]* +open, not checked - registered endpoint$/m.test(wide.stdout) && !wide.stdout.includes(NOT_DIALED), shown(wide));
   check("control: the default report has no broker address as a group title",
     !new RegExp(`^ {2}nats://127.0.0.1:${a}$`, "m").test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
@@ -292,7 +342,7 @@ if (!brokerDisplayOnly) {
   check("a --server that names another address leaves the selected registration not checked", byName(other.envelope).alpha === "not-checked" && other.envelope?.result?.selected.connection === "unreachable", { items: byName(other.envelope), connection: other.envelope?.result?.selected.connection });
   const otherPlain = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--plain"]);
   check("…and its row carries no connection state, under the note that says what was dialed",
-    /^ {2}-> alpha +open$/m.test(otherPlain.stdout) && !/^ {2}\S+ +not checked/m.test(otherPlain.stdout) && otherPlain.stdout.includes("are not dialed"), otherPlain.stdout);
+    /^ {2}-> alpha +open, not checked$/m.test(otherPlain.stdout) && !/^ {2}\S+ +not checked/m.test(otherPlain.stdout) && otherPlain.stdout.includes("are not dialed"), otherPlain.stdout);
   const same = run(["status", "--space", "alpha", "--server", `nats://127.0.0.1:${a}`, "--json"]);
   check("control: a --server that names the recorded address checks it", byName(same.envelope).alpha === "unreachable", byName(same.envelope));
   // Under `--all` with a `--server` that names another address, the selected row shows its own
@@ -344,7 +394,7 @@ if (!brokerDisplayOnly) {
     const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
     const rendered = renderReport(statusView(held as unknown as Parameters<typeof statusView>[0]), "plain");
     const actions = rendered.split("\nNext\n")[1] ?? "";
-    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
+    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|who|ps)\b/.test(actions), rendered);
   }
   for (const state of ["ready", "commit-intent", "active"]) {
     const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };
@@ -468,14 +518,14 @@ if (!brokerDisplayOnly) {
 // ── a folder this account cannot read is the one gap, named with its chmod ───────────────────────
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const { home } = sandbox();
-  // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
   const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
   roots.push(outside);
-  const folder = join(outside, "z");
+  const folder = join(outside, "project notes");
   mkdirSync(folder, { mode: 0o700 });
+  mkdirSync(join(folder, ".cotal"), { mode: 0o700 });
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
-  // The shell enters the folder before its mode drops, as it would for an operator already in it.
-  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 000 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
+  // Keep search permission so root discovery sees this project's marker, but deny reads of the root.
+  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 100 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
   chmodSync(folder, 0o700);
   const envelope = (r.stdout ?? "").startsWith("{") ? (JSON.parse(r.stdout) as Envelope) : undefined;
   const shownR = { status: r.status, stdout: (r.stdout ?? "").slice(0, 900), stderr: (r.stderr ?? "").slice(0, 600) };
@@ -483,12 +533,12 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
     r.status === 4 && envelope?.outcome === "partial" && envelope.warnings.some((w) => w.code === "FOLDER_UNREADABLE" && w.message === `this folder ${folder} cannot be read by this account (EACCES), so nothing in it was read`), shownR);
   check("…and no other warning about a part of that folder, such as an auth.json it does not hold",
     envelope?.warnings.every((w) => !/^(AUTH_UNREADABLE|PERSONAS_UNREADABLE|FRESH_BOOT_RECORD_UNAVAILABLE|ADDITIVE_ATTEMPT_UNAVAILABLE|MAINTENANCE_JOURNAL_UNREADABLE)$/.test(w.code)) === true && !(envelope?.result?.hints ?? []).some((h) => h.includes("auth.json")), envelope?.warnings);
-  check("…and its Next is the chmod that makes it readable", (envelope?.result?.hints ?? []).includes(`make it readable by you, for example with chmod u+rx ${folder}`), envelope?.result?.hints);
+  check("…and its chmod suggestion quotes the folder as one argument", (envelope?.result?.hints ?? []).includes(`make it readable by you, for example with chmod u+rx '${folder.replaceAll("'", "'\\''")}'`), envelope?.result?.hints);
 }
 
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────
 {
-  const { run } = sandbox();
+  const { home, run } = sandbox();
   for (const args of [["--components", "--json"], ["--components", "--plain", "--json"], ["--components", "--all", "--json"], ["--plain", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
@@ -497,6 +547,37 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
+  const root = join(home, "component-target"), other = join(home, "component-other");
+  for (const folder of [root, other]) mkdirSync(folder, { mode: 0o700 });
+  const prepared = run(["space", "create", "component-target", "--root", root]);
+  const alternate = run(["space", "create", "component-other", "--root", other]);
+  const selected = run(["use", "component-other"]);
+  for (const flags of [["--json"], ["--json", "--plain"]]) {
+    const refused = run(["status", "--components", "--space", "component-target", ...flags], {}, root);
+    const retry = /`[^`]*?\b(status --components[^`]*)`/.exec(refused.envelope?.error?.remedy ?? "")?.[1];
+    const retried = retry ? run(retry.split(" "), {}, root) : undefined;
+    check(`the component retry for ${flags.join(" ")} diagnoses the requested project while another space is selected`,
+      [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
+        && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
+  }
+  const reportArgs = ["status", "--space", "component-target", "--json"];
+  const refused = run([...reportArgs, "--creds", "missing.creds"], {}, other);
+  const retry = run(reportArgs, {}, other);
+  check("infrastructure status refuses --creds and tells the caller to keep the other arguments",
+    refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused"
+      && refused.envelope.target.space === "component-target" && refused.envelope.error?.code === "UNSUPPORTED"
+      && refused.envelope.error.remedy === "remove --creds and its value, then rerun the same command with the remaining arguments unchanged", shown(refused));
+  check("removing only --creds and its value keeps the requested space and JSON output",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.outcome === "ok"
+      && retry.envelope.result?.selected.space === "component-target" && retry.envelope.result.meshes.current === "component-other", shown(retry));
+  for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
+    const r = run(["status", ...args]);
+    check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
+  }
+  for (const flag of ["--wide", "--verbose", "-v"]) {
+    const r = run(["status", "myagent", flag]);
+    check(`status myagent ${flag} is refused as USAGE_INVALID, exit 1`, r.status === 1 && /a named agent status takes no --all, --components, --wide or --verbose/.test(r.stderr), shown(r));
+  }
 }
 
 // ── a store write failure the running local broker logged is shown with its cause and file ───────
@@ -608,8 +689,8 @@ if (process.platform !== "win32") {
   const onPath = { PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
-  check("the applications line names what is set up and counts the rest behind cotal setup",
-    ascii(`  Agent applications: aa · 1 more with \`${displayCmd()} setup\``) === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
+  check("the headless applications line names what is set up and counts the rest",
+    ascii("  Agent applications: aa · 1 not set up") === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",
@@ -651,6 +732,19 @@ if (process.platform !== "win32") {
   const skewed = run(["status", "--space", "nosuch", "--plain"], onPath);
   check("an extension at another version is the only one named",
     new RegExp(`^ {2}Extensions: +3 extensions at ${VERSION.replaceAll(".", "\\.")} - old v0\\.0\\.1$`, "m").test(skewed.stdout), shown(skewed));
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    connector("bb", ["bb-bin"]),
+  ] }));
+  const greeter = spawn(process.execPath, ["-e", `const s = require("node:net").createServer((c) => { c.on("error", () => {}); c.end('INFO {"server_id":"app","version":"2.12.12","proto":1,"max_payload":1048576}\\r\\n'); }); s.listen(0, "127.0.0.1", () => console.log(s.address().port));`], { stdio: ["ignore", "pipe", "inherit"] });
+  try {
+    const [port] = (await once(greeter.stdout!, "data")) as [Buffer];
+    const noApp = run(["status", "--server", `nats://127.0.0.1:${port.toString().trim()}`, "--plain"], onPath);
+    const next = noApp.stdout.split("\nNext\n")[1] ?? "";
+    check("when every seeded connector is missing its executable, headless Next offers scripted setup help instead of spawn",
+      noApp.status === 0 && /Agent applications: +not set up/.test(noApp.stdout) && /\bcotal setup --help +See setup flags for scripts/.test(next) && !/\bcotal spawn\b/.test(next), shown(noApp));
+  } finally {
+    greeter.kill("SIGKILL");
+  }
 }
 
 // ── a folder's space is the target here only while it runs ───────────────────────────────────────
@@ -723,13 +817,18 @@ if (process.platform !== "win32") {
   roots.push(parent);
   const [registered, unregistered] = ["stalereg", "staleunreg"].map((name) => join(parent, name));
   for (const root of [registered, unregistered]) mkdirSync(join(root, ".cotal", "nats"), { recursive: true });
+  const server = `nats://127.0.0.1:${await freePort()}`;
   const previousHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = join(home, ".cotal-home");
-  try { recordMesh({ space: "stalereg", server: `nats://127.0.0.1:${await freePort()}`, root: registered, mode: "open", origin: "up", ts: new Date().toISOString() }); }
+  try { recordMesh({ space: "stalereg", server, root: registered, mode: "open", origin: "up", ts: new Date().toISOString() }); }
   finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
-  const staleHints = (root: string) => (run(["status", "--json"], {}, root).envelope?.result?.hints ?? []).filter((hint) => hint.startsWith("if the stored JetStream state is stale:"));
+  const staleHints = (root: string, ...flags: string[]) => (run(["status", ...flags, "--json"], {}, root).envelope?.result?.hints ?? []).filter((hint) => hint.startsWith("if the stored JetStream state is stale:"));
   const reg = staleHints(registered);
   check("a registered stopped root names reset store with the space registered there", reg.length === 1 && / reset store stalereg`, then `up` with your usual flags$/.test(reg[0]!) && !reg[0]!.includes("clean"), reg);
+  const sameBroker = staleHints(registered, "--server", `${server}/`);
+  check("the same recorded broker with an equivalent URL keeps the stopped-store hint", reg.length === 1 && sameBroker[0] === reg[0], sameBroker);
+  const otherBroker = staleHints(registered, "--space", "stalereg", "--server", `nats://127.0.0.1:${await freePort()}`);
+  check("even the folder's own space does not imply the override addresses its store", otherBroker.length === 0, otherBroker);
   const preview = run(["reset", "store", "stalereg", "--dry-run", "--json"], {}, registered);
   check("…and that reset reaches the store as printed", preview.status === 0 && preview.envelope?.outcome === "ok", shown(preview));
   const unreg = staleHints(unregistered);

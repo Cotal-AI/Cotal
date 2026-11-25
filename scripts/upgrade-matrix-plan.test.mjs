@@ -20,7 +20,7 @@ test("registry predecessor excludes target, newer versions, prereleases and malf
   assert.throws(() => publishedPredecessor({ versions: {} }, "0.164.8"), /no published stable source/);
   assert.throws(() => publishedPredecessor({ versions: { "0.164.7": { version: "0.164.6" } } }, "0.164.8"), /version mismatch/);
   const plan = planPhase(pr(), { ...context, sourceVersion: "0.164.7", packageManifest: { version: "0.164.8" } });
-  assert(boundedCells(plan).filter(cell => !["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) && !cell.followOnAction && !cell.chain && !cell.deadUpdater && !cell.otherHomeAuth).every(cell => cell.sourceVersion === "0.164.7"));
+  assert(boundedCells(plan).filter(cell => !["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self", "candidate-next-foreign-config-recovery"].includes(cell.scenario) && !cell.followOnAction && !cell.chain && !cell.deadUpdater && !cell.otherHomeAuth).every(cell => cell.sourceVersion === "0.164.7"));
   assert.throws(() => planPhase(pr(), { ...context, sourceVersion: undefined }), /frozen published/);
 });
 
@@ -107,17 +107,17 @@ const requiredIDs = [
   "linux-npm-daemon-self", "darwin-npm-daemon-self", "win32-npm-daemon-self",
   "linux-installer-daemon-self", "darwin-installer-daemon-self",
 ];
-test("bounded enumeration is deterministic: 22 ordinary + 2 two-home + 3 fresh next + 3 stopped-daemon next + 2 disabled-daemon next + 1 stopped-desktop next + 6 follow-on + 3 pinned chains + 2 killed-updater recovery cells + 1 other-home auth cell", () => {
+test("bounded enumeration is deterministic: 22 ordinary + 2 two-home + 3 fresh next + 3 stopped-daemon next + 2 disabled-daemon next + 1 stopped-desktop next + 6 follow-on + 3 pinned chains + 2 killed-updater recovery cells + 1 other-home auth cell + 1 candidate-source recovery cell", () => {
   const plan = dispatch();
   const cells = boundedCells(plan);
   assert.deepEqual(cells.filter(c => c.required).map(c => c.id), candidateIDs);
   assert.deepEqual(boundedCells(plan), cells);
-  assert.equal(cells.length, 48);
+  assert.equal(cells.length, 49);
   assert.equal(new Set(cells.map(c => c.id)).size, cells.length);
   for (const cell of cells) {
     assert.equal(cell.sourceSHA, sourceSHA);
-    assert.equal(cell.sourceVersion, cell.chain ? "0.164.10" : (["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.deadUpdater || cell.otherHomeAuth) ? "0.164.7" : "0.164.6");
-    assert.equal(cell.targetVersion, (["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.deadUpdater || cell.otherHomeAuth) ? "0.164.1007" : "0.164.7");
+    assert.equal(cell.sourceVersion, cell.chain ? "0.164.10" : (["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self", "candidate-next-foreign-config-recovery"].includes(cell.scenario) || cell.followOnAction || cell.deadUpdater || cell.otherHomeAuth) ? "0.164.7" : "0.164.6");
+    assert.equal(cell.targetVersion, (["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self", "candidate-next-foreign-config-recovery"].includes(cell.scenario) || cell.followOnAction || cell.deadUpdater || cell.otherHomeAuth) ? "0.164.1007" : "0.164.7");
     if (cell.followOnAction) assert.equal(cell.finalTargetVersion, "0.164.2007");
     assert.equal(cell.runner, { linux: "ubuntu-24.04", darwin: "macos-15", win32: "windows-2022" }[cell.platform]);
     if (cell.required) for (const assertion of ["status-healthy", "no-recovery", "no-manual-intervention"]) assert.ok(cell.requiredAssertions.includes(assertion));
@@ -145,7 +145,7 @@ test("killed-updater recovery adds only two POSIX target-owned cells with mandat
     const cells = boundedCells(plan);
     const added = cells.filter(cell => cell.deadUpdater);
     assert.deepEqual(added.map(cell => cell.id), deadUpdaterIDs);
-    assert.equal(cells.filter(cell => cell.required && !cell.deadUpdater && !cell.otherHomeAuth).length, 42);
+    assert.equal(cells.filter(cell => cell.required && !cell.deadUpdater && !cell.otherHomeAuth).length, 43);
     for (const cell of added) {
       assert.equal(cell.sourceVersion, "0.165.0");
       assert.equal(cell.targetVersion, "0.165.1000");
@@ -162,14 +162,22 @@ test("killed-updater recovery adds only two POSIX target-owned cells with mandat
 });
 
 const twoHomeIDs = ["linux", "darwin"].map(platform => `${platform}-npm-candidate-next-two-homes`);
-const candidateIDs = [...requiredIDs, ...twoHomeIDs, ...nextIDs, ...stoppedNextIDs, ...disabledNextIDs, ...stoppedDesktopNextIDs, ...followOnIDs, ...chainIDs, ...deadUpdaterIDs, "linux-npm-candidate-next-other-home-auth"];
+const candidateIDs = [...requiredIDs, ...twoHomeIDs, ...nextIDs, ...stoppedNextIDs, ...disabledNextIDs, ...stoppedDesktopNextIDs, ...followOnIDs, ...chainIDs, ...deadUpdaterIDs, "linux-npm-candidate-next-other-home-auth", "linux-npm-candidate-next-foreign-config-recovery"];
 
-test("both phases retain 45 required cells with permanently pinned chains, stopped/disabled/desktop manual-repair cells, follow-on cells, and conditional ordinary chains", () => {
+test("both phases retain 46 required cells with permanently pinned chains, stopped/disabled/desktop manual-repair cells, follow-on cells, and conditional ordinary chains", () => {
   for (const phase of ["candidate", "published"]) for (const sourceVersion of ["0.164.9", "0.164.10", "0.164.11"]) {
     const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase, sourceSHA, targetVersion: "0.164.12" } }, { sourceVersion });
     assert.deepEqual(plan.expectedIDs, candidateIDs);
-    assert.equal(plan.matrix.include.length, 45);
+    assert.equal(plan.matrix.include.length, 46);
     for (const cell of plan.cells) assert.equal(new Set(cell.requiredAssertions).size, cell.requiredAssertions.length);
+    const recovery = plan.matrix.include.find(c => c.id === "linux-npm-candidate-next-foreign-config-recovery");
+    const publishedSourceRecovery = plan.matrix.include.find(c => c.id === "linux-npm-foreign-config-recovery");
+    assert.equal(recovery.sourceVersion, "0.164.12");
+    assert.equal(recovery.sourceKind, phase === "candidate" ? "packed-candidate-A" : "npm-exact-A");
+    assert.equal(recovery.targetVersion, "0.164.1012");
+    assert.equal(recovery.targetSource, "packed-next-B");
+    assert.equal(recovery.targetSourceSHA, sourceSHA);
+    assert.deepEqual(new Set(recovery.requiredAssertions), new Set([...publishedSourceRecovery.requiredAssertions, "candidate-source-identity", "candidate-next-target", "next-hop-success"]));
     const ordinary = plan.cells.filter(c => requiredIDs.includes(c.id));
     assert.equal(ordinary.length, 22);
     const self = ordinary.filter(c => c.scenario === "daemon-self");
@@ -228,7 +236,7 @@ test("both phases retain 45 required cells with permanently pinned chains, stopp
 test("source 0.164.10 hosted consent chains require restored Manager and all existing chain evidence", () => {
   for (const phase of ["candidate", "published"]) {
     const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase, sourceSHA, targetVersion: "0.164.12" } }, { sourceVersion: "0.164.10" });
-    assert.equal(plan.matrix.include.length, 45);
+    assert.equal(plan.matrix.include.length, 46);
     assert.deepEqual(plan.expectedIDs, candidateIDs);
     const cell = plan.cells.find(c => c.id === "linux-npm-agent-stop-consent");
     assert.equal(cell.platform, "linux");
@@ -269,7 +277,7 @@ test("synthetic next and follow-on versions deterministically add 1000 and 2000 
 test("candidate next-hop owns C to synthetic B at frozen H, separate from optional candidate A", () => {
   const plan = planRelease(pr(), context);
   assert.deepEqual(plan.expectedIDs, candidateIDs);
-  assert.equal(plan.matrix.include.length, 45);
+  assert.equal(plan.matrix.include.length, 46);
   assert.deepEqual(plan.matrix, jobsMatrix(plan.cells));
   const next = plan.cells.filter(c => c.scenario === "candidate-next-daemon-self");
   assert.deepEqual(next.map(c => c.id), nextIDs);
@@ -308,15 +316,15 @@ test("candidate next-hop owns C to synthetic B at frozen H, separate from option
   assert.equal(plan.cells.find(c => c.scenario === "candidate-a").required, false);
   const published = planRelease(run(), publishContext);
   assert.deepEqual(published.expectedIDs, candidateIDs);
-  assert.equal(published.matrix.include.length, 45);
+  assert.equal(published.matrix.include.length, 46);
   assert.ok(published.cells.filter(c => nextIDs.includes(c.id) || stoppedNextIDs.includes(c.id) || disabledNextIDs.includes(c.id) || stoppedDesktopNextIDs.includes(c.id)).every(c => c.sourceKind === "npm-exact-A"));
   assert.deepEqual(plan.cells.map(c => c.id), published.cells.map(c => c.id));
 });
 
 test("candidate uses packed target and receipt-pinned installer artifact, candidate A optional", () => {
   const cells = boundedCells(dispatch({ phase: "candidate" }));
-  assert.equal(cells.filter(c => c.required).length, 45);
-  assert.ok(cells.filter(c => c.required && c.channel === "npm" && !["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(c.scenario) && !c.followOnAction && !c.deadUpdater && !c.otherHomeAuth).every(c => c.targetSource === "packed-target"));
+  assert.equal(cells.filter(c => c.required).length, 46);
+  assert.ok(cells.filter(c => c.required && c.channel === "npm" && !["candidate-next-two-homes", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self", "candidate-next-foreign-config-recovery"].includes(c.scenario) && !c.followOnAction && !c.deadUpdater && !c.otherHomeAuth).every(c => c.targetSource === "packed-target"));
   const installers = cells.filter(c => c.channel === "installer" && c.scenario === "configured-rerun");
   const schedulers = cells.filter(c => c.required && c.scenario === "daemon-scheduler");
   assert.equal(installers.length, 2);
@@ -374,7 +382,7 @@ test("aggregator maps all required assertions, missing cells/assertions and fail
   const results = goodResults(cells);
   const report = verifyResults(cells, results);
   assert.equal(report.acceptance, true);
-  assert.equal(report.passed.length, 45);
+  assert.equal(report.passed.length, 46);
   assert.equal(report.excluded.length, 3);
   assert.equal(verifyResults(cells, results.slice(1)).acceptance, false);
   const missing = structuredClone(results);
@@ -392,7 +400,7 @@ test("aggregator maps all required assertions, missing cells/assertions and fail
 test("workflow wrapper accepts snake-case dispatch fields and exposes exact expected IDs", () => {
   const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase: "candidate", source_sha: sourceSHA, target_version: "0.164.7", profile: "bounded" } }, { sourceVersion: "0.164.6" });
   assert.deepEqual(plan.expectedIDs, candidateIDs);
-  assert.equal(plan.matrix.include.length, 45);
+  assert.equal(plan.matrix.include.length, 46);
   const results = goodResults(plan.cells);
   assert.equal(verifyResults(plan.cells, results).acceptance, true);
   delete results.find(r => r.id === "linux-installer-configured-rerun").assertions["installer-source-receipt"];
@@ -402,7 +410,7 @@ test("workflow wrapper accepts snake-case dispatch fields and exposes exact expe
 test("newer minor releases are valid and Linux isolation cells require their own evidence in both phases", () => {
   for (const phase of ["candidate", "published"]) {
     const cells = boundedCells(dispatch({ phase, targetVersion: "0.165.0" }));
-    assert.equal(cells.filter(c => c.required).length, 45);
+    assert.equal(cells.filter(c => c.required).length, 46);
     for (const [id, assertion] of [["linux-npm-foreign-config-recovery", "foreign-snapshot-retained"], ["linux-npm-container-manager", "container-manager-preserved"]]) {
       const cell = cells.find(c => c.id === id);
       assert.equal(cell.sourceVersion, "0.164.6");

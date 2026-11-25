@@ -1335,7 +1335,7 @@ await parallel({
   ok("and neither landed", outer.n === 0, outer.n);
 
   const protoDesc = Object.getOwnPropertyDescriptor(EngineFrame.prototype, "depth");
-  const interpretSrc = readFileSync(fileURLToPath(new URL("../src/interpret.ts", import.meta.url)), "utf8").replace(/\r\n/g, "\n");
+  const interpretSrc = readFileSync(fileURLToPath(new URL("../src/interpret-state.ts", import.meta.url)), "utf8").replace(/\r\n/g, "\n");
   const walkerFrameSrc = interpretSrc.slice(interpretSrc.indexOf("class Frame {"), interpretSrc.indexOf("// ---- the run"));
   ok(
     "both Frame and EngineFrame derive depth as a prototype getter over keys.path.length with a three-argument constructor",

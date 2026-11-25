@@ -68,6 +68,61 @@ suggests:
 - `check-docs-bundle.mjs` proves the generator turns the pages into a bundle that is not hollow.
   It does not prove that the pages agree with the code.
 
+## Local comment history check
+
+`pnpm check:comment-history` is a local script, run by hand. No CI job, gate or `pnpm check`
+runs it. It scans comments in tracked JS/TS under package, implementation and extension `src/`
+trees and `bin/`, excluding declarations, tests, smokes, mutation fixtures, built output, private
+smoke helpers and `bin/scripts/`. Strings, regexes, template text and JSX text do not count. It
+matches `#` plus at least three digits and the case-insensitive phrases `used to`, `previously`,
+`no longer` and `formerly`, with word boundaries and wrapped-doc support, then runs fixture
+controls against an unchanged copy of the checker.
+
+`scripts/comment-history-allowlist.json` stores counts by file and rule, one file per line.
+Per-file and repository rule-total increases fail. Decreases pass. A source move can fail on its
+receiving file even when the total stays unchanged. Review the source changes, run
+`pnpm check:comment-history:update` by hand, then run `pnpm check:comment-history` and commit the
+reviewed counts. Regeneration can accept new violations, and counts cannot detect same-count
+replacements. Diagnostics name the first match for a rule, not necessarily the addition. Stage
+new source files before scanning.
+
+## File size check
+
+`pnpm check:file-size` holds shipped source to 1,500 lines. CI runs it as the `smoke:file-size`
+fragment, and `pnpm check` runs it too. It counts lines in tracked JS/TS under package,
+implementation and extension `src/` trees and `bin/`, with the same exclusions as the comment
+history check plus `vendor/` trees and `*.generated.*` files, then runs fixture controls against
+an unchanged copy of the checker.
+
+`scripts/file-size-allowlist.json` records each file over the limit with its line count, one file
+per line. An unlisted file over 1,500 lines fails, and so does a listed file longer than its
+recorded count. A listed file that shrinks passes and prints its new count; one at or under the
+limit, or no longer tracked, prints that its row can go. After a reviewed split or move, run
+`pnpm check:file-size:update` and commit the new counts. Regeneration also records any new file
+over the limit, so review its diff. Stage new source files before checking.
+
+## Function length check
+
+`pnpm check:function-length` holds every function in shipped source to 150 lines. CI runs it as
+the `smoke:function-length` fragment, and `pnpm check` runs it too. It parses the files the file
+size check counts and measures each function, method, constructor, accessor, arrow function and
+class static block from its first token to its closing token, so a doc comment above a function
+does not count. A nested function is
+measured on its own as well as inside the function that holds it. It then runs fixture controls
+against an unchanged copy of the checker.
+
+`scripts/function-length-allowlist.json` records each file that holds a function over the limit,
+with the lengths of those functions, longest first, one file per line. A function over 150 lines
+in an unlisted file fails. A listed file fails when it has more long functions than its row lists,
+or when one of them, taken longest first, is more than 10 lines longer than the row's entry at that
+position. The 10 lines let a small fix land in a long function without an extraction first. A
+listed file whose functions differ from its row passes and prints the change; one with no long
+function left, or no longer tracked, prints that its row can go. After a reviewed split, run
+`pnpm check:function-length:update` and commit the new lengths. The update lowers and removes
+entries and does not raise one, so the 10 lines are used once per function. It records a file as it
+stands when the file has more long functions than its row, so review its diff. Stage new source
+files before checking.
+
 ## Upgrade-section gate
 
 `pnpm upgrade-section-gate --base <ref>` checks `<ref>..HEAD`, and `--range <a>..<b>` checks any

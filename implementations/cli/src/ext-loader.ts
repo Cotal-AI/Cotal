@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   registry,
   type Command,
@@ -41,10 +43,29 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
   herdr: { names: ["herdr"] },
 };
 
+/** The ACP clients `cotal setup` connects, client-setup provider name → the package that registers it
+ *  and how to tell the application is on this machine before that package is installed: any one of
+ *  `tools` on PATH, or one of `dirs` present. Once installed, the provider's own `available()`
+ *  decides. Kept beside {@link OFFICIAL_RUNTIME_TOOLS} because an uninstalled provider cannot be asked. */
+export const OFFICIAL_CLIENT_APPS: Readonly<Record<string, { readonly package: string; readonly title: string; readonly tools: readonly string[]; readonly dirs: () => readonly string[] }>> = {
+  // T3 Code's base directory (its `resolveBaseDir`).
+  t3: { package: "@cotal-ai/acp", title: "T3 Code", tools: ["t3"], dirs: () => [process.env.T3CODE_HOME?.trim() ? resolve(process.env.T3CODE_HOME.trim().replace(/^~(?=$|[/\\])/, homedir())) : join(homedir(), ".t3")] },
+  // Zed's config directory (its `paths::config_dir`).
+  zed: {
+    package: "@cotal-ai/acp",
+    title: "Zed",
+    tools: ["zed", "zeditor"],
+    dirs: () => [process.platform === "win32" ? join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Zed")
+      : process.platform === "linux" && process.env.XDG_CONFIG_HOME?.trim() ? join(process.env.XDG_CONFIG_HOME.trim(), "zed")
+      : join(homedir(), ".config", "zed")],
+  },
+};
+
 /** The commands official first-party extensions add that the binary does not seed, command name →
  *  npm package, so running one before its extension is added names the package. Not authority, as
  *  for {@link OFFICIAL_RUNTIMES}: the command exists only once `cotal ext add` installs it. */
 export const OFFICIAL_COMMANDS: Readonly<Record<string, string>> = {
+  acp: "@cotal-ai/acp",
   linear: "@cotal-ai/linear",
 };
 
@@ -149,7 +170,7 @@ export function isExtensionStub(cmd: Command): boolean {
 
 /** Overlay the manifest's cached commands onto the registered surface. Returns the combined
  *  command list for help/complete/dispatch. Loud on builtin collisions; never imports. */
-export function overlayExtensions(reg: Registry): Command[] {
+export function overlayExtensions(reg: Registry, warn = (message: string) => console.error(c.red(message))): Command[] {
   const commands = [...reg.all<Command>("command")];
   const owner = new Map<string, string>(); // command name or alias → "" for a builtin, else the owning ext pkg
   for (const cm of commands) for (const word of [cm.name, ...(cm.aliases ?? [])]) owner.set(word, "");
@@ -162,13 +183,9 @@ export function overlayExtensions(reg: Registry): Command[] {
         // add() refuses fresh collisions, so this install predates the clash: a base upgrade
         // shipped the name (builtin case), or the sibling was added under an older base that
         // allowed it. First holder wins; the loser leaves the surface until the operator resolves.
-        console.error(
-          c.red(
-            holder === ""
-              ? `! command "${clash}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
-              : `! command "${clash}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
-          ),
-        );
+        warn(holder === ""
+          ? `! command "${clash}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
+          : `! command "${clash}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`);
         continue;
       }
       for (const word of words) owner.set(word, ext.pkg);

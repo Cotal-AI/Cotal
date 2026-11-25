@@ -1,0 +1,2 @@
+# No function in shipped source grows past 150 lines, and a function already past that does not grow.
+smoke:function-length

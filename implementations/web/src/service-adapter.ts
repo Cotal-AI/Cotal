@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
-import { registry, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
+import { registry, writeSecretFileAtomic, writeSecretFileCreateOnly, type Command, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, WEB_CREDS_KIND, WEB_PIDFILE, WEB_SERVICE_ADAPTER, claimServicePid, colorEnabled, identityRecord, isCommandFailure, observeServiceStartup,
   oneLine, publishServiceStartup, readLocalRecordSource, readPinnedStaticCredential,
@@ -92,7 +92,7 @@ const nativeWebServiceCommand: Command = {
     const posting = args.values["posting-creds"] ? await readDashboardPostingCredential(selected, String(args.values["posting-creds"]), credsPath) : undefined;
     const releasePid = claimServicePid({ root: selected.root, space: selected.space }, WEB_PIDFILE);
     const sessionPath = serviceWebSessionPath({ space: selected.space, instanceId, launchRequestId, stateDirectory: dirname(readyPath) });
-    let sessionBytes: string | undefined;
+    let sessionBytes: string | undefined, pidReleased = false;
     try {
       await web({ positionals: [], raw: [], values: { space: selected.space, server: selected.server, host: args.values.host, port: args.values.port, "no-open": true } }, {
         posting,
@@ -102,6 +102,12 @@ const nativeWebServiceCommand: Command = {
           writeSecretFileCreateOnly(sessionPath, sessionBytes);
           process.stdout.write(`${posting ? "Posting-enabled" : "Read-only"} dashboard. Private browser bootstrap file: ${oneLine(sessionPath)}\n`);
         },
+        onLaunch(launchUrl) {
+          if (sessionBytes === undefined || readLocalRecordSource(sessionPath, 16384, true)?.toString("utf8") !== sessionBytes) throw new Error("the private dashboard session record changed");
+          const next = JSON.stringify({ ...JSON.parse(sessionBytes), launchUrl }) + "\n";
+          writeSecretFileAtomic(sessionPath, next);
+          sessionBytes = next;
+        },
         onReady() { publishServiceStartup(readyPath, { phase: "web-listening", space: selected.space, instanceId, launchRequestId }); },
         onClosed() {
           if (sessionBytes !== undefined) {
@@ -110,9 +116,17 @@ const nativeWebServiceCommand: Command = {
             if (current) rmSync(sessionPath);
           }
           releasePid();
+          pidReleased = true;
         },
       });
-    } catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native dashboard startup or close was not confirmed; process/session custody was retained and no credential, callback or launch was retried"); }
+    } catch {
+      if (sessionBytes === undefined && !pidReleased) {
+        try { releasePid(); }
+        catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native dashboard startup or close was not confirmed; process/session custody was retained and no credential, callback or launch was retried"); }
+        throw new CommandFailure("failed", "OPERATION_FAILED", "the native dashboard startup failed before its listener was ready; PID custody was released and no launch was retried");
+      }
+      throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the original native dashboard startup or close was not confirmed; process/session custody was retained and no credential, callback or launch was retried");
+    }
   },
 };
 

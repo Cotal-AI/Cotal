@@ -32,6 +32,7 @@ import {
   type PresenceStatus,
   type PresenceView,
 } from "@cotal-ai/core";
+import { concreteChannelProblem, payloadRefused } from "../messaging.js";
 import type { RefusalCode } from "../output.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "../space-streams.js";
 import { mentionsName } from "./compose.js";
@@ -393,6 +394,8 @@ export class NativeChatSession implements AdmittedChatSession {
   }
 
   async join(channel: string): Promise<Result<{ joined: boolean; backfilled: number; durable: boolean; reason?: string }>> {
+    const problem = concreteChannelProblem(channel);
+    if (problem) return refusedUsage(problem);
     const outside = grantRefusal(this.inputs.identity.allowSubscribe, channel, "read", this.inputs.words);
     if (outside) return outside;
     return this.call(() => this.inputs.endpoint.joinChannel(channel));
@@ -539,6 +542,12 @@ export class NativeChatSession implements AdmittedChatSession {
 
   /** Refresh the connection observation without rewriting an attempted publish's outcome. */
   private async afterPublish(e: unknown): Promise<PublishResult> {
+    if (payloadRefused(e)) {
+      let limit: number | undefined;
+      try { limit = this.inputs.endpoint.maxPayload; } catch { /* the connection can close after the refusal */ }
+      const ceiling = limit === undefined ? "message limit" : `${limit}-byte message limit`;
+      return { outcome: "refused", code: "UNSUPPORTED", message: `the message with its envelope exceeds this broker's ${ceiling}; nothing was stored. Shorten the message or split it across several sends.` };
+    }
     await this.observeStreams();
     return classify(e);
   }
