@@ -89,6 +89,49 @@ fn remove_windows_service() -> Result<String, String> {
     }
 }
 
+/// The MSI uninstaller's call after the service is removed and before program files go. It ends
+/// every process still running from this installation for the uninstalling user, as the NSIS
+/// uninstaller does for the app, so no window or status reader keeps a program file in use.
+#[cfg(windows)]
+fn close_windows_app() -> Result<usize, String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
+    let executable = std::fs::canonicalize(std::env::current_exe().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let directory = executable.parent().ok_or("the application has no directory")?.to_path_buf();
+    let own = unsafe { GetCurrentProcessId() };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.map_err(|e| e.to_string())?;
+    let mut entry = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+    let mut closed = 0;
+    let mut next = unsafe { Process32FirstW(snapshot, &mut entry) };
+    let outcome = loop {
+        if next.is_err() { break Ok(closed); }
+        if entry.th32ProcessID != own {
+            // A process of another user, or one already gone, cannot be opened and is not this user's to end.
+            if let Ok(process) = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, entry.th32ProcessID) } {
+                let mut buffer = vec![0u16; 32768];
+                let mut length = buffer.len() as u32;
+                let image = unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut length) }
+                    .ok()
+                    .and_then(|_| std::fs::canonicalize(String::from_utf16_lossy(&buffer[..length as usize])).ok());
+                let ended = match image {
+                    Some(image) if image.starts_with(&directory) => {
+                        let stopped = unsafe { TerminateProcess(process, 1) }.is_ok() && unsafe { WaitForSingleObject(process, 10_000) } == WAIT_OBJECT_0;
+                        if stopped { closed += 1; Ok(()) } else { Err(format!("process {} of this installation did not end", entry.th32ProcessID)) }
+                    }
+                    _ => Ok(()),
+                };
+                unsafe { let _ = CloseHandle(process); }
+                if let Err(message) = ended { break Err(message); }
+            }
+        }
+        next = unsafe { Process32NextW(snapshot, &mut entry) };
+    };
+    unsafe { let _ = CloseHandle(snapshot); }
+    outcome
+}
+
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--updater-config") {
         println!("{}", cotal_desktop::updater::compiled_config());
@@ -107,6 +150,13 @@ fn main() {
         // The installer reads this line: the outcome on success, the reason otherwise.
         match remove_windows_service() {
             Ok(state) => { println!("{state}"); std::process::exit(0) }
+            Err(message) => { println!("{message}"); std::process::exit(1) }
+        }
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--close-app") {
+        match close_windows_app() {
+            Ok(count) => { println!("closed {count}"); std::process::exit(0) }
             Err(message) => { println!("{message}"); std::process::exit(1) }
         }
     }
