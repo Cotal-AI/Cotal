@@ -26,7 +26,7 @@ import {
   materialEnv,
 } from "@cotal-ai/connector-core";
 import { piCommandCatalog } from "./command-catalog.js";
-import { askPi, type PiRpcResponse } from "./rpc-once.js";
+import { askPi, type PiAsk, type PiRpcResponse } from "./rpc-once.js";
 
 const DIST = new URL(import.meta.url.includes("/dist/") ? "./" : "../dist/", import.meta.url);
 const SPAWN_ENTRY = fileURLToPath(new URL("spawn-entry.js", DIST));
@@ -51,19 +51,42 @@ export const PI_PROVIDER_KEYS = [
 ] as const;
 
 const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
+const refused = (command: string, reply: PiRpcResponse): string =>
+  `pi refused ${command}: ${typeof reply.error === "string" ? reply.error : "no reason given"}`;
 
-/** Map pi's `get_available_models` response to the catalog. The ids are `provider/id`, the form
- *  pi's `--model` takes, so a model offered by two providers stays two choices. */
-function piCatalog(reply: PiRpcResponse): ModelCatalog {
-  if (reply.success !== true)
-    return unavailable(`pi refused get_available_models: ${typeof reply.error === "string" ? reply.error : "no reason given"}`);
+/** The thinking levels pi lists for one model once it is selected, or why it listed none. */
+async function thinkingLevels(ask: PiAsk, provider: string, modelId: string): Promise<{ levels: string[] } | { failed: string }> {
+  const id = `${provider}/${modelId}`;
+  const selected = await ask({ type: "set_model", provider, modelId });
+  if (selected.success !== true) return { failed: refused(`set_model for ${id}`, selected) };
+  const reply = await ask({ type: "get_available_thinking_levels" });
+  if (reply.success !== true) return { failed: `${refused(`get_available_thinking_levels for ${id}`, reply)} (pi 0.81.0 added it)` };
+  const levels = reply.data?.levels;
+  if (!Array.isArray(levels) || !levels.every((level) => typeof level === "string"))
+    return { failed: `pi answered get_available_thinking_levels for ${id} without a level list` };
+  return { levels };
+}
+
+/** Map pi's answers to the catalog. The ids are `provider/id`, the form pi's `--model` takes, so a
+ *  model offered by two providers stays two choices. A model's variants are the thinking levels pi
+ *  lists for it, so the catalog offers what pi itself would run. */
+async function piCatalog(ask: PiAsk): Promise<ModelCatalog> {
+  const reply = await ask({ type: "get_available_models" });
+  if (reply.success !== true) return unavailable(refused("get_available_models", reply));
   const entries = reply.data?.models;
   if (!Array.isArray(entries)) return unavailable("pi answered get_available_models without a models list");
   const models: ModelInfo[] = [];
   for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown }[]) {
     if (typeof m?.provider !== "string" || !m.provider || typeof m.id !== "string" || !m.id)
       return unavailable("pi answered get_available_models with a model that has no provider or id");
-    models.push({ id: `${m.provider}/${m.id}`, provider: m.provider, ...(typeof m.name === "string" && m.name ? { name: m.name } : {}) });
+    const listed = await thinkingLevels(ask, m.provider, m.id);
+    if ("failed" in listed) return unavailable(listed.failed);
+    models.push({
+      id: `${m.provider}/${m.id}`,
+      provider: m.provider,
+      ...(typeof m.name === "string" && m.name ? { name: m.name } : {}),
+      ...(listed.levels.length ? { variants: listed.levels.map((name) => ({ name })) } : {}),
+    });
   }
   // pi lists only the models of providers it holds credentials for.
   if (models.length === 0)
@@ -74,8 +97,8 @@ function piCatalog(reply: PiRpcResponse): ModelCatalog {
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
   const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS });
-  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, boundMs: 6_000 }, (ask) => ask({ type: "get_available_models" }));
-  return "failed" in answer ? unavailable(answer.failed) : piCatalog(answer.reply);
+  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, boundMs: 6_000 }, piCatalog);
+  return "failed" in answer ? unavailable(answer.failed) : answer.reply;
 }
 
 export const piConnector: Connector = {
