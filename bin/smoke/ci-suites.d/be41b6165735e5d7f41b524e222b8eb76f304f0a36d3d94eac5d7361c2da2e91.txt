@@ -1,0 +1,3 @@
+# The OpenCode 2.x connector's naming request: generate on a child session of the seat's
+# session, which is deleted after, also on failure.
+smoke:opencode-naming

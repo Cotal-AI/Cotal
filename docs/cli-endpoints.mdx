@@ -525,6 +525,8 @@ Next names a command for each space and keeps the original inventory options. `s
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
 If space selection is ambiguous and you did not pass `--space`, the import uses the file's
 space only if it matches one of the registered candidates. It does not change the current selection.
+If no local space resolves, pass the file's space with `--space`. For a new local space,
+prepare it with `cotal space create <space> --root <project-directory>` first. The import needs no running broker.
 An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.

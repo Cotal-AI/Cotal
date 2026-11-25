@@ -26,7 +26,7 @@ The output schemas below describe successful command results, not the protocol e
 
 ## manager
 
-Cluster `ai.cotal.manager`, revision 55. 46 commands.
+Cluster `ai.cotal.manager`, revision 56. 46 commands.
 
 | Command                                                   | Capability          | Class     | Target modes |
 | --------------------------------------------------------- | ------------------- | --------- | ------------ |
@@ -1561,7 +1561,7 @@ Registered declaration:
   "class": "ephemeral",
   "targeted": false,
   "capability": "manager.spawn",
-  "inputDigest": "sha256:b15608d6b4cee812dc491f6818ba7064a03a0a8d449736cef54196f3ebd56b1b",
+  "inputDigest": "sha256:6d54f5bfe07eb9db0baf0c1e7b84f0a07f2f348f43d1b2bb94b71b6eb6b6a613",
   "outputDigest": "sha256:8db6027204c85b301a3fb109d3fd53dac815204b55d433824cff566d8b766154"
 }
 ```
@@ -1680,6 +1680,9 @@ Input schema:
           "type": "string"
         }
       }
+    },
+    "autoName": {
+      "type": "boolean"
     },
     "persona": {
       "type": "object",

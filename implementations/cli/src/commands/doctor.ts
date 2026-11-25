@@ -443,7 +443,11 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     if (!bytes) continue;
     const creds = bytes.toString("utf8");
     let claims: ReturnType<typeof credsClaims>;
-    try { claims = credsClaims(creds); } catch { rows.push(row); continue; }
+    try { claims = credsClaims(creds); } catch {
+      row.repair = `The original grants cannot be determined from this file. Restore the complete credential file, or confirm the intended grants before using \`${cmd} auth mint\` to mint a replacement to a new private path.`;
+      rows.push(row);
+      continue;
+    }
     const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
     const provision = entry.profile === "agent" && entry.provisioned === true ? " --provision" : "";
     const quotedPath = shellWord(entry.path);
