@@ -1111,9 +1111,11 @@ and each default MUST name one of its own variants or options. A mode MAY carry 
 non-empty reason the logged-in account cannot run it; a catalog with an empty reason is unreadable.
 Before anything is minted, the Manager MUST refuse a `spawn` whose `variant` or `modes` the
 connector's catalog does not list for the launched model, or for the default row when the spawn
-names no model. It MUST refuse a `spawn` that names an unavailable mode, with any value, and the
-refusal MUST carry the reason. It MUST also refuse `modes` for a connector that does not render
-them, and for a runtime that starts seats outside its host. It checks against the last catalog it
+names no model. It MUST refuse a `spawn` that turns an unavailable mode on, a toggle set to
+`true` or a choice set to any option but its `default`, and the refusal MUST carry the reason. A
+spawn that sets such a mode off, `false` or the choice's `default`, launches. It MUST also refuse
+`modes` for a connector that does not render them, and for a runtime that starts seats outside its
+host. It checks against the last catalog it
 read and reads one only when it holds none for the harness files it would launch. A resumed seat
 replays its recorded modes, and a connector that no longer renders them refuses the resume.
 

@@ -265,7 +265,8 @@ names what to remove: the `--variant` option, the `variant:` field in the person
 A launch with a variant or a mode is refused with `USAGE_INVALID` before provisioning unless the
 connector's model catalog lists it for the model, or for the catalog's default model when no
 `--model` is given. The refusal names the values the catalog lists. A mode the catalog marks
-unavailable for your account is refused with any value, and the refusal gives the reason. A spawn in
+unavailable for your account is refused when the launch turns it on, and the refusal gives the
+reason. Turning it off, `false` or the choice's default, launches. A spawn in
 this terminal reads the catalog from the application for that check, and only after the connector's
 own launch check accepts the variant, so a level the connector rejects gets the preview's refusal and
 starts nothing.
