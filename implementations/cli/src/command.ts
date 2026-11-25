@@ -44,6 +44,7 @@ import {
   targetErrorSpace,
   terminalWidth,
   userCotalDir,
+  windowsShellWord,
   type OperationScope,
   type OutputWarning,
   staleStoreHint,
@@ -539,10 +540,12 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) {
       const value = short[2]!;
-      const quoted = shellWord(value);
+      const windows = process.platform === "win32";
+      const common = windows ? windowsShellWord(value) : undefined;
+      const quoted = windows ? common ?? `'${value.replaceAll("'", "''")}'` : shellWord(value);
       const long = `--${flag.name}=${quoted}`;
       const correction = value.startsWith("-") ? long : `-${short[1]} ${quoted} or ${long}`;
-      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
+      return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}${windows && common === undefined ? " in PowerShell" : ""}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
     if (typed && (cmd.name === "ext" || cmd.name === "endpoint") && typed.flagName && typed.flagName !== "help") {
