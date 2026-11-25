@@ -285,7 +285,7 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   /** Bounded trusted-host-only TTL of the held issuer session's credential, 5..300 seconds (default
    *  the `issuer` profile's five minutes). */
   issuerSessionTtlSeconds?: number;
-  /** Maximum callout response window, used to retain newly ended connection evidence. */
+  /** Maximum callout response window for retaining newly ended connection evidence. */
   sessionCalloutTimeoutMs?: number;
   /** Delay between completed native-issuance cleanup walks (default 60 s). Startup reads at most
    *  one historical row, then continues in bounded background batches. */
