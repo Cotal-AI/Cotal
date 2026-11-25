@@ -1117,7 +1117,7 @@ if (process.platform !== "win32") {
       packages: { "": { name: "cotal-extensions", dependencies: { [pkg]: `^${version}` } }, [`node_modules/${pkg}`]: meta },
     }));
     writeFileSync(join(installedDir, "package.json"), JSON.stringify({ ...meta, version: onDisk }));
-    writeFileSync(join(installedDir, "index.js"), "");
+    writeFileSync(join(installedDir, "index.js"), "export {};\n");
   };
   const run = async (entry: InstalledExtension) => {
     const r = updateRuntime({ extensions: [entry], verifyExtension: verifyCurrentExtension });
