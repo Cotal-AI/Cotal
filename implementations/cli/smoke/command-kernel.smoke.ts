@@ -578,6 +578,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(result.error, undefined);
     assert.equal(readFileSync(manifest, "utf8"), corrupt, "the check never repairs the corrupt manifest");
     assert.deepEqual(readdirSync(config), ["extensions"], "no seed or promotion files are written");
+    assert.equal(existsSync(join(env.COTAL_HOME, "trusted-projects-seed.json")), false, "the read-only check does not mark the trust migration attempted");
     assert.deepEqual(readdirSync(join(config, "extensions")), ["extensions.json"]);
     return result;
   };
