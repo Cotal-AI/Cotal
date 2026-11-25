@@ -34,6 +34,10 @@ import {
   type MergedRecord,
 } from "./endpoint-records.js";
 
+const RUN_CEILING_KINDS = [
+  "spawn", "participant", "turn", "ask", "checkpoint", "sleep", "wait", "waitUntil", "notify", "monitor", "conclave",
+] as const;
+
 /**
  * The pins, resolved. Structurally the language's `RunPins` — `@cotal-ai/core` does not depend on
  * `@cotal-ai/lang`, and the wire shape is the contract between them rather than a shared type.
@@ -45,6 +49,8 @@ export interface RunPinsValue {
   readonly yieldEvery: number;
   readonly stepBudget: number;
   readonly effectCeiling: number;
+  /** Optional per-kind journaled limits. Missing kinds have no additional limit. */
+  readonly ceilings?: Readonly<Partial<Record<(typeof RUN_CEILING_KINDS)[number], number>>>;
   readonly languageVersion: string;
 }
 
@@ -118,11 +124,16 @@ const runUint = (value: unknown): value is number => typeof value === "number" &
 /** Validate a stored run spec before a read-only observer relies on its terminal status. */
 export function parseRunSpec(raw: unknown, key: string): RunSpecValue {
   const spec = runObject(raw, ["v", "run", "pins", "createdAt", "forkedFrom"], key);
-  const pins = runObject(spec.pins, ["seed", "startedAt", "yieldEvery", "stepBudget", "effectCeiling", "languageVersion"], key);
+  const pins = runObject(spec.pins, ["seed", "startedAt", "yieldEvery", "stepBudget", "effectCeiling", "languageVersion", "ceilings"], key);
   if (spec.v !== 1 || typeof spec.run !== "string" || !runUint(spec.createdAt) ||
       typeof pins.seed !== "string" || typeof pins.languageVersion !== "string" ||
       ![pins.startedAt, pins.yieldEvery, pins.stepBudget, pins.effectCeiling].every(runUint))
     throw new EpEnvelopeError("internal", `run spec ${key} is malformed`);
+  if (pins.ceilings !== undefined) {
+    const ceilings = runObject(pins.ceilings, RUN_CEILING_KINDS, key);
+    if (!Object.values(ceilings).every(runUint))
+      throw new EpEnvelopeError("internal", `run spec ${key} has invalid effect ceilings`);
+  }
   if (spec.forkedFrom !== undefined) {
     const fork = runObject(spec.forkedFrom, ["run", "step"], key);
     if (typeof fork.run !== "string" || typeof fork.step !== "string")

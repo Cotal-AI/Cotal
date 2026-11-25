@@ -69,6 +69,12 @@ export class AgentManagerUnsettled extends CommandFailure {
 const targetFlags = (values: { space?: unknown; server?: unknown }) =>
   ({ ...(typeof values.space === "string" ? { space: values.space } : {}), ...(typeof values.server === "string" ? { server: values.server } : {}) });
 
+export function managerRosterHint(values: { space?: unknown; server?: unknown }, rosterCommand?: string): string {
+  const flags = targetFlags(values);
+  return flags.server !== undefined && brokerAddressForDisplay(flags.server) !== flags.server
+    ? "the roster for the same broker" : codeSpan(rosterCommand ?? `cotal ps${targetWords(flags)}`);
+}
+
 /** Your live managers on the user-auth mesh `flags` resolve to, as presence shows them. */
 async function yourLiveManagers(flags: { space?: string; server?: string }): Promise<ManagerCandidate[]> {
   const { roster, connection } = await presenceOf(flags);
@@ -91,8 +97,7 @@ async function yourLiveManagers(flags: { space?: string; server?: string }): Pro
 export async function managerPin(values: { on?: unknown; space?: unknown; server?: unknown }, verb: ManagerRetry, rosterCommand?: string): Promise<string | undefined> {
   if (values.on === undefined) return undefined;
   const flags = targetFlags(values);
-  const roster = flags.server !== undefined && brokerAddressForDisplay(flags.server) !== flags.server
-    ? "the roster for the same broker" : codeSpan(rosterCommand ?? `cotal ps${targetWords(flags)}`);
+  const roster = managerRosterHint(flags, rosterCommand);
   const on = onInstance(String(values.on), verb, roster);
   if (on === undefined || instanceIdShaped(on)) return on;
   let mode: string | undefined;
@@ -350,7 +355,7 @@ export async function managerSelection(
   const shown = mode === "user" ? (await yourLiveManagers(flags)).find((m) => m.instanceId === instanceId) : undefined;
   const manager = shown ?? managerCandidate(instanceId, undefined);
   if (manager.host !== null || target === undefined) return { manager, selector: String(values.on ?? instanceId) };
-  const host = await reportedManagerHost(cliControl, target.space, target.server, target.auth, instanceId);
+  const { host } = await reportedManagerHost(cliControl, target.space, target.server, target.auth, instanceId);
   return { manager: { ...manager, host: host ?? null }, selector: String(values.on ?? instanceId) };
 }
 

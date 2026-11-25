@@ -1,0 +1,3 @@
+# The Manager's model selector lists the models of the provider Hermes resolves from the
+# environment a launch receives, spawn.env names included, in one bounded read.
+smoke:hermes-models

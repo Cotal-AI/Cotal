@@ -24,10 +24,33 @@
  *                                              a question it asks carries <contextId>, this call
  *                                              only; a DM to <peerId>, whose session it runs in,
  *                                              answers that peer
+ *     {t:"turn_taken", id} | {t:"turn_refused", id, error}
+ *                                              adapter: the gateway took turn <id>, or did not
+ *     {t:"busy", count}                        adapter: Cotal messages and turns in progress, sent on
+ *                                              every subscribe and every change
+ *     {t:"answer", id, ok, data?, error?}      adapter: the answer to request <id>
+ *     {t:"approval", id, session, command, description, tool, toolCallId?, choices, note, timeoutMs}
+ *                                              adapter: a command waits for the owner's approval
+ *                                              (src/approvals.ts)
+ *     {t:"approval_end", session, outcome}     adapter: the oldest approval waiting in <session>
+ *                                              stopped waiting
+ *     {t:"clarify", id, session, question, choices, multiple, timeoutMs}
+ *                                              adapter: the model asks the owner a question
+ *                                              (src/clarify.ts)
+ *     {t:"clarify_end", id, resolved}          adapter: Hermes stopped waiting on question <id>,
+ *                                              with the answer sent (resolved) or without it
+ *     {t:"delta", key, text}                   adapter: text a reply added under stream <key> while
+ *                                              the model wrote it (plugin/cotal/streams.py)
+ *     {t:"delta_end", key}                     adapter: stream <key> ended with no saved response
  *
  *   sidecar → Python
  *     {t:"incoming", msg}                      push one buffered mesh message (for handle_message)
+ *     {t:"turn", id, text, images?}            a turn in the user's own words, run in the
+ *                                              adapter's operator chat (see submitTurn)
+ *     {t:"interrupt"|"usage"|"commands", id}   a request the adapter answers (see ask)
  *     {t:"tool_result", id, ok, text?, isError?, error?}   reply to a {t:"tool"} request
+ *     {t:"approval_answer", id, choice, reason?}   the owner's answer to approval <id>
+ *     {t:"clarify_answer", id, response}       the reply Hermes hands the model for question <id>
  *
  * Delivery is **serial + ack-on-surface**: the sidecar pushes the oldest buffered message, waits
  * for the adapter's `delivered`, then `drainInbox(1)` acks exactly that message before pushing the
@@ -46,7 +69,10 @@ import { createServer, type Server, type Socket } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { CONTROL_SERVER_AUTH_DEADLINE_MS, MAX_CONTROL_REQUEST_BYTES, assertControlSocketDir, type ControlEndpoint } from "@cotal-ai/core";
+import type { TurnImage } from "@cotal-ai/core";
+import { createTurnDesk } from "./bridge-turns.js";
 import {
+  CommandRefused,
   cotalToolSpecs,
   parseToolArgs,
   NO_TOOL_ARGS,
@@ -107,9 +133,37 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
   };
 }
 
-interface BridgeServer {
+export interface BridgeServer {
   /** Stop accepting, end every accepted connection, and resolve once the server has closed. */
   close(): Promise<void>;
+  /** Hand the gateway a turn in the user's own words, once: it waits for an adapter to subscribe,
+   *  and resolves when the gateway took it. It rejects with {@link CommandRefused} when the gateway
+   *  refused it. A turn handed to an adapter that disconnects before it answers is not handed again,
+   *  because whether the gateway started it cannot be known. */
+  submitTurn(text: string, images?: readonly TurnImage[]): Promise<void>;
+  /** Ask the subscribed adapter to run a request on the gateway, resolving with its answer's data.
+   *  Rejects when no adapter is subscribed, or it fails or disconnects before it answers. */
+  ask(request: "interrupt" | "usage" | "commands"): Promise<Record<string, unknown>>;
+  /** An adapter is subscribed, the gateway has no Cotal message or turn in progress, and no turn
+   *  waits for its answer. */
+  idle(): boolean;
+  /** Send the owner's answer to an approval or a question to the subscribed adapter. False when
+   *  none is. */
+  answerPrompt(answer: { t: "approval_answer"; id: string; choice: string; reason?: string } | { t: "clarify_answer"; id: string; response: string }): boolean;
+}
+
+/** What the bridge tells its owner. */
+interface BridgeEvents {
+  /** An authenticated adapter subscribed. */
+  onSubscribe?(): void;
+  /** The bridge may have become {@link BridgeServer.idle}. */
+  onIdle?(): void;
+  /** The subscribed adapter sent an `approval` or `approval_end` frame. */
+  onApproval?(frame: Record<string, unknown>): void;
+  /** The subscribed adapter sent a `clarify` or `clarify_end` frame. */
+  onClarify?(frame: Record<string, unknown>): void;
+  /** The subscribed adapter sent a `delta` frame (text set) or a `delta_end` frame (text absent). */
+  onDelta?(key: string, text?: string): void;
 }
 
 /** The token the adapter presents in its first frame: HMAC-SHA256 keyed with the UTF-8 bytes of the
@@ -127,10 +181,90 @@ function tokenMatches(presented: unknown, digest: Buffer): boolean {
   return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
 }
 
+/** Read newline-delimited JSON frames off one accepted connection and hand each to `onFrame`, once
+ *  the first frame has authenticated the connection as the subscribe carrying the bridge token. A
+ *  connection that sends anything else first, an oversized or malformed frame before it, or nothing
+ *  before the deadline, is destroyed. */
+function readFrames(sock: Socket, digest: Buffer, onFrame: (frame: Record<string, unknown>) => void): void {
+  let buf = "";
+  let authenticated = false;
+  sock.setEncoding("utf8");
+  // ABSOLUTE deadline (not an idle timeout) on an unauthenticated connection — a slow-loris
+  // dribbling one byte at a time must not camp on the socket forever. Cleared the instant the
+  // first frame is in hand (successful or not: either way the connection is decided).
+  const deadline = setTimeout(() => sock.destroy(), CONTROL_SERVER_AUTH_DEADLINE_MS);
+  deadline.unref?.();
+  const dropUnauthenticated = (): void => {
+    clearTimeout(deadline);
+    log("bridge: dropped an unauthenticated connection");
+    sock.destroy();
+  };
+  sock.on("data", (d) => {
+    buf += d;
+    if (!authenticated && buf.length > MAX_CONTROL_REQUEST_BYTES) {
+      // oversized pre-auth frame — drop hard, never half-close (it keeps spewing)
+      dropUnauthenticated();
+      return;
+    }
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      let frame: Record<string, unknown> = {};
+      try {
+        frame = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        if (!authenticated) {
+          dropUnauthenticated();
+          return;
+        }
+        log(`malformed frame dropped`);
+        continue;
+      }
+      if (!authenticated) {
+        // The first frame off an unauthenticated connection must be the subscribe carrying the
+        // bridge token — anything else (a wrong/missing token, or any other frame type) is
+        // dropped before `adapter` can be assigned or `onTool` reached.
+        if (frame.t !== "subscribe" || !tokenMatches(frame.token, digest)) {
+          dropUnauthenticated();
+          return;
+        }
+        clearTimeout(deadline);
+        authenticated = true;
+        // This same subscribe frame is also the subscribe — handleFrame's "subscribe" case
+        // assigns `adapter` and pumps the queue.
+        onFrame(frame);
+        continue;
+      }
+      onFrame(frame);
+    }
+  });
+  sock.on("close", () => clearTimeout(deadline));
+}
+
+/** Hand one of the subscribed adapter's approval, question or stream frames to its handler. */
+function adapterEvent(frame: Record<string, unknown>, events: BridgeEvents): void {
+  if (frame.t === "approval" || frame.t === "approval_end") events.onApproval?.(frame);
+  else if (frame.t === "clarify" || frame.t === "clarify_end") events.onClarify?.(frame);
+  else if (typeof frame.key === "string" && frame.key) {
+    if (frame.t === "delta_end") events.onDelta?.(frame.key);
+    else if (typeof frame.text === "string") events.onDelta?.(frame.key, frame.text);
+  }
+}
+
+/** Settle the request or turn the desk holds from the adapter's answer to it. */
+function deskFrame(frame: Record<string, unknown>, desk: ReturnType<typeof createTurnDesk>): void {
+  if (frame.t === "answer") {
+    if (frame.ok === true) desk.settleRequest(frame.id, { data: (frame.data ?? {}) as Record<string, unknown> });
+    else desk.settleRequest(frame.id, { error: new Error(String(frame.error ?? "the gateway did not say why")) });
+  } else if (frame.t === "turn_taken") desk.settleTurn(frame.id);
+  else desk.settleTurn(frame.id, new CommandRefused("failed-precondition", `the gateway did not take the turn: ${String(frame.error)}`));
+}
+
 /** Start the adapter bridge. Returns a handle whose `close()` stops the server. `control` is the
- *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key.
- *  `onSubscribe` runs when an authenticated adapter subscribes. */
-export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, onSubscribe?: () => void): BridgeServer {
+ *  launch's control endpoint; the first frame must carry {@link bridgeToken} of its key. */
+export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketPath: string, control: ControlEndpoint, events: BridgeEvents = {}): BridgeServer {
   const digest = createHash("sha256").update(bridgeToken(control)).digest();
   assertControlSocketDir(socketPath);
 
@@ -152,6 +286,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   let pushes = 0;
   /** Receive keys of deliveries the host would not take, each held back until its timer frees it. */
   const deferred = new Set<string>();
+  /** Cotal messages and turns the subscribed adapter has in progress, as it last reported. */
+  let busy = 0;
 
   const sendFrame = (sock: Socket, frame: Record<string, unknown>): void => {
     try {
@@ -183,6 +319,8 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       sendFrame(to, { t: "incoming", msg: wireItem(agent, shown) });
     });
   };
+
+  const desk = createTurnDesk(() => adapter, sendFrame, () => events.onIdle?.());
 
   agent.on("incoming", () => pump());
   // The Stop→idle batch flush (see the hook handle): an idle gateway has nothing in flight, so a
@@ -230,10 +368,30 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
       case "subscribe":
         adapter = sock;
         awaitingId = undefined;
+        busy = 0;
         pushes++;
         log("adapter subscribed");
-        onSubscribe?.();
+        events.onSubscribe?.();
+        desk.pushTurns();
         pump();
+        return;
+      case "approval":
+      case "approval_end":
+      case "clarify":
+      case "clarify_end":
+      case "delta":
+      case "delta_end":
+        if (sock === adapter) adapterEvent(frame, events);
+        return;
+      case "busy":
+        if (sock !== adapter || typeof frame.count !== "number") return;
+        busy = frame.count;
+        if (busy === 0) events.onIdle?.();
+        return;
+      case "answer":
+      case "turn_taken":
+      case "turn_refused":
+        deskFrame(frame, desk);
         return;
       case "delivered":
         // Address by the receive key the sidecar echoes (NOT the wire id: an id-less message's
@@ -293,67 +451,14 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   const server: Server = createServer((sock) => {
     accepted.add(sock);
     sock.once("close", () => accepted.delete(sock));
-    let buf = "";
-    let authenticated = false;
-    sock.setEncoding("utf8");
-    // ABSOLUTE deadline (not an idle timeout) on an unauthenticated connection — a slow-loris
-    // dribbling one byte at a time must not camp on the socket forever. Cleared the instant the
-    // first frame is in hand (successful or not: either way the connection is decided).
-    const deadline = setTimeout(() => sock.destroy(), CONTROL_SERVER_AUTH_DEADLINE_MS);
-    deadline.unref?.();
-    const dropUnauthenticated = (): void => {
-      clearTimeout(deadline);
-      log("bridge: dropped an unauthenticated connection");
-      sock.destroy();
-    };
-    sock.on("data", (d) => {
-      buf += d;
-      if (!authenticated && buf.length > MAX_CONTROL_REQUEST_BYTES) {
-        // oversized pre-auth frame — drop hard, never half-close (it keeps spewing)
-        dropUnauthenticated();
-        return;
-      }
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        let frame: Record<string, unknown> = {};
-        try {
-          frame = JSON.parse(line) as Record<string, unknown>;
-        } catch {
-          if (!authenticated) {
-            dropUnauthenticated();
-            return;
-          }
-          log(`malformed frame dropped`);
-          continue;
-        }
-        if (!authenticated) {
-          // The first frame off an unauthenticated connection must be the subscribe carrying the
-          // bridge token — anything else (a wrong/missing token, or any other frame type) is
-          // dropped before `adapter` can be assigned or `onTool` reached.
-          if (frame.t !== "subscribe" || !tokenMatches(frame.token, digest)) {
-            dropUnauthenticated();
-            return;
-          }
-          clearTimeout(deadline);
-          authenticated = true;
-          // This same subscribe frame is also the subscribe — handleFrame's "subscribe" case
-          // assigns `adapter` and pumps the queue.
-          void handleFrame(sock, frame);
-          continue;
-        }
-        void handleFrame(sock, frame);
-      }
-    });
+    readFrames(sock, digest, (frame) => void handleFrame(sock, frame));
     sock.on("close", () => {
-      clearTimeout(deadline);
       if (sock === adapter) {
         adapter = undefined;
         awaitingId = undefined;
         log("adapter disconnected");
       }
+      desk.connectionClosed(sock);
     });
     sock.on("error", () => {
       /* ignore client errors */
@@ -373,6 +478,16 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
   });
 
   return {
+    submitTurn: desk.submitTurn,
+    ask: desk.ask,
+    idle() {
+      return adapter !== undefined && busy === 0 && desk.pending() === 0;
+    },
+    answerPrompt(answer) {
+      if (!adapter) return false;
+      sendFrame(adapter, answer);
+      return true;
+    },
     close() {
       // A subscription holds its connection open for the life of the gateway, so close ends each
       // accepted connection itself rather than waiting for the adapter to hang up.

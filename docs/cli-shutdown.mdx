@@ -219,8 +219,11 @@ names another folder's stack. In a folder with its own controller stack, a `--sp
 another space refuses with `CONFLICT`, exit 2, and names this folder's stack. Each refusal names
 the space and, when this machine started it elsewhere, its root, and its next step runs the same
 `down` from that root. If the project folder or its stack record paths cannot be accessed, `down`
-leaves the stack and its records unchanged and asks you to restore access before retrying.
-`--json` and `--plain` carry that refusal as structured output when the current folder has no stack of its own.
+leaves the stack and its records unchanged and asks you to restore access before retrying. If
+something other than a folder, such as a regular file, now sits at that root, the next step names
+it and asks you to move it aside and restore the original project folder there before running that
+`down`. `--json` and `--plain` carry that refusal as structured output when the current folder has
+no stack of its own.
 
 A manual or catalog connection records the folder that uses it. If a named stop or preview finds
 only that connection in another folder, run the stop or preview in the project that started the stack.
@@ -448,6 +451,7 @@ unsettled request, a process that cannot be observed, or a record from another h
 
 ```bash
 cotal down
+cotal down --space <name> --yes  # Controller stack in its project folder
 cotal down --with-agents
 cotal down --abandon-stop <request-id> --yes
 cotal down --abandon-launch <instance-id> --yes
@@ -461,7 +465,7 @@ cotal down -f <cotal.yaml> | --run <id> [--dry-run]
 |---|---|---|
 | `--file <cotal.yaml>`, `-f` | none | Tear down this manifest's deploy |
 | `--run <id>` | none | Tear down one additive ledger, written by the retired `spawn -f` deploy, by its run id |
-| `--space <name>` | current space | With service names: the space whose saved definitions to stop. With bare `--dry-run`: confirm that space belongs to this root. A bare stop refuses it |
+| `--space <name>` | current space | With service names: the space whose saved definitions to stop. A controller stack stop or preview accepts a name that matches the project's recorded space and refuses a different name. On a retained legacy stack, a bare preview uses it to check the project's space, but a stop that uses the pidfile sweep requires omitting it. |
 | `--dry-run` | off | Print the manifest teardown, the named service stop or the bare stack preview, mutate nothing. On retained legacy roots, `down -f <file> --dry-run` previews this root's recorded stack when the manifest can be read and no additive ledger exists. Controller-owned roots refuse `--file` and `--run`; use `cotal down --dry-run` there. On legacy roots, an explicit `--run` stays on the ledger lookup, and a ledger teardown has no `--json` or `--plain` output |
 | `--with-agents` | off | Bare whole stack only: also stop and deprovision every managed agent |
 | `--abandon-stop <request-id>` | none | Controller stack, with `--yes`: abandon a member's stop that no receipt settles, then stop the stack. See the settlement rules under [up](cli-startup.mdx#up) |
@@ -988,7 +992,8 @@ custody or a complete identity deletion set.
 
 Bare `reset store <space>` checks those conditions, displays a scoped terminal
 confirmation or requires `--yes` in a script, and acquires the maintenance lock. A refusal for
-missing `--yes` keeps `--json` in both the suggested preview and the confirmation when requested.
+missing `--yes` keeps `--plain` or `--json` in both the suggested preview and the confirmation
+when requested.
 While another command holds the lock, such as an `up` started at the same time, `reset store` and
 `reset space` refuse `LIFECYCLE_BLOCKED`, exit 2, name that command's pid and remove nothing.
 Under the lock it rechecks the exact registration or stopped-stack records, one-tenant root, absent

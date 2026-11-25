@@ -21,13 +21,17 @@
  *
  * Run: pnpm smoke:claude-launch-model
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeConnector } from "../src/extension.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const { check, finish, passed, failed } = createSuite();
+// Each launch makes its private directories under the temp dir, and nothing here starts a child to
+// remove them, so they go in a scratch temp dir this suite removes.
+const scratch = mkdtempSync(join(tmpdir(), "claude-launch-model-"));
+process.env.TMPDIR = scratch;
 
 const launch = (extra: Record<string, unknown>) =>
   claudeConnector.buildLaunch({ space: "s", name: "seat", events: false, ...extra } as never);
@@ -141,5 +145,6 @@ check(
 );
 
 console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+rmSync(scratch, { recursive: true, force: true });
 finish();
 process.exit(failed() === 0 ? 0 : 1);

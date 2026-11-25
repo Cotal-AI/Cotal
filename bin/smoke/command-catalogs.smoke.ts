@@ -2,14 +2,15 @@
  * The lists a launcher reads before launch (`Connector.commands`, SPEC 13.22), from stand-in
  * harnesses, and the first command each connector hands its seat. Claude's list keeps what the
  * command mod lets a remote request run, pi's names skills as skills and trusts a project as a
- * supervised seat does, an install too old to run agent commands lists `supported: false`, and every
- * connector writes a spawn's first command to a launch file its seat takes once.
+ * supervised seat does, OpenCode 1.x's comes from a private server it stops, an install too old to
+ * run agent commands lists `supported: false`, and every connector writes a spawn's first command to
+ * a launch file its seat takes once.
  *
  * Run: pnpm smoke:command-catalogs
  */
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, type CommandCatalog, type Connector, type FirstCommand, type LaunchSpec } from "@cotal-ai/core";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
@@ -30,7 +31,7 @@ const lines = (log: string) => (existsSync(log) ? readFileSync(log, "utf8").trim
 function standIn(name: string, script: string, vars: Record<string, string>): { bin: string; log: string } {
   const home = mkdtempSync(join(dir, `${name}-`));
   const bin = join(home, name), log = join(home, "log.jsonl");
-  const assign = Object.entries({ ...vars, FAKE_CLAUDE_LOG: log, FAKE_PI_LOG: log }).map(([k, v]) => `${k}='${v}'`).join(" ");
+  const assign = Object.entries({ ...vars, FAKE_CLAUDE_LOG: log, FAKE_PI_LOG: log, FAKE_OC1_LOG: log }).map(([k, v]) => `${k}='${v}'`).join(" ");
   writeFileSync(bin, `#!/bin/sh\n${assign} exec '${process.execPath}' '${script}' "$@"\n`);
   chmodSync(bin, 0o700);
   return { bin, log };
@@ -85,6 +86,45 @@ function standIn(name: string, script: string, vars: Record<string, string>): { 
   const old = standIn("pi", FAKE, { FAKE_PI_MODE: "reply", FAKE_PI_REPLY: reply, FAKE_PI_VERSION: "0.84.1" });
   const tooOld = await piConnector.commands!.list({ cwd: project, resolvedBinaries: { pi: old.bin } });
   check("pi: a pi older than 0.84.2 lists supported: false and is never asked for its commands", !tooOld.supported && /0\.84\.1/.test(tooOld.reason) && !lines(old.log).some((e) => e.command), tooOld);
+}
+
+// ---- OpenCode 1.x -------------------------------------------------------------------------------
+{
+  const FAKE = fileURLToPath(new URL("../../extensions/connector-opencode/smoke/fixtures/fake-opencode1-serve.mjs", import.meta.url));
+  const reply = join(dir, "opencode1-reply.json");
+  writeFileSync(reply, JSON.stringify([
+    { name: "init", description: "guided AGENTS.md setup", source: "command", template: "Create or update AGENTS.md" },
+    { name: "lane-cmd", description: "a project command", source: "command", template: "Say hi to $ARGUMENTS" },
+    { name: "lane-skill", description: "a project skill", source: "skill", template: "Do the lane thing." },
+    { name: "reconnect", description: "reconnect this agent to the mesh", source: "command", template: "" },
+  ]));
+  const oc = standIn("opencode", FAKE, { FAKE_OC1_REPLY: reply });
+  const list = (): Promise<CommandCatalog> => opencodeConnector.commands!.list({ cwd: project, resolvedBinaries: { opencode: oc.bin } });
+  const catalog = await list().catch((e: Error) => e.message);
+  check("opencode 1.x: commands and skills are listed under the targets a seat runs them by, without the launch's own /reconnect", same(catalog, { supported: true, commands: [
+    { name: "init", target: "command", description: "guided AGENTS.md setup" },
+    { name: "lane-cmd", target: "command", description: "a project command" },
+    { name: "lane-skill", target: "skill", description: "a project skill" },
+  ] }), catalog);
+  const serve = lines(oc.log).find((e) => e.argv?.[0] === "serve");
+  const flag = (name: string): string | undefined => serve?.argv[serve.argv.indexOf(name) + 1];
+  // 1.x takes port 0 as 4096 while that is free, so a read that asked for 0 could take an operator's server port.
+  check("opencode 1.x: it reads a server it starts in the launch's directory, on loopback and a free port, with a password and a database of its own",
+    serve?.cwd === project && flag("--hostname") === "127.0.0.1" && /^[1-9]\d*$/.test(flag("--port") ?? "") && serve.password === true && typeof serve.db === "string" && !existsSync(dirname(serve.db)), serve);
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const pids: number[] = Array.isArray(serve?.pids) ? serve.pids : [];
+  for (let i = 0; i < 40 && pids.some(alive); i++) await new Promise((r) => setTimeout(r, 50));
+  check("opencode 1.x: the read stops the server and what it started", pids.length === 2 && !pids.some(alive), pids);
+  const early = standIn("opencode", FAKE, { FAKE_OC1_REPLY: reply, FAKE_OC1_EARLY_EXIT: "1" });
+  const why = await opencodeConnector.commands!.list({ cwd: project, resolvedBinaries: { opencode: early.bin } }).then(() => "listed", (e: Error) => e.message);
+  const orphaned: number[] = lines(early.log).find((e) => e.argv?.[0] === "serve")?.pids?.slice(1) ?? [];
+  for (let i = 0; i < 40 && orphaned.some(alive); i++) await new Promise((r) => setTimeout(r, 50));
+  check("opencode 1.x: a server that exits before it listens is a failed read, and the process it started is stopped too",
+    /exited \(3\) before it listened/.test(why) && orphaned.length === 1 && !orphaned.some(alive), { why, orphaned });
+  for (const pid of orphaned.filter(alive)) process.kill(pid, "SIGKILL");
+  writeFileSync(reply, JSON.stringify({ data: [] }));
+  const failed = await list().then((c) => JSON.stringify(c), (e: Error) => e.message);
+  check("opencode 1.x: a server that answers no list is a failed read, never an empty list", /answered \/command with no list/.test(failed), failed);
 }
 
 // ---- Codex --------------------------------------------------------------------------------------

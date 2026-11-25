@@ -5,6 +5,12 @@ import type { Manager } from "./manager.js";
 import type { ManagerParts } from "./manager-parts.js";
 import type { ManagerConfig } from "./manager-config.js";
 
+/** The opt-in launch fields a seat keeps, each present only when asked, so a launch without them is
+ *  built and recorded as before and every relaunch of the seat asks as its spawn did. */
+export function optInLaunchFields(launch: { askPermissions?: boolean; reasoningEvents?: boolean }): { askPermissions?: true; reasoningEvents?: true } {
+  return { ...(launch.askPermissions ? { askPermissions: true } : {}), ...(launch.reasoningEvents ? { reasoningEvents: true } : {}) };
+}
+
 /** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
  *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
 export function resolveHarness(name: string, requires: readonly string[]): { binaries: Record<string, string>; reason?: string } {
@@ -100,11 +106,20 @@ export class HarnessResolution {
 
   /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
    *  a seat's launch is built, so a rule changed here holds on both paths. */
-  capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; firstCommand?: CommandInput; exact: boolean }): string | undefined {
+  capabilityRefusal(
+    connector: Connector,
+    launch: { variant?: string; prompt?: string; firstCommand?: CommandInput; exact: boolean; askPermissions?: boolean; reasoningEvents?: boolean; events: boolean },
+  ): string | undefined {
     if (launch.variant && !connector.supportsModelVariant)
       return `${connector.name} connector does not support model variants (variant)`;
     if (launch.prompt !== undefined && !connector.supportsPrompt)
       return `${connector.name} connector does not support an initial prompt (prompt)`;
+    if (launch.askPermissions && !connector.supportsAskPermissions)
+      return `${connector.name} connector does not support asking before tool use (askPermissions)`;
+    if (launch.reasoningEvents && !connector.supportsReasoningEvents)
+      return `${connector.name} connector does not support reasoning events (reasoningEvents)`;
+    if (launch.reasoningEvents && !launch.events)
+      return "reasoningEvents needs the event plane, and this launch has none (events: false)";
     if (launch.firstCommand && !connector.commands?.targets.includes(launch.firstCommand.target))
       return `${connector.name} seats run no ${launch.firstCommand.target}s, so a spawn cannot name one as their first command (firstCommand)`;
     if (launch.exact && (!connector.supportsSessionReopen || !connector.supportsSessionContinuation))

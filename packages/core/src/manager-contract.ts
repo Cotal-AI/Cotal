@@ -148,11 +148,15 @@ export const SPAWN_INPUT_SCHEMA = deepFreeze({
     resumeAgent: nonBlank(),
     events: { type: "boolean" },
     eventPayloads: { type: "boolean" },
+    askPermissions: { type: "boolean" },
+    reasoningEvents: { type: "boolean" },
     cwd: nonBlank(),
     prompt: nonBlank(),
     // A harness command or skill the new agent runs as its first turn: the `command` input of SPEC
     // 13.22, which the agent queues under the id the acceptance names. Never sent as a prompt.
     firstCommand: AGENT_COMMAND_INPUT_SCHEMA,
+    // The seat labels itself from its first message: the prompt above, else its owner's first DM or mention.
+    autoName: { type: "boolean" },
     // An inline persona: the helper's definition, carried here instead of read from the catalog.
     // Its `prompt` is the persona body; the `prompt` above stays the first-turn kickoff.
     persona: {

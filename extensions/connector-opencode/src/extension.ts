@@ -1,8 +1,9 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { listOpenCode2Models } from "./catalog2.js";
 import { openCodeCommandCatalog } from "./command-catalog.js";
 import { opencodeLine } from "./opencode-line.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
@@ -20,6 +21,33 @@ const PLUGIN_DIR = fileURLToPath(new URL("./plugin", import.meta.url));
 /** The launcher shim (`dist/serve.js`): starts `opencode serve` with the plugin, then attaches a
  *  foreground `opencode` TUI to the exact session the plugin drives (see launch.ts). */
 const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
+
+/** The permission rules of a launch with `askPermissions`: T3 Code's OpenCode approval-required
+ *  rules (`openCodePermissionRules`), in the config shape 1.x reads and 2.x translates. Every tool
+ *  asks except the ones T3 always allows and the agent's own `cotal_*` tools, and reading an `.env`
+ *  file asks. The last matching rule wins, so the catch-all comes first. */
+const ASKING_PERMISSION = {
+  "*": "ask",
+  question: "allow",
+  read: { "*": "allow", "*.env": "ask", "*.env.*": "ask", "*.env.example": "allow" },
+  glob: "allow",
+  grep: "allow",
+  lsp: "allow",
+  todowrite: "allow",
+  task: "allow",
+  skill: "allow",
+  "cotal_*": "allow",
+};
+
+/** The permission rules a launch runs under: everything allowed, so a supervised agent does not stall
+ *  on an approval no one is there to give, or {@link ASKING_PERMISSION} for an `askPermissions`
+ *  launch. Such a launch may not set `permission` in its launch options, which would override them. */
+function launchPermission(opts: LaunchOpts): unknown {
+  if (!opts.askPermissions) return "allow";
+  if (connectorLaunchOptions("opencode", opts.launchOptions).some(([k]) => k === "permission"))
+    throw new Error("opencode connector: askPermissions sets the permission rules, so the launch options may not set `permission` too");
+  return ASKING_PERMISSION;
+}
 
 function discoveryEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -79,73 +107,6 @@ function parseModels(stdout: string): ModelInfo[] {
   return models;
 }
 
-/** The 2.x catalog read. `--standalone` makes the CLI start a private `opencode serve` for this one
- *  request and stop it on exit, so a catalog read never starts OpenCode's background service. */
-const OPENCODE2_CATALOG_ARGS = ["api", "--standalone", "GET", "/api/model"];
-const OPENCODE2_CATALOG_TIMEOUT_MS = 6_000;
-
-/** Maps the `GET /api/model` reply (`{ location, data: Model.Info[] }`, the same shape since 2.0.0)
- *  to `provider/model` ids, the form `--model` accepts. Only ids, names and variant names are read:
- *  a model's `settings` and `headers` carry provider credentials. */
-function parseModels2(stdout: string): ModelInfo[] {
-  let reply: unknown;
-  try {
-    reply = JSON.parse(stdout);
-  } catch {
-    // JSON.parse quotes the input in its message, and this input can hold provider keys.
-    throw new Error("the reply is not JSON");
-  }
-  const data = (reply as { data?: unknown } | null)?.data;
-  if (!Array.isArray(data)) throw new Error("the reply has no model list");
-  return data.map((raw: unknown, i) => {
-    const { id, providerID, name, variants } = (raw ?? {}) as Record<string, unknown>;
-    if (typeof id !== "string" || !id || typeof providerID !== "string" || !providerID)
-      throw new Error(`model ${i} has no id or providerID`);
-    if (!Array.isArray(variants)) throw new Error(`model ${providerID}/${id} has no variant list`);
-    const variantNames = variants.map((v: unknown) => {
-      const variant = (v as { id?: unknown } | null)?.id;
-      if (typeof variant !== "string" || !variant) throw new Error(`model ${providerID}/${id} has a variant without an id`);
-      return { name: variant };
-    });
-    return {
-      id: `${providerID}/${id}`,
-      provider: providerID,
-      ...(typeof name === "string" ? { name } : {}),
-      ...(variantNames.length ? { variants: variantNames } : {}),
-    };
-  });
-}
-
-function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
-  const source = `opencode ${OPENCODE2_CATALOG_ARGS.join(" ")}`;
-  const unavailable = (why: string): ModelCatalog => ({
-    models: [],
-    unavailable: `OpenCode 2.x did not list its models (${source}: ${why}); pass --model provider/model`,
-  });
-  return new Promise((settle) => {
-    const child = execFile(
-      bin,
-      OPENCODE2_CATALOG_ARGS,
-      { encoding: "utf8", env, maxBuffer: 16 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        clearTimeout(timer);
-        if (err) return settle(unavailable((stderr.trim() || err.message).replace(/\s+/g, " ")));
-        try {
-          settle({ source, models: parseModels2(stdout) });
-        } catch (e) {
-          settle(unavailable((e as Error).message));
-        }
-      },
-    );
-    child.stdin?.end();
-    // execFile calls back only once every pipe closes, which a killed CLI's children can delay.
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle(unavailable(`no answer within ${OPENCODE2_CATALOG_TIMEOUT_MS / 1000} seconds`));
-    }, OPENCODE2_CATALOG_TIMEOUT_MS);
-  });
-}
-
 function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise<ModelCatalog> {
   const env = discoveryEnv();
   // The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
@@ -189,7 +150,8 @@ function listOpenCodeModels(opts: ModelCatalogOpts = {}): ModelCatalog | Promise
  * Config rides in `OPENCODE_CONFIG_CONTENT` (inline JSON, the highest merge layer), so the
  * operator's `~/.config/opencode` is never written.
  * `permission:"allow"` keeps a supervised agent from stalling on a tool approval the human may not
- * be at the keyboard to grant. Self-registers on import; the manager resolves it by type "opencode".
+ * be at the keyboard to grant, unless the launch asks first (`askPermissions`). Self-registers on
+ * import; the manager resolves it by type "opencode".
  */
 export const opencodeConnector: Connector = {
   kind: "connector",
@@ -204,7 +166,7 @@ export const opencodeConnector: Connector = {
   // Both plugins wake the session for a run turn and hand a once task over at most once.
   supportsTurnRelay: true,
   listModels: listOpenCodeModels,
-  // OpenCode 2.x seats run both (command-routes.ts); a 1.x install lists `supported: false`.
+  // Seats of both lines run both, and both lines list them before launch (command-catalog.ts).
   commands: { targets: ["command", "skill"], list: (o) => openCodeCommandCatalog(o, launchEnv({ providerKeys: MODEL_PROVIDER_KEYS, envAllow: o.envAllow })) },
   // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
   // launch whose connector does not implement it, before anything is provisioned, rather than mint a
@@ -217,6 +179,11 @@ export const opencodeConnector: Connector = {
   // changed. It takes the PRINCIPAL: a display name is not an identity on this mesh, and a
   // name-keyed channel would fuse two principals' streams onto one subject.
   eventChannel,
+  // A session serves OpenCode's permission asks and questions on the agent endpoint (prompts.ts).
+  prompts: true,
+  supportsAskPermissions: true,
+  // The mappers publish reasoning as REASONING_* when the launch material asks (agui-map.ts, agui-map2.ts).
+  supportsReasoningEvents: true,
   supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");
@@ -305,7 +272,7 @@ export const opencodeConnector: Connector = {
 
     const config: Record<string, unknown> = {
       $schema: "https://opencode.ai/config.json",
-      permission: "allow",
+      permission: launchPermission(opts),
       plugin: [PLUGIN_DIR],
       // `/reconnect`: see reconnect-command.ts.
       command: { [RECONNECT_COMMAND.name]: { description: RECONNECT_COMMAND.description, template: RECONNECT_COMMAND.template } },
@@ -367,7 +334,7 @@ export const opencodeConnector: Connector = {
     // executes the session's tool calls, so a shell this seat runs inherits neither the material
     // nor a reference to it. The shim itself keeps the reference, because the server it starts is
     // the reader; it runs no tools of its own.
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
     Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.

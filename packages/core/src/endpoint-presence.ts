@@ -4,13 +4,14 @@ import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
 import { TimeoutError } from "@nats-io/transport-node";
-import type { Presence, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
+import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import { presenceBucket } from "./subjects.js";
 import { isPresenceRow, assertPresenceRow } from "./subjects.js";
 import { assertValidName } from "./resolve.js";
+import { AGENT_LABEL_META_KEY, AGENT_MODEL_SET_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
 
 type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
@@ -18,6 +19,8 @@ type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 export interface EndpointPresenceDeps {
   /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
   prompts: () => PresencePrompts | undefined;
+  /** The `agentEndpoint` field this process's presence carries now, or none (SPEC §6). */
+  agentEndpoint: () => PresenceAgentEndpoint | undefined;
   notLiveMsg: () => string;
   bindWatch: (kv: KV) => Promise<{ iter: PresenceWatch; info: ConsumerInfo } | undefined>;
   retireWatch: (iter: PresenceWatch) => void;
@@ -25,6 +28,10 @@ export interface EndpointPresenceDeps {
   recoverable: (error: Error) => void;
   isPublishPermissionDenied: (error: unknown) => boolean;
 }
+
+/** Changes to a card's advisory `meta`: each key set to its value, a string or a flat record of
+ *  strings such as `ai.cotal.model-set`, or removed with `undefined`. */
+export type CardMetaChanges = Readonly<Record<string, string | Readonly<Record<string, string>> | undefined>>;
 
 /** Trust state of this endpoint's local presence roster. `fresh` remains for older consumers:
  * unpopulated is deliberately false so they fail toward unknown rather than treating a partial
@@ -371,14 +378,44 @@ export class EndpointPresence {
     await this.publishPresence();
   }
 
-  /** Change the card's display name and republish presence at once (SPEC §6). The principal, and so
-   *  `card.id`, stays as it is. Throws on a name {@link assertValidName} refuses, before anything
-   *  changes. The same name changes nothing. Every later message carries the new `from.name`. */
-  async setCardName(name: string): Promise<void> {
-    assertValidName(name);
-    if (this.identity.card.name === name) return;
-    this.identity.card.name = name;
+  /** Apply `changes` to the card's advisory `meta`, each key set to its value or removed with
+   *  `undefined`, then republish presence once, so no record shows part of them. Like
+   *  {@link setCardModel}, the card changes before the write, so a call made before the first connect
+   *  shows on the first presence record. Values the card already has change nothing. Throws on an
+   *  empty key, before anything changes. */
+  async setCardMeta(changes: CardMetaChanges): Promise<void> {
+    const meta = this.metaWith(changes);
+    if (meta === this.identity.card.meta) return;
+    this.identity.card.meta = meta;
     await this.publishPresence();
+  }
+
+  /** Change the card's display name, and its `meta` by `meta` as {@link setCardMeta} does, then
+   *  republish presence at once in one record (SPEC §6). The principal, and so `card.id`, stays as it
+   *  is. Throws on a name {@link assertValidName} refuses or an empty meta key, before anything
+   *  changes. A name and meta the card already has change nothing. Every later message carries the
+   *  new `from.name`. */
+  async setCardName(name: string, meta?: CardMetaChanges): Promise<void> {
+    assertValidName(name);
+    const next = meta ? this.metaWith(meta) : this.identity.card.meta;
+    if (this.identity.card.name === name && next === this.identity.card.meta) return;
+    this.identity.card.name = name;
+    this.identity.card.meta = next;
+    await this.publishPresence();
+  }
+
+  /** The card's `meta` with `changes` applied, or the card's own object when they change nothing. */
+  private metaWith(changes: CardMetaChanges): Record<string, unknown> | undefined {
+    if (Object.keys(changes).some((key) => !key)) throw new TypeError("card meta keys must be non-empty strings");
+    const meta = this.identity.card.meta ?? {};
+    const changed = Object.entries(changes).filter(([key, value]) => (value === undefined ? Object.hasOwn(meta, key) : !sameMetaValue(meta[key], value)));
+    if (!changed.length) return this.identity.card.meta;
+    const next: Record<string, unknown> = { ...meta };
+    for (const [key, value] of changed) {
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+    }
+    return Object.keys(next).length ? next : undefined;
   }
 
   async publishPresence(): Promise<void> {
@@ -399,6 +436,7 @@ export class EndpointPresence {
       attention: this.attentionMode,
       channelModes: this.channelModes,
       prompts: this.deps.prompts(),
+      agentEndpoint: this.deps.agentEndpoint(),
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
@@ -765,12 +803,17 @@ export class EndpointPresence {
     // left a same-principal successor invisible to presence-event consumers (e.g. the manager's
     // readiness race), which then timed out "uncertain" on a healthy agent (#29). A changed display
     // name is never a heartbeat either: `set-name` changes nothing else, and a watcher keyed on these
-    // events, such as the manager keeping a seat's name, would never see the rename.
+    // events, such as the manager keeping a seat's name, would never see the rename. Nor is a changed
+    // label or naming mark (SPEC 13.22): readers show the label in place of the name. Nor is a model
+    // an owner's `set-model` switched to, which the manager keeps for a relaunch.
     if (
       prev &&
       prev.status !== "offline" &&
       p.status !== "offline" &&
       prev.card.name === p.card.name &&
+      prev.card.meta?.[AGENT_LABEL_META_KEY] === p.card.meta?.[AGENT_LABEL_META_KEY] &&
+      prev.card.meta?.[AGENT_NAMING_META_KEY] === p.card.meta?.[AGENT_NAMING_META_KEY] &&
+      sameMetaValue(prev.card.meta?.[AGENT_MODEL_SET_META_KEY], p.card.meta?.[AGENT_MODEL_SET_META_KEY]) &&
       prev.lifecycleUid === p.lifecycleUid &&
       sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&
@@ -780,7 +823,8 @@ export class EndpointPresence {
       prev.attention === p.attention &&
       sameChannelModes(prev.channelModes, p.channelModes) &&
       prev.prompts?.open === p.prompts?.open &&
-      prev.prompts?.seq === p.prompts?.seq
+      prev.prompts?.seq === p.prompts?.seq &&
+      sameAgentEndpoint(prev.agentEndpoint, p.agentEndpoint)
     ) {
       this.roster.set(id, p);
       return;
@@ -801,9 +845,9 @@ export class EndpointPresence {
    *  not show a stale `[focus]` or "locally muted #x" hint - SPEC: attention removed on offline sweep,
    *  channel modes reset on restart. `statusSince` goes too: it dated the live status, and an observer
    *  that derives offline from a stale heartbeat does not know when the peer left. `prompts` goes as
-   *  well: an offline process serves nothing. card/activity/ts are kept. */
+   *  well, with `agentEndpoint`: an offline process serves nothing. card/activity/ts are kept. */
   private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined };
+    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined, agentEndpoint: undefined };
   }
 
   /** Mark a known peer offline (on KV delete/purge), keeping it in the roster. */
@@ -885,4 +929,17 @@ function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | 
     && a?.source === b?.source
     && a?.message === b?.message
     && a?.since === b?.since;
+}
+
+/** Whether two card meta values are the same: a string by value, and a flat record such as
+ *  `ai.cotal.model-set` by its fields, since each record parses to a new object. */
+function sameMetaValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  const x = Object.entries(a), y = b as Record<string, unknown>;
+  return x.length === Object.keys(y).length && x.every(([k, v]) => Object.hasOwn(y, k) && y[k] === v);
+}
+
+function sameAgentEndpoint(a: PresenceAgentEndpoint | undefined, b: PresenceAgentEndpoint | undefined): boolean {
+  return a?.interrupt === b?.interrupt && a?.turn === b?.turn && a?.images === b?.images && a?.usage === b?.usage && a?.setModel === b?.setModel;
 }

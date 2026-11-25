@@ -1,5 +1,75 @@
 # Upgrading a running deployment
 
+## Labelling an agent from its thread title
+
+The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
+an agent shows in place of its name. The auth callout grants it, so update and restart every member
+of the callout queue, then reconnect each person's clients. A connect that an old member answers
+gets no `set-label` permission. An agent whose connector predates `set-label` answers it
+`unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
+shows.
+
+## Switching a running agent's model
+
+The `agent` cluster advances to revision 6 with `set-model`, which the owner
+calls to switch a running agent's model and variant. The auth callout grants it, so update and
+restart every member of the callout queue, then reconnect each person's clients. A connect that an
+old member answers gets no `set-model` permission. An agent whose connector predates `set-model`
+omits `setModel` from its presence `agentEndpoint`, and a client reads that as not served.
+
+Presence `agentEndpoint` gains the optional boolean `setModel`. A reader older than this accepts the
+field, because it checks only the four flags it knows.
+
+A Manager keeps a switch the agent's presence shows and starts the agent on it when it restarts or
+resumes it. An older Manager starts it on its launch model. The Manager and `cotal spawn` also tell
+an agent whose role `modelPolicy` governs, through `COTAL_MODEL_POLICY`, so it refuses every switch.
+An agent launched by an older Manager or CLI is not told, so on a space whose cotal config sets
+`modelPolicy`, update the Manager and the CLI with the connectors.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. A Manager service that an older release started on this machine keeps
+running after `cotal update --self` and names no machine. `cotal acp` still recognises it as
+running here, by the native instance that `cotal manager status` shows for the space, and starts no
+second Manager. Any other Manager that names no machine counts as another computer's until it runs
+the new version.
+
+## The agent endpoint on every space
+
+Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
+people sign in. A static agent started by an older release keeps a credential without the serve
+rows, because a renewal keeps what its first issuance recorded. It runs on, and its connector logs
+that the broker refused the serve and says to respawn the agent. Despawn it and start it again to
+give it the endpoint.
+
+On a static space, `cotal acp` calls agents through an `agent-caller` credential it mints in memory
+from the space's signing key, so a thread there shows the agent's questions and commands, and `/name`
+renames a running agent. On an open mesh any client that reaches the broker can answer an agent's
+questions and run its commands.
+
+The Manager's `status.connectors[].prompts` is now the connector's declaration on every mesh mode.
+Its schema and the Manager cluster revision are unchanged.
+
+## Opt-in launch fields
+
+The Manager cluster advances to revision 56. Its `spawn` takes the optional `askPermissions` and
+`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 55
+reject either, so update Managers and their callers together. A launch without the fields runs as
+before.
+
+## Agents that label themselves
+
+The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, and a revision-54
+Manager refuses the field. Check that a Manager reports revision 55 or later before you send it.
+A seat labels itself only when the Manager and the seat's connector are both updated. An older
+connector ignores `COTAL_AUTO_NAME` and shows no label. The label is card metadata,
+`meta["ai.cotal.label"]`, and the seat keeps its launch name as its address. A client that lists
+agents shows `meta["ai.cotal.label"] ?? name`.
+
 ## A person's control of their own agents
 
 On a space where people sign in, a person can now stop, attach to, type into and interrupt every

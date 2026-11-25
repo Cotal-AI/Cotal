@@ -376,12 +376,18 @@ jobs:
             assert.equal(process.env.CONTROL_RESULT, 'success', `stock-ui-control job result was ${process.env.CONTROL_RESULT}`);
             const expected = JSON.parse(process.env.EXPECTED_JOBS || '[]');
             assert(Array.isArray(expected) && expected.length >= 8, 'expected job list is missing or incomplete');
-            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+            const listJobs = () => github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               ...context.repo,
               run_id: context.runId,
               filter: 'latest',
               per_page: 100,
             });
+            // The job list can show a job this verdict already depends on as running for some seconds after it ended.
+            let jobs = await listJobs();
+            for (let read = 1; read < 18 && jobs.some(job => job.name !== 'verdict' && job.status !== 'completed'); read++) {
+              await new Promise(resolve => setTimeout(resolve, 10_000));
+              jobs = await listJobs();
+            }
             const byName = new Map(jobs.map(job => [job.name, job]));
             for (const name of expected) {
               const job = byName.get(name);

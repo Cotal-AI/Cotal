@@ -43,7 +43,6 @@ import {
   localProcessPath,
   localProcessVisible,
   PREFERENCE_KEYS,
-  preflightTarget,
   preparedNeverStarted,
   presentationOf,
   stackJournalPath,
@@ -79,6 +78,7 @@ import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { onInstance, onRerun } from "../lib/control.js";
+import { managerRosterHint } from "../lib/manager-choice.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -125,7 +125,7 @@ import {
   managerServiceHealth,
   printComponentHealth,
 } from "./status-health.js";
-import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldRestartProblem, selectedStackStarting } from "./status-meshes.js";
+import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, readStatusPreflight, reportHeldRestartProblem, selectedStackStarting } from "./status-meshes.js";
 
 export { managerNoService, deliveryLeaseAbsent } from "./status-health.js";
 
@@ -171,7 +171,7 @@ export function validateStatusArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all, --components, --wide or --verbose");
-  if (typeof values.on === "string") onInstance(values.on, onRerun("cotal status", values, [...args.positionals, ...(presentation === "rich" ? [] : [`--${presentation}`])]));
+  if (typeof values.on === "string") onInstance(values.on, onRerun("cotal status", values, [...args.positionals, ...(presentation === "rich" ? [] : [`--${presentation}`])]), managerRosterHint(values));
   if (!args.positionals.length && args.values.on !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--on selects a named agent read, not infrastructure status");
   if (!args.positionals.length && args.values.creds !== undefined) {
@@ -233,7 +233,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
-  const preflight = selected.ok && selected.target.mode !== "user" ? await preflightTarget(selected.target) : undefined;
+  const preflightReport = await readStatusPreflight(selected, gaps, hints);
+  const { preflight } = preflightReport;
   const responder = await readResponderAxis(selected, preflight, gaps);
   const { folder, stackStarting } = blocked ? { folder: unreadFolder(root, blocked), stackStarting: false } : await readFolder(root, selected, values, responder.state, gaps, hints);
   if (selected.ok) {
@@ -254,7 +255,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
   const selectedHints: string[] = [], selectedStarting = selectedStackStarting(selected, folder, stackStarting);
-  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all), selectedStarting);
+  const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflightReport, Boolean(values.all), selectedStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
   // Address, journal, channel seed, and store problems can block the conditional store reset.
   if (!stoppedForeignListener && (target.resolved || target.code !== "SCHEMA_INVALID") && folder.storedState && folder.processSpace !== null && maintenance === null && !(target.channelSeedBlocksRestart && target.root === root) && !rootStoreProblem(root)) {

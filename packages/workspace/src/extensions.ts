@@ -63,6 +63,10 @@ export interface CachedConnector {
    *  endpoint. Absent in a manifest written before this was cached, which reads as false: no launch
    *  menu offers prompts on a guess. */
   readonly prompts?: boolean;
+  /** Whether the connector honors `askPermissions` and `reasoningEvents` at launch. Absent in a
+   *  manifest written before these were cached, which reads as false. */
+  readonly askPermissions?: boolean;
+  readonly reasoningEvents?: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
@@ -218,6 +222,8 @@ export function cacheConnector(connector: Connector): CachedConnector {
     requires: [...(connector.requires ?? [])],
     eventPlane: connector.eventChannel !== undefined,
     prompts: connector.prompts === true,
+    askPermissions: connector.supportsAskPermissions === true,
+    reasoningEvents: connector.supportsReasoningEvents === true,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
   };
 }
