@@ -74,7 +74,7 @@ function piCatalog(reply: PiRpcResponse): ModelCatalog {
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
   const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS });
-  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, type: "get_available_models", boundMs: 6_000 });
+  const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, boundMs: 6_000 }, (ask) => ask({ type: "get_available_models" }));
   return "failed" in answer ? unavailable(answer.failed) : piCatalog(answer.reply);
 }
 
