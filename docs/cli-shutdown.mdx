@@ -199,7 +199,9 @@ older `meshes rm --force` dropped it, or an older `meshes add --force` replaced 
 hand at the stack's own root and broker, `down` rebuilds it from the stack journal for the stop and
 says so with a `REGISTRATION_REBUILT` warning, as `--dry-run` does. It does that only while the
 stack's broker is the launch the journal records at that root and address, and otherwise refuses
-`CONFLICT`, exit 2, before any member stops. A registration added by hand at another address or
+`CONFLICT`, exit 2, before any member stops. The refusal points to the project's
+`.cotal/stack-controller.json`, where you can read the recorded roles and instance IDs even if
+there is no registration. A registration added by hand at another address or
 folder is not replaced: `down` refuses `CONFLICT` and names `cotal space forget <space>`, after
 which `down` stops the stack through its journal. While another registered space names this
 stack's exact broker address, bare `down` refuses `LIFECYCLE_BLOCKED`, exit 2, and stops nothing,

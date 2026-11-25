@@ -325,7 +325,7 @@ function strandedRegistration(journal: StackJournal, members: readonly Member[])
   if (journal.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", `"${journal.space}" ${what}, and a user-auth stack's registration holds sign-in settings its journal does not, so it was not rebuilt; nothing was stopped`, { target, remedy: `inspect the recorded members with \`cotal service --space ${journal.space}\`` });
   const broker = members.find((member) => member.role === "broker");
   if (!broker?.live || !brokerLaunchAt(journal.space, broker.instance.name, broker.instance.record.value.launchRequestId, journal.root, journal.server))
-    throw new CommandFailure("refused", "CONFLICT", `"${journal.space}" ${what}, and the stack's broker is not the launch its journal records at ${journal.server}, so its registration was not rebuilt; nothing was stopped`, { target, remedy: `inspect the recorded members with \`cotal service --space ${journal.space}\`` });
+    throw new CommandFailure("refused", "CONFLICT", `"${journal.space}" ${what}, and the stack's broker is not the launch its journal records at ${journal.server}, so its registration was not rebuilt; nothing was stopped`, { target, remedy: `read the recorded member roles and instance IDs in ${oneLine(stackJournalPath(journal.root))}; the journal does not establish which broker is running` });
   const tlsRequired = readBrokerPolicy(journal.root)?.transport.kind === "tls-required";
   return { previous: registered, entry: {
     space: journal.space, server: journal.server, root: journal.root, mode: journal.mode, origin: "up", ts: new Date().toISOString(),

@@ -100,6 +100,7 @@ const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTA
 const { deliveryCredsKey, findMesh, findPreparedSpace, getSpaceAuth, recordMesh, removeMesh, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { observeServiceProcess, serviceInstances, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 const { shellWord } = await import("../src/lib/endpoint-errors.js");
+const { readStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
 const anchors = new Map<string, SmokeSandboxAnchor>();
@@ -487,8 +488,9 @@ try {
     removeMesh(space);
     writeFileSync(receipt, original.replace(server, "nats://127.0.0.1:1"), { mode: 0o600 });
     const mismatched = cli(root, "down", "--yes", "--json");
-    check("with no registration and a broker receipt for another address, down refuses CONFLICT, exit 2",
-      mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")), shown(mismatched));
+    check("with no registration and a broker receipt for another address, down refuses and points to the journal that names the broker",
+      mismatched.status === 2 && mismatched.env?.error?.code === "CONFLICT" && Boolean(mismatched.env.error.message.includes("is not the launch its journal records")) &&
+      mismatched.env.error.remedy?.includes(journalOf(root)) === true && readStackJournal(root)?.journal.members.some((row) => row.role === "broker" && row.instanceId === broker.instanceId) === true, shown(mismatched));
     check("...stopping nothing and writing no registration", live() === running && running > 0 && findMesh(space) === undefined, { running, now: live() });
     const noStop = cli(home, "space", "forget", space, "--json");
     check("forget tells the user to restore the registration when the broker receipt does not match",
