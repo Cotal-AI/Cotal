@@ -1,5 +1,5 @@
 /**
- * A spawn's variant and modes against the connector's model catalog (Manager revision 57). The
+ * A spawn's variant and modes against the connector's model catalog (Manager revision 58). The
  * served `spawn` input takes `modes`. The Manager refuses a variant or mode the catalog does not list
  * for the launched model, and a value that turns on a mode it marks unavailable, before anything is
  * minted or launched, and reads each catalog once. A value that sets such a mode off launches.
@@ -26,7 +26,7 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 
 // --- The served schema -------------------------------------------------------------------------
 const spawnInput = MANAGER_CONTRACTS.spawn!.input;
-check("the Manager cluster is at revision 57", managerShippedSurface().revision === 57, managerShippedSurface().revision);
+check("the Manager cluster is at revision 58", managerShippedSurface().revision === 58, managerShippedSurface().revision);
 check("spawn takes a toggle and a choice in modes", spawnInput.validate({ name: "worker", modes: { fast: true, agent: "plan" } }) === true);
 check("spawn refuses an empty modes object", spawnInput.validate({ name: "worker", modes: {} }) === false);
 check("spawn refuses a mode value that is neither a boolean nor an option id", spawnInput.validate({ name: "worker", modes: { fast: 1 } }) === false);

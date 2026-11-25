@@ -18,8 +18,14 @@
  *  - `frameOf` reads the frame part of an event-channel message and nothing else;
  *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
  *    every live manager the person may use;
- *  - `managerChoices` describes a listed manager with no row under the person's principal, as the
- *    space's own, by the host it reports, so a new thread there defaults to it on this host;
+ *  - `runningManagers` offers the listed managers whose rail is not gone, and with none left rejects as
+ *    a space with no manager does;
+ *  - a signed-in person's listed manager with no row under their principal, as the space's own, is
+ *    described by what its rail reports;
+ *  - a manager is local only by the machine id it names: this machine's manager under a host name it
+ *    no longer has is local and starts no second one, and another machine's under this host name is not;
+ *  - `launchManagers` starts this machine's manager when no listed one is, remote live included, and
+ *    fails the thread when the start fails or its manager is still not listed here;
  *  - the model select and model state list `<agent>/default` once when the catalog names a model
  *    `default`, with that model's name and reasoning variants;
  *  - `agentCatalogs` carries a failed models read, so the application is refused with its reason, and
@@ -31,9 +37,11 @@ import type { CotalMessage, Presence } from "@cotal-ai/core";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
-import { agentCatalogs, answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
-import { applyOption, configOptions, defaultManager, initialSelection, launchModel, modelState, refusal, type Offer } from "../src/options.js";
-import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
+import { agentCatalogs, answeredReads, frameOf, listedChoice, managerChoice, managerPlan, namesDeregister, runningManagers } from "../src/live-mesh.js";
+import { launchManagers } from "../src/manager-start.js";
+import { applyOption, configOptions, initialSelection, launchModel, modelState, noMachine, refusal, type Offer } from "../src/options.js";
+import { NoLaunchManager } from "../src/mesh.js";
+import type { AguiEventLike, ManagerChoice, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -259,42 +267,135 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("every registration of the person's is their own, whatever its state, and the space's manager is not", JSON.stringify([...both.own].sort()) === JSON.stringify(["gone", "lapa", "lapb"]), both.own);
 }
 
-// A manager as a choice: only a current presence row describes it.
+// A listed manager whose rail is gone, such as one that died without deregistering, is not offered.
 {
-  const row = (id: string, host: string, status: string) => ({ card: { id: `u_p.manager_${id}`, name: id, meta: { host } }, status }) as unknown as Presence;
-  const roster = [row("a", "here", "idle"), row("b", "there", "offline")];
-  const a = managerChoice("a", roster, "here");
-  check("a manager with a current row is live, takes its host, and is local on that host", a.live === true && a.host === "here" && a.local === true, a);
-  const b = managerChoice("b", roster, "there");
+  check("the managers whose rail is not gone are offered", JSON.stringify(runningManagers("s", ["a", "b"], [undefined, "b"])) === JSON.stringify(["b"]));
+  let thrown: unknown;
+  try { runningManagers("s", ["a", "b"], [undefined, undefined]); } catch (e) { thrown = e; }
+  check("with every one gone, the list rejects as a space with no manager, naming them, so a new thread starts one",
+    thrown instanceof NoLaunchManager && thrown.message === "No manager for s is running: the broker reports nothing on the rail of a, b.", thrown);
+}
+
+// A manager as a choice: only a current presence row describes it, and only the machine it names
+// makes it local. HERE stands for this machine's id, THERE for another computer's.
+const HERE = "1".repeat(64), THERE = "2".repeat(64);
+{
+  const row = (id: string, host: string, status: string, machine?: string) => ({ card: { id: `u_p.manager_${id}`, name: id, meta: { host, ...(machine ? { machine } : {}) } }, status }) as unknown as Presence;
+  const roster = [row("a", "here", "idle", HERE), row("b", "there", "offline", THERE), row("e", "here", "idle")];
+  const a = managerChoice("a", roster, HERE);
+  check("a manager with a current row is live, takes its host, and is local when it names this machine", a.live === true && a.host === "here" && a.local === true, a);
+  const b = managerChoice("b", roster, THERE);
   check("an offline row makes a manager neither live nor local, and names no host", b.live === false && b.local === false && b.host === undefined, b);
-  const c = managerChoice("c", roster, "here");
+  const c = managerChoice("c", roster, HERE);
   check("a manager with no row is not live", c.live === false && c.local === false && c.host === undefined, c);
-  const theirs = [({ card: { id: "u_other.manager_d", name: "manager_d", meta: { host: "here" } }, status: "idle" }) as unknown as Presence];
-  const d = managerChoice("d", theirs, "here", "u_p");
+  const e = managerChoice("e", roster, HERE);
+  check("a row that names no machine is not local, whatever its host", e.live === true && e.local === false && e.host === "here", e);
+  const theirs = [({ card: { id: "u_other.manager_d", name: "manager_d", meta: { host: "here", machine: HERE } }, status: "idle" }) as unknown as Presence];
+  const d = managerChoice("d", theirs, HERE, "u_p");
   check("on a signed-in space another owner's agent named after the manager does not describe it", d.live === false && d.local === false && d.host === undefined, d);
-  const mine = managerChoice("a", roster, "here", "u_p");
+  const mine = managerChoice("a", roster, HERE, "u_p");
   check("and the person's own manager row still does", mine.live === true && mine.host === "here" && mine.local === true, mine);
 }
 
-// A signed-in person's new thread where the only manager is the space's own, as `cotal up` starts it:
-// its card id is a bare NKey, so it has no row under the person's principal, and its own status
-// answers its host.
+// A signed-in person's listed manager: the space's own shows a row only under its bare NKey id, so
+// what its rail reports describes it.
 {
   const nkey = "UCJ2KVYXP6NPUGAZ4ZQ3JVJ6WQ7K5QOFM4ZQXUMOBQ5RYRYTVLRDUJAN";
-  const spaceRow = ({ card: { id: nkey, name: "manager", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
-  const asked: string[] = [];
-  const reported = async (instanceId: string) => (asked.push(instanceId), "here");
-  const [own] = await managerChoices(["space"], [spaceRow], "here", "u_p", reported);
-  check("the space's own manager, whose status answers this host, is live and local", own?.live === true && own.local === true && own.host === "here", own);
-  check("so a new thread there defaults to it", defaultManager(own ? [own] : [])?.instanceId === "space", own);
-  const [far] = await managerChoices(["space"], [spaceRow], "here", "u_p", async () => "there");
-  check("on another host's answer it is live and not local", far?.live === true && far.local === false && far.host === "there", far);
-  const [quiet] = await managerChoices(["space"], [spaceRow], "here", "u_p", async () => undefined);
-  check("a manager that answers no host is neither live nor local", quiet?.live === false && quiet.local === false && quiet.host === undefined, quiet);
-  const mineRow = ({ card: { id: "u_p.manager_a", name: "manager_a", meta: { host: "here" } }, status: "idle" }) as unknown as Presence;
-  asked.length = 0;
-  const [mine] = await managerChoices(["a"], [mineRow], "here", "u_p", reported);
-  check("the person's own manager is described by its live row and is not asked", mine?.live === true && mine.local === true && asked.length === 0, { mine, asked });
+  const spaceRow = ({ card: { id: nkey, name: "manager", meta: { host: "here", machine: HERE } }, status: "idle" }) as unknown as Presence;
+  const own = listedChoice("space", { host: "here", machine: HERE }, [spaceRow], HERE, "u_p");
+  check("the space's own manager, whose rail reports this machine, is live and local", own?.live === true && own.local === true && own.host === "here", own);
+  const far = listedChoice("space", { host: "there", machine: THERE }, [spaceRow], HERE, "u_p");
+  check("and on another machine's report it is live and not local", far?.live === true && far.local === false && far.host === "there", far);
+  const nameless = listedChoice("space", { host: "here" }, [spaceRow], HERE, "u_p");
+  check("a report that names no machine is not local, whatever its host", nameless?.live === true && nameless.local === false, nameless);
+  const quiet = listedChoice("space", {}, [spaceRow], HERE, "u_p");
+  check("a rail that reports no host leaves it neither live nor local", quiet?.live === false && quiet.local === false && quiet.host === undefined, quiet);
+  check("a gone rail offers nothing", listedChoice("space", undefined, [spaceRow], HERE, "u_p") === undefined);
+  const mineRow = ({ card: { id: "u_p.manager_a", name: "manager_a", meta: { host: "here", machine: HERE } }, status: "idle" }) as unknown as Presence;
+  const mine = listedChoice("a", {}, [mineRow], HERE, "u_p");
+  check("the person's own manager is described by its row", mine?.live === true && mine.local === true && mine.host === "here", mine);
+  let starts = 0;
+  const listed = await launchManagers({ space: "s", managers: async () => [own!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
+  check("so a new thread there starts no second manager", starts === 0 && Array.isArray(listed) && listed.length === 1, { starts, listed });
+}
+
+// This machine's manager after the machine's host name changed, as macOS renames a machine when its
+// network changes: its presence keeps the name it started with, and its status reports the new one.
+// Both name the same machine.
+{
+  const card = { id: "u_p.manager_mac", name: "manager_mac", meta: { host: "mac-home", machine: HERE } };
+  const roster = [({ card, status: "idle" }) as unknown as Presence];
+  const held = managerChoice("mac", roster, HERE, "u_p");
+  check("same machine, different host name: its row reads local", held.live === true && held.local === true, held);
+  const listed = listedChoice("mac", { host: "mac-cafe", machine: HERE }, roster, HERE, "u_p");
+  check("and as a listed manager it reads local", listed?.live === true && listed.local === true, listed);
+  let starts = 0;
+  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
+  check("so a new thread starts no second manager", starts === 0 && Array.isArray(got), { starts, got: got instanceof Error ? got.message : got });
+}
+
+// The mirror: another machine's manager that shows this machine's host name is not local.
+{
+  const card = { id: "u_p.manager_twin", name: "manager_twin", meta: { host: "mac-cafe", machine: THERE } };
+  const roster = [({ card, status: "idle" }) as unknown as Presence];
+  const held = managerChoice("twin", roster, HERE, "u_p");
+  check("same host name, other machine: its row does not read local", held.live === true && held.local === false && held.host === "mac-cafe", held);
+  const listed = listedChoice("twin", { host: "mac-cafe", machine: THERE }, [], HERE, "u_p");
+  check("nor does its rail's report", listed?.live === true && listed.local === false, listed);
+  let starts = 0;
+  const got = await launchManagers({ space: "s", managers: async () => [listed!], startManager: async () => (starts++, "started"), machineUnreadable: () => undefined }, () => {}).catch((e: Error) => e);
+  check("so a new thread starts this machine's manager", starts === 1, { starts, got: got instanceof Error ? got.message : got });
+}
+
+// This machine's identity could not be read, as in a container with no /etc/machine-id. A manager a
+// thread names is still described, and none reads as this machine's, not even one that names no
+// machine either. So a new thread neither defaults to one nor starts one.
+{
+  const card = { id: "u_p.manager_box", name: "manager_box", meta: { host: "box" } };
+  const roster = [({ card, status: "idle" }) as unknown as Presence];
+  const held = managerChoice("box", roster, undefined, "u_p");
+  check("with this machine's identity unread, a manager row that names no machine is described, live and not local", held.live === true && held.local === false && held.host === "box", held);
+  const listed = listedChoice("box", { host: "box" }, [], undefined, "u_p");
+  check("nor does a rail's report that names no machine read local", listed?.live === true && listed.local === false, listed);
+  const why = "ENOENT: no such file or directory, open '/etc/machine-id'";
+  const linux = process.platform === "linux";
+  check("a thread with no Machine chosen says why it cannot tell which manager runs here", noMachine("s", why) === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or choose a machine in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Choose a machine in the Machine option."), noMachine("s", why));
+  let starts = 0;
+  const space = (managers: ManagerChoice[]) => ({ space: "s", managers: async () => managers, startManager: async () => (starts++, "started"), machineUnreadable: () => why });
+  const got = await launchManagers(space([listed!]), () => {}).catch((e: Error) => e);
+  check("so a new thread starts no manager and offers the listed one", starts === 0 && Array.isArray(got) && got.length === 1 && got[0]!.instanceId === "box", { starts, got: got instanceof Error ? got.message : got });
+  const none = await launchManagers(space([]), () => {}).catch((e: Error) => e);
+  check("with none listed, the new thread fails with the reason and starts none", starts === 0 && none instanceof NoLaunchManager && none.message === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or start a manager with `cotal manager start --space s` and choose it in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Start a manager with `cotal manager start --space s` and choose it in the Machine option."), { starts, none: none instanceof Error ? none.message : none });
+}
+
+// Remote live, no local: only another computer's manager is live, so this machine's is started.
+{
+  const far: ManagerChoice = { instanceId: "far", host: "there", local: false, live: true };
+  const near: ManagerChoice = { instanceId: "near", host: "here", local: true, live: true };
+  const line = "Started this machine's manager for s. It stops itself after 10 minutes with no agents.";
+  const space = (after: ManagerChoice[], start = async () => line) => {
+    let listed = [far];
+    const counts = { starts: 0, reads: 0 };
+    return { counts, space: "s", managers: async () => (counts.reads++, listed), startManager: async () => { counts.starts++; const said = await start(); listed = after; return said; }, machineUnreadable: () => undefined };
+  };
+  const lines: string[] = [];
+  const s1 = space([near, far]);
+  const got = await launchManagers(s1, (l) => lines.push(l)).catch((e: Error) => e);
+  check("remote live, no local: this machine's manager is started and the list read again",
+    s1.counts.starts === 1 && s1.counts.reads === 2 && JSON.stringify(Array.isArray(got) ? got.map((m) => m.instanceId) : got) === JSON.stringify(["near", "far"]) && JSON.stringify(lines) === JSON.stringify([line]), { counts: s1.counts, got, lines });
+  const again = await launchManagers(s1, (l) => lines.push(l)).catch((e: Error) => e);
+  check("with this machine's manager listed, nothing starts and nothing is said", s1.counts.starts === 1 && Array.isArray(again) && again.length === 2 && lines.length === 1, { counts: s1.counts, again });
+  const s2 = space([far]);
+  const unlisted = await launchManagers(s2, () => {}).catch((e: Error) => e);
+  check("a start after which no manager here is listed fails the thread, saying so",
+    unlisted instanceof NoLaunchManager && unlisted.message === "Started this machine's manager for s, but the space does not list it as running here yet. Open the thread again in a moment.", unlisted);
+  const s3 = space([near, far], async () => { throw new NoLaunchManager("Could not start this machine's manager for s: boom"); });
+  const failed = await launchManagers(s3, () => {}).catch((e: Error) => e);
+  check("a failed start fails the thread with its reason", failed instanceof NoLaunchManager && failed.message === "Could not start this machine's manager for s: boom", failed);
 }
 
 // An application whose catalog has a model with the id `default`, as a Hermes endpoint can: the value

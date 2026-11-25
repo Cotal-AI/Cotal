@@ -165,6 +165,9 @@ const STATUS_OUTPUT_SCHEMA = {
     instanceId: { type: "string" },
     /** Answering Manager's host name. Advisory display metadata, never routing authority. */
     host: { type: "string" },
+    /** This machine's id (`managerMachineId`): an HMAC of the OS machine id, never the id. Absent
+     *  when the host has none this reads. Advisory, never routing authority. */
+    machine: { type: "string", pattern: "^[0-9a-f]{64}$" },
     /** Running @cotal-ai/manager package version. Optional for older status payloads. */
     version: { type: "string" },
     /** Native per-process incarnation, not inferred from a PID or a logical instance name. */
@@ -267,6 +270,9 @@ export interface ManagerStatus {
   instanceId: string;
   /** Answering Manager's host name. Advisory only; older payloads may omit it. */
   host?: string;
+  /** The answering Manager's machine, as `managerMachineId` derives it. Advisory only; absent when
+   *  the host has no OS machine id it reads, and on older payloads. */
+  machine?: string;
   /** Running @cotal-ai/manager package version. Older payloads may omit it. */
   version?: string;
   /** Older managers can omit this process-incarnation coordinate. */
@@ -1358,11 +1364,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  row requires both as booleans, the connector's declarations. The spawn input and status output
  *  schemas are closed, so a revision-55 contract rejects either.
  *
- *  57 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
- *  against the connector's model catalog. The input schema is closed, so a revision-56 contract
+ *  57 = `status` adds the optional `machine`, the answering Manager's machine id. The status output
+ *  schema is closed, so a revision-56 contract rejects it.
+ *
+ *  58 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
+ *  against the connector's model catalog. The input schema is closed, so a revision-57 contract
  *  rejects the field. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 57, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 58, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

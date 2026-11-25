@@ -236,6 +236,7 @@ export const managerService: LocalProcess = {
     const extra: string[] = [];
     for (const name of ["console-port", "console-host", "ws-port", "max-sessions"] as const) if (context.options[name] !== undefined) extra.push(`--${name}`, String(context.options[name]));
     if (context.managerSeatCap !== undefined) extra.push("--seat-cap", seatCapText(context.managerSeatCap));
+    if (context.managerIdleExit !== undefined) extra.push("--idle-exit", String(context.managerIdleExit));
     // A controller resume passes only its attempt and, when present, the protected token handoff
     // path and digest. Never the token, and never with a launch spec.
     const attempt = context.attempt === undefined ? undefined : serviceAdapterAttempt(context.attempt, ["resumeCommit"]);
