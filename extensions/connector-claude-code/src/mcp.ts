@@ -36,7 +36,8 @@ import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type ClaudeHooks, type WakePolicy } from "./hooks.js";
 import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
-import { claudeNaming } from "./naming.js";
+import { CLAUDE_RESOLVED_BIN_ENV, claudeNaming } from "./naming.js";
+import { listClaudeModels } from "./models.js";
 import { createClaudeEventPlane, type ClaudeEventHolder } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
@@ -409,6 +410,10 @@ function sessionCommands(env: NodeJS.ProcessEnv, claude: Pick<ClaudeHooks, "inte
     dispatcher: claudeCommands({
       feed: () => feed, interrupting: () => claude.interrupting(agent()), warn,
       imageDir: env[TURN_IMAGES_ENV] || undefined, onStop: (stop) => agent().once("stopping", stop),
+      models: {
+        catalog: () => listClaudeModels({ resolvedBinaries: { claude: env[CLAUDE_RESOLVED_BIN_ENV]?.trim() || "claude" } }),
+        launchEffort: env.COTAL_VARIANT || undefined,
+      },
     }),
     /** Serve the command socket of the Claude Code process `claudePid`, and, given a sink, ask its
      *  mod to relay the reply text the session streams. */

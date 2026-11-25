@@ -1,13 +1,15 @@
 /**
  * The Claude Code seat's commands on its `agent` endpoint (SPEC 13.22). The plugin's command mod
  * (`hooks/commands.js`) lists, runs and interrupts inside Claude Code, and the seat's command socket
- * (`command-feed.ts`) carries each request to it. The mod lists only what may run remotely, and
+ * (`command-feed.ts`) carries each request to it. It also switches the model of later turns
+ * (`model-switch.ts`). The mod lists only what may run remotely, and
  * Claude's list does not say which entries are skills, so every entry is a `command`.
  */
 import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher, type MeshAgent } from "@cotal-ai/connector-core";
 import type { CommandEntry } from "@cotal-ai/core";
 import type { CommandFeed } from "./command-feed.js";
 import type { ModAnswer } from "./command-frames.js";
+import { switchClaudeModel, type ClaudeModelSwitch } from "./model-switch.js";
 import { promptWithImages } from "./turn-images.js";
 
 /** How long Claude Code has to start a command or take a prompt, and the mod to stop a turn. A panel
@@ -31,6 +33,8 @@ interface ClaudeCommandsOptions {
   warn(msg: string): void;
   /** The seat's image folder (turn-images.ts). Without one, a turn takes no images. */
   imageDir?: string;
+  /** What the seat's model switch reads. Without it the seat does not switch its model. */
+  models?: ClaudeModelSwitch;
   /** Hands over what stops the feed's calls to `watch`, to run when the agent stops. */
   onStop?(stop: () => void): void;
   bounds?: typeof BOUNDS;
@@ -94,6 +98,12 @@ export function claudeCommands(o: ClaudeCommandsOptions): CommandDispatcher {
         ...(usd !== undefined ? { cost: { amount: usd, currency: "USD" } } : {}),
       };
     },
+    ...(o.models ? {
+      setModel: (model: string | undefined, variant: string | undefined) => switchClaudeModel(o.models!, model, variant, async (ask) => {
+        const late = `the command mod did not take the switch within ${bounds.interruptMs / 1000} s`;
+        return expect(await within(served().request(ask), bounds.interruptMs, late), "model");
+      }),
+    } : {}),
     async interrupt() {
       const feed = served();
       const stopped = o.interrupting();
