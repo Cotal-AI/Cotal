@@ -66,6 +66,19 @@ try {
   const destination = JSON.parse(followed.stdout).result as { slug: string; body: string };
   check("the displayed page and anchor reference opens through the CLI", followed.status === 0 && destination.slug === "cli-processes" && destination.body.length > 0);
 
+  const shutdown = pipe(["docs", "cli-shutdown", "--json"]);
+  const shutdownPage = JSON.parse(shutdown.stdout).result as { slug: string; body: string };
+  const spaceRow = shutdownPage.body.split("\n").find((line) => line.startsWith("| `--space <name>` |"));
+  check("shutdown docs give a project-local controller stop with explicit space", shutdown.status === 0
+    && shutdownPage.slug === "cli-shutdown"
+    && shutdownPage.body.includes("cotal down --space <name> --yes  # Controller stack in its project folder"));
+  check("shutdown flag table distinguishes matching controller scope from the legacy pidfile sweep", Boolean(spaceRow
+    && spaceRow.includes("the space whose saved definitions to stop")
+    && spaceRow.includes("stop or preview accepts a name that matches the project's recorded space and refuses a different name")
+    && spaceRow.includes("a bare preview uses it to check the project's space")
+    && spaceRow.includes("a stop that uses the pidfile sweep requires omitting it")
+    && !spaceRow.includes("A bare stop refuses it")), spaceRow);
+
   const workflowOps = pipe(["docs", "workflow-operations", "--plain"]);
   const toolAvailability = workflowOps.stdout.split(/^## Tool availability\r?$/m)[1]?.split(/^## /m)[0];
   const upgradeLink = "[upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md)";

@@ -1474,7 +1474,32 @@ for (const assistant of [
       /mutually exclusive/,
     );
     checks += 6;
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
+    // A variant is pi's thinking level, rendered as `--thinking` beside `--model`. A `:<level>`
+    // suffix would name another model when the id has a colon, as this OpenRouter id does.
+    ok(piConnector.supportsModelVariant === true, "Pi declares model variant support");
+    const colonId = "openrouter/anthropic/claude-opus-4.6:batch";
+    const thinking = piConnector.buildLaunch({ space: "test", name: "pi", model: colonId, variant: "high", prompt: "go", events: false });
+    ok(
+      thinking.args.slice(-5).join(" ") === `--model ${colonId} --thinking high go` && thinking.env?.COTAL_VARIANT === "high",
+      "a variant renders --thinking after the model, which stays as given, and labels the seat",
+    );
+    ok(!thinking.args.some((arg) => arg.endsWith(":high")), "a variant never becomes a model suffix");
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      const args = piConnector.buildLaunch({ space: "test", name: "pi", variant: level, events: false }).args;
+      ok(args.at(-2) === "--thinking" && args.at(-1) === level, `pi's ${level} level renders as --thinking ${level}`);
+    }
+    // pi applies `--thinking` over a session's saved level, as `--model` over its saved model, so a
+    // restarted or resumed seat runs the level it was launched with.
+    for (const session of [{ resume: "source" }, { continueSession: "current" }, { reopenSession: "current" }]) {
+      const args = piConnector.buildLaunch({ space: "test", name: "pi", ...session, variant: "high", events: false }).args;
+      ok(args.at(-2) === "--thinking" && args.at(-1) === "high", `a ${Object.keys(session)[0]} launch passes its level again`);
+    }
+    const plain = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", events: false });
+    ok(!plain.args.includes("--thinking") && plain.env?.COTAL_VARIANT === undefined, "no variant renders no --thinking and no label");
+    for (const variant of ["turbo", "HIGH", ""]) {
+      assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant, events: false }), /is not one pi takes \(off, minimal, low, medium, high, xhigh, max\)/);
+      checks++;
+    }
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);
     // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser

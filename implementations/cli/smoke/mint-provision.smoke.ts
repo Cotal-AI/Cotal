@@ -57,7 +57,9 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codeSpan } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 // The child `runCotal` starts: the composition root as the binary imports it (the CLI and the
 // `auth` command register themselves), one command line through `runCli`, then its exit code.
@@ -658,7 +660,7 @@ try {
     const linked = await runMint(["x", "--profile", "observer", "--out", join(link, "sub", "x.creds")]);
     check("--out through a symbolic link exits 2 PERMISSION_DENIED, naming the link, where it points and the path without it",
       linked.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(linked.out) && linked.out.includes(`the --out path goes through ${link}, a symbolic link to ${real}`)
-        && linked.out.includes(`such as ${join(real, "sub", "x.creds")} if that folder is yours`), linked.out);
+        && linked.out.includes(`such as ${codeSpan(shellWord(join(real, "sub", "x.creds")))} if that folder is yours`), linked.out);
     check("  and creates nothing through the link", readdirSync(real).length === 0);
     const file = join(root, "out-file");
     writeFileSync(file, "", { mode: 0o600 });
