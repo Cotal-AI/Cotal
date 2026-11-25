@@ -1343,9 +1343,13 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  54 = `harness-commands` lists what a harness would offer a seat in a directory before launch,
  *  `spawn` input takes `firstCommand`, and its acceptance names `firstCommand.id`. A new served
- *  command cannot fold into 53. */
+ *  command cannot fold into 53.
+ *
+ *  55 = `spawn` takes `modes`, the launch's mode choices, which the Manager checks with its variant
+ *  against the connector's model catalog. The input schema is closed, so a revision-54 contract
+ *  rejects the field. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 54, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 55, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

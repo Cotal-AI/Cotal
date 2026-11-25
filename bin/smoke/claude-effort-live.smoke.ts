@@ -10,19 +10,23 @@
  *      each turn as `perTurnEffort` on the assistant line of its own transcript, and each seat's
  *      must be its level. Two levels rule out a default that happens to match one of them.
  *      `cotal ps --json` reports each seat's variant.
- *   3. An unknown level is refused before anything is provisioned.
+ *   3. A level the catalog does not list for the model is refused by the Manager, naming the
+ *      levels it lists, before anything is provisioned.
  *   4. `cotal down --yes` stops the sandbox stack, seats included.
  *
- * The catalog needs this machine's `claude` logged in. The seats do not: their profile is scratch,
- * so each turn ends "Not logged in" after Claude has recorded its effort, and the run spends no
- * tokens. HOME, COTAL_HOME and the XDG dirs are scratch, and the operator's own COTAL_*, CLAUDE_*
- * and ANTHROPIC_* variables never reach a seat. Kills only what it starts.
+ * The Manager reads claude's catalog to check each variant, so the stack runs with this machine's
+ * Claude login, and each seat's one short turn on haiku spends a few tokens. The space is prepared
+ * with `space create`, which leaves the operator's Claude configuration alone, and the persona asks
+ * for the default permission mode, because Cotal never accepts Bypass Permissions for the operator.
+ * COTAL_HOME and the XDG dirs are scratch, the operator's own COTAL_*, CLAUDE_* and ANTHROPIC_*
+ * variables never reach a seat, and the seats' transcript folder is removed at the end. Kills only
+ * what it starts.
  *
  * Run: pnpm smoke:claude-effort:live   (needs claude and nats-server on PATH; `pnpm build` first)
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { claudeConnector } from "../../extensions/connector-claude-code/src/extension.js";
@@ -51,26 +55,21 @@ console.log("the catalog, from this machine's claude:");
 }
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "cotal-claude-effort-")));
-const home = join(scratch, "user");
 const cotalHome = join(scratch, "cotal");
-const xdg = join(home, "config");
+const xdg = join(scratch, "config");
 const root = join(scratch, "project");
+// Where claude keeps the seats' transcripts for this project, under the operator's own Claude home.
+const transcripts = join(homedir(), ".claude", "projects", root.replace(/[^A-Za-z0-9]/g, "-"));
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-mkdirSync(join(home, ".claude"), { recursive: true });
-// A profile that has run Claude once and accepted the Bypass Permissions warning a managed seat raises.
-writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", bypassPermissionsModeAccepted: true }), { mode: 0o600 });
-writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ skipDangerousModePermissionPrompt: true }));
-writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: tester\n---\nYou are a test seat. Answer the prompt and do nothing else.\n");
+writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: tester\nlaunchOptions:\n  permission-mode: default\n---\nYou are a test seat. Answer the prompt and do nothing else.\n");
 
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !key.startsWith("COTAL_") && !key.startsWith("CLAUDE") && !key.startsWith("ANTHROPIC_") && key !== "NODE_OPTIONS"));
 const env: NodeJS.ProcessEnv = {
   ...inherited,
-  HOME: home,
-  USERPROFILE: home,
   XDG_CONFIG_HOME: xdg,
-  XDG_DATA_HOME: join(home, "data"),
-  XDG_CACHE_HOME: join(home, "cache"),
+  XDG_DATA_HOME: join(scratch, "data"),
+  XDG_CACHE_HOME: join(scratch, "cache"),
   COTAL_HOME: cotalHome,
   COTAL_ALLOW_CHECKOUT_SEED: "1",
   COTAL_SKIP_ASSIST: "1",
@@ -85,10 +84,9 @@ const cotal = (anchor: SmokeSandboxAnchor | undefined, ...args: string[]) => {
 
 /** The `perTurnEffort` Claude recorded on each assistant line of the session whose prompt names `word`. */
 function recordedEfforts(word: string): unknown[] | undefined {
-  const projects = join(home, ".claude", "projects");
-  if (!existsSync(projects)) return undefined;
-  for (const file of readdirSync(projects, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"))) {
-    const lines = readFileSync(join(projects, file), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type?: string; perTurnEffort?: unknown; message?: { content?: unknown } });
+  if (!existsSync(transcripts)) return undefined;
+  for (const file of readdirSync(transcripts, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"))) {
+    const lines = readFileSync(join(transcripts, file), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type?: string; perTurnEffort?: unknown; message?: { content?: unknown } });
     if (!lines.some((l) => l.type === "user" && JSON.stringify(l.message?.content ?? "").includes(word))) continue;
     const replies = lines.filter((l) => l.type === "assistant");
     if (replies.length > 0) return replies.map((l) => l.perTurnEffort);
@@ -109,14 +107,15 @@ let up = false;
 try {
   console.log("\nseats through a local Manager:");
   check("connectors seed from this checkout", cotal(undefined, "ext", "seed").status === 0);
-  const setup = cotal(anchor, "setup", "--destination", "local", "-H", "claude", "--project", root, "-s", "effort-live", "--configure-only", "-y");
-  check("setup -H claude prepares the project", setup.status === 0, setup.out);
+  const prepared = cotal(anchor, "space", "create", "effort-live", "--root", root);
+  check("space create prepares the project", prepared.status === 0, prepared.out);
   const started = cotal(anchor, "up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`);
   up = started.status === 0;
   check("up --detach starts the stack", up, started.out);
 
   const refused = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--model", "haiku", "--variant", "extreme", "--name", "effort_bad");
-  check("an unknown level is refused before launch", refused.status !== 0 && /effort level "extreme" is not one claude accepts/.test(refused.out), refused.out);
+  check("a level the catalog does not list is refused before launch, naming the listed ones",
+    refused.status !== 0 && /claude lists variants "low", .* for model "haiku", not "extreme" \(variant\)/.test(refused.out), refused.out);
 
   const seats = ["low", "high"].map((level) => ({ level, name: `effort_${level}`, word: `effortprobe${level}` }));
   for (const { level, name, word } of seats) {
@@ -137,6 +136,7 @@ try {
     const down = cotal(anchor, "down", "--yes");
     check("down stops the stack", down.status === 0, down.out);
   }
+  rmSync(transcripts, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 }
 finish();

@@ -107,6 +107,9 @@ const e2eCon: Connector = {
   name: "e2e",
   requires: ["node"],
   supportsModelVariant: true,
+  // The Manager launches only a variant the catalog lists, and a persona that names no model uses
+  // the default row.
+  listModels: () => ({ models: [{ id: "fancy", isDefault: true, variants: [{ name: "high" }] }] }),
   supportsPrompt: true, // the suite spawns with --prompt; the contract is default-deny (#315)
   buildLaunch: (o) => {
     lastOpts = o;

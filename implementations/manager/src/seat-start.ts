@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchChoice, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
@@ -112,6 +112,12 @@ export class SeatStart {
     if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
     if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
     return undefined;
+  }
+  /** Why this launch cannot run its variant or modes: a runtime that starts seats elsewhere carries no
+   *  modes, and the connector's catalog must list both for the launched model. */
+  private choiceRefusal(connector: Connector, runtime: Runtime, harness: { binaries?: Readonly<Record<string, string>> }, choice: LaunchChoice): string | Promise<string | undefined> {
+    if (choice.modes && runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no modes (modes)`;
+    return this.parts.harnessResolution.catalogRefusal(connector, harness.binaries, choice);
   }
   private spawnerName(...args: Parameters<SeatLaunch["spawnerName"]>): ReturnType<SeatLaunch["spawnerName"]> { return this.launch.spawnerName(...args); }
   private spawnPersona(...args: Parameters<SeatLaunch["spawnPersona"]>): ReturnType<SeatLaunch["spawnPersona"]> { return this.launch.spawnPersona(...args); }
@@ -496,8 +502,9 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, prompt, firstCommand: opts.firstCommand, exact })
-      ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }));
+    const unsupported = this.capabilityRefusal(connector, { variant, modes: opts.modes, prompt, firstCommand: opts.firstCommand, exact })
+      ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }))
+      ?? await this.choiceRefusal(connector, runtime, harness, { model, variant, modes: opts.modes });
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
     if (onceRefused) return { ok: false, error: onceRefused };
@@ -871,7 +878,7 @@ export class SeatStart {
         acceptedToken: issued?.acceptedToken,
         configPath,
         model,
-        variant,
+        variant, modes: opts.modes,
         launchOptions,
         // Fork an existing session into the mesh. Taken straight from `opts.resume` (the imperative
         // control arg), never from `opts.resolved` — so the manifest launch path carries no resume by
@@ -966,7 +973,7 @@ export class SeatStart {
               : { kind: "persona", ref: opts.config ? identityName : ref, configPath, configSha256 },
           cwd,
           model,
-          variant,
+          variant, modes: opts.modes,
           // The kickoff prompt is part of the launch form: a stale-restart re-submits it, so the
           // recorded launch must carry it for the restart gate (and preserve) to see it. A once
           // seat's prompt is its task, which no relaunch may submit again.

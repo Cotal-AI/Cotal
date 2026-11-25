@@ -283,6 +283,7 @@ export class PreservedResume {
         source: a.launch.source,
         model: a.launch.model,
         variant: a.launch.variant,
+        ...(a.launch.modes ? { modes: a.launch.modes } : {}),
         subscribe: a.launch.subscribe,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
@@ -971,7 +972,7 @@ export class PreservedResume {
       }
       // Asked once `exact` is known: an exact seat reopens its retained session or fails, like its
       // manifest launch, so the connector must honor reopenSession before the batch starts any child.
-      const unsupported = this.capabilityRefusal(connector, { variant: entry.launch.variant, prompt: entry.launch.prompt, exact });
+      const unsupported = this.capabilityRefusal(connector, { variant: entry.launch.variant, modes: entry.launch.modes, prompt: entry.launch.prompt, exact });
       if (unsupported) return { ok: false, error: unsupported };
       const eventsRefused = this.eventsRefusal(connector, entry.launch.events);
       if (eventsRefused) return { ok: false, error: eventsRefused };
@@ -1003,6 +1004,7 @@ export class PreservedResume {
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,
           variant: entry.launch.variant,
+          modes: entry.launch.modes,
           launchOptions,
           resume: retainedSession ? undefined : entry.launch.forkSource,
           continueSession: exact ? undefined : retainedSession,
@@ -1094,6 +1096,7 @@ export class PreservedResume {
           cwd: entry.launch.cwd,
           model: entry.launch.model,
           variant: entry.launch.variant,
+          modes: entry.launch.modes,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,

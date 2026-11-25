@@ -1644,6 +1644,7 @@
   "ep:manager:spawn.supervise.restarts": "current:spawn --restarts --restart-window",
   "ep:manager:spawn.supervise.windowMs": "current:spawn --restarts --restart-window",
   "ep:manager:spawn.variant": "current:spawn --detach --variant",
+  "ep:manager:spawn.modes": "current:spawn --detach --mode",
   "ep:manager:status": [
    "current:status",
    "current:ps"

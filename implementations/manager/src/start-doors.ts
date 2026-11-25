@@ -1,5 +1,5 @@
 import { MAX_SCHEDULE_MS, parsePrincipalKey, rejectionText } from "@cotal-ai/core";
-import type { ControlReply, EpCaller, FirstCommand, InlinePersona } from "@cotal-ai/core";
+import type { ControlReply, EpCaller, FirstCommand, InlinePersona, LaunchModes } from "@cotal-ai/core";
 import { authorizeLaunch } from "./authorize.js";
 import { launchAgentToStartOpts, launchSpecForRun, materializePersona, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import type { Manager } from "./manager.js";
@@ -106,6 +106,7 @@ export class StartDoors {
         ...(typeof args.runId === "string" ? { runId: args.runId } : {}),
         model: args.model as string | undefined,
         variant: args.variant as string | undefined,
+        modes: args.modes as LaunchModes | undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume as string | undefined,
         resumeClaim: args.resumeClaim as string | undefined,

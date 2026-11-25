@@ -628,6 +628,7 @@ export class Preservation {
         cwd: launch.cwd,
         model: launch.model,
         variant: launch.variant,
+        modes: launch.modes,
         subscribe: launch.subscribe,
         allowSubscribe: launch.allowSubscribe,
         allowPublish: launch.allowPublish,
