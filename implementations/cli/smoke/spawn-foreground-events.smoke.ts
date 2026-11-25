@@ -248,6 +248,25 @@ async function checkPersonaRefusals() {
   writeFileSync(join(blocked, "child.md"), "---\nname: notdir-link\nagent: opencode\n---\n");
   const repaired = invoke(["notdir-link", "--dry-run", "--plain", ...selectors]);
   check("foreground preview follows the symlink once its target is restored", repaired.status === 0 && repaired.stdout.includes(link), repaired.stderr);
+
+  const callerPath = realpathSync(caller);
+  const component = join(callerPath, "plain-parent");
+  const remedy = "pass the correct persona file path to --file";
+  writeFileSync(component, "not a directory");
+  for (const relative of ["plain-parent/persona.md", "plain-parent/nested/persona.md"]) {
+    const args = ["--foreground", "--file", relative, ...selectors];
+    const preview = invoke([...args, "--dry-run", "--json"]);
+    const launch = invoke(args);
+    const refusal = preview.stdout.trim() ? JSON.parse(preview.stdout) : undefined;
+    const path = join(callerPath, relative);
+    const message = `${component} is not a directory, so the persona file ${path} cannot be reached`;
+    check(`direct preview identifies the non-directory component of ${relative}`,
+      preview.status === 2 && refusal?.outcome === "refused" && refusal.target?.path === path &&
+      refusal.error?.code === "TARGET_NOT_FOUND" && refusal.error.message === message && refusal.error.remedy === remedy, preview);
+    check(`foreground launch identifies the non-directory component of ${relative}`,
+      launch.status === 1 && launch.stderr.includes(message) && launch.stderr.includes(remedy) &&
+      !launch.stderr.includes("ENOTDIR") && readFileSync(component, "utf8") === "not a directory", launch);
+  }
 }
 
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
@@ -517,7 +536,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 48;
+const EXPECTED = process.platform === "win32" ? 41 : 52;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

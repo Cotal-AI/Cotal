@@ -1,5 +1,5 @@
-import { lstatSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { lstatSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
@@ -58,6 +58,28 @@ export function brokenPersonaLink(path: string, target: object, shippedDefault =
     target, remedy: shippedDefault ? "restore the link's target or move the broken link aside, then retry"
       : "restore the link's target, or move the link aside and put a regular persona file in its place",
   });
+}
+
+function nonDirectoryParent(path: string): string | undefined {
+  for (let parent = dirname(path); parent !== path; path = parent, parent = dirname(path)) {
+    try { return statSync(parent).isDirectory() ? undefined : parent; }
+    catch (error) {
+      // If the path changed, report only what the original ENOTDIR established.
+      if ((error as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
+    }
+  }
+  return undefined;
+}
+
+/** ENOTDIR can come from the persona link's target or from a component of the given path. */
+export function personaNotDirectoryFailure(path: string, target: object): CommandFailure {
+  const broken = brokenPersonaLink(path, target);
+  if (broken) return broken;
+  const parent = nonDirectoryParent(path);
+  const message = parent === undefined
+    ? `the persona path ${path} has a parent that is not a directory`
+    : `${parent} is not a directory, so the persona file ${path} cannot be reached`;
+  return new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy: "pass the correct persona file path to --file" });
 }
 
 /** The space a launch from `cwd` targets when no `--space` or `--server` names one: the space the mesh

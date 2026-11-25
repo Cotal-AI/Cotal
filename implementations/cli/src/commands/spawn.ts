@@ -81,7 +81,7 @@ import { askSpawnPlace } from "../lib/manager-choice.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonaNames } from "../lib/personas.js";
 import { personaCatalog, unreadablePersona } from "../lib/persona-files.js";
-import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, missingPersonaFailure, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
+import { brokenPersonaLink, callerHarness, checkSpawnExpiryTarget, directPersonaPath, missingConnector, missingPersona, missingPersonaFailure, personaNotDirectoryFailure, spawnPersona, spawnUsesManager } from "../lib/spawn-defaults.js";
 import { writeDefaultPersonaForLaunch } from "../lib/default-persona.js";
 import { spawnLaunchPreview } from "./spawn-preview.js";
 import { protectedCredentialReference, readLocalRecordSource } from "../lib/protected-records.js";
@@ -286,10 +286,10 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
 
 function reportDirectPersonaReadFailure(path: string, code: string | undefined, space: string, error: unknown): void {
   const target = { space, path };
-  const broken = code === "ENOTDIR" ? brokenPersonaLink(path, target) : undefined;
-  if (broken) {
-    stderrLine("✗ ", broken.message, c.red);
-    stderrLine("  ", broken.remedy!, c.dim);
+  if (code === "ENOTDIR") {
+    const { message, remedy } = personaNotDirectoryFailure(path, target);
+    stderrLine("✗ ", message, c.red);
+    stderrLine("  ", remedy!, c.dim);
     return;
   }
   const unreadable = unreadablePersona(path, code, target);
