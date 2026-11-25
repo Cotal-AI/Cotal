@@ -197,7 +197,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
         once: z
           .boolean()
           .optional()
-          .describe("Run `prompt` as the new peer's one task, then stop the peer. The task reaches the peer as a relayed turn rather than a kickoff, and the peer is stopped when it ends that turn or when the deadline passes. The turn names who started the seat by id when that name is missing or only whitespace. Needs `prompt`. A Claude Code peer takes the task only when its startup shows channels on; otherwise the spawn fails at startup and says why."),
+          .describe("Run `prompt` as the new peer's one task. Claude Code takes it as a kickoff prompt, with or without channels. Other supported peers take it as a relayed turn. The manager stops the peer when that turn ends or the deadline passes. The task names who started the seat by id when that name is missing or only whitespace. Needs `prompt`. A Claude Code startup that cannot take input fails and says why."),
         deadline: z
           .string()
           .optional()

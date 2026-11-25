@@ -371,7 +371,7 @@ export class SeatLaunch {
     if (launch.autoName) return "once: a once seat cannot label itself from its first message (autoName)";
     if (!connector.supportsTurnRelay)
       return `once: the ${connector.name} connector cannot take a once task${connector.turnRelayRefusal ? `: ${connector.turnRelayRefusal}` : ""}`;
-    if (connector.onceNeedsConfirmed !== undefined && !runtime.reportsStartupOutcome)
+    if ((connector.onceNeedsConfirmed !== undefined || connector.name === "claude") && !runtime.reportsStartupOutcome)
       return `once: runtime "${runtime.kind}" does not report how a seat's startup ended, which a once seat on the ${connector.name} connector needs`;
     if (runtime.spawnDelegated) return `once: runtime "${runtime.kind}" starts seats outside this host, where this manager cannot prove the seat's exit`;
     const operator = connector.waitsForOperator?.(launch.launchOptions);

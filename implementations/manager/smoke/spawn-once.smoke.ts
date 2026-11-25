@@ -33,6 +33,62 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const STUB = join(here, "e2e-stub.mjs");
 
+/** The Claude host boundary: show its real startup text and run the shipped MCP seat and hooks. */
+function installClaudeFixture(root: string): void {
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(root, ".mcp.json"), '{"mcpServers":{"cotal":{"command":"node"}}}');
+  for (const name of ["channels_off", "channels_on", "claude-blocked"])
+    writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: tester\n---\n`);
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}
+const { spawn, spawnSync } = require('node:child_process');
+const { existsSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const argv = process.argv.slice(2);
+const arg = name => argv[argv.indexOf(name) + 1];
+if (argv.includes('--version')) { console.log('2.1.330 (Claude Code fixture)'); process.exit(0); }
+if (arg('--model') !== 'claude-opus-5-5') process.exit(2);
+const { command, args } = JSON.parse(arg('--mcp-config')).mcpServers.cotal;
+const seat = spawn(command, args, { stdio: ['pipe', 'ignore', 'inherit'] });
+seat.on('exit', code => process.exit(code ?? 0));
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(signal, () => seat.kill(signal));
+const channelsOn = argv[0].includes('CHANNELS_ON');
+const ready = () => process.stdout.write('\\x1b[2J\\x1b[H? for shortcuts\\r\\n');
+if (process.env.COTAL_NAME === 'claude-blocked') {
+  process.stdout.write('Select login method:\\r\\n');
+} else if (channelsOn) {
+  process.stdout.write('WARNING: Loading development channels\\r\\n');
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.once('data', ready);
+} else {
+  ready();
+}
+const session_id = 'fixture-session';
+const transcript_path = join(process.cwd(), 'fixture-session.jsonl');
+const hook = (hook_event_name, more = {}) => spawnSync(process.execPath, [join(arg('--plugin-dir'), 'dist/hook.cjs')], {
+  input: JSON.stringify({ hook_event_name, session_id, transcript_path, cwd: process.cwd(), ...more }), encoding: 'utf8', timeout: 10000,
+}).stdout ?? '';
+const start = setInterval(() => {
+  if (!existsSync(process.env.COTAL_CONTROL_SOCKET)) return;
+  clearInterval(start);
+  const prompt = argv[0];
+  hook('Stop');
+  hook('UserPromptSubmit', { prompt: 'unrelated prompt' });
+  hook('Stop');
+  const frame = hook('UserPromptSubmit', { prompt });
+  hook('SessionStart', { source: 'compact' });
+  hook('Stop', { agent_id: 'subagent' });
+  setTimeout(() => {
+    writeFileSync(join(process.cwd(), process.env.COTAL_NAME + '.kickoff.json'), JSON.stringify({ prompt, frame, completed: 'ONCE_PROBE_DONE' }));
+    hook('Stop');
+  }, 750);
+}, 50);
+if (process.env.COTAL_NAME === 'claude-blocked') clearInterval(start);
+`, { mode: 0o755 });
+  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+}
+
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
@@ -142,6 +198,7 @@ let writer: HostedTimerWriter | undefined;
 let writerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let runnerNc: Awaited<ReturnType<typeof connect>> | undefined;
 const seatConns: Awaited<ReturnType<typeof connect>>[] = [];
+const originalPath = process.env.PATH;
 
 try {
   await setupSpaceStreams({ servers: broker.servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -548,6 +605,29 @@ try {
       `${plainUnmatched.name}: Cotal startup confirmation failed: prompt "LOAD THE CHANNEL" did not appear within 15000ms.`,
     plainUnmatched.terminal);
   check("the failed startup is absent from ps", plainUnmatched.name !== undefined && plainUnmatched.ps.ok === true && plainUnmatched.row === undefined, plainUnmatched.ps);
+
+  console.log("\n16. Claude once: a kickoff on both startup screens, with no relayed copy");
+  installClaudeFixture(workspaceRoot);
+  for (const mode of ["CHANNELS_OFF", "CHANNELS_ON"] as const) {
+    const c = await spawnOnce({ name: mode.toLowerCase(), agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: `Reply with ONCE_PROBE_DONE (${mode})`, once: { deadlineMs: 60_000 } });
+    const terminal = c.once && await resultOf(c.once.goalId, 20_000);
+    const log = c.name && await until(() => {
+      try { return readFileSync(join(workspaceRoot, `${c.name}.kickoff.json`), "utf8").length > 0; } catch { return false; }
+    }, 2_000) ? JSON.parse(readFileSync(join(workspaceRoot, `${c.name}.kickoff.json`), "utf8")) : undefined;
+    check(`${mode}: the spawn accepts; one attributed kickoff carries the task and deadline, without injection`,
+      c.terminal?.state === "succeeded" && c.once?.deadlineAt !== undefined &&
+      log?.prompt.includes(`started this seat for one task (goal ${c.once.goalId})`) &&
+      log.prompt.includes(`Reply with ONCE_PROBE_DONE (${mode})`) && log.prompt.includes(new Date(c.once.deadlineAt).toISOString()) &&
+      !log.frame.includes("ONCE_PROBE_DONE"), { spawn: c.terminal, log });
+    check(`${mode}: the fixture completed and its main Stop ends the task, exits the seat and clears its debt`,
+      log?.completed === "ONCE_PROBE_DONE" && terminal?.state === "succeeded" && (terminal.data as { status?: string }).status === "done" &&
+      c.seat !== undefined && await gone(c.name!, c.seat.handle) && await debtCleared(c.once!.goalId), terminal);
+  }
+  const blocked = await spawnOnce({ name: "claude-blocked", agent: "claude", cwd: workspaceRoot, model: "claude-opus-5-5", prompt: "Must not run", once: { deadlineMs: 60_000 } });
+  const blockedTask = await resultOf(taskOf(blocked.id), 20_000);
+  check("a Claude startup that cannot take input names the login blocker and cancels the task",
+    blocked.terminal?.state === "failed" && errorOf(blocked.terminal).includes("Claude Code is not logged in for this user and asks for a login method") &&
+    blockedTask?.state === "cancelled" && blocked.seat !== undefined && await gone(blocked.name!, blocked.seat.handle), { spawn: blocked.terminal, task: blockedTask });
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -556,9 +636,11 @@ try {
   await writerNc?.drain().catch(() => writerNc?.close());
   await delivery?.stop().catch(() => {});
   await broker.stop().catch(() => {});
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
 }
 
-const EXPECTED_CELLS = 72;
+const EXPECTED_CELLS = 77;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

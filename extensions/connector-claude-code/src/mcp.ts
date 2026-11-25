@@ -46,6 +46,7 @@ import type { ModDelta } from "./command-frames.js";
 import { claudeCommands, commandTurns } from "./commands.js";
 import { TURN_IMAGES_ENV } from "./turn-images.js";
 import { endHost, recordHost } from "./once-exit.js";
+import { onceKickoff } from "./once-kickoff.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
 const LOCAL =
@@ -278,6 +279,7 @@ async function startSession(
   // One process may host several sessions, so its own directory is not a session's: the card's
   // directory comes from that session's SessionStart hook instead.
   const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
+  const kickoff = onceKickoff(env, warn);
   // The command mod's socket opens below, once the session's teardown is in place.
   const commands = sessionCommands(env, claude, () => agent, warn);
   const agent: MeshAgent = new MeshAgent(config, env, {
@@ -292,7 +294,7 @@ async function startSession(
   // Claude's tool permissions, answerable on the agent's own `agent` endpoint while Claude's dialog
   // stays open. The desk exists once the agent serves that endpoint.
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
-  const hooks = launchedSessionHooks(prompts, claude, warn);
+  const hooks = launchedSessionHooks(prompts, kickoff?.wrap(claude) ?? claude, warn);
 
   const control = requireControl(env);
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
@@ -309,6 +311,7 @@ async function startSession(
       opts.input.off("end", onInputClose);
       opts.input.off("close", onInputClose);
       prompts.sessionEnd();
+      kickoff?.close();
       plane?.stop();
       try {
         controlServer?.close();

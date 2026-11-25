@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
@@ -105,13 +106,8 @@ export const claudeConnector: Connector = {
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
   interruptKey: "\x1b", // Escape ends the live turn ("Interrupted · What should Claude do instead?")
-  // A session wakes for a relayed task while idle only with channels on, and Claude reports that only
-  // on its startup screen: the development-channels gate, then its registration notice for this
-  // server (confirmNotice below). A once seat is served its task only when its startup watch saw
-  // both; the hooks hand it over at most once (hooks.ts).
   supportsTurnRelay: true,
-  onceNeedsConfirmed: "its startup did not show channels on (Claude's development-channels prompt and its notice that server:cotal messages reach the session)",
-  // A plain spawn starts anyway. Its reply and the seat's ps row say that nothing wakes the seat.
+  // The startup watch distinguishes a usable input screen from a startup blocker.
   idleWakeNeedsConfirmed: "channels are off for this session (Claude showed no development-channels prompt), so mesh traffic does not wake it while idle; type into its pane to start a turn, or enable channels for the organization",
   turnFrameLimit: HOOK_CONTEXT_CHARS,
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
@@ -199,6 +195,7 @@ export const claudeConnector: Connector = {
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
     Object.assign(env, claudeNamingLaunchEnv(opts, prompt));
+    if (opts.once && prompt) env.COTAL_CLAUDE_ONCE_PROMPT_HASH = createHash("sha256").update(prompt).digest("hex");
     // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))
@@ -333,10 +330,6 @@ export const claudeConnector: Connector = {
         // default action. The runtime presses Enter once when this connector-owned text appears.
         // Claude skips the gate when channels are off for the session, and opens its input screen.
         confirm: "WARNING: Loading development channels",
-        // Answering the gate is not registration: Claude then prints this line for an admitted
-        // channel server, and a policy warning in its place for a blocked one. Only a once seat waits
-        // for it, because only a once seat's spawn depends on it; a missed notice stops the seat.
-        ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
         confirmReady: CLAUDE_READY_TEXTS,
         confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
         ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),

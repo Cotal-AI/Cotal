@@ -1342,6 +1342,12 @@ export class MeshAgent extends EventEmitter {
   private onceUid(): string { return this.turns.onceUid(); }
   async yieldTurn(status: "done" | "blocked" | "handoff", opts: { to?: string; note?: string; turn?: string } = {}): Promise<ControlReply> { return this.turns.yieldTurn(status, opts); }
 
+  /** Report the end of a prompt submitted by this seat's launcher, not a frame pulled by the relay. */
+  async yieldKickoff(goalId: string, status: "done" | "blocked", note?: string): Promise<ControlReply> {
+    await this.requireConnected();
+    return this.managerInvoke("turn-yield", { goalId, status, ...(note === undefined ? {} : { note }) }, { target: { mode: "self" } });
+  }
+
   /** Presence writes: status, activity, condition, model and cwd, in call order. Every dependency reads through at its use. */
   private readonly presence = new AgentPresence({
     _status: () => this._status,

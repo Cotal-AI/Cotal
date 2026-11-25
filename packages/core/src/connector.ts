@@ -108,7 +108,7 @@ export interface LaunchOpts {
    *  command lane under `id` (SPEC 13.22). The connector hands it to the seat with
    *  `firstCommandEnv`. Only set when {@link Connector.commands} declares its target. */
   firstCommand?: FirstCommand;
-  /** This seat is started for one `once` task, which the manager relays to it as a turn. A
+  /** This seat is started for one `once` task. A
    *  connector that launches processes outside the seat's own process records them from launch on,
    *  so {@link Connector.retireAfterExit} can prove them gone. */
   once?: boolean;

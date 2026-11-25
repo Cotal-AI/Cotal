@@ -53,9 +53,9 @@ export interface PendingTurn {
   deadlineAt?: number;
   holdToken?: string;
   holdEpoch: number;
-  /** Set on the task of a `once` seat. It is not served before the spawn's readiness verdict, and
-   *  its terminal stops the seat. */
-  once?: { deliverable: boolean };
+  /** Set on the task of a `once` seat. Readiness permits this task's relay or kickoff yield. Its
+   *  terminal stops the seat. */
+  once?: { deliverable: boolean; kickoff?: true };
   /** The goal-chain link the caller declared (lang §5.3), mirrored into every terminal's data. */
   handoffFrom?: string;
   /** When the seat's `turn-pending` first served this turn. Until then the turn sweep repeats the
@@ -82,6 +82,8 @@ interface TurnNote {
   /** The task of a `once` seat. Its index entry outlives the terminal until the seat's exit is
    *  proved, because a seat that may still be running the task is a debt a successor must settle. */
   once?: true;
+  /** The connector submits this task at launch, not through turn-pending. */
+  kickoff?: true;
   /** The connector whose {@link Connector.retireAfterExit} must prove a once seat's launched
    *  processes gone before its debt clears. */
   retire?: string;
@@ -97,6 +99,7 @@ function parseTurnNote(raw: string): TurnNote | undefined {
   if (o === null || typeof o !== "object") return undefined;
   const n = o as Record<string, unknown>;
   if (n.once !== undefined && n.once !== true) return undefined;
+  if (n.kickoff !== undefined && (n.kickoff !== true || n.once !== true)) return undefined;
   if (typeof n.payload !== "string" || typeof n.holdEpoch !== "number") return undefined;
   if (typeof n.deadlineAt !== "number" && !(n.once === true && n.deadlineAt === undefined)) return undefined;
   if (n.holdToken !== undefined && typeof n.holdToken !== "string") return undefined;
@@ -109,6 +112,7 @@ function parseTurnNote(raw: string): TurnNote | undefined {
     ...(typeof n.holdToken === "string" ? { holdToken: n.holdToken } : {}),
     ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}),
     ...(n.once === true ? { once: true as const } : {}),
+    ...(n.kickoff === true ? { kickoff: true as const } : {}),
     ...(typeof n.retire === "string" ? { retire: n.retire } : {}),
     ...(typeof n.spawn === "string" ? { spawn: n.spawn } : {}),
   };
@@ -128,13 +132,14 @@ function retireOf(d: { seat: { name: string; uid: string }; retire?: string }): 
 /** The relay record of a `once` task. The prompt is only ever the string value of `context`, so a
  *  prompt shaped like a run payload stays text and cannot add an `ask` or a `checkpoint`; the
  *  `once` block is the manager's, rendered by the seat beside the prompt. */
-export function onceTurnNote(o: { prompt: string; spawner: string; deadlineAt?: number; holdEpoch: number; holdToken?: string; retire?: string; spawn: string }): { payload: string; note: string } {
+export function onceTurnNote(o: { prompt: string; spawner: string; deadlineAt?: number; holdEpoch: number; holdToken?: string; retire?: string; spawn: string; kickoff?: true }): { payload: string; note: string } {
   const payload = JSON.stringify({ context: o.prompt, once: { spawner: o.spawner, ...(o.deadlineAt !== undefined ? { deadlineAt: o.deadlineAt } : {}) } });
   const note = JSON.stringify({
     payload, holdEpoch: o.holdEpoch,
     ...(o.deadlineAt !== undefined ? { deadlineAt: o.deadlineAt } : {}),
     ...(o.holdToken !== undefined ? { holdToken: o.holdToken } : {}),
     once: true,
+    ...(o.kickoff ? { kickoff: true } : {}),
     ...(o.retire !== undefined ? { retire: o.retire } : {}),
     spawn: o.spawn,
   } satisfies TurnNote);
@@ -451,7 +456,7 @@ export class TurnRelay {
     const now = Date.now();
     const head = [...this.pendingTurns.values()]
       .filter((p) => p.seat.owner === c.owner && p.seat.actor === c.actor && p.seat.uid === c.uid)
-      .filter((p) => (p.deadlineAt === undefined || now < p.deadlineAt) && p.once?.deliverable !== false)
+      .filter((p) => (p.deadlineAt === undefined || now < p.deadlineAt) && p.once?.deliverable !== false && !p.once?.kickoff)
       .sort((x, y) => x.acceptedAt - y.acceptedAt)
       .slice(0, 1);
     for (const p of head) p.pulledAt ??= now;
@@ -494,6 +499,8 @@ export class TurnRelay {
     if (key === undefined) throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
     const p = this.pendingTurns.get(key);
     if (!p) return this.settledTurnAnswer(key, goalId);
+    if (p.once?.kickoff && !p.once.deliverable)
+      throw new EpEnvelopeError("unavailable", "the kickoff seat has not passed its startup check yet");
     await this.claimTurnHold(p);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     await this.deps.assertGoalWriterEpochCurrent(epoch);
@@ -581,6 +588,8 @@ export class TurnRelay {
     if (!p) return this.settledTurnAnswer(key, goalId);
     if (!p.once)
       throw new EpEnvelopeError("failed-precondition", `turn "${goalId}" is a run's turn; turn-unconfirmed reports only a once task, and a run's turn is offered again`);
+    if (p.once.kickoff)
+      throw new EpEnvelopeError("failed-precondition", "a kickoff task is not handed over by the turn relay");
     await this.claimTurnHold(p);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     await this.deps.assertGoalWriterEpochCurrent(epoch);
@@ -767,7 +776,7 @@ export class TurnRelay {
     // Repeat the notice until it does; a seat that pulled is not told again for that turn.
     const heads = new Map<string, PendingTurn>();
     for (const p of this.pendingTurns.values()) {
-      if ((p.deadlineAt !== undefined && now >= p.deadlineAt) || p.once?.deliverable === false) continue;
+      if ((p.deadlineAt !== undefined && now >= p.deadlineAt) || p.once?.deliverable === false || p.once?.kickoff) continue;
       const k = `${p.seat.owner}.${p.seat.actor}.${p.seat.uid}`;
       const h = heads.get(k);
       if (h === undefined || p.acceptedAt < h.acceptedAt) heads.set(k, p);
@@ -831,7 +840,7 @@ export class TurnRelay {
       ...(parsed.deadlineAt !== undefined ? { deadlineAt: parsed.deadlineAt, holdToken: parsed.holdToken ?? turnHoldToken(entry.ref.goalId) } : {}),
       ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
       // An inherited once task is served again only once its seat is bound to this incarnation.
-      ...(parsed.once ? { once: { deliverable: false } } : {}),
+      ...(parsed.once ? { once: { deliverable: false, ...(parsed.kickoff ? { kickoff: true as const } : {}) } } : {}),
     };
     // The hold is the relay's bounded ending, minted AFTER the index entry and the goal record,
     // so a crash between them leaves a goal with no hold: nothing could ever settle it, and the
@@ -846,7 +855,7 @@ export class TurnRelay {
     // A once task whose spawn has no succeeded terminal was never served, whatever seat exists:
     // it is cancelled, its row is not rebuilt so a later pull finds nothing, and its seat is
     // settled as an inherited debt.
-    if (parsed.once && !(await this.onceServed(entry.ref, parsed))) {
+    if (parsed.once && !parsed.kickoff && !(await this.onceServed(entry.ref, parsed))) {
       await this.commitOnceCancel(entry.ref, NEVER_SERVED);
       await this.inheritOnce(entry.ref, entry.allocated, parsed);
       return;
@@ -876,12 +885,11 @@ export class TurnRelay {
     if (parsed.once) await this.inheritOnce(entry.ref, entry.allocated, parsed);
     this.ensureTurnSweep();
   }
-  // ---- once (a spawn whose prompt is its one relayed task) ----------------------------------------
+  // ---- once tasks -------------------------------------------------------------------------------
   //
-  // A once spawn's prompt is not a kickoff: the manager accepts it as one turn addressed to the
-  // allocated incarnation, under the spawner's own caller triple and a goal id derived from the
-  // spawn's, so the spawner reads the task's outcome with `goal-result`. The seat is served it from
-  // the spawn's readiness verdict on. The task's terminal (yield, deadline) stops the seat, and the
+  // The manager accepts the task under the spawner's caller triple and a goal id derived from the
+  // spawn's, so the spawner reads its outcome with `goal-result`. The readiness verdict gates a
+  // relay's delivery or a kickoff's yield. The task's terminal (yield, deadline) stops the seat, and the
   // seat's proved exit cancels a task that has none. Until that exit, the task's index entry is the
   // seat's debt: a successor finds it there.
 
@@ -892,7 +900,7 @@ export class TurnRelay {
    *  it. */
   async acceptOnceTurn(o: {
     spawnRef: GoalRef; fingerprint: string; command: string; executor: { lifecycleUid: string; epoch: number }; acceptedAt: number;
-    seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string;
+    seat: { name: string; owner: string; actor: string; uid: string }; prompt: string; spawner: string; deadlineMs: number | undefined; readinessDeadlineMs: number; retire?: string; kickoff?: true;
   }): Promise<{ ref: GoalRef; deadlineAt?: number }> {
     const gw = this.goalWriter;
     if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; a once task cannot be accepted (SPEC 13.6)");
@@ -905,7 +913,7 @@ export class TurnRelay {
     if (deadlineAt !== undefined && deadlineAt > MAX_SCHEDULE_MS)
       throw new EpEnvelopeError("failed-precondition", `once: the deadline ends after the deadline scheduler's last instant (the end of year 9999)`);
     const holdToken = deadlineAt === undefined ? undefined : turnHoldToken(key);
-    const { payload, note } = onceTurnNote({ prompt: o.prompt, spawner: o.spawner, holdEpoch: o.executor.epoch, ...(deadlineAt !== undefined ? { deadlineAt, holdToken } : {}), ...(o.retire !== undefined ? { retire: o.retire } : {}), spawn: o.spawnRef.goalId });
+    const { payload, note } = onceTurnNote({ prompt: o.kickoff ? "" : o.prompt, spawner: o.spawner, holdEpoch: o.executor.epoch, ...(deadlineAt !== undefined ? { deadlineAt, holdToken } : {}), ...(o.retire !== undefined ? { retire: o.retire } : {}), spawn: o.spawnRef.goalId, ...(o.kickoff ? { kickoff: true } : {}) });
     const { seat } = o;
     const idx = await recordGoalIndex(gw.ctx, ref, o.executor.lifecycleUid, { name: seat.name, owner: seat.owner, actor: seat.actor, uid: seat.uid, readinessDeadlineMs: o.readinessDeadlineMs }, note);
     if (!idx.recorded)
@@ -949,22 +957,22 @@ export class TurnRelay {
     this.pendingTurns.set(key, {
       ref, goalId: ref.goalId, seat: { ...seat }, payload, acceptedAt: o.acceptedAt, holdEpoch: o.executor.epoch,
       ...(deadlineAt !== undefined ? { deadlineAt, holdToken } : {}),
-      once: { deliverable: false },
+      once: { deliverable: false, ...(o.kickoff ? { kickoff: true } : {}) },
     });
     this.turnAcceptances.set(key, {
       acceptance: { name: seat.name, owner: seat.owner, actor: seat.actor, uid: seat.uid, goalId: ref.goalId, fingerprint: o.fingerprint, ...(deadlineAt !== undefined ? { deadlineAt } : {}), executor: o.executor },
       ref,
     });
     this.ensureTurnSweep();
-    this.deps.emitGoalProgress(ref, o.executor.epoch, { phase: "relayed" });
+    if (!o.kickoff) this.deps.emitGoalProgress(ref, o.executor.epoch, { phase: "relayed" });
     return { ref, ...(deadlineAt !== undefined ? { deadlineAt } : {}) };
   }
-  /** Serve a once task from now on: its spawn's succeeded terminal is written. */
+  /** Its spawn's succeeded terminal is written: allow delivery or accept a kickoff yield. */
   openOnceDelivery(ref: GoalRef): void {
     const p = this.pendingTurns.get(goalKey(ref));
     if (p?.once === undefined || p.once.deliverable) return;
     p.once.deliverable = true;
-    this.deps.noticeSeatTurns(p.seat);
+    if (!p.once.kickoff) this.deps.noticeSeatTurns(p.seat);
   }
   /** End a once task that can no longer run: once its connector, when it has a `retire` hook, proves
    *  the seat's launched processes gone, cancel the task with `reason` if it has no terminal yet,
@@ -991,7 +999,7 @@ export class TurnRelay {
     if (p && !denyOwed) {
       this.pendingTurns.delete(key);
       this.markTurnLatchDropped(key);
-      this.deps.noticeSeatTurns(p.seat);
+      if (!p.once?.kickoff) this.deps.noticeSeatTurns(p.seat);
     }
     try {
       if (denyOwed) throw new Error("its deadline terminal is not written yet");
@@ -1057,7 +1065,7 @@ export class TurnRelay {
     const p = this.pendingTurns.get(goalKey(inherited.ref));
     if (p?.once) {
       p.once.deliverable = true;
-      this.deps.noticeSeatTurns(p.seat);
+      if (!p.once.kickoff) this.deps.noticeSeatTurns(p.seat);
       return;
     }
     const ended = this.goalWriter ? await readGoalResult(this.goalWriter.ctx, inherited.ref) : undefined;
