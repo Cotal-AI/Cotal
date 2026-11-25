@@ -48,14 +48,16 @@ import { stackStoreWarnings } from "../lib/store-identity.js";
 import { statusFlags, type Selected, type SelectedPreflight, UnregisteredRoot, type PersonaCatalog, type StatusResult, type SelectedResult, Gaps, displayStatusBroker } from "./status-model.js";
 import { servedStack } from "./status-render.js";
 
-/** Replace the current folder's restart banner only when its own broker store blocks startup. */
-export function reportHeldStoreProblem(root: string, hints: string[]): boolean {
-  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string } | undefined;
+/** Replace the current folder's restart banner when its directory or broker store blocks startup. */
+export function reportHeldRestartProblem(root: string, hints: string[]): boolean {
+  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string; state: string } | undefined;
   if (held?.root !== root) return false;
+  const writeProblem = held.state === "stopped" ? preparedRootWriteProblem(root) : undefined;
   const store = rootStoreProblem(root);
-  if (!store) return false;
+  if (!writeProblem && !store) return false;
   withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  hints.push(`${store.message}; ${store.remedy}`);
+  if (writeProblem) hints.push(`Restart blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
+  else if (store) hints.push(`${store.message}; ${store.remedy}`);
   return true;
 }
 
@@ -274,7 +276,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     }
     // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
-    const writeProblem = e.code === "not-started" && preparedNeverStarted(d) ? preparedRootWriteProblem(d.root) : undefined;
+    const writeProblem = e.code === "not-started" && restartRoot !== undefined && (d.stopped || preparedNeverStarted(d)) ? preparedRootWriteProblem(restartRoot) : undefined;
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
     // So does a service instance record of its space that no command can read, which is also a warning.
     const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
@@ -284,7 +286,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // settles from its members' processes when it starts.
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
     else if (instances) hints.push(instances.remedy ?? instances.message);
-    else if (writeProblem) hints.push(`First start blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
+    else if (writeProblem) hints.push(`${d.stopped ? "Restart" : "First start"} blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (restartRoot !== undefined) {
       const block = channelSeedRestartBlock(restartRoot);

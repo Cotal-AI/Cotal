@@ -1127,6 +1127,10 @@ async function controllerHoldCell(kind: "takeover" | "other-home" | "broker-cras
       if (brokerOnly) {
         const who = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["who", "--json"]);
         assert.ok(who.code === 0 && who.out.includes('"managers":"none-present"'), who.out + who.err); passed++;
+      } else if (kind === "broker-crash") {
+        assert.match(taker.io.out, /^\s*delivery\s+stack-delivery\s+\S+\s+started$/m, taker.io.out); passed++;
+        const components = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--components", "--space", space], 60_000);
+        assert.ok(components.code === 0 && /^\s*delivery\s+serving\b/m.test(components.out), components.out + components.err); passed++;
       }
       assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: mesh, env });
       const down = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["down", "--yes"], 120_000);

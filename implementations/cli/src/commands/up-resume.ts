@@ -153,9 +153,9 @@ function retireRestore(attempt: string, leftOut: string | undefined): string {
 }
 
 /** `manifest` is the `up -f` file, which boots a fresh mesh and so needs the restore retired first. */
-export function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: string): void {
+export function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifest?: string): string | undefined {
   const maintenance = readMaintenanceJournal(root);
-  if (!maintenance) return;
+  if (!maintenance) return storeDir;
   if (maintenance.state === "active") {
     const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, maintenance.restore.previousSource ? restoreLeftOut(maintenance) : undefined);
     if (!isManagerCommittedRestore(maintenance))
@@ -172,13 +172,13 @@ export function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifes
         target: { root, attempt },
         remedy: `retire the restore with ${retire}, then run \`cotal up -f ${manifest}\` again; bare \`cotal up\` starts the restored stack instead`,
       });
-    // Relaunching after restore must serve the exact recorded active target, not whatever store the
-    // caller happens to name — the journal's provenance would otherwise describe a different mesh.
-    if (!storeDir)
-      throw new Error(`restore attempt ${attempt} is active; relaunch with bare \`cotal up\` over the recorded target ${maintenance.restore.target.path}`);
-    if (!sameStoreIdentity(readStoreIdentity(resolve(storeDir)), maintenance.restore.target))
-      throw new Error(`ordinary startup after restore must use the recorded active target store ${maintenance.restore.target.path}, not ${storeDir}`);
-    return;
+    const target = maintenance.restore.target;
+    const selected = storeDir ?? target.path;
+    const requested = resolve(selected);
+    // A restart serves the journal's exact target, whether or not the caller names a store.
+    if (!sameStoreIdentity(readStoreIdentity(requested), target))
+      throw new Error(`ordinary startup after restore must use the recorded active target store ${target.path}, not ${requested}`);
+    return selected;
   }
   // A preserved cut resumes only through bare `up`, which journals the resume attempt. Nothing has
   // started here, so this is a refusal.
