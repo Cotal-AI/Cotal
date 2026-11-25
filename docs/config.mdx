@@ -133,6 +133,9 @@ The refusal names the persona, the value and its source, and the allowed IDs. Ro
 and personas with no role are unconstrained.
 A seat launches on the model and variant that were checked, even if its persona file changes after
 the check.
+The launcher tells a seat in a role with a policy entry so through `COTAL_MODEL_POLICY`, and the
+seat then refuses every owner `set-model` that would switch its running model, since the policy is
+checked only at launch. Start a new agent on an allowed model instead.
 
 A space-local role entry replaces the operator-level entry for that role. Roles present in only one
 file keep their entry. Each entry accepts only `models` and `variants`. Both lists must be non-empty
@@ -234,6 +237,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
 | `COTAL_DISPLAY_NAME` | connector session | The display name the card starts with when it differs from `COTAL_NAME`. A manager sets it when it relaunches a seat that `set-name` renamed; `COTAL_NAME`, and in user mode the actor, stay the launch name. An invalid name is refused when the session starts | `COTAL_NAME` |
+| `COTAL_AUTO_NAME` | connector session | `1` labels the seat from its first message: its launch prompt, else its first live direct message or mention from its own owner. The label is `meta["ai.cotal.label"]`, and the seat keeps its launch name. A manager sets it for a `spawn` with `autoName: true`, and never on a relaunch. Ignored when `COTAL_DISPLAY_NAME` is set, and on a connector that cannot ask its model for a label | off |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
 | `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below). A URL with a user name or password is refused when the session starts; pass the credential in `COTAL_CREDS`, `COTAL_TOKEN` or `COTAL_LINK` | the default local broker (or the link's) |
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
@@ -372,8 +376,12 @@ Model discovery uses a different environment. The `codex` and `opencode` catalog
 They do not read `spawn.env`. The binary resolves from the operator pin (`COTAL_CODEX_BIN` or `COTAL_OPENCODE_BIN`),
 then the absolute path recorded at manager boot, then the bare name. The seat allow-list does not apply to these short-lived reads.
 The `claude` and `pi` catalog reads receive a launch's environment: the seat allow-list and the
-connector's provider keys, without `spawn.env`. Their binary is the absolute path recorded at
-manager boot, then the bare name.
+connector's provider keys. The `pi` read also receives the `spawn.env` names, as a Pi launch does,
+so it reads the agent directory and keys a seat reads. The `claude` read does not. Their binary is
+the absolute path recorded at manager boot, then the bare name. The `hermes` catalog read receives
+the same environment with the `spawn.env` names, as a Hermes launch does, and runs `uv` from the
+same places. The manager hands every catalog read the `spawn.env` names from
+the config a spawn would read at that moment, and each connector decides whether its read uses them.
 
 ### Launch material
 

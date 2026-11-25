@@ -594,10 +594,21 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
   check("control: a legacy root no registration names keeps its own address and its own cotal up",
     refusedWith(alone, "TARGET_UNAVAILABLE", `${lastRan}, and no space is registered for it here`, ownUp), shown(alone));
 
+  const reference = join(home, "import.json");
+  writeFileSync(reference, JSON.stringify({ schemaVersion: 1, space: "lg01", endpoint: "example.offline" }));
+  const add = ["endpoint", "add", "offline", "--file", reference, "--json"];
+  const unregistered = run(add, legacyAuth);
+  check("a stopped project's endpoint import names its recorded space and an offline retry",
+    unregistered.status === 2 && unregistered.envelope?.error?.code === "TARGET_UNAVAILABLE" &&
+    unregistered.envelope.error.message.includes(lastRan) && unregistered.envelope.error.remedy?.includes("space create <space> --root .") === true &&
+    unregistered.envelope.error.remedy.includes("--space <space>"), shown(unregistered));
   // The recorded folder is still there, so the stack runs from it. A copy and a folder whose name a
   // later `up` took over read the same, because nothing on disk tells the two apart.
   const holder = realpathSync(mkdtempSync(join(home, "holder-")));
   registerAt(holder, "up");
+  const copiedImport = run(add, legacyAuth);
+  check("an import in a copy does not suggest preparing the space in that copy", copiedImport.status === 2 &&
+    !(copiedImport.envelope?.error?.remedy ?? "").includes("space create"), shown(copiedImport));
   const useHolder = `use the stack from ${holder}, where "lg01" is registered`;
   for (const command of ["ps", "who", "whoami", "endpoints"]) {
     const r = run([command, "--json"], legacyAuth);

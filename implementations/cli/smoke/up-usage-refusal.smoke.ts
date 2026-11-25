@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; effectAttempted?: boolean; persisted?: boolean } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -163,6 +163,31 @@ for (const { args, message } of cases) {
           && retry.envelope?.outcome === "ok" && result?.kind === "fresh-team-boot-preview"
           && result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false
           : /Lifetime request:\s+terminal-bound/.test(retry.stdout)),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
+  const originalServer = "nats://127.0.0.1:1";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const manifest = readFileSync(openManifest, "utf8").replace("  auth: false\n", `  auth: false\n  servers: ${originalServer}\n`);
+  const original = "team.yaml", copy = "team-copy.yaml";
+  writeFileSync(join(manifests, original), manifest);
+  writeFileSync(join(manifests, copy), manifest.replace(originalServer, server));
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "-f", original, "--server", server, "--foreground", "--dry-run", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const preview = ["team", "boot", "<manifest-copy>", "--foreground", "--dry-run", ...flags];
+    const json = flags[0] === "--json";
+    const command = /`((?:pnpm )?cotal) (team boot [^`]+)`/.exec(advice);
+    const retry = command?.[2] === preview.join(" ") && (!json || command[1] === "cotal")
+      ? run(preview.map((word) => word === "<manifest-copy>" ? copy : word), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const correctPreview = json ? result?.brokerCandidate === server && result.lifetimeRequest === "terminal-bound"
+      : retry !== undefined && /Lifetime request:\s+terminal-bound/.test(retry.stdout)
+        && retry.stdout.split("\n").some((line) => line.trim().startsWith("Broker candidate:") && line.trimEnd().endsWith(` ${server}`));
+    check(`foreground preview with --server and ${flags[0] ?? "default output"} inspects the broker from the manifest copy`,
+      refusal.status === 2 && (json ? refusal.envelope?.error?.code === "UNSUPPORTED" : /Code:\s+UNSUPPORTED/.test(refusal.stderr))
+        && advice.includes("copy the manifest") && advice.includes("`broker.servers`") && advice.includes("`--server`")
+        && !advice.includes(`team boot ${original}`) && !advice.includes(server) && retry?.status === 0 && retry.stderr === "" && correctPreview
+        && readFileSync(join(manifests, original), "utf8") === manifest && !existsSync(join(manifests, ".cotal")),
       { refusal: shown(refusal), retry: retry && shown(retry) });
   }
   for (const { label, args, json, help, message, remedy } of [

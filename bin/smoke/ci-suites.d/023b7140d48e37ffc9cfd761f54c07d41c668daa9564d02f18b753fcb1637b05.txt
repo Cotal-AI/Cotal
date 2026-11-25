@@ -1,0 +1,3 @@
+# The Codex connector's naming request: one ephemeral codex exec on the seat's own home and
+# config, at low reasoning under a read-only sandbox.
+smoke:codex-naming

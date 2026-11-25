@@ -164,15 +164,7 @@ def control_key() -> str | None:
             f"this launch carries connection material both in COTAL_LAUNCH_MATERIAL and as {', '.join(both)}; "
             "one launch carries one, so drop one of them"
         )
-    try:
-        if os.name != "nt" and (os.stat(path).st_mode & 0o077):
-            raise ControlConfigError("the launch material is readable beyond its owner")
-        with open(path, encoding="utf-8") as fh:
-            material = json.load(fh)
-    except (OSError, ValueError) as exc:
-        raise ControlConfigError("the launch material cannot be read as JSON") from exc
-    if not isinstance(material, dict):
-        raise ControlConfigError("the launch material is not a JSON object")
+    material = _load_material(path)
     if "controlToken" in material:
         raise ControlConfigError("the launch material carries controlToken, the control key field of a release before the control exchange")
     has_key, has_version = "controlKey" in material, "controlVersion" in material
@@ -184,6 +176,26 @@ def control_key() -> str | None:
     if not has_version or not _is_version(material["controlVersion"]):
         raise ControlConfigError("the launch material's controlVersion is not the control protocol version this plugin speaks")
     return key
+
+
+def _load_material(path: str) -> dict:
+    try:
+        if os.name != "nt" and (os.stat(path).st_mode & 0o077):
+            raise ControlConfigError("the launch material is readable beyond its owner")
+        with open(path, encoding="utf-8") as fh:
+            material = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ControlConfigError("the launch material cannot be read as JSON") from exc
+    if not isinstance(material, dict):
+        raise ControlConfigError("the launch material is not a JSON object")
+    return material
+
+
+def asks_permissions() -> bool:
+    """Whether this launch asks the agent's owner before a command Hermes's approval rules stop
+    (``askPermissions`` in the launch material). A launch without material never does."""
+    path = (os.environ.get("COTAL_LAUNCH_MATERIAL") or "").strip(_JS_WHITESPACE)
+    return bool(path) and _load_material(path).get("askPermissions") is True
 
 
 def socket_dir_problem(path: str) -> tuple[bool, str] | None:

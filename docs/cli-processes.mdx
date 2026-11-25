@@ -335,6 +335,21 @@ Windows adds the account's SID and a custodian that holds the service's job, des
 refuses another platform instead of using PID-only ownership. It launches executable and argv
 separately without a shell. No broker, manager or other dependency is started implicitly.
 
+A background service outlives the terminal or app that started it. On Linux and macOS its process
+leads a session and process group of its own, so a signal to the starting command's group does not
+reach it. On Linux, when the systemd user manager answers, `start` also runs it in a user scope of its own,
+`cotal-<space hash>-<instance>-<launch>-<nonce>.scope`, through `systemd-run --user --scope`. Each
+launch draws its own nonce, so a retry under the same instance and launch IDs never meets an
+earlier attempt's scope that a process it left behind still holds. An app that
+runs each agent in a scope and stops that scope when the agent's session ends, as T3 Code does,
+then leaves a service the agent started running. The process keeps its PID, output and
+environment, and systemd adds `INVOCATION_ID`. No stop removes the scope: a seat that a stopped
+manager released for the next manager to adopt keeps running in it, and systemd removes the scope
+once its last process exits. If the scope cannot be made, the start fails with
+systemd-run's error as the last line logged, and the service is not launched without a scope. With
+no user manager, as with no `XDG_RUNTIME_DIR`, no `systemd-run` or no user bus, nothing scopes the
+starting command either, and the service starts without a scope.
+
 On Windows each background instance runs under its own custodian. The custodian is a detached
 Cotal process that creates the program inside a new job object. The job ends every member when its
 last handle closes and allows no breakaway, and only the custodian holds that handle. So a
@@ -405,8 +420,8 @@ controller's final provider check. Providers still run as the current OS user, n
 Process readiness waits up to one second, or its deadline when that is shorter, for the process to
 exit. One that exits by then fails the start with `OPERATION_FAILED`, exit 5, and its exit code is
 recorded; a restart whose replacement exits so is partial, exit 4, and names that exit code. A
-background start also quotes the last line the process logged during that launch, and says its log
-records the cause when it logged nothing. A line over 1000 characters is quoted by its start and its
+background start quotes the last line it could read from that launch. If no line is available,
+it still names the instance log. A line over 1000 characters is quoted by its start and its
 last `; next:` step. A foreground start says its output went to this terminal
 and was not captured in its log, and names no log to read. A live
 creation-pinned direct process is reported Running. HTTP readiness uses

@@ -18,7 +18,7 @@ cotal service show <name>
 cotal service add <name> --exec "<command>" [--cwd <dir>]
 cotal service add <name> --preset <preset> <preset-options>
 cotal service add <name> --file <definition.json>
-cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--idle-exit <seconds>] [--foreground] [--dry-run]
 cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service status <name> [--instance <id>]
@@ -41,6 +41,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--instance <full-id>` | Select one instance by its full ID, not a prefix |
 | `--new-instance` | start: allocate another instance of a process definition |
 | `--foreground` | start: keep the process in this terminal |
+| `--idle-exit <seconds>` | start of the manager: stop it once it has held no agents for that long; this start only (see [manager](cli-maintenance.mdx#manager)) |
 | `--with-agents` | stop, restart: request the manager's native agent-stop policy |
 | `--dry-run` | start, stop, restart: preview the effect. install, uninstall: inspect the unit |
 | `-y, --yes` | stop, restart, remove, uninstall: confirm in a script |
@@ -362,7 +363,10 @@ Use `service add <name> --preset <preset> --help` for that preset's option flags
 help and completion derive those flags from the adapter's closed schema. Boolean options have
 positive and negative forms; a pair refuses. A boolean whose schema admits only true, such as an
 explicit intent, has only the positive form. Numeric and complex options use JSON syntax.
-Use `cotal service start <preset> --help` for start options. Use `--no-open` with
+Use `cotal service start <preset> --help` for start options. To keep flags from an existing
+start command, pass its words after `cotal help --`, for example
+`cotal help -- service start broker --config ./nats.conf`.
+Use `--no-open` with
 `cotal service start web` or when starting a dashboard saved under a custom name.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
 names `cotal ext add @cotal-ai/web`.
@@ -462,6 +466,15 @@ ambient credentials and agent identity markers are not inherited by generic proc
 A component needing the invoking caller must supply its supported native handoff, not infer a new
 operator identity. In particular, the web service does not receive the invoking caller's
 authority.
+
+The manager service also receives the [`spawn.env`](config.mdx#launcher-variables) names that are
+set where it starts, read from the config the manager reads. No value is printed. A manager gives
+its seats their provider keys and `spawn.env` names from its own environment. So when
+`cotal manager start`, `cotal acp` or a controller stack's `cotal up` starts the manager, its seats
+get a provider key or harness folder from the environment only when `spawn.env` lists it. A name
+added to `spawn.env` later reaches seats once the manager starts again. A manager that `cotal up`
+starts on the [legacy launcher](cli-startup.mdx#controller-startup) inherits the whole environment
+of `up`.
 
 
 ## Native auth service [#native-auth-service]

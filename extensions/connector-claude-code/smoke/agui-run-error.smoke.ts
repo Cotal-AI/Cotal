@@ -22,6 +22,11 @@
  * “unsupported source undefined”. This suite now carries the reordering through `StopFailure` before
  * SessionStart, so adopt → flush → close must be restored by the shipped handler itself.
  *
+ * **THE RUNNING TOOL.** Claude Code writes its transcript on a 100 ms timer, so `PreToolUse` runs
+ * before the `tool_use` line is on disk, and no hook follows until the tool ends. Turn 12 writes the
+ * line after that hook's read and sends no other hook: the call must still be published while the
+ * tool runs, once.
+ *
  * **THE HANDLER IS THE SHIPPED ONE AND THE BROKER IS REAL.** `createClaudeHandle` from `src` runs
  * against a real `nats-server`, over a real `AguiEmitterHolder` reading a real transcript file
  * through a real write-ahead log — the holder is assembled here exactly as `mcp.ts` assembles it.
@@ -365,6 +370,29 @@ try {
   await hook({ hook_event_name: "Stop" });
   await events.settled();
 
+  // ---- Turn 12 runs a long tool. Claude Code queues each transcript line and writes its queue on a
+  // 100 ms timer, so its PreToolUse hook runs, and the read that hook wakes ends, before the
+  // tool_use line is on disk. No hook follows until the tool ends, so the call shows while it runs
+  // only if the transcript's own growth wakes the reader.
+  appendFileSync(transcript, prompt(12));
+  await hook({ hook_event_name: "UserPromptSubmit" });
+  await hook({ hook_event_name: "PreToolUse", tool_name: "Bash" });
+  await events.settled();
+  appendFileSync(transcript, record(12, 1, { type: "assistant", uuid: "a-12", message: { content: [
+    { type: "tool_use", id: "running-tool-12", name: "Bash", input: { command: "sleep 120" } },
+  ] } }));
+  await sleep(2_500);
+  await events.settled();
+  const running = JSON.parse(readFileSync(eventWalPath, "utf8"));
+  check("running-12:with no hook after PreToolUse, the call is published while the tool runs",
+    (await new JsonlFileSource(transcript).read(running.frontier.sourceCursor)).records.length === 0 && running.pending === null,
+    { cursor: running.frontier.sourceCursor, pending: running.pending });
+  appendFileSync(transcript, record(12, 2, { type: "user", uuid: "result-12", message: { content: [
+    { type: "tool_result", tool_use_id: "running-tool-12", content: "done" },
+  ] } }) + answer(12));
+  await hook({ hook_event_name: "Stop" });
+  await events.settled();
+
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
@@ -471,8 +499,13 @@ try {
     afterInterrupts.filter(isClose).length === 1 && afterInterrupts.at(-1)?.type === "RUN_FINISHED" &&
     afterInterrupts.at(-1)?.outcome === undefined, afterInterrupts);
 
+  const runningRun = runForPrompt(12);
+  check("running-12:its call starts, ends and carries its result once in its run, however often the transcript was read",
+    ["TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM"].every((type) =>
+      runningRun.filter((e) => e.type === type && e.toolCallId === "running-tool-12").length === 1), runningRun);
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 43;
+  const EXPECTED = 45;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

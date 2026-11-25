@@ -11,8 +11,29 @@ export interface AgentCatalog {
   readonly available: boolean;
   /** Whether the connector publishes an AG-UI event plane. The bridge needs one. */
   readonly eventPlane: boolean;
+  /** A seat launches asking before it uses a tool: the connector takes `askPermissions` and serves
+   *  its prompts on this space, so the thread answers them. Absent: it launches as the connector's
+   *  default. */
+  readonly askPermissions?: boolean;
+  /** A seat launches publishing the model's reasoning: the connector takes `reasoningEvents` and
+   *  publishes an event plane. */
+  readonly reasoningEvents?: boolean;
   readonly reason?: string;
+  /** Why the manager could not read the application's models. A thread does not start it, since its
+   *  model list would be a default the application may not take. Absent when the read worked, and
+   *  for a connector with no model list to read, which keeps its default alone. */
+  readonly modelsUnread?: string;
   readonly models: readonly CatalogModel[];
+}
+
+/** Which `agent` endpoint commands a seat serves now, as its presence `agentEndpoint` field says
+ *  (SPEC §6). A seat older than `set-model` omits `setModel`. */
+export interface AgentEndpointServes {
+  readonly interrupt: boolean;
+  readonly turn: boolean;
+  readonly images: boolean;
+  readonly usage: boolean;
+  readonly setModel?: boolean;
 }
 
 export interface CatalogModel {
@@ -21,11 +42,27 @@ export interface CatalogModel {
   readonly variants: readonly string[];
 }
 
+/** One persona in a manager's catalog. */
+export interface PersonaRow {
+  readonly name: string;
+  /** The caller owns the persona's file. */
+  readonly own?: true;
+}
+
+/** One channel of the space: how many messages the space retains on it, and the purpose its registry
+ *  entry states. */
+export interface ChannelRow {
+  readonly channel: string;
+  readonly messages: number;
+  readonly description?: string;
+}
+
 /** A manager the bridge can spawn through. */
 export interface ManagerChoice {
   readonly instanceId: string;
+  /** The host name it reported, shown and never compared. */
   readonly host?: string;
-  /** The manager runs on the host this process runs on. */
+  /** The manager names this machine's id (`managerMachineId`), so it runs on this process's machine. */
   readonly local: boolean;
   /** The manager's presence is current, or, with no presence row to read, it answered for its host.
    *  A registration whose computer is gone can stay listed. */
@@ -62,8 +99,13 @@ export interface SpawnRequest {
   /** Channels the seat subscribes to at launch. */
   readonly subscribe?: readonly string[];
   readonly cwd: string;
-  readonly prompt: string;
+  /** The seat's first turn. Absent: the seat starts with none. */
+  readonly prompt?: string;
   readonly managerInstanceId?: string;
+  /** Launch the harness asking before it uses a tool. */
+  readonly askPermissions?: true;
+  /** Publish the model's reasoning on the event plane. */
+  readonly reasoningEvents?: true;
 }
 
 /** One AG-UI event as the bridge reads it. Only the fields the mapping uses are named. */
@@ -72,8 +114,10 @@ export interface AguiEventLike {
   readonly [key: string]: unknown;
 }
 
-/** One AG-UI frame from a seat's event channel. */
+/** One AG-UI frame from a seat's event channel, or from its payload rail (SPEC 13.19), which carries
+ *  only its tool calls' arguments and results. */
 export interface SeatFrame {
+  readonly plane: "events" | "payloads";
   /** The principal whose event channel carried the frame. */
   readonly owner: string;
   readonly actor: string;
@@ -84,6 +128,23 @@ export interface SeatFrame {
   readonly events: readonly AguiEventLike[];
   /** When the frame was published, epoch ms. */
   readonly ts: number;
+}
+
+/** A call to a seat's `agent` endpoint (SPEC 13.22) that did not succeed. `code` is the endpoint's
+ *  refusal code, such as `unimplemented`, or `unavailable` when the seat serves no endpoint. */
+export class AgentCallFailed extends Error {
+  override readonly name = "AgentCallFailed";
+  constructor(message: string, readonly code: string, readonly details?: readonly unknown[]) {
+    super(message);
+  }
+}
+
+/** What a seat's presence says about the prompts its `agent` endpoint holds. `runtime` is the serving
+ *  process, and `seq` goes up each time one of its prompts opens or changes state. */
+export interface PromptCounter {
+  readonly runtime: string;
+  readonly open: number;
+  readonly seq: number;
 }
 
 export interface RosterEntry {
@@ -108,6 +169,15 @@ export class LaunchListsRefused extends Error {
  *  live. The agents they have stay listed and controllable. The message says why. */
 export class NoLaunchManager extends Error {
   override readonly name = "NoLaunchManager";
+}
+
+/** No live manager is registered for the space, as once the last one stopped itself, so none runs
+ *  there to list the agents. */
+export class NoManagerRegistered extends Error {
+  override readonly name = "NoManagerRegistered";
+  constructor(readonly space: string) {
+    super(`No live manager is registered for ${space}`);
+  }
 }
 
 /** What a person on a space where people sign in can do about a registered manager that does not
@@ -136,21 +206,38 @@ export interface Mesh {
   /** The managers this caller can spawn through. On a space where people sign in, rejects with
    *  {@link NoLaunchManager} when none may. */
   managers(): Promise<ManagerChoice[]>;
+  /** Start this machine's manager for the space, for a new agent that no manager may start. It stops
+   *  itself after a while with no agents. Resolves with the line the thread shows; rejects with
+   *  {@link NoLaunchManager} naming the start's reason. */
+  startManager(): Promise<string>;
+  /** Why this machine's identity could not be read, undefined when it could. Without it no manager
+   *  reads as this machine's, so a thread neither defaults to one nor starts one. */
+  machineUnreadable(): string | undefined;
   /** One manager as a choice, described from its presence, or from its own answer when its presence
    *  row is not found. */
   manager(instanceId: string): Promise<ManagerChoice>;
-  /** Persona names in a manager's catalog. Each manager holds its own. Rejects with
+  /** The personas in a manager's catalog, by name. Each manager holds its own. Rejects with
    *  {@link LaunchListsRefused} when the caller may not read them. */
-  personas(managerInstanceId?: string): Promise<string[]>;
+  personas(managerInstanceId?: string): Promise<PersonaRow[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
-  /** Every managed seat the caller can see. */
+  /** Every managed seat the caller can see. Rejects with {@link NoManagerRegistered} when no live
+   *  manager is registered for the space. */
   seats(): Promise<SeatList>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;
-  /** Interrupt the seat's live turn: its manager writes the connector's interrupt key into the
-   *  seat's terminal. Rejects, naming why, when the manager refuses. */
+  /** Interrupt the seat's live turn through its manager, which writes the connector's interrupt key
+   *  into its terminal. Rejects, naming why, when the manager refuses. */
   interrupt(seat: SeatRef): Promise<void>;
+  /** Call one of the seat's `agent` endpoint commands as its owner and resolve with the reply's
+   *  data. Rejects with {@link AgentCallFailed}, `unavailable` when the seat does not serve it. */
+  agentCall(seat: SeatRef, command: string, args: Record<string, unknown>): Promise<unknown>;
+  /** The seat's prompt counter from its presence, or undefined when it serves no `agent` endpoint. */
+  promptCounter(seat: SeatRef): PromptCounter | undefined;
+  /** Which `agent` endpoint commands the seat's presence says it serves now (SPEC §6), or undefined
+   *  when it shows none or the space has no agent endpoint. The bridge reads it once to pick a path
+   *  before it sends anything. */
+  served(seat: SeatRef): AgentEndpointServes | undefined;
   /** Change the name the seat shows with its agent endpoint's `set-name`, as the seat's owner. Resolves
    *  with the name its card now carries; rejects, naming why, when the space or the agent refuses. */
   rename(seat: SeatRef, name: string): Promise<string>;
@@ -159,14 +246,16 @@ export interface Mesh {
   /** Type `text` into the seat's terminal and press Enter, through its manager's `input` command, so
    *  it arrives as the operator's own words. Rejects, naming why, when the manager refuses. */
   input(seat: SeatRef, text: string): Promise<void>;
-  /** Follow every seat's event frames. Returns a function that stops following. */
+  /** Follow every seat's event frames and payload frames. Returns a function that stops following. */
   followFrames(onFrame: (frame: SeatFrame) => void): () => void;
-  /** The event frames the space still retains for one seat, oldest first. */
+  /** The event and payload frames the space still retains for one seat, oldest first, a payload frame
+   *  before the event frame it belongs to. */
   frameHistory(seat: SeatRef): Promise<SeatFrame[]>;
   /** A seat's presence status (`idle`, `working`, `waiting`), or undefined when it is not on the
    *  roster. */
   presence(seat: SeatRef): string | undefined;
   roster(): Promise<RosterEntry[]>;
-  channels(): Promise<string[]>;
+  /** The space's channels, by name, without the agents' event channels. */
+  channels(): Promise<ChannelRow[]>;
   close(): Promise<void>;
 }

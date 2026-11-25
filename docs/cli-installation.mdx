@@ -333,8 +333,9 @@ Update runs from the surviving project root, or the filesystem root when no proj
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
-If the running Node is in a directory that contains a colon and no Node is available on npm's `PATH`,
-self-update can run the selected npm script directly with that Node.
+On Linux and macOS, self-update can run a recognized npm script directly with the Node running Cotal
+when npm cannot find `node` on its `PATH`. This covers version-named Node executables without a
+`node` link and Node directories that contain a colon.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -802,6 +803,8 @@ cotal ext seed [--repair|--reset|--force]
 `add` and `remove` each take one operand. Missing or extra operands are usage errors and
 leave the extension inventory unchanged.
 Give `add` a package name or a local package path such as `./example-extension`.
+For a folder below the current directory, include the `./` prefix: `./plugins/example`.
+An unsupported source spelling returns `USAGE_INVALID` before installation.
 A package can declare its entry through a root `exports` entry such as
 `"exports": { ".": { "import": "./greet.mjs" } }` without also declaring `main`.
 An npm `main` such as `"./greet"` can resolve to `greet.js` without naming the suffix.
@@ -1064,6 +1067,9 @@ Only an automatically adopted selection yields to a running space registered for
 With no space running here it is the selected space, or the only running one. Outside a project,
 with no saved selection, an offline registration does not take the place of your defaults.
 You can still read that space's saved values with `--space <name>`. `--user` reads your defaults alone.
+A damaged extension inventory does not stop a preference read unless Cotal needs the inventory to
+validate a harness from the environment. In that case, `--json` reports a `SCHEMA_INVALID` refusal
+with the repair command. A preference read does not repair a damaged inventory.
 If `config get` or `config unset` already has a key, or `config set` has both a key and a value,
 remove an unknown option rather than moving it after `--`.
 
@@ -1113,10 +1119,11 @@ cotal completion uninstall [shell] [--json|--plain]
 
 ### Completion inspection
 
-Bare `completion` reads local integration files. It reports the script version, startup reference
-and recorded ownership separately. It does not inspect or load the running shell. An unreadable
-file or ownership record produces a warning and a partial result, exit 4. The warning names the
-file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
+Bare `completion` reads local integration files even if the extension inventory is damaged. It
+reports the script version, startup reference and recorded ownership separately. It does not inspect
+or load the running shell. An unreadable file or ownership record produces a warning and a partial
+result, exit 4. The warning names the file and why. A record wired into another startup file, as an
+install under another `ZDOTDIR` leaves
 one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
 owned by another account, or writable by an account that is not you is named once, with the `chmod`
 that fixes it when one does. Group write is accepted when the group is your proven user private

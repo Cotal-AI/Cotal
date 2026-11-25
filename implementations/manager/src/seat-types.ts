@@ -53,6 +53,12 @@ export interface StartAgentOpts {
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
   eventPayloads?: boolean;
+  /** Launch the harness asking before it uses a tool. Refused before provisioning on a connector
+   *  that does not declare `supportsAskPermissions`. */
+  askPermissions?: boolean;
+  /** Publish the model's reasoning on the event plane. Refused before provisioning on a connector
+   *  that does not declare `supportsReasoningEvents`, and on a launch without the event plane. */
+  reasoningEvents?: boolean;
   /** `opStart` sets this when a non-owner, non-admin caller omits `events` and the event plane
    *  is disarmed. The reply includes it so the caller sees the downgrade. */
   eventsNotice?: string;
@@ -64,6 +70,9 @@ export interface StartAgentOpts {
    *  names (SPEC 13.22). Imperative launches only, and never recorded on the launch, so no restart
    *  runs it again. */
   firstCommand?: FirstCommand;
+  /** The seat labels itself from its first message (`LaunchOpts.autoName`). Imperative launches only,
+   *  and only on this host: a delegated runtime refuses it. A relaunch never passes it again. */
+  autoName?: boolean;
   /** Access-policy overrides (the `--subscribe` / `--allow-subscribe` / `--allow-publish` flags):
    *  win over the persona file exactly as in foreground `cotal spawn`, and are minted into the
    *  creds AND forwarded to the connector from ONE source. Imperative-only — a manifest launch
@@ -136,6 +145,9 @@ export interface ManagedLaunch {
   endpoints?: PersonaEndpoint[];
   events: boolean;
   eventPayloads?: boolean;
+  /** Recorded only when true, so every relaunch of the seat asks as its spawn did. */
+  askPermissions?: true;
+  reasoningEvents?: true;
   shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */

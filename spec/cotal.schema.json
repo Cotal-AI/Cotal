@@ -466,6 +466,10 @@
           "description": "Epoch ms when the current `activity` was set. A status change does not move it, so an activity left behind while hooks flip the status every turn still reads as old.",
           "type": "number"
         },
+        "agentEndpoint": {
+          "$ref": "#/definitions/PresenceAgentEndpoint",
+          "description": "The `agent` endpoint commands this process serves now (SPEC §6, §13.22). Present, with its four required flags, under the same gate as `prompts`. It follows what the connector runs at the moment, so it can change within a lifecycle. Advisory: it carries no authority."
+        },
         "attention": {
           "$ref": "#/definitions/AttentionMode",
           "description": "This instance's current global attention mode. Advisory, within-space observability — a peer can see \"they're in focus\" and choose to DM. Published from the connector's authoritative state (presence is a mirror, never the source of truth for delivery). `open`/absent ⇒ receives all."
@@ -516,6 +520,33 @@
         "card",
         "status",
         "ts"
+      ],
+      "type": "object"
+    },
+    "PresenceAgentEndpoint": {
+      "description": "Which `agent` endpoint commands a process serves now. `interrupt` stops its turn, `turn` starts one on its owner's words, `images` takes images with such a turn, `usage` reports the harness's context and cost, and `setModel` switches the model the harness runs. False means that call answers `unimplemented`, or `supported: false` for `usage`. A process older than `set-model` omits `setModel`, which reads as false.",
+      "properties": {
+        "images": {
+          "type": "boolean"
+        },
+        "interrupt": {
+          "type": "boolean"
+        },
+        "setModel": {
+          "type": "boolean"
+        },
+        "turn": {
+          "type": "boolean"
+        },
+        "usage": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "interrupt",
+        "turn",
+        "images",
+        "usage"
       ],
       "type": "object"
     },

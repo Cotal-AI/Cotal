@@ -39,14 +39,14 @@ export class ConnectorInventory {
     this.bootNotes = [];
     if (this.settings.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; prompts?: boolean; pkg?: string }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; prompts?: boolean; askPermissions?: boolean; reasoningEvents?: boolean; pkg?: string }>;
     if (this.settings.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext).map((connector) => ({ ...connector, pkg: ext.pkg })));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, prompts: false, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, prompts: false, askPermissions: false, reasoningEvents: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
@@ -56,19 +56,22 @@ export class ConnectorInventory {
         requires: connector.requires ?? [],
         eventPlane: connector.eventChannel !== undefined,
         prompts: connector.prompts === true,
+        askPermissions: connector.supportsAskPermissions === true,
+        reasoningEvents: connector.supportsReasoningEvents === true,
       }));
     }
     this.connectorRequirements = new Map(declared.map(({ name, requires, pkg }) => [name, {
       requires, needsClaudeWake: !!this.settings.machineSetupCommand && name === "claude" && pkg === OFFICIAL_CONNECTORS.claude,
     }]));
-    for (const { name, requires, eventPlane, prompts = false } of declared) {
+    for (const { name, requires, eventPlane, prompts = false, askPermissions = false, reasoningEvents = false } of declared) {
       const { binaries, reason: missing } = resolveHarness(name, requires);
       const reason = missing ?? (this.connectorRequirements.get(name)?.needsClaudeWake ? await this.prepareClaudeWake() : undefined);
+      const facts = { binaries, eventPlane, prompts, askPermissions, reasoningEvents };
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, prompts, reason });
+        rows.push({ agent: name, state: "unavailable", ...facts, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane, prompts });
+        rows.push({ agent: name, state: "available", ...facts });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
@@ -132,9 +135,9 @@ export class ConnectorInventory {
   }
 }
 
-/** The connector rows a status read serves. A row's `prompts` holds the connector's declaration, and a
- *  session serves prompts only where its endpoint names a caller, which only a user-auth mesh does
- *  (SPEC 13.21). The mesh mode is known only after boot inspected the connectors, so it is applied here. */
-export function servedConnectorStatuses(rows: readonly ManagerConnectorStatus[], userMode: boolean): ManagerConnectorStatus[] {
-  return rows.map((row) => ({ ...row, binaries: { ...row.binaries }, prompts: userMode && row.prompts }));
+/** The connector rows a status read serves, copied so a reader cannot change the inventory. A row's
+ *  `prompts` is the connector's declaration on every mesh mode, since a session serves its `agent`
+ *  endpoint on each (SPEC 13.21). */
+export function servedConnectorStatuses(rows: readonly ManagerConnectorStatus[]): ManagerConnectorStatus[] {
+  return rows.map((row) => ({ ...row, binaries: { ...row.binaries } }));
 }

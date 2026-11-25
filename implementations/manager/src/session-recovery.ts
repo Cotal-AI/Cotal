@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  discardLaunchArtifacts, EpEnvelopeError, rejectionText,
+  discardLaunchArtifacts, EpEnvelopeError, loadCotalConfig, modelPolicyEnv, rejectionText,
   type AttachSession, type Connector, type CotalEndpoint, type LaunchOpts, type LaunchSpec, type RuntimeReference,
 } from "@cotal-ai/core";
 import type { ControlEndpoint } from "@cotal-ai/core";
@@ -315,11 +315,13 @@ export class SessionRecovery {
         const connector = await this.deps.resolveConnector(a.agent);
         if (this.deps.agentFor(a.name) !== a || a.terminalizing || this.deps.maintenanceState() !== "active") return;
         const continueSession = connector.supportsSessionContinuation ? this.readManagedSession(a) : undefined;
-        // The seat starts again under the name it last showed, which `set-name` may have changed since launch.
-        const named = { ...restart.opts, displayName: a.displayName, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined };
+        // The seat starts again under the name it last showed, which `set-name` may have changed since
+        // launch, and on the model it runs, which `set-model` may have switched. A seat labels itself
+        // at its first launch only.
+        const named = { ...restart.opts, displayName: a.displayName, model: a.launch.model, variant: a.launch.variant, resume: undefined, reopenSession: undefined, prompt: undefined, firstCommand: undefined, autoName: undefined };
         const opts: LaunchOpts = continueSession !== undefined ? { ...named, continueSession } : named;
         const spec = connector.buildLaunch(opts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(loadCotalConfig(this.config.workspaceRoot), a.role) };
         const wanted = this.deps.managedPrincipal(a);
         const joinedAfter = this.deps.endpoint().getRoster()
           .filter((p) => p.card.id === wanted && p.lifecycleUid === a.lifecycleUid)

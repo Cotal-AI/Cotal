@@ -31,8 +31,8 @@ export interface SessionFrame { id: string; ts: number; events: unknown[]; live:
 
 /** What a call is, from its short name, for its words: `toolKind`. */
 export type ToolKind = "command" | "edit" | "write" | "read" | "send" | "dm" | "inbox" | "other";
-/** One tool call. `failed` is set, true or false, exactly when its `cotal.toolResult` marker arrived;
- *  `end` is that marker's time, when it had one. Neither is ever inferred. */
+/** One tool call. `failed` is set exactly when its `cotal.toolResult` marker arrived: true when the
+ *  marker says the call failed, false otherwise. `end` is that marker's time, when it had one. */
 export interface ToolCall {
   key: string;
   /** Its `toolCallId`, "" when the START carried none. */
@@ -352,7 +352,7 @@ function flatten(frames: readonly SessionFrame[]): { flat: Flat[]; marked: boole
             const latest = calls.get(marker.toolCallId);
             if (latest !== undefined) {
               if (at !== undefined) latest.end = at;
-              latest.failed = marker.isError;
+              latest.failed = marker.isError === true;
               latest.live = latest.live && live;
             }
             break;

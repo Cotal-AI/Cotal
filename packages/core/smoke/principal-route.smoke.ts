@@ -2,8 +2,9 @@
  * The principal route and the `agent` endpoint, broker-free (SPEC 13.21, 13.22): the subject
  * grammar, the parser branch and the sentinel; the `authorities` field of a cluster command and
  * its parse refusals (cell 26); the envelope agreement branch (cells 9 and 21); the serve-side
- * construction refusals (cell 23); the row builders; the two mint arms and every profile that
- * gets nothing; and the maximum-capability credential's size with the new rows.
+ * construction refusals (cell 23); the row builders; the callout and static mint arms, the
+ * `agent-caller` profile, a static renewal that keeps the rows its issuance had, and every profile
+ * that gets nothing; and the maximum-capability credential's size with the new rows.
  *
  * The cells that need a broker run in `pnpm smoke:principal-route:auth`.
  *
@@ -19,6 +20,7 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
+  importNativeSubjectPermissions, issuedPermitsPattern, grantOverreach, mintAcceptedToken, mintGeneration, type IssuedCaller,
   principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
@@ -111,26 +113,46 @@ check("the builder writes authorities, and a row without it writes none",
   buildClusterDocument("ai.cotal.test", 1, [{ name: "a", targeted: false, authorities: ["owner"], capability: "x.y", input: {}, output: {} },
     { name: "b", targeted: false, capability: "x.y", input: {}, output: {} }]).commands.map((c) => c.authorities?.join() ?? "-").join("|") === "owner|-");
 
-// ── the `agent` cluster, revision 4 (SPEC 13.22) ──
+// ── the `agent` cluster, revision 6 (SPEC 13.22) ──
 const agentDoc = parseClusterDocument(structuredClone(AGENT_CLUSTER));
-check("the agent cluster is ai.cotal.agent revision 4 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt and set-name",
-  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 4
-  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name", agentDoc.commands.map((c) => c.name));
+check("the agent cluster is ai.cotal.agent revision 6 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn, usage and set-model",
+  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 6
+  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage,set-model", agentDoc.commands.map((c) => c.name));
 check("every command is ephemeral, untargeted and without modes",
   agentDoc.commands.every((c) => c.class === "ephemeral" && c.targeted === false && c.modes === undefined));
-check("the prompt commands admit owner and grant, and the four command commands, interrupt and set-name admit owner only",
+check("the prompt commands admit owner and grant, and the four command commands, interrupt, set-name, turn, usage and set-model admit owner only",
   agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`).join()
-    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner,set-name:owner",
+    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner,set-name:owner,turn:owner,usage:owner,set-model:owner",
   agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`));
-check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read, and the interrupt and the rename as their own",
+check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read, and the interrupt, the rename, the turn, the usage read and the model switch as their own",
   agentDoc.commands.map((c) => c.capability).join()
-    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt,agent.profile.write",
+    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt,agent.profile.write,agent.turn.start,agent.usage.read,agent.model.write",
   agentDoc.commands.map((c) => c.capability));
 check("the declared digests are the compiled contracts' closure digests",
   agentDoc.commands.every((c) => AGENT_CONTRACTS[c.name].input.closureDigest === c.inputDigest && AGENT_CONTRACTS[c.name].output.closureDigest === c.outputDigest));
 check("the cluster constant, its commands and its schemas are frozen",
   Object.isFrozen(AGENT_CLUSTER) && Object.isFrozen(AGENT_CLUSTER.commands) && AGENT_COMMANDS.every((r) => Object.isFrozen(r.input) && Object.isFrozen(r.output)));
 check("the closure digest is stable across calls", agentClusterArtifacts().closureDigest === agentClusterArtifacts().closureDigest);
+
+const turnIn = AGENT_CONTRACTS.turn.input.validate, usageOut = AGENT_CONTRACTS.usage.output.validate;
+const PNG = { mimeType: "image/png", data: "iVBORw0KGgo=" };
+check("turn takes { text, images? }: text up to 262144 characters, 1 to 16 images of the four types in base64, and nothing else",
+  turnIn({ text: "hi" }) && turnIn({ text: "", images: [PNG] }) && turnIn({ text: "x".repeat(262144) }) && turnIn({ text: "a", images: Array(16).fill(PNG) })
+  && !turnIn({}) && !turnIn({ text: "x".repeat(262145) }) && !turnIn({ text: "a", images: [] }) && !turnIn({ text: "a", images: Array(17).fill(PNG) })
+  && !turnIn({ text: "a", images: [{ mimeType: "image/svg+xml", data: "PHN2Zz4=" }] }) && !turnIn({ text: "a", images: [{ mimeType: "image/png", data: "not base64!" }] })
+  && !turnIn({ text: "a", images: [{ ...PNG, url: "https://x" }] }) && !turnIn({ text: "a", extra: 1 }));
+check("usage answers { supported: false }, or { supported: true } with an optional context of two counts and a cost in an ISO currency",
+  usageOut({ supported: false }) && usageOut({ supported: true }) && usageOut({ supported: true, context: { used: 10, size: 200000 }, cost: { amount: 0.5, currency: "USD" } })
+  && !usageOut({ supported: false, context: { used: 1, size: 2 } }) && !usageOut({ supported: true, context: { used: -1, size: 2 } })
+  && !usageOut({ supported: true, cost: { amount: 1, currency: "usd" } }) && !usageOut({ supported: true, cost: { amount: -1, currency: "USD" } }) && !usageOut({ supported: true, tokens: 5 }));
+const modelIn = AGENT_CONTRACTS["set-model"].input.validate, modelOut = AGENT_CONTRACTS["set-model"].output.validate;
+check("set-model takes { model?, variant? }: a model id of 1 to 256 characters and a variant of 1 to 64, neither with whitespace or a control character, and nothing else",
+  modelIn({ model: "claude-opus-4-5" }) && modelIn({ model: "openrouter/x-ai/grok-4:free", variant: "high" }) && modelIn({ variant: "low" }) && modelIn({})
+  && modelIn({ model: "m".repeat(256), variant: "v".repeat(64) }) && !modelIn({ model: "m".repeat(257) }) && !modelIn({ variant: "v".repeat(65) })
+  && !modelIn({ model: "" }) && !modelIn({ model: "has space" }) && !modelIn({ model: "line\nbreak" }) && !modelIn({ variant: "" })
+  && !modelIn({ model: 7 }) && !modelIn({ model: "a", provider: "b" }));
+check("set-model answers { model, variant? }: the model is required",
+  modelOut({ model: "opus" }) && modelOut({ model: "opus", variant: "high" }) && !modelOut({}) && !modelOut({ variant: "high" }) && !modelOut({ model: "opus", extra: 1 }));
 
 const cmdIn = AGENT_CONTRACTS.command.input.validate, cmdOut = AGENT_CONTRACTS.command.output.validate;
 const listIn = AGENT_CONTRACTS.commands.input.validate, listOut = AGENT_CONTRACTS.commands.output.validate;
@@ -286,8 +308,8 @@ check("serve rows: subscribe its own head for every runtime, publish replies und
 check("the serve subscribe row has the request's 15 tokens and the reply row the reply's 13",
   serve.sub[0].split(".").length === 15 && serve.pub[0].split(".").length === 13);
 const own = epPrincipalOwnerGrantRows(SPACE, web);
-check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt and set-name, the caller's own owner pinned in the head",
-  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name"]
+check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn, usage and set-model, the caller's own owner pinned in the head",
+  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage", "set-model"]
     .map((cmd) => `${P}.ep.prin.agent.u_alice.*.*.*.${cmd}.owner.u_alice.web.${CUID}.*`).join("|"), own.pub);
 check("owner rows: one reply read with the caller triple pinned", own.sub.join("|") === `${P}.ep.prin-reply.*.*.*.*.*.u_alice.web.${CUID}.*`);
 const grantee: EpCaller = { owner: "u_bob", actor: "builder", uid: UID2 };
@@ -306,8 +328,11 @@ throws("no grant row cancels a command: command-cancel admits owner only", () =>
 throws("no grant row reads a command's state: command-state admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["command-state"]), "admits");
 throws("no grant row interrupts a turn: interrupt admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["interrupt"]), "admits");
 throws("no grant row renames an agent: set-name admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["set-name"]), "admits");
+throws("no grant row gives a turn: turn admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["turn"]), "admits");
+throws("no grant row reads usage: usage admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["usage"]), "admits");
+throws("no grant row switches a model: set-model admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["set-model"]), "admits");
 check("the (command, word) pairs come from the cluster constant",
-  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name"
+  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage,set-model"
   && principalRouteCommands("grant").join() === "describe,prompts,prompt,prompt-answer" && Object.isFrozen(principalRouteCommands("owner")),
   { owner: principalRouteCommands("owner"), grant: principalRouteCommands("grant") });
 
@@ -325,17 +350,68 @@ check("a managed-agent ledger row gets the serve rows and no caller row",
   prinRows(managed).sort().join("|") === [...serve.pub, ...serve.sub].sort().join("|"), prinRows(managed));
 const interactive = mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID);
 const webServe = epPrincipalServeGrantRows(SPACE, web);
-check("an interactive ledger row gets the serve rows, the ten owner rows and the reply read",
-  own.pub.length === 10 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
+check("an interactive ledger row gets the serve rows, the thirteen owner rows and the reply read",
+  own.pub.length === 13 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
 check("an interactive row's owner rows cover its own actor as a target, so the command must refuse a self-answer (R4)",
   (interactive as { pub: { allow: string[] } }).pub.allow.includes(`${P}.ep.prin.agent.u_alice.*.*.*.prompt-answer.owner.u_alice.web.${CUID}.*`));
 check("a callout mint with no ledger kind (a chat session) gets none", prinRows(mint({ owner: "u_alice", actor: "chat" })).length === 0);
 throws("a static mint carries no ledger kind", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "interactive" }, UID, null), "static mint");
 throws("an unknown ledger kind is refused", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "admin" }, UID), "ledgerKind");
-check("a static agent mint gets none", prinRows(mint({ owner: "local", actor: "coder" }, {}, UID, null)).length === 0);
+
+// ── a static space: agents serve, only the person's agent-caller calls (SPEC 13.21) ──
+const localServe = epPrincipalServeGrantRows(SPACE, { owner: "local", actor: "coder", uid: UID });
+const staticAgent = mint({ owner: "local", actor: "coder" }, {}, UID, null);
+check("a static agent mint gets the serve rows and no caller row",
+  prinRows(staticAgent).sort().join("|") === [...localServe.pub, ...localServe.sub].sort().join("|"), prinRows(staticAgent));
+check("a static agent holding spawn, run and admin still gets no caller row: the rows follow the profile, never a capability",
+  prinRows(mint({ owner: "local", actor: "coder" }, { capabilities: ["spawn", "run", "admin"] }, UID, null)).sort().join("|") === [...localServe.pub, ...localServe.sub].sort().join("|"));
+const unserved = mint({ owner: "local", actor: "coder" }, { principalServe: false }, UID, null);
+const withoutPrin = (perms: Record<string, unknown>) => {
+  const p = perms as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
+  return { ...p, pub: { ...p.pub, allow: p.pub.allow.filter((r) => !r.includes(".ep.prin")) }, sub: { ...p.sub, allow: p.sub.allow.filter((r) => !r.includes(".ep.prin")) } };
+};
+check("principalServe: false mints the static agent ceiling without the serve rows, and nothing else changes",
+  prinRows(unserved).length === 0 && JSON.stringify(unserved) === JSON.stringify(withoutPrin(staticAgent)));
+throws("principalServe on a callout mint is refused: its rows come from the ledger kind", () => mint({ owner: "u_alice", actor: "coder" }, { ledgerKind: "managed-agent", principalServe: false }, UID), "principalServe");
+throws("principalServe on any other profile is refused", () => permissionsFor("observer", SPACE, { owner: "local", actor: "obs", connId: callout.connId }, { principalServe: true }), "principalServe");
+
+// A renewal keeps the rows the issuance recorded (SPEC 13.15): the Manager reads the evidence's subscribe ceiling.
+const nkeyActor = "UPARENTACTOR0000000000000000000000000000000000000000000";
+const issuedCaller = { owner: "local", actor: nkeyActor, uid: UID, generation: mintGeneration(Math.floor(Date.now() / 1000) + 3600) } as IssuedCaller;
+const acceptedToken = mintAcceptedToken();
+const evidenceOf = (opts: Record<string, unknown>) => importNativeSubjectPermissions(permissionsFor("agent", SPACE,
+  { owner: "local", actor: nkeyActor, connId: nkeyActor, lifecycleUid: UID }, { ...opts, lifecycleUid: UID, issued: { generation: issuedCaller.generation, acceptedToken } }));
+const issuedServeRow = epPrincipalServeGrantRows(SPACE, issuedCaller).sub[0]!;
+const renewalOf = (recorded: ReturnType<typeof evidenceOf>) => evidenceOf({ principalServe: issuedPermitsPattern(recorded.subscribe, issuedServeRow) });
+const preChange = evidenceOf({ principalServe: false });
+const current = evidenceOf({});
+check("an issuance made before the rows existed renews byte-identical, with no serve row",
+  JSON.stringify(renewalOf(preChange)) === JSON.stringify(preChange) && !issuedPermitsPattern(preChange.subscribe, issuedServeRow));
+check("...where a renewal that added the rows would differ from the recorded ceiling, which the issuer refuses as a renewal",
+  JSON.stringify(current) !== JSON.stringify(preChange));
+check("an issuance that has the rows renews byte-identical with them", JSON.stringify(renewalOf(current)) === JSON.stringify(current));
+check("the delegation bound is unchanged: the serve rows are in the empty projection it subtracts",
+  grantOverreach(SPACE, issuedCaller, current, { allowSubscribe: ["review"] }).length === 1
+  && grantOverreach(SPACE, issuedCaller, evidenceOf({ allowSubscribe: ["review"] }), { allowSubscribe: ["review"] }).length === 0);
+
+const ownerCaller = (pr: Record<string, unknown>) => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, ...pr }, {}) as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
+const personCaller = ownerCaller({ lifecycleUid: CUID });
+const personOwn = epPrincipalOwnerGrantRows(SPACE, { owner: "local", actor: "acp", uid: CUID });
+check("an agent-caller holds the twelve owner rows over every agent under local, their reply read and its inbox, and nothing else",
+  personCaller.pub.allow.join("|") === personOwn.pub.join("|") && personCaller.sub.allow.join("|") === [`_INBOX_${callout.connId}.>`, ...personOwn.sub].join("|") && personCaller.pub.deny === undefined,
+  personCaller);
+check("an agent-caller holds no serve row", !personCaller.sub.allow.some((r) => r.startsWith(`${P}.ep.prin.`)) && !personCaller.pub.allow.some((r) => r.startsWith(`${P}.ep.prin-reply.`)));
+throws("the auth callout never mints an agent-caller", () => ownerCaller({ lifecycleUid: CUID, readerId: callout.readerId }), "static mint");
+throws("an agent-caller needs a lifecycle UID", () => ownerCaller({}), "lifecycleUid");
+throws("an agent-caller is never issued", () => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, lifecycleUid: CUID },
+  { issued: { generation: issuedCaller.generation, acceptedToken: mintAcceptedToken() } }), "issued");
 const profiles: [string, () => Record<string, unknown>][] = [
   ["observer", () => permissionsFor("observer", SPACE, { owner: "u_alice", actor: "obs", connId: callout.connId, readerId: callout.readerId }, {})],
   ["admin", () => permissionsFor("admin", SPACE, { owner: "u_alice", actor: "console", connId: callout.connId, readerId: callout.readerId }, {})],
+  ["static observer", () => permissionsFor("observer", SPACE, { owner: "local", actor: "obs", connId: callout.connId }, {})],
+  ["static admin", () => permissionsFor("admin", SPACE, { owner: "local", actor: "console", connId: callout.connId }, {})],
+  ["control-caller-privileged", () => permissionsFor("control-caller-privileged", SPACE, { owner: "local", actor: "ctl", connId: callout.connId, lifecycleUid: CUID }, {})],
+  ["static manager-caller", () => permissionsFor("manager-caller", SPACE, { owner: "local", actor: "seat", connId: callout.connId, lifecycleUid: CUID }, { capabilities: ["spawn"], lifecycleUid: CUID, managerInstanceId: UID2 })],
   ["delivery", () => permissionsFor("delivery", SPACE, { owner: "local", actor: "delivery", connId: callout.connId }, {})],
   ["supervisor", () => permissionsFor("supervisor", SPACE, { owner: "local", actor: "sup", connId: callout.connId }, {})],
   ["operator", () => permissionsFor("operator", SPACE, { owner: "local", actor: "op", connId: callout.connId }, {})],
@@ -408,7 +484,7 @@ const without = await jwtBytes(fixture());
 const withRows = await jwtBytes(fixture("interactive"));
 console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the rows an interactive row adds (mint bound ${MAX_MINTED_JWT_BYTES})`);
 check("the maximum-capability fixture with the rows an interactive row adds stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
-check("the interactive rows add 2 serve rows, 10 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 13,
+check("the interactive rows add 2 serve rows, 13 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 16,
   prinRows(fixture("interactive")).length - prinRows(fixture()).length);
 
 // ── the entry point: the package root serves the `agent` endpoint only ──
@@ -421,5 +497,9 @@ const schema = JSON.parse(readFileSync(fileURLToPath(new URL("../../../spec/cota
 const counts = schema.definitions.PresencePrompts?.properties;
 check("spec/cotal.schema.json gives prompts.open and prompts.seq as non-negative integers",
   ["open", "seq"].every((k) => counts?.[k]?.type === "integer" && counts[k].minimum === 0), counts);
+const served = schema.definitions.PresenceAgentEndpoint as { properties: Record<string, { type?: string }>; required?: string[] } | undefined;
+check("spec/cotal.schema.json gives the presence agentEndpoint field four required booleans and an optional setModel boolean",
+  ["interrupt", "turn", "images", "usage"].every((k) => served?.properties[k]?.type === "boolean" && served.required?.includes(k))
+  && served?.properties.setModel?.type === "boolean" && !served.required?.includes("setModel") && Object.keys(served?.properties ?? {}).length === 5, served);
 
 finish();

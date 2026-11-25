@@ -668,6 +668,11 @@ const envelopes = (r: Run) => {
   check("foreground spawn keeps its mode and offers two compatible ways past --json",
     foregroundJson.status === 1 && foregroundReceipt.error?.code === "USAGE_INVALID" &&
     foregroundReceipt.error.remedy.includes("omit --json to launch in this terminal, or replace --foreground with -d"), shown(foregroundJson));
+  for (const [flags, omit] of [[["--live-only"], "--json"], [["--expires-in", "1h", "--runtime", "pty"], "--runtime, --json"]] as const) {
+    const refusal = cotal(["spawn", "--foreground", "--json", ...flags], undefined, noSeed);
+    const error = JSON.parse(refusal.stdout).error;
+    check(`foreground spawn keeps ${flags[0]} in its remedy`, refusal.status === 1 && error?.code === "USAGE_INVALID" && error.remedy === `omit ${omit} to launch in this terminal`, shown(refusal));
+  }
   const pinnedSpawn = ["spawn", "dev", "--on", "a".repeat(30)];
   const pinnedJson = cotal([...pinnedSpawn, "--json"], undefined, noSeed);
   const pinnedReceipt = JSON.parse(pinnedJson.stdout);
