@@ -499,7 +499,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 82;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);
