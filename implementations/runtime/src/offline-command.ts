@@ -268,7 +268,7 @@ function simulationFailure(error: unknown, file: string, journal: Journal, prese
   // only showing the result object. When a results file was passed, it names that file.
   const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
   const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
-  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}${presentation === "json" ? " --json" : ""}`);
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}${presentation === "rich" ? "" : ` --${presentation}`}`);
   const rerun = handler !== undefined
     ? `add it to ${oneLine(handler)} and rerun with ${command}`
     : `save it in a results file, for example results.json, and rerun with ${command}`;
