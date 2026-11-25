@@ -1,5 +1,14 @@
 # Upgrading a running deployment
 
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
+recognise it as running here.
+
 ## Personas saved over the wire
 
 `define-persona` refuses channel lists outside the definer's grant before writing, even if a later
