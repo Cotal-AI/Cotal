@@ -81,7 +81,7 @@ const shape = (data: Census) => JSON.stringify([data.asOf !== null, data.members
 
 async function checkHistoryObserver(): Promise<void> {
   const observerCreds = join(base, "history-reader.creds");
-  const minted = cotal("auth", "mint", "history-reader", "--provision", "--allow-subscribe", "general", "--out", observerCreds, "--json");
+  const minted = cotal("auth", "mint", "history_reader", "--provision", "--allow-subscribe", "general", "--out", observerCreds, "--json");
   check("a provisioned agent credential can read #general", minted.status === 0, minted.out);
   if (minted.status !== 0) return;
   const read = started("history", "general", "--creds", observerCreds, "--follow", "--json");
