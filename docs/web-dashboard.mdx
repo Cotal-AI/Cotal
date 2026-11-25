@@ -145,8 +145,9 @@ on one colour, the one later in name order takes the next free colour, so every 
 same colours for the same agents. When two live agents share a first letter, both badges take two
 letters (`lead` and `logic` read Le and Lo). A name that is only whitespace is not used, so the
 letter and the colour come from the id. An offline agent's badge turns grey and keeps its
-letter. Below 26 pixels the badge is a colour dot with no letter. A message read from history has no
-verified sender, so its row gets no badge.
+letter. Below 26 pixels the badge is a colour dot with no letter. Messages seen only in history have
+no badge because history does not verify the sender. When you open a channel, the page keeps the
+verified sender and badge for matching live messages it still holds in Activity.
 
 **What moves while an agent works.** A working agent's status dot breathes a ring out from it, and
 its working icon turns wherever its status shows. Under a channel's messages, the working line names

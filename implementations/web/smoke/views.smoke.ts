@@ -695,6 +695,21 @@ const frame = (id: string, seq: number) =>
   same("11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too",
     [heldBack, h.store.get().activity.map((e) => [e.msg.id, (e as FeedMessage).senderId ?? null])], [0, [["f2", "local.dav"]]]);
 }
+{
+  const h = harness({ history: async () => [
+    msg("first-live", "local.rv2", "Edited history copy.", at(11, 1)),
+    msg("other-live", "local.rv2", "Only in review history.", at(11, 2)),
+  ] });
+  h.store.set(channelSeed({ open: null }));
+  h.ctl.onMessage({ mode: "chat", channel: "review", senderId: "local.rv2", msg: msg("first-live", "local.dav", "Seen live in review.", at(11, 1)) });
+  h.ctl.onMessage({ mode: "chat", channel: "general", senderId: "local.rv2", msg: msg("other-live", "local.rv2", "Seen live in general.", at(11, 2)) });
+  await h.ctl.open("review");
+  const rows = rowsIn(centre(shellDom(h.store.get(), channelRoute)));
+  same("11.8 the first channel open renders the verified copy from Activity once and does not borrow another channel's sender",
+    rows.map((r) => [bodyOf(r), !unverifiedIn(r)]), [["Seen live in review.", true], ["Only in review history.", false]]);
+  same("11.9 the channel retains the verified sender rather than the live payload's claimed sender",
+    h.store.get().open?.messages.map((row) => row.senderId), ["local.rv2", undefined]);
+}
 
 // ── 12. The DM window ────────────────────────────────────────────────────────────────────────────
 // The page holds the newest `DM_WINDOW` direct messages space-wide, and knows when that window may not
