@@ -79,7 +79,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   const stagingRefused = scenario === 'staging-refused';
   const repairSelection = scenario === 'selection-upgrade' || scenario === 'selection-rollback';
   const extensionMissing = scenario === 'extension-arrives' || scenario === 'extension-unavailable';
-  const lifecycle = scenario === 'lifecycle-node';
+  const stagedLifecycle = scenario === 'staging-node' || scenario === 'staging-node-shared-tmp';
+  const lifecycle = scenario === 'lifecycle-node' || stagedLifecycle;
   assert(repairSelection || stagingNetwork || stagingTimeout || stagingRefused || extensionMissing || reconcileInterrupted || lifecycle || ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'archive-interrupted', 'closure-killed', 'closure-nospace', 'orphan', 'pending', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'staging-killed', 'concurrent', 'extension-peers', 'corepack'].includes(scenario));
   const dateFiltered = scenario === 'min-release-age' || scenario === 'before';
   const closureKilled = scenario === 'closure-killed';
@@ -106,8 +107,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
   for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', '.cotal', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
   const scripts = lifecycle ? { scripts: { postinstall: 'node postinstall.cjs' } } : {};
   if (lifecycle) writeFileSync(join(root, 'payload/package/postinstall.cjs'),
-    'require("node:fs").writeFileSync("postinstall-node", process.execPath);\n');
-  const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection;
+    'require("node:fs").writeFileSync(process.env.STAGED_POSTINSTALL_MARKER || "postinstall-node", process.execPath);\n');
+  const staged = scenario === 'staging-killed' || stagingNetwork || stagingTimeout || stagingRefused || repairSelection || stagedLifecycle;
   const preinstall = { v: 1, entry: 'dist/preinstall.js' };
   if (closureNoSpace) writeFileSync(join(root, 'payload/package/dist/data'), Buffer.alloc(4 * 1024 * 1024));
   if (stagingNetwork) writeFileSync(join(root, 'payload/package/dist/data'), randomBytes(1024 * 1024));
@@ -317,9 +318,9 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     armed = true;
     if (lifecycle) {
       const node = lifecycleNode(root, env);
-      const normalTmp = env.TMPDIR;
-      env.TMPDIR = join(root, 'metadata:tmp');
+      env.TMPDIR = join(root, scenario === 'staging-node-shared-tmp' ? 'shared-tmp' : 'lifecycle:tmp');
       mkdirSync(env.TMPDIR);
+      if (scenario === 'staging-node-shared-tmp') chmodSync(env.TMPDIR, 0o777);
       const otherNode = join(env.PATH, 'node');
       for (const competingNode of [false, true]) {
         if (competingNode) writeFileSync(otherNode, '#!/bin/sh\nexit 97\n', { mode: 0o700 });
@@ -329,17 +330,28 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert.equal(JSON.parse(check.output).result.latest, target);
         assert(requests.slice(requestsBeforeCheck).some(({ path }) => path === '/cotal-ai'));
       }
-      unlinkSync(otherNode);
+      if (stagedLifecycle) {
+        unlinkSync(otherNode);
+        env.STAGED_POSTINSTALL_MARKER = join(root, 'staged-postinstall-ran');
+      }
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
       assert.deepEqual(readdirSync(env.TMPDIR), []);
-      env.TMPDIR = normalTmp;
       const update = await run(node, [entry, 'update', '--self'], 60000);
       assert.equal(update.code, 0, update.output);
-      assert.match(update.output, /installed globally and reconciled/);
-      assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
-      assert.equal(readFileSync(join(packageRoot, 'postinstall-node'), 'utf8'), node);
-      assert.equal(JSON.parse(readFileSync(join(env.COTAL_HOME, 'update-recovery.json'), 'utf8')), null);
-      assert(!readdirSync(normalTmp, { recursive: true }).some(name => basename(name).startsWith('cotal-npm-node-')));
+      assert.match(update.output, stagedLifecycle ? /in use and reconciled/ : /installed globally and reconciled/);
+      if (stagedLifecycle) {
+        const current = await run(node, [entry, '--version'], 60000);
+        assert.equal(current.code, 0, current.output);
+        assert.match(current.output, /cotal-ai 99\.0\.0/);
+        assert(!existsSync(env.STAGED_POSTINSTALL_MARKER), 'staging must not run the archive postinstall');
+      } else {
+        assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
+        assert.equal(readFileSync(join(packageRoot, 'postinstall-node'), 'utf8'), node);
+      }
+      const recovery = join(env.COTAL_HOME, 'update-recovery.json');
+      assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
+      assert(!existsSync(marker), 'the global npm child marker is cleared');
+      assert(!readdirSync(root, { recursive: true }).some(name => basename(name).startsWith('cotal-npm-node-')));
       return { scenario, ...update };
     }
     if (stagingTimeout) {
@@ -1124,7 +1136,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   try {
     canMount = process.platform === 'linux' && spawnSync('unshare', ['-Urm', 'mount', '-t', 'tmpfs', '-o', 'size=2m', 'tmpfs', mountPoint]).status === 0;
   } finally { rmSync(mountPoint, { recursive: true }); }
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack', 'lifecycle-node'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'unavailable', 'integrity', 'reset', 'cache', 'orphan', 'closed-scope', 'min-release-age', 'before', 'offline-metadata', 'offline-archive', 'offline-closure', 'offline-staging', 'concurrent', 'extension-peers', 'extension-arrives', ...(process.platform !== 'win32' ? ['corepack', 'lifecycle-node'] : []), ...(process.platform === 'linux' ? ['archive-interrupted', 'closure-killed', 'pending', 'reconcile-killed', 'reconcile-orphan', 'staging-killed', 'staging-timeout', 'staging-fetch-timeout', 'staging-partial', 'staging-no-accept', 'staging-trickle', 'staging-auto', 'staging-refused', 'staging-node', 'staging-node-shared-tmp', 'selection-upgrade', 'selection-rollback'] : []), ...(canMount ? ['closure-nospace'] : [])];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }

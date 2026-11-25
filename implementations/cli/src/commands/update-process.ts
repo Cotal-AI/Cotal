@@ -162,7 +162,8 @@ export async function runGlobalProcess(
   let stopping: Promise<void> | undefined;
   try {
     if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
-    using npm = operation === "install" && file === "npm" ? npmInvocation(env, args, "lifecycle") : undefined;
+    const npmPhase = staging !== undefined && args.includes("--ignore-scripts") ? "preflight" : "lifecycle";
+    using npm = operation === "install" && file === "npm" ? npmInvocation(env, args, npmPhase) : undefined;
     if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const reconcileCache = gated && operation === "reconcile";
     cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));

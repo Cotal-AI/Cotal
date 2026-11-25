@@ -173,9 +173,11 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[], phase: "pr
   // A wrapper may need `node` to start. A direct preflight already has its executable.
   if (!pathNode || (direct && phase === "preflight")) return { ...npm, [Symbol.dispose]() {} };
   const temp = realpathSync(tmpdir());
-  if (temp.includes(delimiter)) throw new Error(`npm cannot use a temporary directory containing ${JSON.stringify(delimiter)} on PATH: ${temp}`);
-  protectedLocalDirectory(temp, "the npm Node link parent");
-  const bin = mkdtempSync(join(temp, "cotal-npm-node-"));
+  // Keep npm's scratch where the caller requested it. Only the executable link needs a PATH entry.
+  const parent = temp.includes(delimiter) ? realpathSync(homedir()) : temp;
+  if (parent.includes(delimiter)) throw new Error(`npm cannot put its Node link on PATH: both TMPDIR and the home directory contain ${JSON.stringify(delimiter)}`);
+  protectedLocalDirectory(parent, "the npm Node link parent");
+  const bin = mkdtempSync(join(parent, "cotal-npm-node-"));
   const dispose = () => rmSync(bin, { recursive: true, force: true, maxRetries: 3 });
   try {
     // npm's lifecycle shell and node-gyp resolve `node` by name, even when npm itself starts directly.

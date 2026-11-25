@@ -335,8 +335,10 @@ manager does not affect the update. Relative `PATH` entries are resolved from th
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
 On Linux and macOS, self-update makes its selected Node available to npm install scripts as `node`,
 including when the executable has a versioned name or its directory contains a colon. The temporary
-link is private to npm and does not change your shell's `PATH`. `update --check` does not create
-the link when it can start npm directly on the selected Node.
+link is private to npm and does not change your shell's `PATH`. If the temporary directory's path
+contains a colon, Cotal creates the link under your home directory instead, provided that directory
+is writable, protected from other local accounts, and has no colon in its path. `update --check`
+and script-disabled staged installs do not need the link when they can start npm directly.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -815,8 +817,9 @@ If the package is already absent, `remove` reports that nothing was removed and 
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. On Linux and macOS, npm install scripts can find the Node
-Cotal selects for npm as `node`, even if the executable has a versioned name. Commands appear in
-help, completion, and dispatch. Runtime providers load on demand in commands such as `supervise`
+Cotal selects for npm as `node`, using the same private link as [self-update](#update) when needed.
+Commands appear in help, completion, and dispatch. Runtime providers load on demand in commands
+such as `supervise`
 and when a managed seat first names one with `spawn --runtime <name>`. A `pty` manager launches a seat on
 an installed `tmux` without a restart; local process providers participate in `status` and
 selective `down`. Removing an additional runtime extension, one the manager was not started with,
