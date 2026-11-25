@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -37,15 +39,21 @@ export interface Win32ProcessBinding {
 
 const require = createRequire(import.meta.url);
 let binding: Win32ProcessBinding | undefined;
+const outsideInstall = new AsyncLocalStorage<true>();
+const creationBindingPath = () => fileURLToPath(new URL(`../build/Release/win32-${process.arch}/creation.node`, import.meta.url));
+
+/** A replacing updater must not map its installed DLL while npm moves or removes that DLL. */
+export function withWindowsUpdateIdentity<T>(run: () => T): T {
+  return process.platform === "win32" ? outsideInstall.run(true, run) : run();
+}
 
 /** Load the shipped Node-API binding once. A broken installation is a loud failure, not an unreadable process. */
 export function win32ProcessBinding(): Win32ProcessBinding {
   if (process.platform !== "win32" || (process.arch !== "x64" && process.arch !== "arm64"))
     throw new Error(`Windows creation identity is unsupported on ${process.platform}/${process.arch}`);
   if (binding === undefined) {
-    const path = new URL(`../build/Release/win32-${process.arch}/creation.node`, import.meta.url);
     let loaded: unknown;
-    try { loaded = require(fileURLToPath(path)); }
+    try { loaded = require(creationBindingPath()); }
     catch (cause) { throw new Error("could not load the shipped Windows creation identity binding; reinstall this version", { cause }); }
     if (loaded === null || typeof loaded !== "object" || !["creationToken", "pinProcess", "processTree", "userSid", "systemId", "bootId", "accounting", "drain", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
       throw new Error("the shipped Windows creation identity binding is missing a reader");
@@ -56,6 +64,15 @@ export function win32ProcessBinding(): Win32ProcessBinding {
 
 /** Read through the shipped Node-API binding. A broken installation is not an unreadable PID. */
 export function nativeWin32CreationToken(pid: number): string | undefined {
+  if (outsideInstall.getStore()) {
+    const script = "const token = require(process.argv[1]).creationToken(Number(process.argv[2])); if (token !== undefined) process.stdout.write(token);";
+    const result = spawnSync(process.execPath, ["-e", script, creationBindingPath(), String(pid)], {
+      timeout: 5_000, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (result.error || result.status !== 0 || (result.stdout !== "" && !/^\d{1,20}$/.test(result.stdout)))
+      throw new Error("could not read the Windows update process creation token");
+    return result.stdout || undefined;
+  }
   return win32ProcessBinding().creationToken(pid);
 }
 

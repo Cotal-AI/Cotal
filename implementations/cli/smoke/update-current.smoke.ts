@@ -6,15 +6,46 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
 import { pathToFileURL } from "node:url";
-import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, recoveryProcessStartToken, withWindowsUpdateIdentity } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "../../../bin/smoke/sentinel.mjs";
 import { executeUpdate, updateRuntime, type UpdateRuntime } from "../src/commands/update.js";
-import { runGlobalProcess, runProcess } from "../src/commands/update-process.js";
+import { installedUpdatePrefix, runGlobalProcess, runNpm, runProcess } from "../src/commands/update-process.js";
 import { npmProjectDirectory } from "../src/lib/npm-invocation.js";
 import { SEED_BUILTINS } from "../src/seed/paths.js";
 import { repairRuntimeEntry } from "./update-runtime-entry.smoke.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
+if (process.platform === "win32") {
+  const prefix = mkdtempSync(join(tmpdir(), "cotal update prefix "));
+  const previous = process.env.npm_config_prefix;
+  try {
+    const installed = join(prefix, "node_modules", "cotal-ai"), entry = join(installed, "dist", "cotal.js");
+    mkdirSync(dirname(entry), { recursive: true });
+    writeFileSync(entry, "");
+    writeFileSync(join(installed, "package.json"), JSON.stringify({ name: "cotal-ai", version: "1.0.0", bin: { cotal: "dist/cotal.js" } }));
+    writeFileSync(join(prefix, "cotal.cmd"), '@node "%dp0%\\node_modules\\cotal-ai\\dist\\cotal.js" %*\r\n');
+    const selected = installedUpdatePrefix(installed, entry);
+    assert.equal(selected, realpathSync(prefix), "the invoked Windows package selects its own prefix");
+    process.env.npm_config_prefix = join(prefix, "other");
+    const result = runNpm(["root", "-g", "--prefix", selected!]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(realpathSync(result.stdout.trim()), realpathSync(join(prefix, "node_modules")), "the pinned prefix wins over the alternate npm environment");
+    writeFileSync(join(prefix, "package.json"), '{"name":"local-project"}');
+    assert.equal(installedUpdatePrefix(installed, entry), undefined, "local installs do not redirect the global update");
+    const root = join(prefix, "node_modules");
+    const fail = await runGlobalProcess(root, "install", process.execPath, ["-e", "process.exit(7)"], process.env);
+    assert.equal(fail.status, 7, fail.error);
+    const retry = await runGlobalProcess(root, "install", process.execPath, ["-e", "console.log('retried')"], process.env);
+    assert.equal(retry.status, 0, retry.error);
+    assert.equal(retry.stdout.trim(), "retried", "a confirmed failed Windows install does not block retry");
+    const token = withWindowsUpdateIdentity(() => recoveryProcessStartToken(process.pid));
+    assert.match(token ?? "", /^\d{1,20}$/, "a Windows updater can pin its identity without loading its replaceable native binding");
+  } finally {
+    if (previous === undefined) delete process.env.npm_config_prefix;
+    else process.env.npm_config_prefix = previous;
+    rmSync(prefix, { recursive: true, force: true });
+  }
+}
 const effects: string[] = [], output: string[] = [];
 const current = { isCurrent: () => true };
 const rt: UpdateRuntime = {
