@@ -48,7 +48,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -235,6 +235,14 @@ check("an empty slot pin names the JSON manager lookup and a separate JSON slot 
 const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
 check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
   && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
+for (const [verb, ...args] of [["stop", "target"], ["attach", "target"], ["status", "target"], ["input", "target", "review"]] as const) {
+  for (const pin of ["", "local.U123"]) {
+    const server = "nats://127.0.0.1:39200";
+    const refused = cotal(verb, ...args, "--on", pin, "--space", "elsewhere", "--server", server);
+    check(`${verb} keeps the selected space and broker on the manager lookup for ${pin || "an empty pin"}`,
+      refused.status === 1 && refused.stderr.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !refused.stderr.includes("`cotal ps`"), shown(refused));
+  }
+}
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
@@ -677,5 +685,6 @@ for (const mode of [["--dry-run"], []]) {
     auto.status === 1 && auto.envelope?.error?.code === "USAGE_INVALID" && auto.envelope.error.message === "--runtime auto chooses a manager's own runtime, not the runtime of one seat", shown(auto));
 }
 
+check("the fixture does not create a reporting identity", !existsSync(join(home, ".cotal", "telemetry.json")));
 finish();
 process.exit(process.exitCode ?? 0);

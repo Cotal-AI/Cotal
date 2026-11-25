@@ -330,7 +330,9 @@ the broker's PID, and its Next is `cotal down`, then `backup cleanup-fallback <a
 includes `--discard-history` and says it deletes the previous store. Once that stack is stopped, it refuses `LIFECYCLE_BLOCKED`, exit 2, and names
 the cleanup. Nothing is started either way. While the restored broker runs, any other `cotal up`,
 bare or with `--server`, refuses `CONFLICT` too, naming its PID, and leaves the restore journal as it
-was. Its Next is `cotal down`, then `cotal up`, which starts the restored stack again.
+was. Its Next is `cotal down`, then `cotal up`. Once the broker stops, `cotal up` checks the store's
+identity and reopens the store recorded in the active restore journal. You do not need to repeat
+`--store-dir` or retire the journal to restart.
 
 
 ## Artifact contents

@@ -478,11 +478,14 @@ runs. If the recorded folder no longer exists,
 the step says so and names moving it back if it was renamed or `cotal space forget <space>` to
 remove its local record. For a space `cotal space create` prepared
 and no `cotal up` started, the step is to start it with `cotal up` first, then run the same command
-again. If the default broker store is unwritable or `.cotal/channels.json` blocks that first
-start, the step names the path and what to fix before running `cotal up`. `doctor auth` does not
-change the store's permissions. From another folder, that `cotal up` names the
-space's root with `--root`, quoted for a shell. If startup cannot write or search the project's
-`.cotal` directory, the step gives the same repair as `cotal up` without changing permissions.
+again. If a regular file occupies the project's `.cotal` path, the step names it and asks you to
+move the file aside and restore the original `.cotal` directory before startup. The diagnostic
+does not move or change either entry. If the default broker store is unwritable or
+`.cotal/channels.json` blocks that first start, the step names the path and what to fix before
+running `cotal up`. `doctor auth` does not change the store's permissions. From another folder,
+that `cotal up` names the space's root with `--root`, quoted for a shell. If startup cannot write
+or search the project's `.cotal` directory, the step gives the same repair as `cotal up` without
+changing permissions.
 
 
 ### Diagnosis limits

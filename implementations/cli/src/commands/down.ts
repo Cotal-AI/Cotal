@@ -79,7 +79,7 @@ import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
-import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
+import { goneRootDown, goneRootStackDown, refuseInaccessibleDownRoot, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine, recordedProcessesUnder } from "../lib/stack-journal.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -212,7 +212,8 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
     space = typeof values.space === "string" ? values.space : getCurrent();
     root = space === undefined ? undefined : stackRootElsewhere(space, here);
   } catch { return; }
-  if (root === undefined) return;
+  if (root === undefined || space === undefined) return;
+  refuseInaccessibleDownRoot(root, space);
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
 }
 
@@ -557,6 +558,7 @@ function refuseSpaceElsewhere(root: string, space: string, values: ParsedArgs["v
     target: { root, space, registeredRoot: at },
     remedy: `run ${codeSpan(sameDown(values))} in the project that started the stack`,
   });
+  refuseInaccessibleDownRoot(at, space);
   let controller = false;
   try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
   const stop = values["dry-run"] ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";

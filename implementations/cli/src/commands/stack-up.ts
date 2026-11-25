@@ -68,6 +68,7 @@ import { shellWord } from "../lib/endpoint-errors.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
 import { definitionListeners, exposedPlaintext, listenerRow, type StackListener } from "../lib/stack-listeners.js";
+import { controlsRecordedAdapter } from "../lib/service-adapters.js";
 import { definitionRootMatch, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstance, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { prepareKernelServiceStop, prepareProcessService, readOwnedLogTail, readServiceLog, removeServiceLogs, removeStoppedInstanceRecords, settleExitedInstances, startProcessService, stopProcessService } from "../lib/service-process.js";
@@ -1179,7 +1180,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       const credsKey = deliveryCredsKey(space, { injected: false, root });
       const credsPath = join(root, ".cotal", credsKey);
       const deliveryRows = serviceInstances(space, STACK_DEFINITION.delivery);
-      if (!(deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running")) {
+      const runningDelivery = deliveryRows.length === 1 && observeServiceProcess(deliveryRows[0]!.record.value) === "running" ? deliveryRows[0] : undefined;
+      const stoppedDelivery = mode === "auth" && prepared && runningDelivery && await stopDeliveryForBrokerRepair(root, recordedMembers, runningDelivery);
+      if (!runningDelivery || stoppedDelivery) {
         const creds = await mintCreds(auth, newIdentity(), "delivery");
         // A daemon that was killed, or that exited when its broker went away, cannot release shard 0,
         // and a replacement started inside the row's TTL loses the create and refuses to bind. No
@@ -1312,6 +1315,20 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   }
   const allReused = journal.members.every((row) => row.state === "reused" || row.state === "not-attempted");
   return { journal, changed, allReused, ...(storeTenants.length ? { storeShared: { path: storePath, tenants: storeTenants } } : {}), ...(storeWarnings.length ? { storeWarnings } : {}), ...(clearedRecords.length ? { clearedRecords } : {}), ...(launch ? { launch } : {}), ...(admittedRestore ? { admittedRestore } : {}), ...(settled ? { settled } : {}), ...(brokerExecutable ? { brokerExecutable } : {}), ...(streamsRecreated ? { streamsRecreated: true as const } : {}), ...(rotation ? { rotation } : {}) };
+}
+
+/** A delivery process can still be exiting after broker loss. Stop the stack's exact recorded
+ * member so the ordinary start waits for its lease and requires fresh delivery readiness. */
+async function stopDeliveryForBrokerRepair(root: string, members: StackMember[], selected: ServiceInstanceSnapshot): Promise<boolean> {
+  const value = selected.record.value;
+  const member = members.find((row) => row.role === "delivery");
+  if (member?.instanceId !== selected.name || !member.process || !value.process || member.process.pid !== value.process.pid || member.process.token !== value.process.token) return false;
+  const definition = serviceDefinitionStore(value.space).read(STACK_DEFINITION.delivery);
+  const launch = definition?.record.value.launch;
+  if (!definition || definition.record.revision !== value.definitionRevision || launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.delivery || launch.options.root !== root) return false;
+  if (!controlsRecordedAdapter(value, prepareProcessService(definition).adapter)) return false;
+  await stopProcessService(definition, selected);
+  return true;
 }
 
 /** Stop a broker this call started, through its exact kernel stop, and read whether its log says it

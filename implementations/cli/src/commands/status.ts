@@ -79,6 +79,7 @@ import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { onInstance, onRerun } from "../lib/control.js";
+import { managerRosterHint } from "../lib/manager-choice.js";
 import { serviceDefinitionProjection, serviceDefinitionStore } from "../lib/service-definitions.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
 import { readinessAddressSurvivors } from "../lib/service-process.js";
@@ -125,7 +126,7 @@ import {
   managerServiceHealth,
   printComponentHealth,
 } from "./status-health.js";
-import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldStoreProblem, selectedStackStarting } from "./status-meshes.js";
+import { registryFallbackChecks, personaCatalog, readMeshes, readStackStoreWarnings, readSelected, reportHeldRestartProblem, selectedStackStarting } from "./status-meshes.js";
 
 export { managerNoService, deliveryLeaseAbsent } from "./status-health.js";
 
@@ -171,7 +172,7 @@ export function validateStatusArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", "status takes at most one agent name");
   if (args.positionals.length && (args.values.all || args.values.components || args.values.wide || args.values.verbose))
     throw new CommandFailure("refused", "USAGE_INVALID", "a named agent status takes no --all, --components, --wide or --verbose");
-  if (typeof values.on === "string") onInstance(values.on, onRerun("cotal status", values, [...args.positionals, ...(presentation === "rich" ? [] : [`--${presentation}`])]));
+  if (typeof values.on === "string") onInstance(values.on, onRerun("cotal status", values, [...args.positionals, ...(presentation === "rich" ? [] : [`--${presentation}`])]), managerRosterHint(values));
   if (!args.positionals.length && args.values.on !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--on selects a named agent read, not infrastructure status");
   if (!args.positionals.length && args.values.creds !== undefined) {
@@ -279,10 +280,10 @@ export async function status(args: ParsedArgs): Promise<void> {
     readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
   // Replace the folder banner with the repair when startup is blocked under another selection.
   // `This folder's space` names any unsettled stack work, with the recovery step in Next.
-  const heldStoreBlocked = !blocked && reportHeldStoreProblem(root, hints);
+  const heldRestartBlocked = !blocked && reportHeldRestartProblem(root, hints);
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  if (!recovery && !heldStoreBlocked && held && !stackStarting && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
+  if (!recovery && !heldRestartBlocked && held && !stackStarting && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
   const services = readOwnedServices(selected, gaps);
   const bootAttempts: StatusResult["bootAttempts"] = blocked ? { root, state: "partial", observedAt: new Date().toISOString(), unsettled: [], additive: [], unreadable: [], elsewhere: [] } : readBootAttempts(root, gaps);
   const logged = selected.ok ? brokerStoreWrite(selected.target.root, selected.target.space) : undefined;

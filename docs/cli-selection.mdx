@@ -298,9 +298,11 @@ running processes, `space forget` exits 2 with `PERMISSION_DENIED` and keeps the
 access to the project folder and its process records before retrying. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
 its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
-`down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops
-the record, and the refusal says so, unless the space is named after its folder: that `down` keeps the
-record, and the refusal names `space forget` again. A space whose root holds its stack journal counts as
+`down`, so the refusal names `cotal down` in the project folder and then `space forget` again.
+When the command cannot prompt or uses `--json`, it names `cotal down --yes` to confirm the stop
+explicitly. A legacy root's `down` drops the record, and the refusal says so, unless the space is
+named after its folder: that `down` keeps the record, and the refusal names `space forget` again.
+A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
 writes nothing: the registration, the selection and the root's files stay. A space whose folder was
 deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack

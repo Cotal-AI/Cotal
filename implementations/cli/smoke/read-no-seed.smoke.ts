@@ -235,7 +235,7 @@ channels:
   const offline = { COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off" };
   for (const [selector, space, diagnosis] of [
     [["--server", "http://127.0.0.1:1"], null, /--server scheme "http" is not a broker scheme/],
-    [["--space", ""], "", /--space\/-s is empty; name one space/],
+    [["--space", ""], null, /--space\/-s is empty; name one space/],
   ] as const) {
     for (const [args, target] of [
       [["watch"], { requestedSpace: space }],

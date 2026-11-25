@@ -495,9 +495,8 @@ An empty or whitespace-only `--harness` or `-H` refuses with
 `USAGE_INVALID`, exit 1, before selecting a space or contacting a manager.
 Claude Code, OpenCode, Codex and pi ask the installed application.
 Claude Code lists the models its login can use, with their effort levels as variants, and pi lists
-the models of providers it holds credentials for, with their thinking levels as variants. Jcode reads providers that enable
-`model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
-and launch can still refuse one.
+the models of providers it holds credentials for, with their thinking levels as variants. Jcode lists
+the models `jcode model list` reports with an available route, without variants.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives
 the reason in `unavailable`; neither is a failed read. A connector whose catalog could not be
