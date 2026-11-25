@@ -104,7 +104,7 @@ try {
   check("attributes a model to the only provider that carries it", byId.get("fake-gamma")?.provider === "fakeprov2", byId.get("fake-gamma"));
   check("leaves a model unattributed when several other providers carry it", byId.has("glm-4.7") && byId.get("glm-4.7")?.provider === undefined, byId.get("glm-4.7"));
   check("offers no effort variants, because jcode reports none per model", catalog.models.every((model) => model.variants === undefined));
-  const loggedOut = fakeJcode("jcode-logged-out", `cat > /dev/null\necho "No credentials found. Let's log in!" >&2\necho "Error: Login skipped. Run \\\`jcode login\\\` when you're ready to authenticate." >&2\nexit 1`);
+  const loggedOut = fakeJcode("jcode-logged-out", `cat > /dev/null\necho "No credentials found. Let's log in!" >&2\nprintf "Enter 1-52, provider name, or Enter=skip: Error: Login skipped. Run \\\`jcode login\\\` when you're ready to authenticate.\\n" >&2\nexit 1`);
   const loggedOutMessage = await rejection(listFrom(loggedOut));
   check(
     "ends stdin so jcode's login prompt exits, and names jcode's own reason",
