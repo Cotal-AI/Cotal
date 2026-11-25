@@ -195,6 +195,22 @@ const malformedWithLiteralJson = run(["--no-color=false", "--no-input=false", "s
 check("a literal --json does not set the format of a malformed leading switch refusal", malformedWithLiteralJson.status === 1 &&
   malformedWithLiteralJson.stdout === "" && malformedWithLiteralJson.stderr.includes("--no-color takes no value"), shown(malformedWithLiteralJson));
 
+for (const [args, flag] of [
+  [["--plain=false", "status", "--json"], "--plain"],
+  [["--json=false", "status", "--json"], "--json"],
+  [["--plain=false", "--json=false", "-j", "--", "s"], "--plain"],
+  [["--json", "-j=false", "status"], "-j"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} preserves the JSON refusal`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+}
+
+const malformedOutput = run(["--json=false", "status", "--", "--json"]);
+check("only a valid output switch before -- requests JSON", malformedOutput.status === 1 && malformedOutput.stdout === "" &&
+  malformedOutput.stderr.includes("--json takes no value"), shown(malformedOutput));
+
 const literalGlobal = run([...search, "--", "--no-input=false"]);
 check("after -- an attached global value is still a page word", literalGlobal.status === 1 && literalGlobal.stderr === "" &&
   literalGlobal.envelope?.error?.message === "give a page or --search, not both", shown(literalGlobal));
