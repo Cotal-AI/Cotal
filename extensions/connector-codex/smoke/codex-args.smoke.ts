@@ -98,7 +98,20 @@ try {
   throws("a fast value that is not true or false is refused", () => tier({ fast: "yes" }), /takes true or false, not "yes"/);
   throws("a validate-only launch refuses an unknown mode too", () => tier({ plan: true }, { validateOnly: true }), /not one Codex offers/);
 
-  // The host renders the tier as a `-c service_tier` override, and an operator `--opt` key wins.
+  // The fast mode and an operator service_tier both choose the tier, so the mix is refused at spawn.
+  const opTierOpt = { launchOptions: { service_tier: '"flex"' } };
+  const conflict = /mode "fast" and launch option "service_tier" both set Codex's service tier.*--opt service_tier=\.\.\. alone/;
+  throws("fast on beside an operator service_tier is refused", () => tier({ fast: true }, opTierOpt), conflict);
+  throws("fast off beside an operator service_tier is refused", () => tier({ fast: false }, opTierOpt), conflict);
+  throws("a validate-only launch refuses the mix too", () => tier({ fast: true }, { ...opTierOpt, validateOnly: true }), conflict);
+  const opOnly = launch({ space: "s", name: "n", ...opTierOpt }).env ?? {};
+  check(
+    "an operator service_tier alone still launches, with no mode tier",
+    !("COTAL_CODEX_SERVICE_TIER" in opOnly) && JSON.parse(opOnly.COTAL_CODEX_CONFIG ?? "{}").service_tier === '"flex"',
+    opOnly.COTAL_CODEX_CONFIG,
+  );
+
+  // The host renders the tier as a `-c service_tier` override, and refuses one beside an operator's.
   const serviceTiers = (o: [string, string][]) => o.filter(([k]) => k === "service_tier").map(([, v]) => v);
   const ownConfig = process.env.COTAL_CODEX_CONFIG;
   delete process.env.COTAL_CODEX_CONFIG;
@@ -107,8 +120,9 @@ try {
     check("a tier renders service_tier", rendered.length === 1 && rendered[0] === '"priority"', rendered);
     check("no tier renders no service_tier", serviceTiers(configOverrides(undefined, undefined, undefined)).length === 0);
     process.env.COTAL_CODEX_CONFIG = JSON.stringify({ service_tier: '"flex"' });
-    const opTier = serviceTiers(configOverrides(undefined, undefined, "priority"));
-    check("an operator service_tier is the only one rendered", opTier.length === 1 && opTier[0] === '"flex"', opTier);
+    throws("the host refuses a tier beside an operator service_tier", () => configOverrides(undefined, undefined, "priority"), /both set the service tier/);
+    const opTier = serviceTiers(configOverrides(undefined, undefined, undefined));
+    check("an operator service_tier alone renders once", opTier.length === 1 && opTier[0] === '"flex"', opTier);
   } finally {
     if (ownConfig === undefined) delete process.env.COTAL_CODEX_CONFIG;
     else process.env.COTAL_CODEX_CONFIG = ownConfig;

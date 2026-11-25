@@ -199,9 +199,9 @@ function prepareCodexHome(space: string, name: string): string {
 }
 
 /** The `-c key=value` override list for the codex child: the operator's launch options first
- *  (verbatim), then the model, effort and service tier selectors and the autonomy defaults ONLY
- *  where the operator didn't set that key — one rail, so an explicit `--opt approval_policy=…`
- *  naturally wins. */
+ *  (verbatim), then the model and effort selectors and the autonomy defaults ONLY where the
+ *  operator didn't set that key — one rail, so an explicit `--opt approval_policy=…` naturally
+ *  wins. A service tier beside an operator `service_tier` is refused, as buildLaunch refuses it. */
 export function configOverrides(model: string | undefined, variant: string | undefined, serviceTier: string | undefined): [string, string][] {
   const overrides: [string, string][] = [];
   const raw = process.env.COTAL_CODEX_CONFIG?.trim();
@@ -219,7 +219,10 @@ export function configOverrides(model: string | undefined, variant: string | und
   const has = (key: string): boolean => overrides.some(([k]) => k === key);
   if (model && !has("model")) overrides.push(["model", `"${model}"`]);
   if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
-  if (serviceTier && !has("service_tier")) overrides.push(["service_tier", `"${serviceTier}"`]);
+  if (serviceTier) {
+    if (has("service_tier")) throw new Error('codex host: mode "fast" and launch option "service_tier" both set the service tier; set one, not both');
+    overrides.push(["service_tier", `"${serviceTier}"`]);
+  }
   // Autonomy: a headless host has no one to answer an approval prompt, so an interactive
   // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
   // nullifying the operator's stated policy. Refuse anything but `never` rather than pretend.

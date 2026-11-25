@@ -55,6 +55,12 @@ interface CodexModelEntry {
  *  when the mode is off. */
 const SERVICE_TIER = { fast: "priority", standard: "default" } as const;
 
+/** The refusal when the fast mode and an operator `service_tier` both pick the tier. */
+const TIER_CONFLICT =
+  'codex connector: mode "fast" and launch option "service_tier" both set Codex\'s service tier, so ' +
+  "one would silently override the other. Use --mode fast=true or fast=false for the Fast or " +
+  "standard tier, or --opt service_tier=... alone for another tier, not both.";
+
 /** The file a launch runs: the operator pin, then the path boot resolved, then the bare name. The
  *  pin is read here because discoveryEnv strips every COTAL_* key, which is what keeps a catalog
  *  probe from looking like a managed seat. A later PATH change cannot pick a different file. */
@@ -250,8 +256,9 @@ export const codexConnector: Connector = {
     // RAW passthrough (the spawn capability is the trust boundary, not the key set — see
     // connectorLaunchOptions). The key-shape guard admits top-level config keys only (no dotted
     // paths). The host appends its autonomy defaults (approval_policy, sandbox_mode) and the
-    // model, effort and service tier selectors ONLY for keys the operator didn't set, so an
-    // explicit --opt wins.
+    // model and effort selectors ONLY for keys the operator didn't set, so an explicit --opt wins.
+    // The service tier is the exception: the fast mode and an operator service_tier both choose
+    // it, and either winning would run a tier the other asked against, so the mix is refused.
     const overrides: Record<string, unknown> = {};
     let hasOverrides = false;
     for (const [k, v] of connectorLaunchOptions("codex", opts.launchOptions)) {
@@ -279,6 +286,7 @@ export const codexConnector: Connector = {
       overrides[k] = v;
       hasOverrides = true;
     }
+    if (tier && "service_tier" in overrides) throw new Error(TIER_CONFLICT);
     if (hasOverrides) env.COTAL_CODEX_CONFIG = JSON.stringify(overrides);
 
     // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a

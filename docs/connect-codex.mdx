@@ -84,7 +84,7 @@ An unspecified effort remains absent from presence rather than showing a guessed
 `--mode fast=true` runs the model on Codex's Fast service tier, and `--mode fast=false` runs it at standard speed.
 The connector renders the choice as Codex's `service_tier` setting.
 Without `--mode fast`, the model runs on its own default tier, which the catalog shows as the mode's default.
-An `--opt service_tier=<tier>` launch option takes precedence over the mode.
+The mode and an `--opt service_tier=<tier>` launch option both set the tier, so a spawn that names both is refused before launch. Use `--opt service_tier=<tier>` alone for a tier other than Fast or standard.
 
 ## Inspect the integration [#how-it-binds]
 
