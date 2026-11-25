@@ -223,6 +223,11 @@ export function displayRemedy(remedy: string, cmd?: string): string {
     command.startsWith("cotal ") ? codeSpan(`${cmd ??= displayCmd()}${command.slice("cotal".length)}`) : span);
 }
 
+/** Adapt the project-trust command for human output without changing the machine-readable error. */
+export function displayProjectTrustFailure(message: string): string {
+  return message.replace(/(?<=If you trust this folder, run `)cotal(?= trust )/g, () => displayCmd());
+}
+
 export function hasMovedStackRemedy(error: unknown): boolean {
   return isWorkspaceTargetError(error) && error.code === "not-started" && error.details.home === undefined && error.details.stackRemedy !== undefined;
 }

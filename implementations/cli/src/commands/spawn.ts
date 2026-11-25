@@ -75,7 +75,7 @@ import {
 import { c, stderrLine } from "../ui.js";
 import { parseChannelFlag } from "../lib/channel-flags.js";
 import { withProvisioner } from "../lib/provisioner.js";
-import { displayCmd, displayRemedy } from "../lib/self-exec.js";
+import { displayCmd, displayProjectTrustFailure } from "../lib/self-exec.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
 import { onInstance } from "../lib/control.js";
@@ -600,7 +600,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // persona file in a project folder that is not trusted may contribute none: the connector renders
   // each key into the host's own flags or config. Judged above, on the file that was read.
   if (personaOptionsRefused) {
-    stderrLine("✗ ", displayRemedy(personaOptionsRefused), c.red);
+    stderrLine("✗ ", displayProjectTrustFailure(personaOptionsRefused), c.red);
     process.exit(1);
   }
   const launchOptions = mergeLaunchOptions(def.launchOptions, cliLaunchOptions);
@@ -628,7 +628,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
   } catch (e) {
-    stderrLine("✗ ", displayRemedy((e as Error).message), c.red);
+    stderrLine("✗ ", displayProjectTrustFailure((e as Error).message), c.red);
     process.exit(1);
   }
 

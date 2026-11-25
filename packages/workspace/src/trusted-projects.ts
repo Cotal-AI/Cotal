@@ -269,7 +269,7 @@ function walkPersonaPath(file: string): WalkedPersona {
   return { final: done, stat: lstatSync(done), spellings: [...new Set(spellings)] };
 }
 
-/** Read the file a walk ended at, refusing when it is no longer the file the walk judged: the last
+/** Read the file a walk ended at, refusing if it differs from the file the walk judged: the last
  *  component is opened without following a link, and the opened file must be the same one. */
 function readWalked(file: string, walked: WalkedPersona, as: "launch" | "agent"): Buffer {
   const notRegular = () => as === "launch" ? new PersonaSourceError(`persona is not a regular file: ${file}`, { remedy: "pass a regular persona file" }) : new Error(`agent file ${file} is not a regular file`);
@@ -333,7 +333,7 @@ export function loadTrustCheckedPersona(file: string, as: "launch" | "agent"): {
  *  refuses. */
 export function manifestPersonaLaunchOptionsRefusal(personaPath: string | undefined, launchOptions: Record<string, unknown> | undefined): string | undefined {
   if (personaPath === undefined || !Object.keys(launchOptions ?? {}).length) return undefined;
-  const unreadable = (e: unknown) => `${personaPath} could not be read to check its launch options (${(e as Error).message}), so nothing was launched`;
+  const unreadable = (e: unknown) => `${personaPath} could not be read to check its launch options (${(e as Error).message}), so nothing was launched. Make the path resolve to a readable persona file, then retry`;
   let walked: WalkedPersona;
   try { walked = walkPersonaPath(personaPath); }
   catch (e) {

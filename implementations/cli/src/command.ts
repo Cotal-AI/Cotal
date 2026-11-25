@@ -78,7 +78,7 @@ import { workingFolderRemoved } from "./lib/paths.js";
 import { npmProjectDirectory, preserveUpdatePath } from "./lib/npm-invocation.js";
 import { reportLostOutput, writeAllSync } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
-import { displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
+import { displayProjectTrustFailure, displayRemedy, hasMovedStackRemedy } from "./lib/self-exec.js";
 import { asksForHelp, GLOBAL_FLAG_WORDS, leadingInvocation, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 import { nearestWords, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
@@ -226,7 +226,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   }
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
   const report = () => {
-    const message = failure.message.includes("If you trust this folder, run `cotal trust ") ? displayRemedy(failure.message) : failure.message;
+    const message = displayProjectTrustFailure(failure.message);
     const shown = message === failure.message ? failure : new CommandFailure(failure.outcome, failure.code, message, failure);
     return renderReport(commandFailureReport(shown), plain ? "plain" : "rich", process.stderr);
   };

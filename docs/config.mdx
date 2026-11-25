@@ -40,10 +40,11 @@ A project folder's own `.cotal` may declare these only when the folder is truste
   reads the persona from the file it checked.
 
 A spawn that reads either from a folder that is not trusted refuses. The refusal names the file,
-the entries, the folder and the command that trusts it. Nothing launches. This applies to a spawn
-in this terminal and to one a manager runs. The config file's other fields, such as `modelPolicy`,
-apply whether or not the folder is trusted. A persona file outside any project folder, `--opt`
-given on the command line, and a manifest's own `launchOptions` on an agent are not affected.
+the entries, the folder and the command that trusts it. Nothing launches. For a managed launch,
+run the printed command on the manager's host as the account that runs it. The config file's other
+fields, such as `modelPolicy`, apply whether or not the folder is trusted. A persona file outside
+any project folder, `--opt` given on the command line, and a manifest's own `launchOptions` on an
+agent are not affected.
 
 `cotal trust <path>` trusts one folder. It records the folder's canonical path in
 `trusted-projects.json` in the operator config folder. A trusted folder does not trust the folders
@@ -55,8 +56,8 @@ by a link does not pass its trust to the link's target.
 in that run. A folder that already had a `.cotal`, such as a cloned repository, is trusted only by
 `cotal trust`. Run it after you read the folder's `.cotal/config.json` and personas.
 
-The first command at the version that added this rule trusted every folder a space was registered
-or prepared at before it. That ran once per Cotal home, and `trusted-projects-seed.json` in the
+The first regular command at the version that added this rule trusted every folder where a space
+was already registered or prepared. That ran once per Cotal home, and `trusted-projects-seed.json` in the
 Cotal home records it. Removing `trusted-projects.json` does not run it again: no folder is trusted
 until `cotal trust` records it. `cotal trust` does not change the seed record. Removing
 `trusted-projects-seed.json` makes the next command run the seed again, trusting every folder a

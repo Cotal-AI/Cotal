@@ -17,10 +17,44 @@
 import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { delimiter, join, resolve } from "node:path";
+import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { projectTrustProblem } from "@cotal-ai/core";
 
-if (process.platform === "win32") skipSuite("the stand-in harness is a POSIX script");
+if (process.platform === "win32") {
+  const sandbox = mkdtempSync(join(tmpdir(), "cotal-project-trust-shells-"));
+  const entry = resolve("bin/dist/cotal.js");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  Object.assign(env, { COTAL_HOME: join(sandbox, "state"), XDG_CONFIG_HOME: join(sandbox, "config"), COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" });
+  const launcher = join(sandbox, "cotal.cmd");
+  writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "${entry}" %*\r\n`);
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "Path";
+  env[pathKey] = `${sandbox}${delimiter}${env[pathKey] ?? ""}`;
+  let passed = 0, failed = 0;
+  try {
+    for (const shell of ["powershell.exe", "cmd.exe"]) {
+      for (const suffix of ["a project with spaces", "a project %PATH% $HOME & '!"]) {
+        const root = join(sandbox, shell, suffix);
+        mkdirSync(root, { recursive: true });
+        const reason = projectTrustProblem(["spawn.env"], root);
+        const command = /`(cotal trust [^`]+)`/.exec(reason)?.[1];
+        const expected = suffix.includes("%") ? `cotal trust --hex ${Buffer.from(root).toString("hex")}` : `cotal trust -- "${root}"`;
+        if (command !== expected) {
+          failed++;
+          console.error(`wrong trust command: ${reason}`);
+          continue;
+        }
+        const args = shell === "cmd.exe" ? ["/d", "/v:off", "/c", command] : ["-NoProfile", "-NonInteractive", "-Command", command];
+        const result = spawnSync(shell, args, { cwd: sandbox, env, encoding: "utf8", timeout: 30_000, windowsVerbatimArguments: shell === "cmd.exe" });
+        if (result.status === 0 && result.stdout.includes(root)) { passed++; console.log(`✓ ${shell} records ${suffix}`); }
+        else { failed++; console.error(`${shell}: ${result.stderr || result.error || result.stdout}`); }
+      }
+    }
+  } finally { rmSync(sandbox, { recursive: true, force: true }); }
+  emitSentinel({ passed, failed });
+  process.exit(failed === 0 ? 0 : 1);
+}
 
 const box = realpathSync(mkdtempSync(join(tmpdir(), "cotal-project-trust-")));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];

@@ -9,7 +9,7 @@ terminal and for one a manager runs.
 
 ### What changes for you
 
-- The first command you run at this version writes `trusted-projects.json` in the operator config
+- The first regular command you run at this version writes `trusted-projects.json` in the operator config
   folder. It lists every root a space on this machine was registered or prepared at before that
   command, so those projects keep working with no step. This happens once per Cotal home: a
   record beside the space registry notes it, so a space registered later is never added, even if
@@ -29,7 +29,8 @@ terminal and for one a manager runs.
 - A project config is refused if its file or `.cotal` belongs to another account. Copy the settings
   into a project folder and config file your account owns, then review the folder and run
   `cotal trust <path>` if the settings require trust.
-- Restart a running manager at this version so its spawns apply the rule.
+- Restart a running manager at this version so its spawns apply the rule. Run the printed trust
+  command on the execution host, as the account that runs the manager.
 
 If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
 for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
