@@ -36,6 +36,9 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 
+When a single manager returns an empty list, Next checks the local default harness before offering
+`cotal spawn`. If a required executable is missing, Next names it and links to its installation guide.
+
 ### Control credentials
 
 When `ps` refuses an invalid `--on`, its suggested lookup lists managers on the same target

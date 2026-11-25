@@ -36,7 +36,6 @@ import {
   homeCotalDir,
   installationWriter,
   cachedPreferences,
-  loadLaunchPersonaFile,
   resolvePreference,
   isWorkspaceTargetError,
   loadSoleSpaceAuth,
@@ -74,7 +73,7 @@ import { selectResetTarget } from "./reset-store-apply.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas } from "../lib/personas.js";
-import { directPersonaPath } from "../lib/spawn-defaults.js";
+import { defaultPersonaPin, directPersonaPath } from "../lib/spawn-defaults.js";
 import { agentStatus } from "./agents.js";
 import { invalidEnvironmentValues } from "./config.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -440,16 +439,10 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
       let path: string | undefined;
       try {
         path = directPersonaPath(selected.target.root, persona.value!);
-        const definition = loadLaunchPersonaFile(path);
-        defaults.harness = resolvePreference("harness", { ...context, pin: definition.agent }).value;
+        defaults.harness = resolvePreference("harness", { ...context, pin: defaultPersonaPin(path, persona.winner?.source === "default") }).value;
       } catch (error) {
-        const { code, path: errorPath } = error as NodeJS.ErrnoException;
-        // A bare spawn writes the shipped, unpinned default only when the product default is absent.
-        // Every other failed read leaves the effective harness unknown, never the saved preference.
-        if (code !== "ENOENT" || persona.winner?.source !== "default") {
-          defaults.harness = null;
-          gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path: path ?? errorPath });
-        }
+        defaults.harness = null;
+        gaps.add("DEFAULT_PERSONA_UNREADABLE", "the default launch persona could not be read and validated; its effective harness is unknown", { path: path ?? (error as NodeJS.ErrnoException).path });
       }
     }
   } catch (e) {
