@@ -192,7 +192,7 @@ The same applies to `team check`, `team boot` and `team deploy` once you have su
 Service verbs with a definition name, such as `service add <name>`, give the same remedy.
 `service list` takes no operands and gives it too. So do manager lifecycle commands such as
 `manager status`, which already select the manager service by name.
-`ext root` takes no operands, so the refusal tells you to drop an unknown option instead of suggesting `--`.
+`ext root` and `history limit` take no operands, so the refusal tells you to drop an unknown option instead of suggesting `--`.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
 the refusal tells you to drop the unknown option instead.
