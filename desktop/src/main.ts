@@ -712,25 +712,30 @@ function renderConnections(): void {
     if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy || !!rowOperation; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
-    remove.addEventListener("click", () => void rowAction(space, restore));
+    const recovery = accountRow?.custodyRecovery;
+    const label = recovery ? "Use signed-in account" : restore ? "Add" : "Remove";
+    const button = document.createElement("button"); button.type = "button"; button.className = "text-button"; button.textContent = label; button.disabled = busy || !!rowOperation; button.setAttribute("aria-label", recovery ? `${label} for ${name.textContent}` : `${label} ${name.textContent}`);
+    button.addEventListener("click", () => {
+      if (recovery && !window.confirm(`Use the signed-in account for ${name.textContent} instead of ${recovery.holder}?`)) return;
+      void rowAction(space, restore, recovery);
+    });
     if (rowOperation?.space === space) {
       row.setAttribute("aria-busy", "true");
       const waiting = document.createElement("small"); waiting.setAttribute("role", "status"); waiting.textContent = `${rowOperation.label}… Waiting for the background service.`; copy.append(waiting);
     }
-    row.append(copy, remove); return row;
+    row.append(copy, button); return row;
   }));
 }
-async function rowAction(space: string, restore: boolean): Promise<void> {
+async function rowAction(space: string, restore: boolean, recovery?: { candidate: string; holder: string }): Promise<void> {
   if (busy || rowOperation) return;
-  const operation = { space, label: `${restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
+  const operation = { space, label: `${recovery ? "Moving" : restore ? "Adding" : "Removing"} ${shownSpaceLabel(accountSpaces.get(space)?.label, space)}` };
   rowOperation = operation; refreshGeneration++; renderConnections();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       (async () => {
-        if (restore) {
-          await request({ op: "space-intent", space, enabled: true });
+        if (recovery || restore) {
+          await request(recovery ? { op: "space-recover", space, ...recovery } : { op: "space-intent", space, enabled: true });
           if (rowOperation !== operation) return;
           await refresh();
         } else await removeSpace(space, () => rowOperation === operation);
