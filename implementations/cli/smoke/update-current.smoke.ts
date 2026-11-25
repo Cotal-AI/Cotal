@@ -327,15 +327,17 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
     const projectNode = process.platform === "win32" ? join(onlyNode, exe) : process.execPath;
     assert.equal(realpathSync(recordedLaunches().at(-1)!.node), realpathSync(projectNode), "npm can succeed on the project Node even when its declared range excludes it");
     if (process.platform !== "win32") {
-      const cwd = join(root, "native:tools"), node = join(cwd, "node");
-      mkdirSync(cwd);
-      copyFileSync(process.execPath, node);
-      symlinkSync(cli, join(cwd, "npm"));
-      const viaColon = run("--self", [], npmBin, cwd, node);
-      assert.equal(viaColon.status, 0, viaColon.stdout + viaColon.stderr);
-      assert.match(viaColon.stdout, /Registry latest:/);
-      assert.equal(recordedLaunches().at(-1)!.node, realpathSync(node));
-      assert.equal(recordedLaunches().at(-1)!.cwd, parse(root).root, "npm still runs outside the caller's project");
+      for (const [dir, name] of [["native:tools", "node"], ["native-tools", `node-${process.versions.node}`]]) {
+        const cwd = join(root, dir), node = join(cwd, name);
+        mkdirSync(cwd);
+        copyFileSync(process.execPath, node);
+        symlinkSync(cli, join(cwd, "npm"));
+        const update = run("--self", [], npmBin, cwd, node);
+        assert.equal(update.status, 0, `${node}\n${update.stdout}${update.stderr}`);
+        assert.match(update.stdout, /Registry latest:/);
+        assert.equal(recordedLaunches().at(-1)!.node, realpathSync(node));
+        assert.equal(recordedLaunches().at(-1)!.cwd, parse(root).root, "npm still runs outside the caller's project");
+      }
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 }

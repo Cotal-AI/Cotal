@@ -155,7 +155,9 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const node = resolveOnPath("node", lookup);
   if (node && realpathSync(node) === realpathSync(process.execPath))
     return { file: literal ? file : "npm", args, env, cwd };
-  if (!node && engine && literal && dirname(process.execPath).includes(delimiter))
-    return { file: process.execPath, args: [engine.entry, ...args], env, cwd };
+  const bin = dirname(process.execPath);
+  // Prepending the runtime directory cannot satisfy npm's shebang without a `node` entry.
+  if (!node && engine && (bin.includes(delimiter) || !inDirectory(bin, "node")))
+    return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd };
   return { file, args, env: withNode(process.execPath), cwd };
 }

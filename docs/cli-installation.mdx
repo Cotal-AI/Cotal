@@ -331,8 +331,9 @@ Update runs from the surviving project root, or the filesystem root when no proj
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
-If the running Node is in a directory that contains a colon and no Node is available on npm's `PATH`,
-self-update can run the selected npm script directly with that Node.
+On Linux and macOS, self-update can run a recognized npm script directly with the Node running Cotal
+when npm cannot find `node` on its `PATH`. This covers version-named Node executables without a
+`node` link and Node directories that contain a colon.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
