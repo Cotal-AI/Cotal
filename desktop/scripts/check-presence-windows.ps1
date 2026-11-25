@@ -148,6 +148,42 @@ process.stdin.setEncoding('utf8').on('data', chunk => {
     Move-Item -LiteralPath $original -Destination $entry -Force
   }
 }
+function Read-ExplorerRunningApps($taskbarHandle) {
+  $probe = $null
+  try {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $start.StandardErrorEncoding = [Text.Encoding]::UTF8
+    foreach ($arg in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', (Join-Path $PSScriptRoot 'read-windows-taskbar-accessibility.ps1'), '-TaskbarHandle', $taskbarHandle.ToInt64().ToString())) {
+      $start.ArgumentList.Add($arg)
+    }
+    $probe = [Diagnostics.Process]::Start($start)
+    $stdout = $probe.StandardOutput.ReadToEndAsync()
+    $stderr = $probe.StandardError.ReadToEndAsync()
+    if (!$probe.WaitForExit(8000)) { throw 'Explorer legacy reader exceeded its eight-second bound.' }
+    if (!$stdout.Wait(500) -or !$stderr.Wait(500)) { throw 'Explorer legacy reader output did not close.' }
+    if ($probe.ExitCode -ne 0) {
+      $message = $stderr.Result.Trim()
+      if ($message.Length -gt 2048) { $message = $message.Substring(0, 2048) }
+      throw "Explorer legacy reader exited $($probe.ExitCode): $message"
+    }
+    $reply = ConvertFrom-Json -InputObject $stdout.Result -AsHashtable
+    if ($reply.toolbar -le 0 -or $reply.buttons -isnot [array]) { throw 'Explorer legacy reader returned invalid geometry or button evidence.' }
+    return @{ status = 'observed'; toolbar = $reply.toolbar; buttons = @($reply.buttons); error = $null }
+  } catch {
+    return @{ status = 'reader unavailable'; toolbar = $null; buttons = $null; error = $_.Exception.GetBaseException().Message }
+  } finally {
+    if ($null -ne $probe) {
+      try { if (!$probe.HasExited) { $probe.Kill($true); $null = $probe.WaitForExit(1000) } }
+      finally { $probe.Dispose() }
+    }
+  }
+}
 $results = @()
 $taskbarMissing = @()
 foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') })) {
@@ -178,6 +214,8 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     }
     $links = @(Shortcuts $path)
     $links | Set-Content (Join-Path $out "$kind-shortcuts.txt")
+    $beforeTaskbar = [PresenceWindow]::Taskbar()
+    $beforeLegacy = Read-ExplorerRunningApps $beforeTaskbar
     $launch = Start-Process -FilePath $path -PassThru -RedirectStandardOutput (Join-Path $out "$kind-stdout.log") -RedirectStandardError (Join-Path $out "$kind-stderr.log")
     $launch.Id | Set-Content (Join-Path $out "$kind-launched-pid.txt")
     $owned = Wait-Window $path
@@ -194,9 +232,20 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $names = @($items | ForEach-Object { $_.Current.Name })
     $names | Set-Content (Join-Path $out "$kind-taskbar-elements.txt")
     $taskbarNamed = [bool]($names | Where-Object { $_ -match '^Cotal(?:\b|$)' })
+    $taskbarNameSource = if ($taskbarNamed) { 'uia-name' } else { $null }
+    $afterLegacy = Read-ExplorerRunningApps $taskbarHandle
+    $beforeNamed = @($beforeLegacy.buttons | Where-Object { $_.Name -match '^Cotal(?:\b|$)' })
+    $afterNamed = @($afterLegacy.buttons | Where-Object { $_.Name -match '^Cotal(?:\b|$)' })
+    if (!$taskbarNamed -and !$beforeLegacy.error -and !$afterLegacy.error -and
+        $beforeTaskbar -eq $taskbarHandle -and $beforeLegacy.toolbar -eq $afterLegacy.toolbar -and
+        $beforeNamed.Count -eq 0 -and $afterNamed.Count -eq 1) {
+      $taskbarNamed = $true
+      $taskbarNameSource = 'explorer-msaa-name'
+    }
+    @{ before = $beforeLegacy; after = $afterLegacy; source = $taskbarNameSource } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out "$kind-taskbar-accessibility.json")
     if (!$taskbarNamed) {
       $taskbarMissing += $kind
-      Write-Warning 'Not proven: the Cotal taskbar button accessibility name. Explorer exposes unnamed running-app children. Screenshot and independent window, shortcut identity, lifecycle and uninstall checks are retained, not substituted for this name lookup.'
+      Write-Warning 'Not proven: the Cotal taskbar button accessibility name. See the recorded Explorer UI Automation names and legacy reads. Screenshot and independent window, shortcut identity, lifecycle and uninstall checks are retained, not substituted for this name lookup.'
     }
     Start-Process -FilePath $path | Out-Null
     Start-Sleep 3
@@ -230,7 +279,7 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $installed = $false
     $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
-    $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
+    $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed; taskbarNameSource = $taskbarNameSource }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {
     if ($launch -and (Get-Process -Id $launch.Id -ErrorAction SilentlyContinue)) {

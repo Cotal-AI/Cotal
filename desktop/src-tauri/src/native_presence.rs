@@ -7,6 +7,25 @@ use tauri_plugin_autostart::ManagerExt;
 
 pub struct Presence(pub Mutex<Preferences>, pub Option<String>);
 
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub fn login_receipt(stage: &'static str, source: &'static str, requested: Option<bool>, ok: Option<bool>, observed: Option<bool>) {
+    use std::io::Write;
+    static RECEIPT_LOCK: Mutex<()> = Mutex::new(());
+    let Some(home) = crate::e2e_trace_home() else { return; };
+    // DOM events and native command/readback threads share timestamp and append order.
+    let Ok(_guard) = RECEIPT_LOCK.lock() else { return; };
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis());
+    let Ok(mut record) = serde_json::to_vec(&serde_json::json!({ "stage": stage, "source": source, "pid": std::process::id(), "atUnixMs": at, "requested": requested, "ok": ok, "observed": observed })) else { return; };
+    record.push(b'\n');
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(home.join("login-preference-receipts.jsonl")) {
+        // One append contains the whole line. Never retry a short write as fragments.
+        match file.write(&record) {
+            Ok(written) if written == record.len() => {},
+            _ => return,
+        }
+    }
+}
+
 fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("presence.json"))
 }
@@ -177,15 +196,21 @@ fn is_login_enabled(app: &AppHandle) -> Result<bool, String> {
     { app.autolaunch().is_enabled().map_err(|e| e.to_string()) }
 }
 
-fn apply_login(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
+fn apply_login(app: &AppHandle, preferences: &Preferences, _source: &'static str) -> Result<(), String> {
     if preferences.recovered { return Ok(()); }
     let enabled = preferences.login_enabled() && !transient(app)?;
-    if is_login_enabled(app)? != enabled {
+    let observed = is_login_enabled(app);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("api-is-enabled", _source, Some(enabled), Some(observed.is_ok()), observed.as_ref().ok().copied());
+    if observed? != enabled {
         #[cfg(windows)]
-        windows_set_hkcu_login(enabled)?;
+        let result = windows_set_hkcu_login(enabled);
         #[cfg(not(windows))]
-        if enabled { app.autolaunch().enable() } else { app.autolaunch().disable() }
-            .map_err(|e| format!("Open at login could not be changed: {e}"))?;
+        let result = if enabled { app.autolaunch().enable() } else { app.autolaunch().disable() }
+            .map_err(|e| format!("Open at login could not be changed: {e}"));
+        #[cfg(all(feature = "e2e", debug_assertions))]
+        login_receipt(if enabled { "api-enable" } else { "api-disable" }, _source, Some(enabled), Some(result.is_ok()), None);
+        result?;
     }
     Ok(())
 }
@@ -204,7 +229,7 @@ pub fn observe(app: &AppHandle, operation: &str, frame: &serde_json::Value) -> R
         let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
         let changed = p.connected != connected;
         p.connected = connected;
-        apply_login(app, &p)?;
+        apply_login(app, &p, "connection-observation")?;
         if changed { save(app, &p)?; }
         #[cfg(windows)]
         if !p.recovered { reconcile_owned_hklm_login()?; }
@@ -241,8 +266,11 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
         let p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
         if p.recovered { None } else { reconcile_owned_hklm_login().err() }
     };
+    let login_enabled = is_login_enabled(&app);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("api-is-enabled", "presence-view", None, Some(login_enabled.is_ok()), login_enabled.as_ref().ok().copied());
     Ok(PresenceView {
-        login_enabled: is_login_enabled(&app)?,
+        login_enabled: login_enabled?,
         #[cfg(windows)]
         login_error,
         relocation_offer: !relocation_declined && transient(&app)?,
@@ -254,18 +282,25 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
 
 #[tauri::command]
 pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let _activity = app.state::<crate::app_activity::Activity>().request()?;
-    let state = app.state::<Presence>();
-    let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
-    if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
-    if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
-    p.recovered = false;
-    p.login = Some(enabled);
-    apply_login(&app, &p)?;
-    save(&app, &p)?;
-    #[cfg(windows)]
-    reconcile_owned_hklm_login()?;
-    Ok(())
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("handler-enter", "preference", Some(enabled), None, None);
+    let result = (|| {
+        let _activity = app.state::<crate::app_activity::Activity>().request()?;
+        let state = app.state::<Presence>();
+        let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
+        if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
+        if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
+        p.recovered = false;
+        p.login = Some(enabled);
+        apply_login(&app, &p, "preference")?;
+        save(&app, &p)?;
+        #[cfg(windows)]
+        reconcile_owned_hklm_login()?;
+        Ok(())
+    })();
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    login_receipt("handler-return", "preference", Some(enabled), Some(result.is_ok()), None);
+    result
 }
 
 #[tauri::command]
