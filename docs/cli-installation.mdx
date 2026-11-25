@@ -333,9 +333,9 @@ Update runs from the surviving project root, or the filesystem root when no proj
 It runs npm for the installation and its extensions outside the project, so the project's package
 manager does not affect the update. Relative `PATH` entries are resolved from the folder where you
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
-On Linux and macOS, self-update can run a recognized npm script directly with the Node running Cotal
-when npm cannot find `node` on its `PATH`. This covers version-named Node executables without a
-`node` link and Node directories that contain a colon.
+On Linux and macOS, self-update makes its selected Node available to npm install scripts as `node`,
+including when the executable has a versioned name or its directory contains a colon. The temporary
+link is private to npm and does not change your shell's `PATH`.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 
@@ -813,9 +813,10 @@ For a scoped package such as `@acme/_helper`, include the scope and the leading 
 If the package is already absent, `remove` reports that nothing was removed and exits 0.
 
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
-every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
-providers are loaded on demand by commands such as `supervise`, and by a running manager the first
-time a managed seat names one with `spawn --runtime <name>`, so a `pty` manager launches a seat on
+every registry provider it contributes. On Linux and macOS, npm install scripts can find the Node
+Cotal selects for npm as `node`, even if the executable has a versioned name. Commands appear in
+help, completion, and dispatch. Runtime providers load on demand in commands such as `supervise`
+and when a managed seat first names one with `spawn --runtime <name>`. A `pty` manager launches a seat on
 an installed `tmux` without a restart; local process providers participate in `status` and
 selective `down`. Removing an additional runtime extension, one the manager was not started with,
 refuses the next seat that names it; the manager's own runtime and the seats already running stay

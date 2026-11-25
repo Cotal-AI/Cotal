@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, protectedLocalDirectory, resolveOnPath } from "@cotal-ai/workspace";
 
 const { satisfies } = createRequire(import.meta.url)("semver") as { satisfies: (version: string, range: string) => boolean };
 export const npmProjectDirectory = new AsyncLocalStorage<string | undefined>();
@@ -81,7 +81,7 @@ function pathVariable(env: NodeJS.ProcessEnv): string {
 
 export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (!npmProjectDirectory.getStore() && env[UPDATE_NPM_NODE] === undefined) return env;
-  const { node } = npmInvocation(env, []);
+  const { node } = selectNpm(env, []);
   if (!node) {
     if (env[UPDATE_NPM_NODE] === undefined) return env;
     const next = { ...env };
@@ -95,7 +95,9 @@ export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proces
   return { ...env, [UPDATE_NPM_NODE]: node, [pathKey]: bin.includes(delimiter) || path.split(delimiter).includes(bin) ? path : `${path}${delimiter}${bin}` };
 }
 
-export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
+function selectNpm(env: NodeJS.ProcessEnv, args: string[]): {
+  file: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; node?: string; pathNode?: string;
+} {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
   const inheritedNode = env[UPDATE_NPM_NODE];
@@ -121,6 +123,12 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
   const engine = npmEngine(file);
   const withNode = (node: string, preserveLiteral = literal !== undefined) => preserveLiteral && dirname(node).includes(delimiter) ? env
     : { ...env, [pathKey]: `${dirname(node)}${delimiter}${path}` };
+  const withRuntime = (node: string, preserveLiteral = literal !== undefined) => {
+    if (windows) return { env: withNode(node, preserveLiteral) };
+    const bin = dirname(node);
+    const named = !bin.includes(delimiter) && inDirectory(bin, "node");
+    return named && realpathSync(named) === realpathSync(node) ? { env: withNode(node) } : { env, pathNode: node };
+  };
   if (engine && !satisfies(process.version, engine.range)) {
     const current = realpathSync(process.execPath);
     const probeEnv = { ...env };
@@ -132,7 +140,7 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
         (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
         resolveOnPath(inheritedNode, env) === inheritedNode) {
       const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
-      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
+      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], ...withRuntime(node, true), cwd, node };
     }
     const seen = new Set<string>();
     const candidates: string[] = [];
@@ -142,22 +150,38 @@ export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
       candidates.push(candidate);
       const node = project === undefined ? undefined : compatibleNode(candidate, project, cwd, probeEnv, engine.range);
-      if (node) return { file: node, args: [engine.entry, ...args], env: withNode(node, true), cwd, node };
+      if (node) return { file: node, args: [engine.entry, ...args], ...withRuntime(node, true), cwd, node };
     }
     for (const candidate of candidates) {
       // Keep the shim's invocation name and environment for npm if isolated version lookup succeeds.
       const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
       if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
-        return { file: candidate, args: [engine.entry, ...args], env: withNode(candidate), cwd };
+        return { file: candidate, args: [engine.entry, ...args], ...withRuntime(candidate), cwd };
     }
   }
   if (windows) return { file: "npm", args, env, cwd };
   const node = resolveOnPath("node", lookup);
   if (node && realpathSync(node) === realpathSync(process.execPath))
     return { file: literal ? file : "npm", args, env, cwd };
-  const bin = dirname(process.execPath);
-  // Prepending the runtime directory cannot satisfy npm's shebang without a `node` entry.
-  if (!node && engine && (bin.includes(delimiter) || !inDirectory(bin, "node")))
-    return { file: process.execPath, args: [engine.entry, ...args], env: withNode(process.execPath, true), cwd };
-  return { file, args, env: withNode(process.execPath), cwd };
+  const runtime = withRuntime(process.execPath);
+  if (engine && runtime.pathNode) return { file: process.execPath, args: [engine.entry, ...args], ...runtime, cwd };
+  return { file, args, ...runtime, cwd };
+}
+
+export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
+  const { pathNode, ...npm } = selectNpm(env, args);
+  if (!pathNode) return { ...npm, [Symbol.dispose]() {} };
+  const temp = realpathSync(tmpdir());
+  if (temp.includes(delimiter)) throw new Error(`npm cannot use a temporary directory containing ${JSON.stringify(delimiter)} on PATH: ${temp}`);
+  protectedLocalDirectory(temp, "the npm Node link parent");
+  const bin = mkdtempSync(join(temp, "cotal-npm-node-"));
+  const dispose = () => rmSync(bin, { recursive: true, force: true, maxRetries: 3 });
+  try {
+    // npm's lifecycle shell and node-gyp resolve `node` by name, even when npm itself starts directly.
+    symlinkSync(pathNode, join(bin, "node"));
+    return { ...npm, env: { ...npm.env, PATH: `${bin}${delimiter}${npm.env.PATH}` }, [Symbol.dispose]: dispose };
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 }

@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, parse } from "node:path";
@@ -186,12 +186,19 @@ async function npmNodeEngine(): Promise<void> {
     copyFileSync(process.execPath, alternate);
     const version = JSON.parse(readFileSync(join(repoBin, "package.json"), "utf8")).version;
     const record = join(root, "npm-runtime");
-    type NpmLaunch = { node: string; cwd: string; pathHead: string };
+    type NpmLaunch = { node: string; cwd: string; pathHead: string; lifecycleNode?: string };
     const recordedLaunches = (): NpmLaunch[] => readFileSync(record, "utf8").trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const assertLifecycle = (expected: string) => {
+      const launch = recordedLaunches().at(-1)!;
+      assert.equal(launch.lifecycleNode, realpathSync(expected), "a lifecycle shell can run the selected Node by name");
+      assert.equal(existsSync(launch.pathHead), false, "the private PATH entry is removed after npm exits");
+    };
     writeFileSync(join(npmRoot, "package.json"), JSON.stringify({ name: "npm", bin: { npm: "bin/npm-cli.js" }, engines: { node: process.version } }));
     writeFileSync(cli, `#!/usr/bin/env node
+const lifecycleNode = process.env.CHECK_LIFECYCLE_NODE && require('node:child_process')
+  .execFileSync('/bin/sh', ['-c', 'node -p process.execPath'], { encoding: 'utf8' }).trim();
 require('node:fs').appendFileSync(${JSON.stringify(record)}, JSON.stringify({
-  node: process.execPath, cwd: process.cwd(), pathHead: (process.env.PATH ?? '').split(require('node:path').delimiter)[0],
+  node: process.execPath, cwd: process.cwd(), pathHead: (process.env.PATH ?? '').split(require('node:path').delimiter)[0], lifecycleNode,
 }) + '\\n');
 console.log(JSON.stringify(${JSON.stringify(version)}));
 `, { mode: 0o755 });
@@ -227,11 +234,12 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
       ...env, HOME: root, USERPROFILE: root, APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "config"),
       COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: root, npm_config_prefix: prefix,
       COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_ALLOW_CHECKOUT_SEED: "1",
-      NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`, PATH: [onlyNode, npmPath, ...extraPath].join(delimiter),
+      CHECK_LIFECYCLE_NODE: undefined, NODE_OPTIONS: `--import=${pathToFileURL(versionOverride).href}`,
+      PATH: [onlyNode, npmPath, ...extraPath].join(delimiter),
     });
     const run = (flag: string, extraPath: string[] = [], npmPath = npmBin, cwd = root, node?: string) => spawnSync(node ?? join(onlyNode, exe), [entry, "update", flag], {
       cwd, encoding: "utf8", timeout: 60_000,
-      env: node ? { ...cliEnv(extraPath, npmPath), NODE_OPTIONS: undefined, PATH: "." } : cliEnv(extraPath, npmPath),
+      env: node ? { ...cliEnv(extraPath, npmPath), NODE_OPTIONS: undefined, PATH: ".", CHECK_LIFECYCLE_NODE: "1" } : cliEnv(extraPath, npmPath),
     });
     const first = run("--check", posixLauncher ? [] : [dirname(alternate)]);
     assert.equal(first.status, 0, first.stdout + first.stderr);
@@ -293,7 +301,7 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
       const original = process.version;
       Object.defineProperty(process, "version", { value: incompatibleVersion });
       try {
-        const file = join(onlyNode, exe), args = [entry, "update", "--check"], env = cliEnv([shimDir]);
+        const file = join(onlyNode, exe), args = [entry, "update", "--check"], env = { ...cliEnv([shimDir]), CHECK_LIFECYCLE_NODE: "1" };
         const release = claimGlobalNpmUpdateLock(root);
         try {
           for (const binName of ["node executable", "node:executable"]) {
@@ -302,13 +310,12 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
             copyFileSync(process.execPath, namedNode);
             symlinkSync(namedNode, projectNode);
             const resolved = realpathSync(namedNode);
-            const pathHead = binName.includes(delimiter) ? onlyNode : dirname(resolved);
             for (const launch of [() => runGlobalProcess(root, "reconcile", file, args, env), () => runProcess(file, args, env)]) {
               const child = await npmProjectDirectory.run(project, () => launch());
               assert.equal(child.status, 0, child.stdout + child.stderr);
-              assert.deepEqual(recordedLaunches().at(-1), {
-                node: resolved, cwd: parse(root).root, pathHead,
-              }, `the child keeps the symlinked runtime from ${binName} without splitting its directory on PATH`);
+              assert.equal(recordedLaunches().at(-1)!.node, resolved, `npm keeps the symlinked runtime from ${binName}`);
+              assert.equal(recordedLaunches().at(-1)!.cwd, parse(root).root);
+              assertLifecycle(resolved);
             }
             rmSync(projectNode);
           }
@@ -337,6 +344,7 @@ console.log(JSON.stringify(${JSON.stringify(version)}));
         assert.match(update.stdout, /Registry latest:/);
         assert.equal(recordedLaunches().at(-1)!.node, realpathSync(node));
         assert.equal(recordedLaunches().at(-1)!.cwd, parse(root).root, "npm still runs outside the caller's project");
+        assertLifecycle(node);
       }
     }
   } finally { rmSync(root, { recursive: true, force: true }); }

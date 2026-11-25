@@ -133,14 +133,14 @@ async function npm(args: string[], prefix: string, seeding = false): Promise<{ s
   // Select the extension prefix explicitly so Corepack never treats its ancestors as a project.
   const env = { ...process.env };
   delete env[EXT_UPDATE_PARENT_ENV];
-  const npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
-  const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
   const seedGroup = seeding && process.platform === "linux";
   const mutation = beginExtensionNpmMutation(undefined, seedGroup);
   let published = false;
   let preservePending = false;
   let stopForwarding = () => {};
   try {
+    using npm = npmInvocation(env, [...args, "--prefix", prefix, "--include=optional", "--legacy-peer-deps"]);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const child = withInstallUmask(() => spawn(file, spawnArgs, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, detached: seedGroup }));
     if (seedGroup && child.pid !== undefined) {
       const pid = child.pid;
