@@ -17,6 +17,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import type { StreamRecord } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -24,16 +25,18 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string; message?: string }[] }
+interface Envelope { schemaVersion?: number; command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string; message?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
 const neutral = join(home, "neutral");
+const runtime = join(home, "runtime");
 mkdirSync(neutral);
+mkdirSync(runtime, { mode: 0o700 });
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_RUNTIME_DIR: runtime, COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 const run = (args: string[], config = env.XDG_CONFIG_HOME) => {
   const r = spawnSync(process.execPath, [BIN, ...args], { cwd: neutral, env: { ...env, XDG_CONFIG_HOME: config }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
@@ -206,6 +209,64 @@ for (const { args, command, status, code } of [
 }
 
 const dashFlag = "\u2013\u2013no-color";
+const dashRefusal = {
+  code: "USAGE_INVALID",
+  message: `${dashFlag} starts with a typographic dash, so it is not an option`,
+  remedy: "type the option with hyphens: --no-color",
+};
+const configJson = ["config", "get", "harness", "--json"];
+const asciiConfig = run(["--no-color", ...configJson]);
+check("control: an ASCII leading global runs config get", asciiConfig.status === 0 && asciiConfig.stderr === "" &&
+  asciiConfig.envelope?.command === "config" && asciiConfig.envelope.outcome === "ok", shown(asciiConfig));
+for (const args of [[...configJson, dashFlag], [dashFlag, ...configJson], ["-j", dashFlag, "cfg", "get", "harness"]]) {
+  const r = run(args);
+  check(`${args.join(" ")} writes one JSON dash refusal`, r.status === 1 && r.stderr === "" && r.envelope?.schemaVersion === 1 && r.envelope.command === "config" &&
+    r.envelope.outcome === "refused" && r.envelope.error?.code === dashRefusal.code && r.envelope.error.message === dashRefusal.message &&
+    r.envelope.error.remedy === dashRefusal.remedy, shown(r));
+}
+for (const args of [[dashFlag, "config", "get", "harness", "--", "--json"], [dashFlag, "__complete", "--json"], ["--", dashFlag, ...configJson]]) {
+  const r = run(args);
+  check(`${args.join(" ")} keeps the dash diagnostic on stderr`, r.status === 1 && r.stdout === "" && r.stderr.includes(dashRefusal.message), shown(r));
+}
+
+function refusalRecords(stdout: string): StreamRecord<Record<string, unknown>>[] {
+  try { return stdout.trim().split("\n").map((line) => JSON.parse(line) as StreamRecord<Record<string, unknown>>); }
+  catch { return []; }
+}
+
+for (const { words, stream } of [
+  { words: ["watch"], stream: "watch" },
+  { words: ["history", "general", "--follow"], stream: "history" },
+  { words: ["channel", "members", "general", "--follow"], stream: "membership" },
+]) {
+  for (const args of [[...words, "--json", dashFlag], [dashFlag, ...words, "--json"]]) {
+    const r = run(args);
+    const records = refusalRecords(r.stdout);
+    const [error, end] = records;
+    check(`${args.join(" ")} writes only ${stream} error and end records`, r.status === 1 && r.stderr === "" && records.length === 2 &&
+      error?.schemaVersion === 1 && error.stream === stream && error.type === "error" && error.data?.code === dashRefusal.code &&
+      error.data.message === dashRefusal.message && error.data.remedy === dashRefusal.remedy && end?.schemaVersion === 1 &&
+      end.stream === stream && end.type === "end" && end.data?.reason === "setup-failed", shown(r));
+  }
+}
+
+const broker = ["service", "start", "broker"];
+const brokerHelp = run([...broker, "--help"]);
+const brokerRefusal = "✗ --no-color takes no value\n  omit --no-color or pass it without a value\n";
+check("control: broker start help lists its preset options", brokerHelp.status === 0 && brokerHelp.stderr === "" &&
+  ["--root <dir>", "--config <file>", "--binary <file>", "--server <url>", "--log-file <path>"].every((flag) =>
+    brokerHelp.stdout.split("\n").some((line) => line.trimStart().startsWith(flag))), shown(brokerHelp));
+for (const args of [[...broker, "--no-color=false"], ["--no-color=false", ...broker]]) {
+  const r = run(args);
+  check(`${args.join(" ")} refuses with the same broker preset help`, r.status === 1 && r.stdout === "" &&
+    r.stderr === brokerRefusal + brokerHelp.stdout, shown(r));
+}
+const brokerPlain = run([...broker, "--no-color=false", "--plain"]);
+const leadingBrokerPlain = run(["--no-color=false", ...broker, "--plain"]);
+check("a malformed leading global preserves broker preset help in plain output", brokerPlain.status === 1 && leadingBrokerPlain.status === 1 &&
+  brokerPlain.stdout === "" && leadingBrokerPlain.stdout === "" && brokerPlain.stderr.includes("USAGE_INVALID") &&
+  leadingBrokerPlain.stderr === brokerPlain.stderr, { before: shown(leadingBrokerPlain), after: shown(brokerPlain) });
+
 for (const { words, command } of [
   { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },
   { words: [dashFlag, "verify", "./not-there"], command: "backup verify" },

@@ -359,6 +359,8 @@ positive and negative forms; a pair refuses. A boolean whose schema admits only 
 explicit intent, has only the positive form. Numeric and complex options use JSON syntax.
 Use `cotal service start <preset> --help` for start options. Use `--no-open` with
 `cotal service start web` or when starting a dashboard saved under a custom name.
+The text refusal for a malformed global flag includes those same preset options whether the
+flag comes before or after `service start <preset>`.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
 names `cotal ext add @cotal-ai/web`.
 Options that collide with service/global flags require the file form. No preset is installed or
