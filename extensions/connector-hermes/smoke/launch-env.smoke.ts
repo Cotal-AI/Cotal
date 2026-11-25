@@ -21,7 +21,7 @@ import { hermesConnector } from "../src/extension.js";
 import { startOwnerPipe } from "../src/owner-pipe.js";
 import { bridgeToken, startBridgeServer } from "../src/bridge.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
-import { briefing, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
+import { briefing, DeltaJournal, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -74,6 +74,11 @@ async function checkWindowsLaunch(): Promise<void> {
   const signed = { ...endpoint, token: bridgeToken(endpoint) };
   const limit = { timeoutMs: 2_000, maxReplyBytes: 16 };
   try {
+    const deltaPath = join(root, "deltas.jsonl");
+    const deltaOptions = { path: deltaPath, createPrivateOnWindows: true, anchor: () => "", onWrite() {}, onError(error: Error) { throw error; } };
+    DeltaJournal.open(deltaOptions).close();
+    assert.equal(readFileSync(deltaPath, "utf8"), "");
+    assert.throws(() => DeltaJournal.open(deltaOptions), { code: "EEXIST" });
     delete process.env.COTAL_HERMES_ADOPT_HOME;
     process.env.PATH = root;
     assert.match(hermesConnector.launchUnavailable?.() ?? "", /needs uv\.exe on PATH/);
