@@ -337,6 +337,20 @@ if (process.platform !== "win32") {
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
   const original = files.map((path) => readFileSync(path));
+  const checkArgs = ["endpoint", "check", join(dir, "contract.json")];
+  const pastedFile = "\u2013\u2013file=example.json";
+  const pastedCheck = run([...checkArgs, pastedFile], {}, cwd);
+  const checkRetry = run(checkArgs, {}, cwd);
+  check("endpoint check tells the caller to omit a pasted reference option and the retry works",
+    usageShape(pastedCheck, /starts with a typographic dash/) && ["cotal", "pnpm cotal"].some((cli) =>
+      pastedCheck.stderr.includes(`omit this option; \`${cli} endpoint check\` does not take --file`))
+    && !pastedCheck.stderr.includes("type the option with hyphens")
+    && checkRetry.status === 0 && checkRetry.stderr === "" && checkRetry.stdout.includes("Endpoint contract valid locally")
+    && files.every((path, index) => readFileSync(path).equals(original[index]!)), [pastedCheck, checkRetry].map(shown));
+  const pastedAdd = run(["endpoint", "add", pastedFile], {}, cwd);
+  check("endpoint add still suggests the hyphenated spelling for its reference option",
+    usageShape(pastedAdd, /starts with a typographic dash/) && pastedAdd.stderr.includes("type the option with hyphens: --file=example.json"), shown(pastedAdd));
+
   const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
   const conflict = run([...conflictArgs, "--json"], {}, cwd);
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
