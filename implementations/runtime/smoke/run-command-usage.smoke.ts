@@ -706,17 +706,22 @@ if (process.platform !== "win32") {
       && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
       && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
 
-    for (const handler of [undefined, "timer's $results file.json"]) {
+    for (const handler of [undefined, "timer's $results file.json"]) for (const jsonMode of [false, true]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
-      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]));
-      const retry = /rerun with `([^`]+)`/.exec(missing.stderr ?? "")?.[1];
+      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]), ...(jsonMode ? ["--json"] : []));
+      const failure = jsonMode ? JSON.parse(missing.stdout) : undefined;
+      const retry = /rerun with `([^`]+)`/.exec(jsonMode ? failure.error?.remedy ?? "" : missing.stderr ?? "")?.[1];
       writeFileSync(join(dir, handler ?? "results.json"), '{"checkpoints":{"expiry":{"status":"expired"}}}');
       const replayed = retry?.startsWith("cotal run simulate ")
         ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\n${retry}`], options)
         : undefined;
-      c(`the printed simulation retry runs verbatim with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
-        missing.status === 5 && replayed?.status === 0 && /Program outcome:\s+completed/.test(replayed.stdout)
-        && /Virtual time:\s+23000 ms/.test(replayed.stdout), { missing, replayed });
+      const envelope = jsonMode && retry?.endsWith(" --json") && replayed?.status === 0 ? JSON.parse(replayed.stdout) : undefined;
+      c(`the printed simulation retry runs verbatim in ${jsonMode ? "JSON" : "human output"} with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
+        missing.status === 5 && replayed?.status === 0 && (jsonMode
+          ? missing.stderr === "" && failure.error?.code === "OPERATION_FAILED" && failure.error?.cause?.code === "L6001"
+            && replayed.stderr === "" && envelope?.outcome === "ok" && envelope.completeness === "complete"
+            && envelope.result?.outcome === "completed" && envelope.result.elapsedMs === 23000
+          : /Program outcome:\s+completed/.test(replayed.stdout) && /Virtual time:\s+23000 ms/.test(replayed.stdout)), { missing, replayed });
     }
     for (const [empty, named] of [["--admit-read", "--admit-publish"], ["--admit-publish", "--admit-read"]]) {
       const refused = run("start", program, "--local", "--server", "nats://127.0.0.1:1", empty!, " , , ", named!, "none");

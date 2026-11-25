@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -252,7 +252,7 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
 
 /** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
  *  the program, and `target.step` names the step it stopped at. */
-function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
+function simulationFailure(error: unknown, file: string, journal: Journal, presentation: Presentation, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
   const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
@@ -264,7 +264,7 @@ function simulationFailure(error: unknown, file: string, journal: Journal, handl
   // only showing the result object. When a results file was passed, it names that file.
   const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
   const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
-  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}`);
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}${presentation === "json" ? " --json" : ""}`);
   const rerun = handler !== undefined
     ? `add it to ${oneLine(handler)} and rerun with ${command}`
     : `save it in a results file, for example results.json, and rerun with ${command}`;
@@ -349,7 +349,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
     if (isCommandFailure(error)) throw error;
-    throw simulationFailure(error, file, journal, values.handler);
+    throw simulationFailure(error, file, journal, presentation, values.handler);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;
