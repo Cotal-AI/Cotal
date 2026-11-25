@@ -16,7 +16,7 @@
  * Run: pnpm smoke:history-clear-surface
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chatStream, dmStream, isReachable } from "@cotal-ai/core";
@@ -52,47 +52,59 @@ process.env.COTAL_HOME = join(home, ".cotal");
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
-const run = (args: string[], cwd = root) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const run = (args: string[], cwd = root, cliEnv: NodeJS.ProcessEnv = env) => {
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env: cliEnv, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 900), stderr: r.stderr.slice(0, 600) });
 
-function checkDirectPreviewTargets(cwd: string, space: string, server: string): void {
-  const preview = ["history", "clear", "--dry-run", "--dms", "--json"];
+const directUp = ["up", "--foreground", "--open", "--no-manager"];
+const directPreview = ["history", "clear", "--dry-run", "--dms", "--json"];
+
+function checkSavedPreviews(cwd: string, space: string, server: string): void {
   for (const [label, target] of [
     ["explicit broker control", ["--space", space, "--server", server]],
     ["named space", ["--space", space]],
     ["local project", []],
   ] as const) {
-    const plan = run([...preview, ...target], cwd);
+    const plan = run([...directPreview, ...target], cwd);
     const e = plan.envelope;
-    check(`directly stopped space previews its saved broker offline (${label})`, plan.status === 0 && e?.outcome === "ok"
+    check(`directly stopped ${space} previews its saved broker offline (${label})`, plan.status === 0 && e?.outcome === "ok"
       && e.target?.space === space && e.target.broker === server && e.result?.kind === "history-clear-preview"
       && e.result.streams?.join(",") === [chatStream(space), dmStream(space)].join(",")
       && e.result.authorization === "not-checked" && e.result.retainedCounts === "not-checked" && e.result.purged === false, shown(plan));
   }
-  const wrong = run([...preview, "--space", "not-volume"], cwd);
+}
+
+function checkDirectRefusals(cwd: string, space: string): void {
+  const wrong = run([...directPreview, "--space", "not-volume"], cwd);
   check("the saved broker is not a preview target for a different space", wrong.status === 2 && wrong.envelope?.error?.code === "TARGET_NOT_FOUND", shown(wrong));
   const confirm = run(["history", "clear", "--yes", "--space", space, "--json"], cwd);
   check("a confirmed clear still refuses the stopped direct target", confirm.status === 2 && confirm.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(confirm));
 
   const linked = mkdtempSync(join(home, "linked-project-"));
   symlinkSync(join(cwd, ".cotal"), join(linked, ".cotal"), "junction");
-  const foreign = run([...preview, "--space", space], linked);
+  const foreign = run([...directPreview, "--space", space], linked);
   check("a link to another project's records does not name a local stopped preview target", foreign.status === 2
     && foreign.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(foreign));
+
+  const copied = mkdtempSync(join(home, "copied-project-"));
+  mkdirSync(join(copied, ".cotal"), { mode: 0o700 });
+  for (const file of ["stack-home.json", "server-open.conf"]) copyFileSync(join(cwd, ".cotal", file), join(copied, ".cotal", file));
+  const copy = run([...directPreview, "--space", space], copied);
+  check("copied native records cannot name a stopped preview target in another project", copy.status === 2
+    && copy.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(copy));
 }
 
-async function checkDirectStopPreview(): Promise<void> {
+async function checkDirectStopPreview(space: string, tls?: { cert: string; key: string }): Promise<void> {
   const cwd = realpathSync(mkdtempSync(join(home, "direct-project-")));
-  const space = "volume";
-  const server = `nats://127.0.0.1:${await freePort()}`;
+  const server = `${tls ? "tls" : "nats"}://127.0.0.1:${await freePort()}`;
+  const childEnv = tls ? { ...env, NODE_EXTRA_CA_CERTS: tls.cert } : env;
+  const launch = [...directUp, "--space", space, "--server", server, ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])];
   const anchor = recordSmokeSandbox({ root: cwd, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
-  const up = spawn(process.execPath, [BIN, "up", "--foreground", "--open", "--no-manager", "--space", space, "--server", server],
-    { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  const up = spawn(process.execPath, [BIN, ...launch], { cwd, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   const closed = new Promise<number | null>((resolve, reject) => { up.once("close", resolve); up.once("error", reject); });
   let output = "";
   up.stdout.on("data", (data) => { output += data; });
@@ -102,19 +114,46 @@ async function checkDirectStopPreview(): Promise<void> {
     await awaitBrokerReady(async () => findMesh(space)?.server === server && await reachable(),
       { servers: server, attempts: 120, delayMs: 250, output: () => output });
     const downArgs = ["down", "--yes"];
-    assertSmokeSandboxDown(anchor, downArgs, { cwd, env });
-    const down = run(downArgs, cwd);
+    assertSmokeSandboxDown(anchor, downArgs, { cwd, env: childEnv });
+    const down = run(downArgs, cwd, childEnv);
     const exited = down.status === 0 ? await withDeadline(closed, 15_000, "foreground up after down") : undefined;
     const offline = down.status === 0 && exited === 0 && findMesh(space) === undefined && !await reachable();
-    check("direct down stops the foreground broker and removes the named registration", offline, { ...shown(down), exited });
-    if (offline) checkDirectPreviewTargets(cwd, space, server);
+    check(`direct down stops the foreground broker and removes the registration for ${space}`, offline, { ...shown(down), exited });
+    if (!offline) return;
+    checkSavedPreviews(cwd, space, server);
+    if (!tls) checkDirectRefusals(cwd, space);
   } finally {
     await killAndAwaitExit(up);
     await closed;
   }
 }
 
-await checkDirectStopPreview();
+async function checkFailedFirstStartPreview(): Promise<void> {
+  const cwd = realpathSync(mkdtempSync(join(home, "failed-project-")));
+  const space = "hcfailed";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const store = join(cwd, ".cotal", "nats");
+  mkdirSync(store, { recursive: true, mode: 0o700 });
+  writeFileSync(join(store, "jetstream"), "a regular file, not a store directory");
+  const up = run([...directUp, "--space", space, "--server", server], cwd);
+  const failed = up.status === 5 && existsSync(join(cwd, ".cotal", "server-open.conf")) && findMesh(space) === undefined
+    && !await isReachable(server, { timeoutMs: 300 });
+  check("failed native startup leaves a rendered config but no registered or reachable broker", failed, shown(up));
+  if (!failed) return;
+  for (const target of [[], ["--space", space]]) {
+    const plan = run([...directPreview, ...target], cwd);
+    check(`rendered config from a failed first start cannot name a preview target (${target.length ? "named space" : "local project"})`,
+      plan.status === 2 && plan.envelope?.error?.code === "TARGET_UNAVAILABLE", shown(plan));
+  }
+}
+
+await checkDirectStopPreview("volume");
+await checkFailedFirstStartPreview();
+const [cert, key] = [join(home, "broker.pem"), join(home, "broker.key")];
+const pki = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert,
+  "-days", "2", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { cwd: home, env, encoding: "utf8" });
+check("TLS fixture has a loopback certificate", pki.status === 0, { status: pki.status, error: pki.error?.message, stderr: pki.stderr?.slice(-500) });
+if (pki.status === 0) await checkDirectStopPreview("hctls", { cert, key });
 
 function checkJsonClearRemedy(server: string): void {
   const target = ["--space", "hcdry", "--server", server];

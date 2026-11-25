@@ -1,11 +1,12 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, cotalDirLink, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, brokerUrlKey, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { deniedWrite } from "../lib/denied-write.js";
+import { readNativeReadyServer } from "../lib/native-stack-home.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }
@@ -36,8 +37,10 @@ export async function historyClear(values: Values): Promise<void> {
       if (!isWorkspaceTargetError(error) || error.code !== "not-started") throw error;
       const { root, space, stopped, lastRun, stackSpace, server, recordedRoot } = error.details;
       if (!root) throw error;
-      if (lastRun && stackSpace && server && recordedRoot === undefined && cotalDirLink(root) === undefined) {
-        selected = { space: stackSpace, server: values.server ?? server };
+      if (lastRun && stackSpace && server && recordedRoot === undefined) {
+        const readyServer = readNativeReadyServer(root, stackSpace, server);
+        if (!readyServer || (values.server !== undefined && brokerUrlKey(values.server) !== brokerUrlKey(readyServer))) throw error;
+        selected = { space: stackSpace, server: readyServer };
       } else {
         if (!space || !stopped) throw error;
         const journal = readStackJournal(root)?.journal;

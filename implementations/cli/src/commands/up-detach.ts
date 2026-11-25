@@ -13,7 +13,6 @@ import {
   standaloneConnectOpts,
   parseServerVersion,
   EpEnvelopeError,
-  writeSecretFile,
   type AuthPrepared,
   type ChannelRegistryFile,
 } from "@cotal-ai/core";
@@ -28,7 +27,6 @@ import {
   canonicalRoot,
   findMesh,
   findPreparedSpace,
-  homeCotalDir,
   getCurrent,
   preparedRootRemedy,
   preparedSpaceAt,
@@ -80,6 +78,7 @@ import { authTimeoutArgs, commitTransportPolicy, assertServesDialHost } from "./
 import { postStart, recreateMemoryBuckets } from "./up-stores.js";
 import { type BrokerFacts, brokerVersion, writeOpenBrokerConf, authSetup } from "./up-broker-auth.js";
 import { folderSpace } from "./up-args.js";
+import { writeNativeStackHome } from "../lib/native-stack-home.js";
 
 function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
@@ -241,7 +240,7 @@ export function reportDegradedControlPlane(why: string): void {
 export async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
   if (!child.pid) throw new Error("nats-server spawned with no pid");
   try {
-    writeSecretFile(cotalPath("stack-home.json"), JSON.stringify({ home: canonicalRoot(homeCotalDir()) }));
+    writeNativeStackHome(cotalRoot());
     writePidPair(cotalPath(NATS_PIDFILE), child.pid); // #969/#1238: publish the pair by rename, never torn
   } catch (error) {
     // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
@@ -402,6 +401,8 @@ export async function serveReadyListener(l: {
     await stopFailedListener(child);
     throw e;
   }
+  try { writeNativeStackHome(cotalRoot(), { space, server }); }
+  catch { stderrLine("! ", "the broker is registered, but its address could not be saved for offline previews", c.yellow); }
   // Commit the policy only for a listener that is up and recorded (S5), and before the control
   // plane (S9). startDeliveryWithBroker is HANDED the transport decision, so it does not depend on
   // the file at all.
