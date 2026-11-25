@@ -13,6 +13,8 @@
  *  - the first prompt spawns the seat in the session's folder with that prompt, every update of the
  *    turn reaches the client before the prompt answers, frames that beat the spawn reply are kept,
  *    and a tool call left open is closed;
+ *  - an application whose catalog lists a model with id `default` spawns naming that model, with the
+ *    chosen variant; without one, `<agent>/default` spawns naming no model;
  *  - a failed run fails the prompt with the seat's message;
  *  - a later prompt is a direct message, and answers once the seat stopped working and the runs it
  *    started ended, or once the seat did not start on it in time;
@@ -37,8 +39,8 @@
  *  - `/name` before the first prompt names the seat the thread spawns, refuses a name the manager
  *    would refuse, and on a running seat changes the name it shows or says why not;
  *  - `/open` drives a running seat found by its name or shown name from a thread with no agent,
- *    replays what the space retains, and stores the thread's link; it refuses in a thread that
- *    already drives one, and names the choices when two seats match;
+ *    replays what the space retains, sends the seat's options, and stores the thread's link; it
+ *    refuses in a thread that already drives one, and names the choices when two seats match;
  *  - a linked thread is listed under its own id with the seat's shown name, and loads and deletes
  *    through its link;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
@@ -481,6 +483,27 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const said = both.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
   check("/open drives such a seat too", opened === undefined && said.includes("now drives reader"), opened ?? said);
   both.conn.close();
+}
+
+// `/open` sends the opened seat's options, so the client's selects show its model.
+{
+  const unread: AgentCatalog = { agent: "opencode", available: true, eventPlane: true, models: [], modelsUnread: "Database is not empty and has no session table" };
+  const space = new FakeMesh();
+  space.catalogList = [{ agent: "claude-code", available: true, eventPlane: true, models: [{ id: "sonnet", name: "Claude Sonnet", variants: [] }] }, unread];
+  space.rows = [{ name: "coder", owner: "local", actor: "c1", lifecycleUid: "life-c", managerInstanceId: "m1", agent: "opencode", model: "anthropic/claude-opus-4-6", cwd: dir, status: "running" }];
+  const c = connect(async () => space);
+  await c.init;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  c.updates.length = 0;
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "/open coder" }] }));
+  const kinds = c.updates.filter((u) => u.sessionId === s.sessionId).map((u) => u.update.sessionUpdate);
+  const update = c.updates.find((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "config_option_update")?.update as { configOptions?: unknown[] } | undefined;
+  const model = update?.configOptions?.find((o) => (o as { id: string }).id === "model") as { currentValue?: string; options?: { group: string; options: { value: string }[] }[] } | undefined;
+  check("/open sends the opened seat's options: its model, beside the models a new agent can start on",
+    model?.currentValue === "opencode/anthropic/claude-opus-4-6" && JSON.stringify(model.options?.map((g) => [g.group, g.options.map((o) => o.value)])) === JSON.stringify([["claude-code", ["claude-code/default", "claude-code/sonnet"]], ["opencode", ["opencode/anthropic/claude-opus-4-6"]]]),
+    { kinds, model });
+  c.conn.close();
 }
 
 // session/new, options, delete of an unspawned session
@@ -947,6 +970,32 @@ check("a thread's agent name is a valid user-mode actor token", (() => { try { r
   const refused = await errorOf(start("pi/default"));
   check("the manager's refusal of a launch field fails the prompt with its reason as is", refused?.message?.includes("does not support asking before tool use (askPermissions)") === true, refused);
   fields.spawn = spawn;
+  c.conn.close();
+}
+// A catalog model whose id is `default`, as a custom endpoint serving one under that id lists it, is
+// a model the spawn names. Without one, `<agent>/default` leaves the model to the application.
+{
+  const space = new FakeMesh();
+  space.catalogList = [
+    { agent: "hermes", available: true, eventPlane: true, models: [{ id: "default", variants: ["none", "low", "high"] }] },
+    { agent: "claude", available: true, eventPlane: true, models: [{ id: "opus", variants: ["high"] }] },
+  ];
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const c = connect(async () => space);
+  await c.init;
+  const start = async (model: string, variant?: string): Promise<SpawnRequest | undefined> => {
+    const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+    await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: model });
+    if (variant) await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "variant", value: variant });
+    const before = space.spawned.length;
+    await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+    return space.spawned.length > before ? space.spawned.at(-1) : undefined;
+  };
+  const listed = await start("hermes/default", "high");
+  check("an application whose catalog lists a model with id default spawns naming that model, with the chosen variant",
+    listed?.agent === "hermes" && listed.model === "default" && listed.variant === "high", listed);
+  const own = await start("claude/default");
+  check("an application whose catalog lists no default spawns naming no model", own?.agent === "claude" && !("model" in own) && !("variant" in own), own);
   c.conn.close();
 }
 // The seat's agent endpoint: the prompts its harness opens and the commands it runs.
