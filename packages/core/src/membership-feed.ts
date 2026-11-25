@@ -31,6 +31,7 @@ import { watchNativeConnection, type NativeConnectionBinding } from "./native-co
  */
 import { credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
+import { OBSERVER_CONN_NAME_PREFIX, OBSERVER_INBOX_NONCE_PREFIX } from "./endpoint-identity.js";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
   membershipBucket,
@@ -815,9 +816,11 @@ interface ConnzReply {
  *  delivery cred / the manager hold no chat sub at all. The ONLY subscription that yields the whole-chat
  *  `>` pattern is an AGENT's own `chat.*.*.>` (allowSubscribe `[">"]` — e.g. the default persona), which is
  *  a legitimate broad reader the feed MUST surface (the source-of-truth goal), NOT drop. So no shape-based
- *  exclusion: a `>` pattern is recorded as-is and the dashboard renders it as a "reads-all" node (a badge,
- *  not a spoke to every hub) rather than expanding it. */
+ *  exclusion of broad participant reads: a `>` pattern is recorded as-is and the dashboard renders
+ *  it as a "reads-all" node (a badge, not a spoke to every hub) rather than expanding it. */
 function addConn(space: string, live: Map<string, Set<string>>, c: ConnzConnection): void {
+  // Scoped taps can use the same subjects as joins. The client-chosen marker is for display only.
+  if (c.name?.startsWith(OBSERVER_CONN_NAME_PREFIX) || c.name?.startsWith(OBSERVER_INBOX_NONCE_PREFIX)) return;
   const subs = c.subscriptions_list ?? [];
   const id = principalFromConnz(c); // tag (static) OR authorized_user name-form (callout) — see doc above
   if (!id) return; // no attributable principal (open mode / legacy / infra) — not a member here

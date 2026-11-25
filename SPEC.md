@@ -833,6 +833,12 @@ input to any delivery, ACL, or authorization decision (authority for those stays
 `sub.allow` and the members registry), and it is not part of the normative wire contract a client
 must implement.
 
+The reference SDK's `EndpointOptions.omitFromLiveMembership` marks a connection as an observer.
+A marked static-auth connection uses the NATS connection name `cotal:observer/<name>`. A marked
+user-auth connection uses `ibx_observer_` followed by a random suffix as its connection name and
+reply-inbox nonce. The feed writer excludes live subscriptions from connections with either marker.
+The markers do not change grants, durable memberships, or the feed record format.
+
 ### 8.1 Anycast request status
 
 This subsection applies in auth mode. There the delivery daemon (the `delivery` profile, Appendix
