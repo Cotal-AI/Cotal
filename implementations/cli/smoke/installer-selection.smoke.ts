@@ -29,10 +29,12 @@ function checkWindowsNpmInstall(): void {
     const install = windows?.match(/```text\n(npm\.cmd install -g --prefix \. )cotal-ai\n```/)?.[1];
     assert(install, "the Windows install guide selects the current folder as the short npm prefix");
 
-    const env = { ...process.env, PATH: `${prefix}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("COTAL_")) delete env[key];
+    Object.assign(env, { PATH: `${prefix}${delimiter}${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
       COTAL_TEST_NPM_PREFIX: prefix, COTAL_TEST_LAUNCH_CWD: root,
       npm_config_userconfig: join(root, "user.npmrc"), npm_config_globalconfig: join(root, "global.npmrc"),
-      npm_config_cache: join(root, "cache"), npm_config_prefix: join(root, "unused-prefix") };
+      npm_config_cache: join(root, "cache"), npm_config_prefix: join(root, "unused-prefix") });
     const shell = "powershell.exe";
     const shellArgs = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"];
     // Set the directory in the shell so npm.cmd receives a drive path rather than an extended path.
