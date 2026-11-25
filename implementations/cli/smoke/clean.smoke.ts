@@ -118,6 +118,7 @@ function checkCleanStoreCli(): void {
   const runClean = (cwd: string, args: string[]) => spawnSync(process.execPath, [cli, "clean", ...args], { ...options, cwd });
   const run = (...args: string[]) => runClean(root, ["store", ...args]);
   try {
+    mkdirSync(join(root, ".cotal"));
     const fixture = "-fixture with spaces";
     const store = join(root, fixture);
     const force = `cotal clean store --store-dir='${fixture}' --force`;
@@ -158,7 +159,6 @@ function checkCleanStoreCli(): void {
     const link = join(root, ".cotal", "nats");
     const parked = "parked store";
     mkdirSync(join(root, parked, "jetstream"), { recursive: true });
-    mkdirSync(join(root, ".cotal"), { recursive: true });
     symlinkSync("missing-store", link);
     for (const mode of ["--dry-run", "--force"]) {
       const result = run(mode);
