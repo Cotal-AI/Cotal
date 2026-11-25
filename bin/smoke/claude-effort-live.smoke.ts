@@ -18,14 +18,20 @@
  * Claude login, and each seat's one short turn on haiku spends a few tokens. The space is prepared
  * with `space create`, which leaves the operator's Claude configuration alone, and the persona asks
  * for the default permission mode, because Cotal never accepts Bypass Permissions for the operator.
- * COTAL_HOME and the XDG dirs are scratch, the operator's own COTAL_*, CLAUDE_* and ANTHROPIC_*
- * variables never reach a seat, and the seats' transcript folder is removed at the end. Kills only
- * what it starts.
+ * COTAL_HOME and the Cotal config dir are scratch, the operator's own COTAL_*, CLAUDE_* and
+ * ANTHROPIC_* variables never reach a seat, and the seats' transcript folder is removed at the end.
+ * Kills only what it starts.
+ *
+ * Claude's installer must not move: it keeps its versions under XDG_DATA_HOME and its launcher under
+ * HOME, and a seat given a scratch data dir with the real HOME installs itself there and repoints
+ * `~/.local/bin/claude` at a folder this suite deletes. So the data and cache dirs stay the
+ * operator's, the project's Claude settings set DISABLE_AUTOUPDATER so a seat installs nothing, and
+ * the last cell checks that the launcher still points where it did.
  *
  * Run: pnpm smoke:claude-effort:live   (needs claude and nats-server on PATH; `pnpm build` first)
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -60,7 +66,14 @@ const xdg = join(scratch, "config");
 const root = join(scratch, "project");
 // Where claude keeps the seats' transcripts for this project, under the operator's own Claude home.
 const transcripts = join(homedir(), ".claude", "projects", root.replace(/[^A-Za-z0-9]/g, "-"));
+const launcher = join(homedir(), ".local", "bin", "claude");
+const launcherTarget = (): string | undefined => { try { return readlinkSync(launcher); } catch { return undefined; } };
+const launcherBefore = launcherTarget();
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+// A seat reads this from the project it runs in. The Manager starts with a filtered environment, so
+// the variable cannot reach a seat from this process.
+mkdirSync(join(root, ".claude"), { recursive: true });
+writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify({ env: { DISABLE_AUTOUPDATER: "1" } }));
 writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: tester\nlaunchOptions:\n  permission-mode: default\n---\nYou are a test seat. Answer the prompt and do nothing else.\n");
 
 const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -68,8 +81,6 @@ const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) 
 const env: NodeJS.ProcessEnv = {
   ...inherited,
   XDG_CONFIG_HOME: xdg,
-  XDG_DATA_HOME: join(scratch, "data"),
-  XDG_CACHE_HOME: join(scratch, "cache"),
   COTAL_HOME: cotalHome,
   COTAL_ALLOW_CHECKOUT_SEED: "1",
   COTAL_SKIP_ASSIST: "1",
@@ -139,4 +150,7 @@ try {
   rmSync(transcripts, { recursive: true, force: true });
   rmSync(scratch, { recursive: true, force: true });
 }
+const after = spawnSync("claude", ["--version"], { encoding: "utf8" });
+check(`this machine's claude launcher still points at ${launcherBefore ?? "nothing"}, and claude --version still answers`,
+  launcherTarget() === launcherBefore && after.status === 0 && after.stdout.trim() === version.stdout.trim(), { launcher: launcherTarget(), version: after.stdout.trim() });
 finish();
