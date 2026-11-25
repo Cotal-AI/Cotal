@@ -2,8 +2,8 @@
  * An agent's labelling from its first message (SPEC 13.22), with no broker: the label taken from a
  * model's reply, the request's framing and its 8,000-character cap, which items start naming, that
  * every way naming ends removes the pending mark, that an owner's `set-name` drops a label not yet
- * written, the card meta writes the label rides, that `set-name` removes a label, and that an agent
- * file cannot set one. The broker is covered by `agent-auto-name-auth.smoke.ts`; this suite drives
+ * written, the card meta writes the label rides, that `set-name` removes a label, that an owner's
+ * `set-label` sets one under the label rule and ends naming, and that an agent file cannot set one. The broker is covered by `agent-auto-name-auth.smoke.ts`; this suite drives
  * the shipped functions and classes directly.
  *
  * Run: pnpm smoke:agent-naming
@@ -13,7 +13,7 @@ import { createSuite } from "@cotal-ai/smoke-kit";
 import { AutoNaming, NAMING_SOURCE_MAX, nameRequest, sanitizeLabel, type NameRequest } from "../src/agent-naming.js";
 import { createNameLane, type NameLane } from "../src/agent-name.js";
 import { buildMeta } from "../src/agent-support.js";
-import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY, CotalEndpoint, parseAgentFileSource, type EpPrincipalServeContext, type Presence } from "@cotal-ai/core";
+import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY, CotalEndpoint, EpEnvelopeError, parseAgentFileSource, type EpPrincipalServeContext, type Presence } from "@cotal-ai/core";
 import type { InboxItem } from "../src/agent-inbox.js";
 import { configFromEnv, type AgentConfig } from "../src/config.js";
 import { nameEnv } from "../src/launch.js";
@@ -262,7 +262,7 @@ console.log("\nthe card meta writes the label rides");
 
 console.log("\nan owner's set-name and the label");
 {
-  const setName = async (lane: NameLane, name: string): Promise<unknown> => lane.handler.handler({ request: { args: { name } } } as unknown as EpPrincipalServeContext);
+  const setName = async (lane: NameLane, name: string): Promise<unknown> => lane.handlers.find((h) => h.command === "set-name")!.handler({ request: { args: { name } } } as unknown as EpPrincipalServeContext);
   const labelled = endpoint("coder", { [AGENT_LABEL_META_KEY]: "Login bug" });
   const seen: string[] = [];
   const reply = await setName(createNameLane(labelled, () => {}, () => seen.push(labelled.card.name)), "Owner pick");
@@ -276,6 +276,27 @@ console.log("\nan owner's set-name and the label");
   const ended: string[] = [];
   const refused = await setName(createNameLane(taken, () => {}, () => ended.push("ended")), "rival").then(() => "ok", (e: Error) => e.message);
   check("a refused set-name ends nothing and keeps the label", refused.includes("is named") && ended.length === 0 && taken.card.meta?.[AGENT_LABEL_META_KEY] === "Login bug", { refused, ended, meta: taken.card.meta });
+}
+
+console.log("\nan owner's set-label and the label");
+{
+  const setLabel = async (lane: NameLane, label: string): Promise<unknown> => lane.handlers.find((h) => h.command === "set-label")!.handler({ request: { args: { label } } } as unknown as EpPrincipalServeContext);
+  const refusal = (p: Promise<unknown>): Promise<string> => p.then(() => "ok", (e: unknown) => (e instanceof EpEnvelopeError ? `${e.code}/${e.outcome}: ${e.message}` : String(e)));
+  const pending = endpoint("coder", { [AGENT_NAMING_META_KEY]: "pending" });
+  const seen: unknown[] = [];
+  const reply = await setLabel(createNameLane(pending, () => {}, () => seen.push(pending.card.meta?.[AGENT_LABEL_META_KEY] ?? null)), "Login work");
+  check("set-label sets the label and keeps the name", same(reply, { label: "Login work" }) && pending.card.name === "coder" && pending.card.meta?.[AGENT_LABEL_META_KEY] === "Login work",
+    { reply, name: pending.card.name, meta: pending.card.meta });
+  check("and ends naming before the card changes", same(seen, [null]), seen);
+  const ended: string[] = [];
+  const lane = createNameLane(pending, () => {}, () => ended.push("ended"));
+  const refused = await Promise.all(["x".repeat(41), "Login  work", "src/app.ts", " Login", ""].map((label) => refusal(setLabel(lane, label))));
+  check("a label the rule refuses is bad-request, not-executed, and says which rule",
+    refused.every((r) => r.startsWith("bad-request/not-executed")) && refused[0]!.includes("40-character") && refused[1]!.includes("single spaces") && refused[2]!.includes("reserved"), refused);
+  check("and ends nothing and keeps the label", ended.length === 0 && pending.card.meta?.[AGENT_LABEL_META_KEY] === "Login work", { ended, meta: pending.card.meta });
+  lane.close();
+  const closed = await refusal(setLabel(lane, "Later"));
+  check("a set-label after the lane closed is unavailable, not-executed", closed.startsWith("unavailable/not-executed") && pending.card.meta?.[AGENT_LABEL_META_KEY] === "Login work", closed);
 }
 
 console.log("\nan agent file and the label");

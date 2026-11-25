@@ -339,6 +339,12 @@ Messages the agent sends afterwards carry the new `from.name`, and stored histor
 `agent.displayName` reads the current name, and `config.name` stays the launch name.
 A manager keeps the last name a seat showed with the seat, apart from its alias. When it starts the seat again, after a crash or a preserved resume, it passes the name as `COTAL_DISPLAY_NAME`, so the seat comes back under the same alias and actor and shows its last name.
 
+The owner's session labels an agent with `set-label` `{ label }` and gets `{ label }` back. Only the owner can call it, as with `set-name`.
+`MeshAgent` sets `meta["ai.cotal.label"]`, which clients show in place of the name, and leaves the name, so `@mentions` still reach the agent by it.
+A label follows the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words.
+The agent refuses a label that breaks it as `bad-request`, `not-executed`, with a message that says which part.
+A later `set-name` drops the label.
+
 ### Labels from the first message [#labels-from-the-first-message]
 
 A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) labels itself from the first message it gets: its launch prompt, else its first live direct message or `@mention` from a principal of its own owner.
@@ -349,9 +355,10 @@ The request asks for a short name for the message and caps the message at 8,000 
 The card's `name` stays the launch name, so `@mentions`, direct messages and name lookups keep reaching the seat by it.
 A client that lists agents shows `meta["ai.cotal.label"] ?? name`.
 From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`.
-The key goes when naming settles: a label, a failed or empty reply, 60 seconds, an owner `set-name`, or the seat stopping.
+The key goes when naming settles: a label, a failed or empty reply, 60 seconds, an owner `set-name` or `set-label`, or the seat stopping.
 The label and the key's removal reach presence in one record.
 An owner `set-name` sets the name and drops the label in one record, and one made while naming is out ends naming with no label.
+An owner `set-label` made while naming is out ends naming too, and the owner's label stays.
 A failed naming leaves no label, and so does a relaunch.
 An agent file cannot set either key.
 A connector with no hook never shows the key and logs that the seat shows no label.

@@ -33,13 +33,18 @@ export async function historyClear(values: Values): Promise<void> {
         ? { space, server }
         : resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
     } catch (error) {
-      // A completed down removes the live registration but keeps the broker address in its journal.
       if (!isWorkspaceTargetError(error) || error.code !== "not-started") throw error;
-      const { root, space, stopped } = error.details;
-      if (!root || !space || !stopped) throw error;
-      const journal = readStackJournal(root)?.journal;
-      if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") throw error;
-      selected = { space, server: values.server ?? journal.server };
+      const { root, space, stopped, lastRun, stackSpace, server, recordedRoot, home } = error.details;
+      // A stopped direct `up` leaves no journal, but its retained configuration names the broker.
+      if (lastRun && stackSpace && server && recordedRoot === undefined && home === undefined && (values.space === undefined || values.space === stackSpace)) {
+        selected = { space: stackSpace, server: values.server ?? server };
+      } else {
+        // A completed down removes the live registration but keeps the broker address in its journal.
+        if (!root || !space || !stopped) throw error;
+        const journal = readStackJournal(root)?.journal;
+        if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") throw error;
+        selected = { space, server: values.server ?? journal.server };
+      }
     }
     const streams = [chatStream(selected.space), ...(values.dms ? [dmStream(selected.space)] : [])];
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));

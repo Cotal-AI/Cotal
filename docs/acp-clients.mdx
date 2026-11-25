@@ -34,7 +34,7 @@ Until then, a bare `cotal down` for the space refuses and names the command that
 A thread's first prompt checks again when its Machine is this machine's, so a thread left open past that time starts the manager again.
 When no manager is registered for the space, as after that manager stopped itself, listing threads, loading or deleting one, and `/open` fail with a message that says so and that a new thread starts this machine's manager. None of them starts a manager.
 If the start fails, the new thread fails with the start's reason. It also fails when the start succeeds but the space does not list a manager on this machine yet; open the thread again.
-A manager runs on this machine when it names this machine's id, the `machine` field of its status and presence (see [Control discovery](control-discovery.mdx#status-metadata-and-launch-availability)). The host name decides nothing, because macOS changes it when the network changes. A manager that names no machine, such as one from a release before this field, counts as another computer's. When `cotal acp` cannot read this machine's own id, as in a container with no `/etc/machine-id`, no manager counts as this machine's, so a thread neither defaults to one nor starts one. A new thread offers the listed managers in the Machine option, a prompt with none chosen fails and says why, and a manager the thread names runs its agent as before. With none listed, the new thread fails and says why.
+A manager runs on this machine when it names this machine's id, the `machine` field of its status and presence (see [Control discovery](control-discovery.mdx#status-metadata-and-launch-availability)). The host name decides nothing, because macOS changes it when the network changes. A manager that names no machine, such as one an older release started, runs on this machine when this machine's manager service for the space runs it: `cotal acp` reads `cotal manager status`, and the listed manager with the native instance it shows is this machine's. Any other manager that names no machine counts as another computer's. When `cotal acp` cannot read this machine's own id, as in a container with no `/etc/machine-id`, no manager counts as this machine's, so a thread neither defaults to one nor starts one. A new thread offers the listed managers in the Machine option, a prompt with none chosen fails and says why, and a manager the thread names runs its agent as before. With none listed, the new thread fails and says why.
 
 ## Add Cotal to the client [#add-to-a-client]
 
@@ -99,6 +99,7 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
 | The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The agent's name is the thread's id, or the name you gave it with `/name`. The turn ends when that first task's run ends. |
 | A later prompt | Reaches the agent as your own words: through the agent's `turn` where its presence says it takes one now, else typed into its terminal through its manager. The thread picks the path from the agent's presence before it sends the prompt, and a path that fails is reported, not retried another way. The turn ends once the agent has started working and stopped again. |
+| The thread's title | The name the agent shows: the label it took from its first message, else its name. The thread sends it when it starts or loads its agent, and again each time the agent's presence shows another name, as after `/name`, a label or a rename made elsewhere. Where the client lists its own thread server, as T3 Code does, a title you give the thread there becomes the agent's label (see [Thread titles](#titles)). |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. An agent a thread spawned or opened is listed as that thread. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
@@ -106,6 +107,13 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 A later prompt sent as a `turn` joins the agent's queue, as one of the agent's own commands does. While the agent finishes earlier work, the prompt waits there and its turn stays open, however long that takes. The turn shows only the agent's run for that prompt.
 If the agent does not start working on a later prompt within 30 seconds of taking it, or of having it typed in, the turn ends with a note saying so.
 The agent still has the prompt, and answers it when it gets to it.
+
+When the agent's turn fails, the prompt fails with the application's own error text and, in parentheses, its error kind, such as `acp_x's turn failed: You've hit your usage limit. ... (usageLimitExceeded)`.
+The text and kind come from the agent's presence condition ([SPEC §6](../SPEC.md#6-presence-and-discovery)), because the run error on its event channel carries only the fixed text `run failed`.
+The error's `data.condition` holds the condition's `code`, `source` and `message`.
+The thread waits up to 2 seconds for the condition after the run fails.
+An application that reports no text, such as Hermes for a message it could not process, fails the prompt with `<agent>'s turn failed` alone.
+Hermes shows its own error reply, such as a provider failure, as the agent's message instead.
 
 A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls.
 A tool call shows its arguments and its result, and a file edit shows as a diff.
@@ -125,6 +133,24 @@ On an open mesh nothing checks who calls, so any program that reaches the broker
 - A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
 - After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage. The usage arrives before the prompt answers, unless the agent takes more than 3 seconds to report it.
 - Choosing another model or reasoning choice on a running thread switches the agent with its `set-model`, from its next turn. The thread then shows what the agent runs. The model must belong to the agent's application and be one it lists: a model of another application, or the application's default, needs a new agent after `/despawn`. When the agent cannot switch now, such as a Claude Code session with mods off, or refuses the model, the choice fails with the agent's reason and stays. Each connector's reference page says what its switch calls and what it leaves on the launch model.
+
+## Thread titles [#titles]
+
+T3 Code lists an MCP server of its own for each thread in `session/new` and `session/load`.
+The bridge finds such a thread server by the tools it offers, `t3_thread_configure`, `t3_thread_read` and `t3_thread_update`, and never by the client's name.
+The bridge starts each MCP server the client passes once, to read its tools, and closes it when the list is read.
+It knows a server by its command and arguments, and lists each one once for as long as the bridge runs.
+Only a server that offers the three tools stays open, for the thread whose session listed it.
+The bridge starts a server with the command, arguments and environment the client gave, and no variable of its own.
+
+- When a thread starts or loads its agent, and at the start of each prompt, the bridge reads the thread's title there.
+- A title that changed since the bridge last set or read it, and differs from the name the agent shows, becomes the agent's label before the prompt reaches it. The agent's name, which mentions and direct messages use, stays.
+- Otherwise the bridge sets the name the agent shows as the title there, and again each time it sends the thread's title.
+- The bridge stores the last title it set or read with the thread's link. A load in a new bridge compares the title with it, so a title you gave the thread while no bridge ran becomes the label, and a name the agent took elsewhere becomes the title. A link with no title stored gives the agent's name.
+- A title the bridge set itself is never taken as a rename.
+- A label follows the rule for a label an agent takes from its first message: one line of at most 40 characters, no `/` or `\`, and single spaces between words. The agent refuses any other title.
+- A read that fails, or a label the agent refuses, is said in the thread and logged, and the prompt runs. A refused title is set back to the name the agent shows.
+- A client that lists no thread server gets the title through ACP alone.
 
 ## Choose the agent [#options]
 
@@ -148,7 +174,7 @@ The session's model list also gives each model its reasoning choices, so a clien
 
 | Command | What it does |
 | --- | --- |
-| `/name <new name>` | Before the first prompt, sets the name the agent starts with. On a running agent, changes the name it shows on the mesh. Its manager still lists it by the name it started with. |
+| `/name <new name>` | Before the first prompt, sets the name the agent starts with. On a running agent, changes the name it shows on the mesh and the thread's title. Its manager still lists it by the name it started with. |
 | `/open <name>` | In a thread with no agent, drives an agent that is already running, found by its name or the name it shows. The thread's options change to show that agent's model, and the thread shows what the agent's event channel still holds, then follows it live. When you load the thread again, it opens that agent. |
 | `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
@@ -187,10 +213,11 @@ person controls every agent under their own owner (see
 - Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
 - When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
 - Switching a running agent's model needs an application whose connector can switch it. Hermes cannot yet.
+- A title you give a thread in the client becomes its agent's label only through a thread server, and only once the thread loads or you send its next prompt. An agent whose connector predates `set-label` refuses it.
 - `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
-- An agent whose credential holds no rows for the `agent` endpoint, such as one an older release started on a static space, answers none of its calls: its questions stay at its terminal, its commands are not listed, and `/name` fails. Despawn it and start it again.
-- The client's own MCP servers are not passed to the agent.
+- An agent whose credential holds no rows for the `agent` endpoint, such as one an older release started on a static space, answers none of its calls: its questions stay at its terminal, its commands are not listed, and `/name` and a thread title fail. Despawn it and start it again.
+- The client's own MCP servers are not passed to the agent. The bridge itself uses only a thread server (see [Thread titles](#titles)).
 
 ## cotal acp [#acp]
 
