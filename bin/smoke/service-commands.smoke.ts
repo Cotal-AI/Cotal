@@ -353,6 +353,10 @@ try {
     [badGlobalLeading, badGlobalTrailing].every((run) => run.status === 1 && run.stdout === ""
       && run.stderr.includes("--no-color takes no value") && run.stderr.endsWith(brokerStartHelp.stdout)),
     { leading: out(badGlobalLeading), trailing: out(badGlobalTrailing) });
+  const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
+  check("explicit broker start help keeps preset options when passed startup flags",
+    brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
+    out(brokerHelpWithOptions));
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));
