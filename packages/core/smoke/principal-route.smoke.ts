@@ -372,8 +372,8 @@ check("a managed-agent ledger row gets the serve rows and no caller row",
   prinRows(managed).sort().join("|") === [...serve.pub, ...serve.sub].sort().join("|"), prinRows(managed));
 const interactive = mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID);
 const webServe = epPrincipalServeGrantRows(SPACE, web);
-check("an interactive ledger row gets the serve rows, the thirteen owner rows and the reply read",
-  own.pub.length === 13 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
+check("an interactive ledger row gets the serve rows, the fourteen owner rows and the reply read",
+  own.pub.length === 14 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
 check("an interactive row's owner rows cover its own actor as a target, so the command must refuse a self-answer (R4)",
   (interactive as { pub: { allow: string[] } }).pub.allow.includes(`${P}.ep.prin.agent.u_alice.*.*.*.prompt-answer.owner.u_alice.web.${CUID}.*`));
 check("a callout mint with no ledger kind (a chat session) gets none", prinRows(mint({ owner: "u_alice", actor: "chat" })).length === 0);
@@ -419,7 +419,7 @@ check("the delegation bound is unchanged: the serve rows are in the empty projec
 const ownerCaller = (pr: Record<string, unknown>) => permissionsFor("agent-caller", SPACE, { owner: "local", actor: "acp", connId: callout.connId, ...pr }, {}) as { pub: { allow: string[]; deny?: string[] }; sub: { allow: string[] } };
 const personCaller = ownerCaller({ lifecycleUid: CUID });
 const personOwn = epPrincipalOwnerGrantRows(SPACE, { owner: "local", actor: "acp", uid: CUID });
-check("an agent-caller holds the twelve owner rows over every agent under local, their reply read and its inbox, and nothing else",
+check("an agent-caller holds the fourteen owner rows over every agent under local, their reply read and its inbox, and nothing else",
   personCaller.pub.allow.join("|") === personOwn.pub.join("|") && personCaller.sub.allow.join("|") === [`_INBOX_${callout.connId}.>`, ...personOwn.sub].join("|") && personCaller.pub.deny === undefined,
   personCaller);
 check("an agent-caller holds no serve row", !personCaller.sub.allow.some((r) => r.startsWith(`${P}.ep.prin.`)) && !personCaller.pub.allow.some((r) => r.startsWith(`${P}.ep.prin-reply.`)));
@@ -506,7 +506,7 @@ const without = await jwtBytes(fixture());
 const withRows = await jwtBytes(fixture("interactive"));
 console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the rows an interactive row adds (mint bound ${MAX_MINTED_JWT_BYTES})`);
 check("the maximum-capability fixture with the rows an interactive row adds stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
-check("the interactive rows add 2 serve rows, 13 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 16,
+check("the interactive rows add 2 serve rows, 14 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 17,
   prinRows(fixture("interactive")).length - prinRows(fixture()).length);
 
 // ── the entry point: the package root serves the `agent` endpoint only ──

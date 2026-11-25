@@ -863,7 +863,7 @@ try {
       const served = await until(() => watcher.getRoster().find((p: Presence) => p.card.id === open.id)?.prompts !== undefined, 8000);
       const presence = watcher.getRoster().find((p: Presence) => p.card.id === open.id);
       check("a MeshAgent with a dispatcher on an open mesh serves its agent endpoint, logs nothing about it, and its presence shows the prompts and agentEndpoint fields",
-        open.connected && served && presence?.prompts !== undefined && same(presence?.agentEndpoint, { interrupt: true, turn: false, images: false, usage: false }) && said.length === 0,
+        open.connected && served && presence?.prompts !== undefined && same(presence?.agentEndpoint, { interrupt: true, turn: false, images: false, usage: false, setModel: false }) && said.length === 0,
         { prompts: presence?.prompts, agentEndpoint: presence?.agentEndpoint, said });
       // No row exists on an open mesh: any client that reaches the broker calls as the owner.
       const at = { owner: presence!.card.owner ?? "local", actor: open.id.split(".").pop()!, uid: presence!.lifecycleUid!, runtimeId: presence!.runtime!.id };
