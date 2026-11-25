@@ -583,8 +583,8 @@ must match the catalog name. Creation keeps the original bytes.
 A file with invalid encoding is refused with `SCHEMA_INVALID`, naming the source and asking you to
 save it as UTF-8. A name mismatch is refused with `SCHEMA_INVALID` and names the value in the file.
 If the file's name can be used to create a persona, the refusal gives the
-`persona create` command that keeps it and quotes the file path for the shell. With `--file -`,
-pipe the definition into the retry again.
+`persona create` command that keeps it and quotes the file path for the shell. The retry keeps an
+explicit `--json` or `--plain` format. With `--file -`, pipe the definition into the retry again.
 A file the agent-file rules refuse is `SCHEMA_INVALID` naming the file, the field and the reason,
 such as a missing frontmatter block, the renamed `channels` key or a `subscribe` channel outside
 `allowSubscribe`. A YAML error names only its line and column, not the parser's text.
@@ -646,9 +646,10 @@ successful editor exit and valid definition are required before saving. A draft 
 validation is refused with `SCHEMA_INVALID` and the reason, keeping the draft and naming its path,
 so the edit is not lost. The retry command keeps any explicit `--space` or `--server` flags
 and the requested `--json` or `--plain` output.
-An editor that exits non-zero, as vim's `:cq` does, cancels the edit: it
-exits 0 with a `USER_CANCELLED` warning, saves nothing, and keeps and names a draft it changed. An
-editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
+An editor that exits non-zero, as vim's `:cq` does, cancels the edit. This includes statuses 126 and
+127 from an editor run directly by path. The CLI exits 0 with a `USER_CANCELLED` warning, saves
+nothing, and keeps and names a draft the editor changed.
+An editor ended by a signal fails with `OPERATION_FAILED` and keeps the draft. A SIGINT, SIGTERM or
 SIGHUP that reaches the CLI while the editor is open is passed to the editor, and the CLI waits for
 it to exit. SIGTERM and SIGHUP then stop the edit, as does a Ctrl-C that ends the editor: nothing is
 saved, an unchanged draft is removed, a changed one is kept and named, and the CLI exits 130, 143 or

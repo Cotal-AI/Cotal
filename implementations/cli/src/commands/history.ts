@@ -29,6 +29,7 @@ import {
   concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { spaceChoiceRemedy } from "../lib/choose-target.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
 import { historySetupFailureRecords } from "../lib/stream-setup-failure.js";
@@ -311,8 +312,9 @@ export async function history(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
     // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
+    const spaceRemedy = isConnectRefusal(error) ? spaceChoiceRemedy(error.cause, "history", args, args.raw) : undefined;
     const failure = isCommandFailure(error) ? error
-      : isConnectRefusal(error) ? error.failure(hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
+      : isConnectRefusal(error) ? error.failure(spaceRemedy !== undefined ? () => spaceRemedy : hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
       : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);

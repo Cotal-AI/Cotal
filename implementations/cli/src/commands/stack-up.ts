@@ -1056,6 +1056,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
+    if (!brokerRunning && previous === undefined && request.retryAtAnotherAddress) {
+      const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
+      if (holder) throw new CommandFailure("refused", "CONFLICT", `another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`, {
+        remedy: await request.retryAtAnotherAddress(brokerHost ?? brokerListenAddress(server).host)
+          ?? "choose an unreserved broker address and retry with `--server`",
+      });
+    }
     snapshot = writeStackJournal(root, current ?? recorded, journal);
     settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;

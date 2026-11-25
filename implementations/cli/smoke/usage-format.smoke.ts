@@ -180,6 +180,25 @@ check("a global flag after a missing history follow value preserves the stream r
   && followRecords.every((record) => record.stream === "history" && record.target?.channel === "abc")
   && followRecords[0]?.data?.code === "USAGE_INVALID" && followRecords[0]?.data?.message === "--limit needs a value"
   && followRecords[0]?.data?.remedy === "write --limit <n>" && followRecords[1]?.data?.reason === "setup-failed", shown(followGlobal));
+for (const [args, stream] of [[["history", "general"], "history"], [["channel", "members", "general"], "membership"]] as const) {
+  for (const [fixed, valid, malformed] of [["--follow", "--json", "--json=false"], ["--json", "--follow", "--follow=false"]]) {
+    for (const pair of [[valid, malformed], [malformed, valid]]) {
+      const result = run([...args, fixed, ...pair]);
+      const records = result.stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      check(`${args.join(" ")} ${fixed} ${pair.join(" ")} emits a stream usage refusal`,
+        result.status === 1 && result.stderr === "" && result.stdout.endsWith("\n")
+        && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream && record.target?.channel === "general")
+        && records[0]?.data?.code === "USAGE_INVALID" && records[1]?.data?.reason === "setup-failed", shown(result));
+    }
+  }
+  for (const suffix of [[], ["--", "--follow"]]) {
+    const result = run([...args, "--json", "--follow=false", ...suffix]);
+    check(`${args.join(" ")} without a bare follow option emits a finite usage refusal`,
+      result.status === 1 && result.stderr === "" && parsed(result)?.outcome === "refused"
+      && parsed(result)?.error?.code === "USAGE_INVALID", shown(result));
+  }
+}
 const groupedSpace = run(["config", "get", "harness", "-js", "--no-input", "abc"]);
 for (const [args, space] of [[[], null], [["--space", "watch-test"], "watch-test"]] as const) {
   const result = run(["watch", ...args, "--view", "--json"]);
@@ -337,6 +356,20 @@ if (process.platform !== "win32") {
     && files.every((path, index) => (statSync(path).mode & 0o777) === (index === 0 ? 0o600 : 0o700)), shown(scaffold));
 
   const original = files.map((path) => readFileSync(path));
+  const checkArgs = ["endpoint", "check", join(dir, "contract.json")];
+  const pastedFile = "\u2013\u2013file=example.json";
+  const pastedCheck = run([...checkArgs, pastedFile], {}, cwd);
+  const checkRetry = run(checkArgs, {}, cwd);
+  check("endpoint check tells the caller to omit a pasted reference option and the retry works",
+    usageShape(pastedCheck, /starts with a typographic dash/) && ["cotal", "pnpm cotal"].some((cli) =>
+      pastedCheck.stderr.includes(`omit this option; \`${cli} endpoint check\` does not take --file`))
+    && !pastedCheck.stderr.includes("type the option with hyphens")
+    && checkRetry.status === 0 && checkRetry.stderr === "" && checkRetry.stdout.includes("Endpoint contract valid locally")
+    && files.every((path, index) => readFileSync(path).equals(original[index]!)), [pastedCheck, checkRetry].map(shown));
+  const pastedAdd = run(["endpoint", "add", pastedFile], {}, cwd);
+  check("endpoint add still suggests the hyphenated spelling for its reference option",
+    usageShape(pastedAdd, /starts with a typographic dash/) && pastedAdd.stderr.includes("type the option with hyphens: --file=example.json"), shown(pastedAdd));
+
   const conflictArgs = ["endpoint", "init", "different", "--dir", dir];
   const conflict = run([...conflictArgs, "--json"], {}, cwd);
   const plainConflict = run([...conflictArgs, "--plain"], {}, cwd);
@@ -993,12 +1026,15 @@ for (const [flag, value] of [["--server", "nats://127.0.0.1:37126"], ["--creds",
       && error.remedy === `add --live to read native registrations, or omit ${flag} to list saved references`, shown(inventory));
 }
 const ascii = { LANG: "C" };
-const plainOwn = run(["config", "get", "bogus", "--plain"]);
-check("under --plain a command's own usage refusal is the plain report with its Next, then the help", reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr), shown(plainOwn));
+const forcedColor = { FORCE_COLOR: "1", NO_COLOR: "" };
+const plainOwn = run(["config", "get", "bogus", "--plain"], forcedColor);
+check("under --plain a command's own usage refusal and help stay uncolored with forced color",
+  reportShape(plainOwn, /unknown preference "bogus"/) && /^Next$/m.test(plainOwn.stderr) && !plainOwn.stderr.includes("\x1b"), shown(plainOwn));
 const asciiOwn = run(["config", "get", "bogus"], ascii);
 check("under a locale without UTF-8 a command's own usage refusal is the report, then the help", reportShape(asciiOwn, /unknown preference "bogus"/), shown(asciiOwn));
-const plainParser = run(["status", "--bogus", "--plain"]);
-check("under --plain a parser usage error is the plain report, then the help", reportShape(plainParser, /Unknown option '--bogus'/), shown(plainParser));
+const plainParser = run(["status", "--bogus", "--plain"], forcedColor);
+check("under --plain a parser usage refusal and help stay uncolored with forced color",
+  reportShape(plainParser, /Unknown option '--bogus'/) && !plainParser.stderr.includes("\x1b"), shown(plainParser));
 const asciiParser = run(["status", "--bogus"], ascii);
 check("under a locale without UTF-8 a parser usage error is the report, then the help", reportShape(asciiParser, /Unknown option '--bogus'/), shown(asciiParser));
 const asciiUnknown = run(["frobnicate"], ascii);

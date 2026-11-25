@@ -282,9 +282,14 @@ try {
     check("the instance records the native stop the manager returned", row?.state === "stopped" && row.nativeStop?.nativeStop === "returned", row);
 
     // ---- A manager that fails at boot names its cause ---------------------------------------------
+    const capRecord = join(root, ".cotal", `manager.${spaceKey(SPACE)}.seat-cap.json`);
+    writeFileSync(capRecord, JSON.stringify({ version: 1, seatCap: 0 }), { mode: 0o600 });
+    const supervise = cotal(["supervise", "--space", SPACE, "--server", SERVER, "--runtime", "pty"]);
+    check("supervise names the invalid saved seat cap and how to recover",
+      supervise.status === 1 && supervise.stderr.includes(`✗ the manager seat-cap record ${capRecord} holds neither a positive integer nor "unlimited"\n  Next: remove or repair that record, then start the manager again`), out(supervise));
+
     // The controller does not read the recorded seat cap, so a corrupt record fails the native child
     // inside its own startup, with a classified failure that wraps the record's refusal.
-    const capRecord = join(root, ".cotal", `manager.${spaceKey(SPACE)}.seat-cap.json`);
     writeFileSync(capRecord, "not a record\n", { mode: 0o600 });
     // The line names the record and ends in the one step that clears it.
     const cause = `✗ the manager did not start: OPERATION_UNKNOWN: the native manager child did not confirm startup; cause: SCHEMA_INVALID: the manager seat-cap record ${capRecord} is not valid JSON; next: remove or repair that record, then start the manager again\n`;

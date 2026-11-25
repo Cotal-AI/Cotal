@@ -15,7 +15,7 @@ import { abandonableSignalStop, abandonRetainedNativeStop, abandonRetainedSignal
 import { stackRunsRecord, type StackRuns } from "./stack-runs.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
-import { assertRecordIdentity, localProcessOwnerStatus, readMaintenanceLockHolder } from "@cotal-ai/workspace";
+import { assertRecordIdentity, localProcessOwnerStatus, projectRootDisplaced, projectRootProblem, projectRootProblemText, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd, displayRemedy } from "./self-exec.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
@@ -881,21 +881,30 @@ export function releaseStackDefinitions(root: string, space: string): { released
   try { owned = stackDefinitionsAt(space, root); } catch (error) { return { released: [], kept: { names: [], why: `${(error as Error).message}; inspect them with \`cotal service --space ${space}\`` } }; }
   if (!owned.length) return { released: [] };
   const names = owned.map((row) => row.name);
-  let preserved: boolean;
-  try { preserved = existsSync(root) && readMaintenanceJournal(root) !== undefined; } catch { preserved = true; }
-  if (preserved) return { released: [], kept: { names, why: `${root} holds preserved state that resumes from them` } };
+  const problem = projectRootProblem(root);
+  if (problem === "inaccessible")
+    return { released: [], kept: { names, why: `${root} ${projectRootProblemText(problem)}, so its preserved state could not be checked` } };
+  const displaced = projectRootDisplaced(problem);
+  if (!displaced) {
+    try {
+      if (readMaintenanceJournal(root) !== undefined)
+        return { released: [], kept: { names, why: `${root} holds preserved state that resumes from them` } };
+    } catch {
+      return { released: [], kept: { names, why: `the maintenance journal in ${root} could not be read, so its preserved state could not be checked` } };
+    }
+  }
   try {
     for (const row of owned) removableServiceInstances(space, row.name);
   } catch (error) {
     const route = goneStackRoot(space) === root ? `its folder is gone; \`cotal down --space ${space} --yes\` stops the stack and removes them`
-      : existsSync(root) ? `stop the stack with \`cotal down --yes\` in ${root}, then run \`cotal space forget ${space}\` again`
+      : !displaced ? `stop the stack with \`cotal down --yes\` in ${root}, then run \`cotal space forget ${space}\` again`
       : isCommandFailure(error) && error.remedy || `inspect them with \`cotal service --space ${space}\``;
     return { released: [], kept: { names, why: `${(error as Error).message}; ${route}` } };
   }
   // Read before anything is removed, so the update below replaces only these bytes. A journal this
   // cannot read is left as it is; `up` and `down` there refuse it and name its way out.
   let journal: StackJournalSnapshot | undefined;
-  try { journal = readStackJournal(root); } catch { journal = undefined; }
+  try { journal = displaced ? undefined : readStackJournal(root); } catch { journal = undefined; }
   const store = serviceDefinitionStore(space), released: string[] = [], retired: { definition: string; instanceId: string }[] = [];
   try {
     for (const row of owned) {
