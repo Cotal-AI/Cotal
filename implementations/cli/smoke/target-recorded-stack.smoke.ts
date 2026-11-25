@@ -547,6 +547,37 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
     streamed.status === 2 && records[0]?.type === "error" && records[0].data.code === expected?.code && records[0].data.message === expected?.message && records[0].data.remedy === expected?.remedy && records[1]?.type === "end", shown(streamed));
 }
 
+{
+  const parent = realpathSync(mkdtempSync(join(home, "named-down-")));
+  const space = "rootproject", project = join(parent, space), saved = `${project}.saved`;
+  mkdirSync(project, { mode: 0o700 });
+  sandbox(parent);
+  const record = join(env.COTAL_HOME, "meshes", `space.${Buffer.from(space).toString("hex")}.json`);
+  const entry = JSON.stringify({ space, server: "nats://127.0.0.1:2", root: project, mode: "open", origin: "up", stoppedByDown: true, ts: new Date().toISOString() });
+  mkdirSync(join(env.COTAL_HOME, "meshes"), { recursive: true, mode: 0o700 });
+  writeFileSync(record, entry, { mode: 0o600 });
+
+  const down = ["down", "--yes", "--space", space];
+  const message = (path: string) => `--space ${space} names a stack rooted at ${path}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`;
+  const retry = `run \`${launcher} down --yes\``;
+  const before = runDown(down, parent);
+  check("down from outside an intact recorded project names the command to run there",
+    refusedWith(before, "TARGET_NOT_FOUND", message(project), `${retry} from ${project}`), shown(before));
+
+  renameSync(project, saved);
+  writeFileSync(project, "replacement file\n", { mode: 0o600 });
+  for (const output of [[], ["--json"]]) {
+    const blocked = runDown([...down, ...output], parent);
+    check(`down ${output[0] ?? "text"} names the obstruction and how to restore the recorded project`,
+      refusedWith(blocked, "TARGET_NOT_FOUND", message(`${project}, which is not a directory`),
+        `move the obstruction aside and restore the original project folder at its recorded path, then ${retry} there`) &&
+      !blocked.stderr.includes(`${retry} from ${project}`), shown(blocked));
+  }
+  check("down leaves the obstruction, moved project and registration untouched",
+    readFileSync(project, "utf8") === "replacement file\n" && existsSync(saved) && readFileSync(record, "utf8") === entry);
+  rmSync(record);
+}
+
 // With another space selected the stopped stack does not capture the command: a folder's space is
 // the target there only while it runs, so the selection is, and nothing reaches the legacy address.
 // `status` names what this folder holds and the `cotal up` that starts it.

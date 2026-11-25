@@ -222,6 +222,10 @@ the space and, when this machine started it elsewhere, its root, and its next st
 records unchanged and asks you to restore access before retrying. `--json` and `--plain` carry that
 refusal as structured output when the current folder has no stack of its own.
 
+If a file blocks the recorded project path and `down` refuses the stop from another folder, it
+reports that the path is not a directory. Move the file aside and restore the original project
+folder before retrying there.
+
 A manual or catalog connection records the folder that uses it. If a named stop or preview finds
 only that connection in another folder, run the stop or preview in the project that started the stack.
 
