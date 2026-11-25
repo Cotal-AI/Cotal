@@ -53,7 +53,7 @@ export function available(): boolean {
   let out: string;
   try {
     out = execFileSync("herdr", ["--version"], {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: PROBE_MS,
     });
@@ -68,7 +68,7 @@ export function available(): boolean {
 export function versionText(): string {
   try {
     return execFileSync("herdr", ["--version"], {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: PROBE_MS,
     }).trim();
@@ -108,7 +108,7 @@ export function run(
   let out: string;
   try {
     out = execFileSync("herdr", ["--session", session, ...args], {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
       // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM would
@@ -173,7 +173,7 @@ function findResult(out: string): Record<string, unknown> | undefined {
  *  way, so the answer is in the text. */
 export function serverRunning(session: string): boolean {
   const out = execFileSync("herdr", ["--session", session, "status", "server"], {
-    encoding: "utf8",
+    encoding: "utf8", windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     timeout: PROBE_MS,
   });
@@ -199,7 +199,7 @@ function childDead(pid: number | undefined): boolean {
   let state: string;
   try {
     state = execFileSync("ps", ["-o", "state=", "-p", String(pid)], {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: PROBE_MS,
     }).trim();
@@ -222,7 +222,7 @@ export function ensureServer(session: string): void {
   const logPath = join(dir, "server.log");
   const logFd = openSync(logPath, "a");
   const child = spawn("herdr", ["--session", session, "server"], {
-    detached: true,
+    detached: true, windowsHide: true,
     stdio: ["ignore", "ignore", logFd],
   });
   // A spawn failure (e.g. ENOENT) is delivered as an async "error" event once the event loop
@@ -499,7 +499,7 @@ export function sendKeys(session: string, paneId: string, key: string, opts: { t
  *  envelope {@link run} parses. */
 export function readPane(session: string, paneId: string, opts: { timeoutMs?: number } = {}): string {
   return execFileSync("herdr", ["--session", session, "pane", "read", paneId], {
-    encoding: "utf8",
+    encoding: "utf8", windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
     killSignal: "SIGKILL",
@@ -571,7 +571,7 @@ export function stopSession(session: string): void {
   let out: string;
   try {
     out = execFileSync("herdr", ["session", "stop", session], {
-      encoding: "utf8",
+      encoding: "utf8", windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       timeout: PROBE_MS,
     });

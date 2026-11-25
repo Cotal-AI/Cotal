@@ -40,7 +40,7 @@ export function startLine(space: string, stdout: string): string {
  *  {@link NoLaunchManager} naming the start's reason. */
 export async function startManager(space: string): Promise<string> {
   const args = [...process.execArgv, process.argv[1]!, "manager", "start", "--space", space, "--idle-exit", String(IDLE_EXIT_SECONDS), "--json"];
-  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (b: Buffer) => (stdout += b));

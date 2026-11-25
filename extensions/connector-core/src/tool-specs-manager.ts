@@ -70,7 +70,7 @@ function resolveFeedbackEmail(explicit: string | undefined, env?: NodeJS.Process
   // A hosted session must not discover a contact in the host repository.
   const args = env === undefined ? ["config", "user.email"] : ["config", "--global", "--includes", "user.email"];
   try {
-    const email = execFileSync("git", args, { encoding: "utf8", env }).trim();
+    const email = execFileSync("git", args, { encoding: "utf8", env, windowsHide: true }).trim();
     return email || undefined;
   } catch {
     return undefined;
