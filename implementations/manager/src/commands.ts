@@ -676,7 +676,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
   } catch (e) {
     if (service) throw unconfirmedStart(e);
-    console.error(c.red(`✗ ${rejectionText(e)}`));
+    const next = isCommandFailure(e) && e.remedy ? `\n  Next: ${e.remedy}` : "";
+    console.error(c.red(`✗ ${rejectionText(e)}`) + next);
     process.exit(1);
   }
   // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
