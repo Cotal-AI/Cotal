@@ -8,7 +8,7 @@ import {
   probeLiveness, readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
   localProcessPathCandidates, verifyIdentityPin, homeCotalDir,
 } from "@cotal-ai/workspace";
-import { goneStackRoot } from "./stack-journal.js";
+import { stackRootRecovery } from "./stack-journal.js";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
@@ -126,7 +126,7 @@ export function recordedUpdateManagers(
     result.set(key, { pid: process.pid, root, space, server, instanceId, process });
   };
   for (const entry of registry.entries) {
-    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+    if (!existsSync(entry.root) || stackRootRecovery(entry.space) !== undefined) {
       console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
       continue;
     }
@@ -176,7 +176,7 @@ export function localUpdateManagers(
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(server));
   const known = new Map<number, { root: string; space: string; server: string }>();
   for (const entry of entries) {
-    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+    if (!existsSync(entry.root) || stackRootRecovery(entry.space) !== undefined) {
       console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
       continue;
     }
@@ -322,7 +322,7 @@ export function localUpdateManagers(
       result.set(JSON.stringify([pid, pin.token]), { ownership: "foreign", pid, root: canonicalRoot, space, process: pin });
       continue;
     }
-    if (!existsSync(root) || goneStackRoot(space) !== undefined) continue;
+    if (!existsSync(root) || stackRootRecovery(space) !== undefined) continue;
     const entry = entries.find(value => value.space === space);
     const server = option(argv, "server") ?? env.COTAL_SERVER ?? recorded?.server ?? entry?.server;
     if (!server) blocked(`Manager pid ${pid}, root ${root}, space ${space} has no broker address`);

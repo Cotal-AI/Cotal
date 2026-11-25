@@ -11,12 +11,58 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { authDir, clearCurrent, findPreparedSpace, meshFile, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, findPreparedSpace, meshFile, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, spaceKey, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
 import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
+import { SEED_BUILTINS } from "../src/seed/paths.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
+
+function checkInaccessibleUpdate(bin: string, cwd: string, project: string, space: string, version: string, env: NodeJS.ProcessEnv & { COTAL_HOME: string }): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const scratch = mkdtempSync(join(cwd, "inaccessible-update-"));
+  const config = join(scratch, "config"), seed = join(config, "cotal", "seed");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  // Honor previously removed built-ins without attempting any package installation.
+  writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }), { mode: 0o600 });
+  writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
+  writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }), { mode: 0o600 });
+  const npm = join(scratch, "npm"), unexpected = join(scratch, "unexpected-npm-call");
+  writeFileSync(npm, `#!/bin/sh
+case "$1 $2" in
+  "view cotal-ai@latest") printf '"%s"\\n' "$SMOKE_CLI_VERSION" ;;
+  "--version ") printf '11.0.0\\n' ;;
+  *) printf '%s\\n' "$*" >> "$SMOKE_UNEXPECTED_NPM"; exit 97 ;;
+esac
+`, { mode: 0o700 });
+  const records = [meshFile(space), join(project, ".cotal", "stack-controller.json")];
+  const definitions = join(env.COTAL_HOME, "services", spaceKey(space), "definitions");
+  const instances = join(env.COTAL_HOME, "services", spaceKey(space), "instances");
+  for (const dir of [definitions, instances]) records.push(...readdirSync(dir).filter(name => name.endsWith(".json")).map(name => join(dir, name)));
+  const before = records.map(path => readFileSync(path));
+  const attempts = [project, join(project, ".cotal")].flatMap(blocked => {
+    const mode = statSync(blocked).mode & 0o777;
+    try {
+      chmodSync(blocked, 0o000);
+      assert.throws(() => statSync(join(blocked, blocked === project ? ".cotal" : "stack-controller.json")), { code: "EACCES" });
+      return [[], ["--space", space]].map(flags => ({ blocked, result: spawnSync(process.execPath, [bin, "update", ...flags], {
+        cwd, encoding: "utf8", timeout: 120_000,
+        env: { ...env, XDG_CONFIG_HOME: config, PATH: `${scratch}:${env.PATH}`, TMPDIR: scratch, TMP: scratch, TEMP: scratch,
+          SMOKE_CLI_VERSION: version, SMOKE_UNEXPECTED_NPM: unexpected },
+      }) }));
+    } finally { chmodSync(blocked, mode); }
+  });
+  assert.deepEqual(attempts.map(({ result }) => result.status), [0, 0, 0, 0], attempts.map(({ blocked, result }) => `${blocked}:\n${result.stdout}${result.stderr}`).join("\n"));
+  for (const { result } of attempts) {
+    assert.ok(result.stdout.includes(`${space}: folder is gone; leaving its processes untouched, continuity not checked`));
+    assert.ok(result.stdout.includes(`Registry latest: ${version}`), "the private npm stub answered the version lookup");
+    assert.doesNotMatch(result.stderr, /running manager continuity check/);
+  }
+  assert.equal(existsSync(unexpected), false, "update never requests an npm install or unrelated registry lookup");
+  assert.deepEqual(records.map(path => readFileSync(path)), before, "update leaves registration, journal, definitions and instance records byte-identical");
+}
+
 const root = mkdtempSync(join(tmpdir(), "cotal-update-unstarted-"));
 const other = mkdtempSync(join(tmpdir(), "cotal-update-deleted-"));
 const prior = process.env.COTAL_HOME;
@@ -317,6 +363,8 @@ try {
     const up = controllerCli(["up", "--detach", "--server", target.server]);
     started = up.status === 0;
     assert.equal(up.status, 0, `${up.stdout}\n${up.stderr}`);
+    checkInaccessibleUpdate(bin, other, controllerProject, controllerSpace, version, env);
+    expectSuccess(["send", "-c", "general", "broker still running after update"]);
     expectSuccess(["down", "--yes"]);
     started = false;
     expectSuccess(["use", "--clear"]);

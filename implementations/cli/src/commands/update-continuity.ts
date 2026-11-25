@@ -225,8 +225,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   const local = registry.entries.filter(entry => entry.mode !== "user" &&
     (typeof flags.space !== "string" || flags.space === entry.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(entry.server)));
-  const { goneStackRoot } = await import("../lib/stack-journal.js");
-  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => !existsSync(entry.root) || goneStackRoot(entry.space) !== undefined);
+  const { stackRootRecovery } = await import("../lib/stack-journal.js");
+  const gone = typeof flags.creds === "string" ? [] : local.filter(entry => !existsSync(entry.root) || stackRootRecovery(entry.space) !== undefined);
   for (const entry of gone) console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
   if (gone.length && gone.length === local.length) return "none";
   if (gone.length) {
