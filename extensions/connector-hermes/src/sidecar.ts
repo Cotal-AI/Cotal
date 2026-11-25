@@ -29,10 +29,12 @@ import { startBridgeServer, type BridgeServer } from "./bridge.js";
 import { drainWhileIdle, hermesCommands } from "./commands.js";
 import { startHermesEvents, type HermesEvents } from "./events.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
+import type { startOwnerPipe } from "./owner-pipe.js";
 
 interface Sidecar {
   agent: MeshAgent;
   config: AgentConfig;
+  shutdownGateway(): void;
   stop(): Promise<void>;
 }
 
@@ -45,7 +47,7 @@ function need(name: string): string {
 /** Start the mesh agent, the control + bridge servers, and emit the tool descriptors file.
  *  Reads `COTAL_CONTROL_SOCKET`, `COTAL_BRIDGE_SOCKET`, and `COTAL_TOOLS_FILE` from the env, and the
  *  control key and version from the launch material (see controlFromEnv). */
-export function startSidecar(): Sidecar {
+export function startSidecar(windows?: { onShutdown(): void; listenPipe: typeof startOwnerPipe }): Sidecar {
   const config = configFromEnv();
   config.connector = "hermes"; // advertise the host harness on our AgentCard (meta.connector)
   // The gateway posts every turn's output, and its own busy notices, back to the channel as a reply
@@ -81,7 +83,7 @@ export function startSidecar(): Sidecar {
   const controlServer = startControlServer(agent, control, (a, ev) => {
     if (journal) events?.holder.flush(journal);
     return hermesHookHandle(a, ev);
-  }, { fatalBind: true });
+  }, { fatalBind: true, onShutdown: windows?.onShutdown });
   const drain = drainWhileIdle(agent, () => bridge);
   agent.on("command", drain);
   const onIdle = (): void => {
@@ -106,7 +108,7 @@ export function startSidecar(): Sidecar {
   });
   const onClarify = (frame: Record<string, unknown>): void => (frame.t === "clarify" ? clarify.request(frame) : clarify.ended(frame));
   const onDelta = (key: string, text?: string): void => events?.delta(key, text);
-  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval, onClarify, onDelta });
+  bridge = startBridgeServer(agent, config, bridgeSock, control, { onSubscribe: startAgent, onIdle, onApproval, onClarify, onDelta }, windows?.listenPipe);
   // The launch's initial prompt is the gateway's first turn, in the user's own words. Read once and
   // dropped from the environment the gateway inherits.
   const prompt = process.env.COTAL_HERMES_PROMPT;
@@ -120,6 +122,7 @@ export function startSidecar(): Sidecar {
   return {
     agent,
     config,
+    shutdownGateway() { bridge!.shutdownGateway(); },
     async stop() {
       // Both servers have closed, with every accepted connection ended, before stop resolves, so a
       // launcher that removes their directory next leaves nothing listening or connected in it. A

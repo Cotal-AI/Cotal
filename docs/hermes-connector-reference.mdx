@@ -15,8 +15,8 @@ Unlike Claude Code or OpenCode (where the harness *is* the process), Hermes runs
 live inside a per-turn process; the connector's command is a small **launcher/supervisor** that
 owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run` as its child.
 
-- The launcher bridges to an in-gateway **Python plugin** (the platform adapter, presence hooks,
-  and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket sits beside the control
+- On macOS and Linux, the launcher bridges to an in-gateway **Python plugin** (the platform adapter,
+  presence hooks, and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket sits beside the control
   socket, in a directory only the seat's user can enter, and the adapter checks that directory before
   it connects. The adapter's first frame is a `subscribe` carrying a token derived from the launch's
   control key, so the key itself never crosses the bridge socket. The token authenticates the
@@ -28,6 +28,9 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   its version together when the gateway carries neither, and refuses a gateway that carries one
   without the other. It puts both sockets and the tools file in a private `cotal-hermes-*`
   directory under the temp directory, which it does not remove when the gateway stops.
+- On Windows, the bridge is a local named pipe restricted to the seat's Windows user. The plugin
+  and launcher use the control exchange to prove they hold a bridge key derived from the launch
+  key. The hook relay proves both ends on each call using the launch key.
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve)
   unless the launch sets `askPermissions` (see [Command approvals](#command-approvals)).
@@ -40,7 +43,7 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   checks, refreshes or conflicts with your own `hermes-gateway.service`.
 - The disposable profile belongs to the launch and goes away with it. Its private root under
   `$TMPDIR` also holds the gateway's own `TMPDIR` and the
-  state Hermes keeps beside its profiles. When the seat stops, the launcher sends the gateway
+  state Hermes keeps beside its profiles. On macOS and Linux, when the seat stops, the launcher sends the gateway
   SIGTERM, kills its process tree if it is still running 1.5 seconds later, waits for it to exit,
   and then removes that root and the control socket's directory, so a seat stopped mid-turn leaves
   nothing behind either. A stop with an adopted profile or a `--resume` fork waits for the gateway
@@ -349,7 +352,9 @@ Hermes' own `/resume`.
 
 ## Launch contract
 
-- **Unix-only** (no Windows).
+- **Windows**: run a foreground seat with a disposable managed profile. The gateway and its children
+  run in a Windows job so they cannot outlive the launcher. Detached launches, adopted profiles,
+  and session forks require macOS or Linux.
 - **Not containerized**: the [deploy](deploy.mdx) image bundles only Claude Code and OpenCode (no
   `uv`/`hermes-agent`), so there is no containerized Hermes today.
 - **Brings its own toolchain**: you supply `uv` and a `hermes-agent` inside the supported range.

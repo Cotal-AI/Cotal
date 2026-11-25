@@ -659,6 +659,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
+  const unavailable = connector.launchUnavailable?.({ resume: values.resume });
+  if (unavailable) throw new CommandFailure("refused", "UNSUPPORTED", unavailable, { target: { space, path } });
   const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
   const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
   if (missing.length) {
@@ -1059,6 +1061,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     }
   };
   for (const sig of FORWARDED_SIGNALS) process.on(sig, onTerminate);
+  // The Windows console delivers Ctrl+C to the launcher and its child. Keep the outer CLI in
+  // place until Hermes proves its job exited and we retire the seat's credentials.
+  const keepForegroundOnInterrupt = process.platform === "win32" && agentType === "hermes";
+  const waitForHermes = (): void => {};
+  if (keepForegroundOnInterrupt) process.on("SIGINT", waitForHermes);
   try {
     await new Promise<void>((resolve) => {
       child.on("error", (e) => {
@@ -1094,6 +1101,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
     discardLaunchArtifacts(spec.artifacts);
   } finally {
+    if (keepForegroundOnInterrupt) process.off("SIGINT", waitForHermes);
     if (killTimer !== undefined) clearTimeout(killTimer);
     for (const sig of FORWARDED_SIGNALS) process.off(sig, onTerminate);
   }

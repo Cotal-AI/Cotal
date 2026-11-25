@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardLaunchArtifacts, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, nameEnv, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { resolveOnPath } from "@cotal-ai/workspace";
 import { HERMES_PROVIDER_KEYS, listHermesModels } from "./models.js";
 import { HERMES_FORK_RECORD, hermesSeatHome } from "./seat-home.js";
 
@@ -24,6 +25,15 @@ const LAUNCH_COMMAND = FROM_BUILD
  *  shapes. It reaches a SQL parameter only, but a path or a flag is never a session. */
 const HERMES_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
+export function hermesLaunchUnavailable(opts: Pick<LaunchOpts, "cwd" | "resume"> = {}): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const mode = opts.cwd !== undefined ? "detached or manager-attached launches" : opts.resume !== undefined ? "session resume" : process.env.COTAL_HERMES_ADOPT_HOME?.trim() ? "adopted profiles" : undefined;
+  if (mode) return `Hermes on Windows does not support ${mode}. Use a foreground launch with a managed profile. Leave COTAL_HERMES_ADOPT_HOME unset and run \`cotal spawn --foreground --harness hermes --model <model>\`.`;
+  if (process.arch !== "x64" && process.arch !== "arm64") return "Hermes on Windows needs a 64-bit Node.js installation.";
+  if (!resolveOnPath("uv.exe")) return "Hermes on Windows needs uv.exe on PATH. Install uv, then retry the foreground launch.";
+  return undefined;
+}
+
 /**
  * The Hermes (Nous Research) connector. Unlike Claude Code / Codex — where the harness *is* the
  * process and an MCP server rides inside it — Hermes runs as a long-lived **gateway daemon** that
@@ -43,6 +53,7 @@ export const hermesConnector: Connector = {
   // `uv` is the external harness. It provisions the project-pinned `hermes` command below, so a
   // separately installed `hermes` on PATH is neither required nor sufficient to launch this seat.
   requires: ["uv"],
+  launchUnavailable: hermesLaunchUnavailable,
   supportsLaunchValidation: true,
   // The AG-UI event plane, published from the plugin's turn journal (plugin/cotal/journal.py).
   eventChannel,
@@ -58,12 +69,9 @@ export const hermesConnector: Connector = {
   // checks it against the efforts the installed Hermes takes (launchEffort in src/launch.ts).
   supportsModelVariant: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    const unavailable = hermesLaunchUnavailable(opts);
+    if (unavailable) throw new Error(unavailable);
     if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
-    // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
-    // sidecar, none of which are ported to Windows. Fail loud rather than launch a half-wired agent
-    // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.
-    if (process.platform === "win32")
-      throw new Error("the Hermes connector is Unix-only (AF_UNIX bridge + Python sidecar) — not supported on Windows");
     // Resume forks: the launcher copies the named session out of the operator's Hermes profile into
     // the seat's own before the seat joins the mesh, and refuses there, by name, a session it cannot
     // find (see plugin/cotal/resume.py). The adopted profile already holds the session, so it is
@@ -94,7 +102,8 @@ export const hermesConnector: Connector = {
       ...nameEnv(opts),
     };
     if (prompt) env.COTAL_HERMES_PROMPT = prompt;
-    if (opts.resolvedBinaries?.uv) env.COTAL_HERMES_UV_BIN = opts.resolvedBinaries.uv;
+    const uv = process.platform === "win32" ? resolveOnPath("uv.exe") : opts.resolvedBinaries?.uv;
+    if (uv) env.COTAL_HERMES_UV_BIN = uv;
     // Adopt-home is a machine-wide operator decision ("put MY Hermes on the mesh"), not a
     // per-session value the manager assigns, so it crosses from this process like the other
     // operator knobs. launchEnv resets every other COTAL_* name precisely because those ARE
@@ -114,7 +123,8 @@ export const hermesConnector: Connector = {
     }
     if (opts.validateOnly) {
       if (!adoptHome && !opts.model)
-        throw new Error("A managed Hermes profile needs a model. Set one with --model or the agent file's model: field, or use your own profile with COTAL_HERMES_ADOPT_HOME=$HOME/.hermes.");
+        throw new Error("A managed Hermes profile needs a model. Set one with --model or the agent file's model: field" +
+          (process.platform === "win32" ? "." : ", or use your own profile with COTAL_HERMES_ADOPT_HOME=$HOME/.hermes."));
       return { command: "", args: [] };
     }
     if (adoptHome) env.COTAL_HERMES_ADOPT_HOME = adoptHome;
@@ -150,7 +160,7 @@ export const hermesConnector: Connector = {
       env.COTAL_CONTROL_SOCKET = control.path;
       Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
       const seat = hermesSeatHome(opts.space, opts.name);
-      if (!adoptHome && !opts.resume && !existsSync(join(seat.home, HERMES_FORK_RECORD))) {
+      if (!adoptHome && !opts.resume && (process.platform === "win32" || !existsSync(join(seat.home, HERMES_FORK_RECORD)))) {
         const root = mkdtempSync(join(tmpdir(), "cotal-hermes-"));
         artifacts.push(root);
         env.COTAL_HERMES_SEAT_HOME = join(root, "profiles", basename(seat.home));

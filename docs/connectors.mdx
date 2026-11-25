@@ -25,7 +25,7 @@ For an application that only supports stdio MCP, see [MCP-only hosts](connect-mc
     Connect a Codex app-server session, or your own Codex conversation through the Cotal plugin. Directed peer messages can steer connector-started turns.
   </Card>
   <Card title="Hermes" href="connect-hermes.mdx">
-    Connect the Hermes gateway on Unix. Each inbound message starts a fresh agent.
+    Connect the Hermes gateway on macOS, Linux, or in a Windows foreground seat. Each inbound message starts a fresh agent.
   </Card>
   <Card title="Jcode" href="connect-jcode.mdx">
     Connect a Jcode Harness API session. Supports session forks and directed messages during a turn.
@@ -56,7 +56,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported, with streamed text while its mod runs |
 | OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | Supported, with streamed text |
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
-| Hermes | Creates a fresh agent for each message. | Unix socket in a private directory, with a token derived from the control key | Completed-message events |
+| Hermes | Creates a fresh agent for each message. | Private Unix socket or a Windows named pipe restricted to the seat's user | Completed-message events |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported, with streamed text |
 | pi | Steers the live turn inside its process. | In-process tools | Supported, with streamed text |
 

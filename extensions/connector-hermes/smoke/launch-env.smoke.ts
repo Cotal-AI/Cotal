@@ -11,15 +11,17 @@ import { strict as nodeAssert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type LaunchOpts } from "@cotal-ai/core";
-import { skipSuite } from "@cotal-ai/smoke-kit";
+import { CONTROL_PROTOCOL_VERSION, controlCall, discardLaunchArtifacts, readLaunchMaterial, writeLaunchMaterial, type LaunchOpts } from "@cotal-ai/core";
 import { hermesUvCommand, spawnHermesGateway } from "../src/binary.js";
 import { hermesConnector } from "../src/extension.js";
+import { startOwnerPipe } from "../src/owner-pipe.js";
+import { bridgeToken, startBridgeServer } from "../src/bridge.js";
 import { ADOPT_HOME_ENV, LaunchRefused, adoptedHome, assertHermesVersion, setupAdoptedProfile, setupProfile } from "../src/launch.js";
-import { briefing } from "@cotal-ai/connector-core";
+import { briefing, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
 
 /**
  * Count every assertion, so the terminal tally is derived from what actually ran.
@@ -53,7 +55,50 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  */
 const EXPECTED_CELLS = 191;
 
-if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
+if (process.platform === "win32") {
+  await checkWindowsLaunch();
+  console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells} failed=0`);
+  process.exit(0);
+}
+
+async function checkWindowsLaunch(): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), "cotal-hermes-availability-"));
+  const savedPath = process.env.PATH;
+  const savedAdopt = process.env.COTAL_HERMES_ADOPT_HOME;
+  const opts = { space: "smoke", name: "hermes", model: "smoke-model", events: false, validateOnly: true };
+  const endpoint = { path: `\\\\.\\pipe\\cotal-hermes-smoke-${randomUUID()}`, token: randomUUID(), version: CONTROL_PROTOCOL_VERSION };
+  let reached = 0;
+  const agent = { on() {}, inboxPreview: () => [] } as unknown as MeshAgent;
+  const config = { space: "smoke", name: "hermes" } as AgentConfig;
+  const bridge = startBridgeServer(agent, config, endpoint.path, endpoint, { onSubscribe: () => { reached++; } }, startOwnerPipe);
+  const signed = { ...endpoint, token: bridgeToken(endpoint) };
+  const limit = { timeoutMs: 2_000, maxReplyBytes: 16 };
+  try {
+    delete process.env.COTAL_HERMES_ADOPT_HOME;
+    process.env.PATH = root;
+    assert.match(hermesConnector.launchUnavailable?.() ?? "", /needs uv\.exe on PATH/);
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, cwd: root }), /does not support detached or manager-attached launches/);
+    writeFileSync(join(root, "uv.exe"), "");
+    assert.deepEqual(hermesConnector.buildLaunch(opts), { command: "", args: [] });
+    assert.throws(() => hermesConnector.buildLaunch({ ...opts, resume: "session" }), /does not support session resume/);
+    process.env.COTAL_HERMES_ADOPT_HOME = root;
+    assert.throws(() => hermesConnector.buildLaunch(opts), /does not support adopted profiles/);
+    assert.throws(() => startOwnerPipe(endpoint.path, () => {}, () => {}), { code: "EADDRINUSE" });
+    await assert.rejects(controlCall(endpoint, { t: "subscribe" }, limit));
+    await assert.rejects(controlCall(signed, { t: "tool" }, limit));
+    assert.equal(reached, 0);
+    assert.equal(await controlCall(signed, { t: "subscribe" }, limit), "{}");
+    assert.equal(reached, 1);
+  } finally {
+    await bridge.close();
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    if (savedAdopt === undefined) delete process.env.COTAL_HERMES_ADOPT_HOME;
+    else process.env.COTAL_HERMES_ADOPT_HOME = savedAdopt;
+    rmSync(root, { recursive: true, force: true });
+  }
+  await assert.rejects(controlCall(signed, { t: "subscribe" }, limit));
+}
 
 /** The provider keys this connector declares. They must still arrive. */
 const PROVIDER_KEYS = [

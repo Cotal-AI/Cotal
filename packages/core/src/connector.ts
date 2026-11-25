@@ -339,6 +339,8 @@ export interface Connector extends Extension {
   /** Connector-owned setup surface. The base CLI resolves this through the extension registry and
    * never carries a harness's asset names or native install commands itself. */
   readonly setup?: ExtensionRef;
+  /** A host-specific launch restriction, checked without allocating or writing launch material. */
+  launchUnavailable?(opts?: Pick<LaunchOpts, "cwd" | "resume">): string | undefined;
   buildLaunch(opts: LaunchOpts): LaunchSpec;
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */

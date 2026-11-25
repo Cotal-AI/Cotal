@@ -204,6 +204,11 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
+    const unavailable = connector.launchUnavailable?.({ cwd: this.config.workspaceRoot, resume: opts.resume });
+    if (unavailable) {
+      if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", unavailable, undefined, "not-executed");
+      return { ok: false, error: unavailable };
+    }
     // Read here, beside the connector, so the capacity check and the reserve below take no new await.
     const run = await this.spawnRun(authenticatedCaller, opts.runId);
     if (run !== undefined && "refused" in run) return { ok: false, error: `spawn: ${run.refused}` };

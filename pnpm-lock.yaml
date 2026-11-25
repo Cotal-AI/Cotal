@@ -434,9 +434,15 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/seat':
+        specifier: workspace:*
+        version: link:../../packages/seat
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
+      '@cotal-ai/workspace':
+        specifier: workspace:*
+        version: link:../../packages/workspace
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0

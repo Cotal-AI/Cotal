@@ -14,7 +14,7 @@ First [start the mesh](run-a-mesh.mdx).
 
 <Callout type="warn" title="Alpha connector">
 
-Hermes requires macOS or Linux and an external Python toolchain.
+The connector requires an external Python toolchain.
 Managed profiles disable Hermes command approvals unless the launch sets `askPermissions`, so run the seat with the host permissions you intend to grant it.
 The deployment image does not include Hermes.
 
@@ -40,7 +40,7 @@ cotal spawn --harness hermes --model <model>
 ```
 
 A bare spawn runs the gateway in this terminal.
-Add `--detach` to launch through a manager and return after readiness. `--on <instance>` selects a manager and attaches where supported.
+On macOS and Linux, add `--detach` to launch through a manager and return after readiness. `--on <instance>` selects a manager and attaches where supported.
 `--prompt <text>` gives the seat its first turn. Its reply shows on the [event plane](#event-plane) and is not posted to the mesh.
 
 For a persona file on the execution host, use:
@@ -54,6 +54,18 @@ See [Define a team](define-a-team.mdx) and [Workflows](workflows.mdx).
 
 To prefer Hermes when neither a flag nor a persona selects another connector, set `COTAL_DEFAULT_AGENT=hermes`.
 Keep a model selection on those launches.
+
+### Launch on Windows
+
+Install 64-bit Node.js and put `uv.exe` on `PATH` on the Windows execution host. Run the same command in either shell:
+
+```text
+cotal spawn --foreground --harness hermes --model <model>
+```
+
+Replace `<model>` with your model name. Leave `COTAL_HERMES_ADOPT_HOME` unset to use a disposable profile.
+Press Ctrl+C in the launch terminal to stop the gateway and remove the profile.
+Windows does not support detached Hermes launches, adopted profiles, or `--resume`.
 
 ## Choose a model [#choose-a-model]
 
@@ -91,7 +103,10 @@ Exporting them only in a later caller shell does not change an already running m
 The connector forwards its declared provider keys and the names in `spawn.env`; it does not inherit your whole shell.
 `cotal models --harness hermes` then lists the models the endpoint serves.
 
-For an endpoint that requires a key, [adopt your own profile](#use-your-own-hermes-profile) and set its `config.yaml` model block:
+On Windows, to use a keyed custom endpoint with a managed profile, also include `CUSTOM_API_KEY` in `spawn.env`.
+Set it in the launch environment, not in the Cotal configuration. With `HERMES_INFERENCE_PROVIDER=custom`, the connector writes the model, URL, and key into the seat's private profile and removes it when the seat stops.
+
+On macOS and Linux, for an endpoint that requires a key, [adopt your own profile](#use-your-own-hermes-profile) and set its `config.yaml` model block:
 
 ```yaml
 model:
@@ -240,7 +255,7 @@ See [Answer routing](hermes-connector-reference.mdx#answer-routing) for correlat
 
 Hermes refuses arbitrary `--opt` values and exact-session continuation.
 An adopted profile also refuses a model variant.
-It cannot run on Windows or in the current deployment image.
+It cannot run in the current deployment image.
 You supply `uv` and the supported Python environment.
 
 ## Continue [#see-also]
