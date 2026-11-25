@@ -167,7 +167,7 @@ export class AgentSupervision {
         ...reply,
         data: {
           ...(reply.data as Record<string, unknown> | undefined),
-          pinAudit: { requested: pinned, error: recorded.error, ...(recorded.unreported ? { unreported: true } : {}) },
+          pinAudit: { requested: pinned, error: recorded.error, ...(recorded.unreported ? { unreported: true } : {}), ...(recorded.denied ? { denied: true } : {}) },
         },
       };
     }
@@ -180,12 +180,14 @@ export class AgentSupervision {
   /** The manager's recorded model pin for a managed seat (`inspect.model`). Absence is a real
    *  state: a launch may pin none. Distinct from a failed inspect, which cannot attest.
    *  `unreported` marks a failure the manager side settled at once: it answered without the seat's
-   *  row, its surface has no `inspect` for this caller, or no responder took the request. */
-  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string; unreported?: true }> {
+   *  row, its surface has no `inspect` for this caller, or no responder took the request.
+   *  `denied` marks a read this caller's credential may not make, so its own inspect is refused too;
+   *  only the failure's code says so, never its text. */
+  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string; unreported?: true; denied?: true }> {
     const info = await this.managerInvoke("inspect", { name }, instance === undefined ? undefined : { instanceId: instance });
     if (!info.ok) {
       const unreported = info.code === "not-found" || (info.code === "unavailable" && info.details?.some((d) => d.kind === EP_UNANSWERED) === true);
-      return { ok: false, error: info.error ?? "inspect refused", ...(unreported ? { unreported: true as const } : {}) };
+      return { ok: false, error: info.error ?? "inspect refused", ...(unreported ? { unreported: true as const } : {}), ...(info.code === "permission-denied" ? { denied: true as const } : {}) };
     }
     const model = (info.data as { model?: unknown } | undefined)?.model;
     if (model === undefined) return { ok: true };

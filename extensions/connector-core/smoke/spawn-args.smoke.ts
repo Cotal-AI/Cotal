@@ -12,9 +12,10 @@
  * a landed pin from a dropped one.
  *
  * A launch that stands while only its pin read fails is a partial outcome: the seat, its id, its
- * manager and runtime, the unaudited pin and `cotal ps --on <manager>`, in the text and in the
- * structured content the MCP renderer sends. A refusal there read as "nothing was spawned", and the
- * caller's retry started a second seat on the same work.
+ * manager and runtime, the unaudited pin and the next step, in the text and in the structured
+ * content the MCP renderer sends. A refusal there read as "nothing was spawned", and the caller's
+ * retry started a second seat on the same work. A caller whose own pin read was refused is told to
+ * ask the user, since the inspect it would be pointed at is refused too.
  *
  * An inline `persona` rides whole to the manager through a closed schema, and its `model` is audited
  * like the override. `cotal_persona` carries `capabilities` and `endpoints` for the manager to bound.
@@ -168,8 +169,9 @@ const taskAgent = new MeshAgent(cfg);
 };
 (taskAgent as unknown as { _connected: boolean })._connected = true;
 const taskReply = await spawnTool!.run(taskAgent, cfg, { name: "helper", prompt: "Do one thing.", once: true });
-check("a once spawn's result names its task goal, its deadline and how to read the outcome",
-  /Its task is goal "task-goal", with a deadline of 2030-01-01T00:00:00.000Z/.test(taskReply.text) && /command="goal-result", args=\{"goalId":"task-goal"\}/.test(taskReply.text), taskReply.text);
+check("a once spawn's result names its task goal, its deadline and how to read the outcome, without call syntax",
+  /Its task is goal "task-goal", with a deadline of 2030-01-01T00:00:00.000Z; it is stopped when the task ends\. To read how it ended, call goal-result for this goal with cotal_invoke on the manager endpoint\./.test(taskReply.text)
+    && !/cotal_invoke\(|command=|args=/.test(taskReply.text), taskReply.text);
 
 const pinToolAgent = new MeshAgent(cfg);
 const callsPinTool = record(pinToolAgent);
@@ -331,14 +333,51 @@ check(
   unanswered,
 );
 
+// A caller whose own pin read is refused would be refused the inspect too, so it is sent to the user.
+// The refusal is read from the failure's code, never from its text.
+const refusal = new EpEnvelopeError("permission-denied", "Permission Violation for Publish to \"cotal.x.ep.one.manager.inspect\"", undefined, "not-executed");
+const lookalike = new EpEnvelopeError("unavailable", "the upstream answered permission-denied", undefined, "not-executed");
+const auditOf = async (failure: unknown) =>
+  ((await auditFails(new MeshAgent(cfg), failure).spawn("rev", "reviewer", { model: PIN })).data as { pinAudit?: { denied?: true } } | undefined)?.pinAudit;
+const refusalAudit = await auditOf(refusal), lookalikeAudit = await auditOf(lookalike);
+check(
+  "only a permission-denied code marks the pin audit denied, whatever the failure's text says",
+  refusalAudit?.denied === true && lookalikeAudit !== undefined && lookalikeAudit.denied === undefined && timedOutData?.pinAudit !== undefined && !("denied" in timedOutData.pinAudit),
+  { refusalAudit, lookalikeAudit, timedOut: timedOutData?.pinAudit },
+);
+const denied = await spawnWith(refusal);
+check(
+  "a caller refused its own pin read gets the joined partial and is told to ask the user, not to inspect",
+  denied.isError !== true && denied.text.includes(`model pin "${PIN}" could not be audited (permission-denied: `)
+    && denied.text.endsWith("It is running, so spawning it again would start a second agent. This session may not inspect it, so ask the user to check which model it runs.")
+    && !/inspect it with cotal_invoke/.test(denied.text)
+    && denied.structured?.status === "partial" && denied.structured.joined === true && denied.structured.model?.reported === true && denied.structured.message === denied.text
+    && Object.keys(denied.structured.model ?? {}).sort().join() === "audited,error,reported,requested",
+  denied,
+);
+const mentionsDenial = await spawnWith(lookalike);
+check(
+  "a pin read failure whose text only mentions a denial keeps the inspect step",
+  mentionsDenial.isError !== true && mentionsDenial.text.includes("could not be audited (unavailable: the upstream answered permission-denied)")
+    && mentionsDenial.text.endsWith("It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint."),
+  mentionsDenial,
+);
+
 const accepted = { name: "rev", owner: "u_x", actor: "rev", uid: "uuuuuuuuuuuuuuuuuuuuuuuuuu", goalId: "g", fingerprint: "f", executor: { lifecycleUid: MANAGER, epoch: 0 } };
 const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "uncertain", message: "rev did not join within its readiness window" }, data: accepted });
 check(
   "a launch still booting with its pin unaudited is the same partial, marked as not joined",
   booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
-    && booting.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options.")
+    && booting.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it once it has joined, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options.")
     && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
   booting,
+);
+const bootingRefused = await spawnWith(refusal, { id: "g", ok: false, error: { code: "uncertain", message: "rev did not join within its readiness window" }, data: accepted });
+check(
+  "a launch still booting gets the booting step even when the caller's own pin read was refused",
+  bootingRefused.isError !== true && bootingRefused.text.includes("could not be audited (permission-denied: ") && bootingRefused.structured?.joined === false
+    && bootingRefused.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it once it has joined, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options."),
+  bootingRefused,
 );
 
 const refused = await spawnWith(new Error("timeout"), { id: "g", ok: false, error: { code: "failed-precondition", message: `no persona "rev"` } });
@@ -494,7 +533,7 @@ check(
   onceOn.text,
 );
 
-const EXPECTED_CHECKS = 81;
+const EXPECTED_CHECKS = 85;
 if (checks !== EXPECTED_CHECKS) {
   failures++;
   console.log(`SUITE INCOMPLETE: ${checks} of ${EXPECTED_CHECKS} checks`);

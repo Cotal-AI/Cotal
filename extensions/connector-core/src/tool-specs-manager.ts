@@ -236,20 +236,19 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           const accepted = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
           if (!reply.ok && !pending && reply.outcome === "unknown" && accepted?.goalId && !accepted.submissionUnknown) {
             const goalId = accepted.goalId;
-            const message = `Spawn for ${name} was accepted as goal "${goalId}", but its outcome is not known yet. It may still be starting or may already have succeeded. An identical retry in this session returns the same goal instead of submitting another spawn. Inspect 'ps'/'inspect' or read manager goal-result for this goal as the same caller.`;
+            const message = `Spawn for ${name} was accepted as goal "${goalId}", but its outcome is not known yet. It may still be starting or may already have succeeded. An identical retry in this session returns the same goal instead of submitting another spawn. To check on it, call goal-result for this goal with cotal_invoke on the manager endpoint, as this same caller.`;
             return { text: message, structured: { status: "unknown", name, goalId, manager: reply.instanceId, message } };
           }
           const submission = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
           if (!reply.ok && submission?.submissionUnknown && submission.goalId) {
             const goalId = submission.goalId;
-            const next = `cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(goalId)}})`;
-            const message = `Spawn submission for ${name} has an unknown outcome for goal "${goalId}". Acceptance has not been confirmed; the seat may appear later. Do NOT retry: another submission could create a second lifecycle. ${reply.error ?? "The submission wait ended."} Next: ${next} as this same caller, or inspect 'ps'/'inspect'. A missing result does not prove the submission failed.`;
-            return { text: message, structured: { status: "unknown", name, goalId, next, message } };
+            const message = `Spawn submission for ${name} has an unknown outcome for goal "${goalId}". Acceptance has not been confirmed; the seat may appear later. Do NOT retry: another submission could create a second lifecycle. ${reply.error ?? "The submission wait ended."} To check on it, call goal-result for this goal with cotal_invoke on the manager endpoint, as this same caller. A missing result does not prove the submission failed.`;
+            return { text: message, structured: { status: "unknown", name, goalId, message } };
           }
           if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as {
             name?: string; goalId?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
-            pinAudit?: { requested: string; error: string; unreported?: true };
+            pinAudit?: { requested: string; error: string; unreported?: true; denied?: true };
             once?: { goalId: string; deadlineAt?: number }; waitingFor?: string; startupNotice?: string;
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
@@ -263,13 +262,15 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           // The seat launched and only its pin read failed: a partial outcome naming the seat, so the
           // caller knows it is running instead of spawning a second seat.
           if (d?.pinAudit) {
-            const { requested, error, unreported } = d.pinAudit;
+            const { requested, error, unreported, denied } = d.pinAudit;
             const id = d.id ?? d.actor;
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
             const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
-              (pending ? "An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options." : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.");
+              (pending ? "An identical retry in this session while it is starting returns the same goal. To check on it once it has joined, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options."
+                : denied ? "It is running, so spawning it again would start a second agent. This session may not inspect it, so ask the user to check which model it runs."
+                : "It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint.");
             return {
               text: message,
               structured: {
@@ -285,7 +286,7 @@ export function managerToolSpecs(config: AgentConfig, source: string, env?: Node
           }
           // A once spawn names its task, so the spawner can read how it ended.
           const task = d?.once
-            ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
+            ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. To read how it ended, call goal-result for this goal with cotal_invoke on the manager endpoint.`
             : "";
           // The manager's word that nothing wakes the seat while idle: a DM to it waits for a turn
           // somebody else starts, so the spawner must not hand it work and go idle waiting.

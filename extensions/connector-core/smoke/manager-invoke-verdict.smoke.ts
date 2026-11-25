@@ -259,9 +259,26 @@ for (const [label, config, expected] of [
   const { result, calls } = await unknown(submitted);
   check("an unknown submitted spawn is not reported as a plain failure", !result.isError && result.structured?.status === "unknown", result);
   check("unknown spawn text and structured data retain the same goal", result.text.includes(`goal "${goalId}"`) && result.structured?.goalId === goalId, result);
-  check("unknown spawn gives an existing same-caller goal-result read", result.text.includes('command="goal-result"') && result.text.includes("as this same caller"), result);
+  check("unknown spawn names goal-result through cotal_invoke as the same caller, with no call syntax and no next field",
+    result.text.includes("To check on it, call goal-result for this goal with cotal_invoke on the manager endpoint, as this same caller. A missing result does not prove the submission failed.")
+      && !/cotal_invoke\(|command=|or inspect 'ps'/.test(result.text) && result.structured !== undefined && !("next" in result.structured), result);
   check("unknown spawn forbids retry and treats missing readback as inconclusive", result.text.includes("Do NOT retry") && result.text.includes("missing result does not prove"), result);
   check("the unknown result neither resubmits nor claims confirmed acceptance", calls === 1 && result.text.includes("Acceptance has not been confirmed"), { result, calls });
+  // An accepted goal whose outcome was not observed: the follow keeps the acceptance beside the unknown outcome.
+  const acceptedAgent = new MeshAgent(cfg);
+  (acceptedAgent as unknown as { ep: unknown }).ep = {
+    invokeService: async (endpoint: string) => ({
+      reply: { ok: false, error: { code: "unavailable", message: `the goal "${goalId}" was accepted, but following its outcome failed`, outcome: "unknown" }, data: { goalId } },
+      responder: { endpoint, instanceId: "i", epoch: 0 },
+    }),
+    principal: { owner: "local", actor: "caller" },
+  };
+  (acceptedAgent as unknown as { _connected: boolean })._connected = true;
+  const accepted = await spawnTool.run(acceptedAgent, cfg, { name: "reviewer" });
+  check("an accepted spawn with an unknown outcome names goal-result through cotal_invoke as the same caller, with no call syntax",
+    !accepted.isError && accepted.structured?.status === "unknown" && accepted.structured.goalId === goalId && accepted.structured.manager === "i"
+      && accepted.text.endsWith("To check on it, call goal-result for this goal with cotal_invoke on the manager endpoint, as this same caller.")
+      && !/'ps'|cotal_invoke\(|command=/.test(accepted.text), accepted);
   const pinned = await unknown(submitted, "requested-model");
   check("a requested model does not discard the unknown goal or inspect an unallocated alias", pinned.calls === 1 && pinned.result.structured?.goalId === goalId, pinned);
   for (const [label, error] of [
@@ -382,7 +399,7 @@ for (const [label, config, expected] of [
   check("verified exact-incarnation join releases the pending claim", launches === 3, launches);
 }
 
-const EXPECTED_CELLS = 94;
+const EXPECTED_CELLS = 95;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -1205,7 +1205,7 @@ export class MeshAgent extends EventEmitter {
   });
 
   async spawn(name: string, role?: string, opts?: { agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean; runtime?: string; instance?: string; join?: string[]; persona?: InlinePersona; once?: { deadlineMs?: number } }): Promise<ControlReply & { instanceId?: string }> { return this.supervision.spawn(name, role, opts); }
-  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string; unreported?: true }> { return this.supervision.inspectModel(name, instance); }
+  async inspectModel(name: string, instance?: string): Promise<{ ok: true; model?: string } | { ok: false; error: string; unreported?: true; denied?: true }> { return this.supervision.inspectModel(name, instance); }
   async listManagerEndpoints(input: RegistryEndpointsInput, instance?: string): Promise<
     | { none: string }
     | { unbound: true }
