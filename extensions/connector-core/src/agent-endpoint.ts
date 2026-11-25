@@ -32,8 +32,8 @@ export interface AgentEndpoint {
  * as they are. `policed` names the role whose `modelPolicy` the agent launched under, and then every
  * `set-model` is refused.
  *
- * Rejects on an open mesh, under a static credential and without a lifecycle UID, when the broker
- * refuses the subscription (a credential minted before the rows existed), and when the connection's
+ * Rejects without a lifecycle UID, when the broker refuses the subscription (a credential minted
+ * before the rows existed), and when the connection's
  * `max_payload` is under {@link PROMPT_DESK_MIN_MAX_PAYLOAD}, which the largest prompt replies need.
  * Then nothing is served and presence shows neither field. The same checks run on every replaced
  * connection, and a failure there closes the endpoint and warns. Stopping `ep` ends the serve and not

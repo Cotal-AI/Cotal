@@ -2466,8 +2466,9 @@ export class CotalEndpoint extends EventEmitter {
    * and runtime id, with no registration. `handlers` serves the cluster's commands with
    * `AGENT_CONTRACTS`; `describe` is built in.
    *
-   * Throws on an open mesh and on a static credential, where no row names who may call, without a
-   * lifecycle UID, before the endpoint has started, while it already serves `agent`, for an
+   * Serves under a user-auth or static credential, whose rows name who may call, and on an open mesh,
+   * where the broker confines no caller (SPEC 13.21). Throws without a lifecycle UID, before the
+   * endpoint has started, while it already serves `agent`, for an
    * `endpoint` or `cluster` field, which this entry point does not take, and for a set of handlers
    * that is not the cluster's commands with its contracts. It subscribes this process's own subject
    * with no queue group.
@@ -2483,10 +2484,6 @@ export class CotalEndpoint extends EventEmitter {
     if ("endpoint" in spec || "cluster" in spec)
       throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
     const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
-    if (!this.authed)
-      throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
-    if (!this.identity.userMode)
-      throw new Error("the principal route is served only under a user-auth credential: a static credential names no one who may call (SPEC 13.21)");
     const uid = this.identity.ownLifecycleUid;
     if (uid === undefined)
       throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");

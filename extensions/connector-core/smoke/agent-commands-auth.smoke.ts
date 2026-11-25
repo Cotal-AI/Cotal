@@ -19,8 +19,8 @@
  * and leaves a taken one taken; closing the endpoint returns at once. A `MeshAgent` opens its endpoint
  * once it joined a per-user mesh, with or without a dispatcher, runs a command that arrived before
  * the broker confirmed its serve, never runs a command still queued when it stops, stops within 4 s
- * while its harness is being asked to start a command, and on an open mesh starts as before and
- * serves nothing. `turn` queues the owner's words and images on the same queue and the harness gets them
+ * while its harness is being asked to start a command, and on an open mesh serves too, where a
+ * client with no credential calls it. `turn` queues the owner's words and images on the same queue and the harness gets them
  * once taken; a turn with nothing in it is bad-request, a turn to a connector that takes none, or with
  * images to one that takes no images, is unimplemented, and an agent never gives itself a turn.
  * `usage` answers the harness's numbers, `supported: false` without a hook, and unavailable when the
@@ -33,7 +33,7 @@
  * `agentEndpoint` with all five for a pi-like dispatcher and all false with none, follows the
  * dispatcher's `watch` as its `unsupported()` flips (all five false, `turn` then unimplemented and
  * `usage` then `supported: false` without asking the harness), and carries
- * none on an offline record or on an open mesh. A MeshAgent's card keeps a switched model when the
+ * none on an offline record. A MeshAgent's card keeps a switched model when the
  * harness later reports another.
  *
  * Run: pnpm smoke:agent-commands:auth   (needs nats-server on PATH; operator-mode callout, local-only)
@@ -847,7 +847,7 @@ try {
     watcher.on("error", () => {});
     stops.push(() => watcher.stop());
     await watcher.start();
-    const harness = fake();
+    const harness = fake({ interrupt: async () => "idle" });
     // MeshAgent logs to stderr: an open mesh must add no line about an agent endpoint.
     const said: string[] = [];
     const write = process.stderr.write.bind(process.stderr);
@@ -860,12 +860,19 @@ try {
     stops.push(() => open.stop());
     try {
       await open.start();
-      const seen = await until(() => watcher.getRoster().some((p: Presence) => p.card.id === open.id), 8000);
-      await wait(500);
+      const served = await until(() => watcher.getRoster().find((p: Presence) => p.card.id === open.id)?.prompts !== undefined, 8000);
       const presence = watcher.getRoster().find((p: Presence) => p.card.id === open.id);
-      check("a MeshAgent with a dispatcher on an open mesh starts and connects as before, serves nothing, logs nothing about it, and its presence has no prompts or agentEndpoint field",
-        open.connected && seen && presence !== undefined && presence.prompts === undefined && presence.agentEndpoint === undefined && open.queuedCommands === 0 && said.length === 0,
+      check("a MeshAgent with a dispatcher on an open mesh serves its agent endpoint, logs nothing about it, and its presence shows the prompts and agentEndpoint fields",
+        open.connected && served && presence?.prompts !== undefined && same(presence?.agentEndpoint, { interrupt: true, turn: false, images: false, usage: false }) && said.length === 0,
         { prompts: presence?.prompts, agentEndpoint: presence?.agentEndpoint, said });
+      // No row exists on an open mesh: any client that reaches the broker calls as the owner.
+      const at = { owner: presence!.card.owner ?? "local", actor: open.id.split(".").pop()!, uid: presence!.lifecycleUid!, runtimeId: presence!.runtime!.id };
+      const openCall = (command: string) => settled(watcher.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: at, command, authority: "owner", args: {}, deadlineMs: WAIT }));
+      const list = await openCall("commands");
+      const stop = await openCall("interrupt");
+      check("...and a client with no credential lists its commands and interrupts it",
+        list.ok && list.value.ok && same(list.value.data, { supported: true, commands: EXPECTED }) && stop.ok && stop.value.ok && same(stop.value.data, { state: "idle" }) && harness.interrupts === 1,
+        { list: verdict(list), stop: verdict(stop) });
     } finally {
       process.stderr.write = write;
     }

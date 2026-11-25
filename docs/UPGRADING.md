@@ -2,7 +2,7 @@
 
 ## Switching a running agent's model
 
-The `agent` cluster advances to revision 6 with `set-model`, which the owner's interactive session
+The `agent` cluster advances to revision 6 with `set-model`, which the owner
 calls to switch a running agent's model and variant. The auth callout grants it, so update and
 restart every member of the callout queue, then reconnect each person's clients. A connect that an
 old member answers gets no `set-model` permission. An agent whose connector predates `set-model`
@@ -16,6 +16,31 @@ resumes it. An older Manager starts it on its launch model. The Manager and `cot
 an agent whose role `modelPolicy` governs, through `COTAL_MODEL_POLICY`, so it refuses every switch.
 An agent launched by an older Manager or CLI is not told, so on a space whose cotal config sets
 `modelPolicy`, update the Manager and the CLI with the connectors.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
+recognise it as running here.
+
+## The agent endpoint on every space
+
+Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
+people sign in. A static agent started by an older release keeps a credential without the serve
+rows, because a renewal keeps what its first issuance recorded. It runs on, and its connector logs
+that the broker refused the serve and says to respawn the agent. Despawn it and start it again to
+give it the endpoint.
+
+On a static space, `cotal acp` calls agents through an `agent-caller` credential it mints in memory
+from the space's signing key, so a thread there shows the agent's questions and commands, and `/name`
+renames a running agent. On an open mesh any client that reaches the broker can answer an agent's
+questions and run its commands.
+
+The Manager's `status.connectors[].prompts` is now the connector's declaration on every mesh mode.
+Its schema and the Manager cluster revision are unchanged.
 
 ## Opt-in launch fields
 

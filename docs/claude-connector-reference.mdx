@@ -52,7 +52,7 @@ claude --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   `--opt permission-mode=default` (or another mode); the connector adds the default only when the
   launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. A foreground
   `cotal spawn` runs in your terminal, so it keeps Claude's own permission mode and you answer its
-  prompts there. With a mode that asks, on a signed-in space, a remote session can also answer each
+  prompts there. With a mode that asks, the agent's owner can also answer each
   tool permission ([Tool permissions](#tool-permissions)). Claude refuses
   the bypass mode as root and under a policy that disables it; such a host must pass a mode.
   Claude also asks each user to accept the bypass mode once, in a warning only that user may answer.
@@ -682,7 +682,7 @@ plugin registers, with their matchers, are listed in the
 
 ## Tool permissions [#tool-permissions]
 
-On a signed-in space, a seat that Cotal launched serves Claude's tool permissions on its own `agent`
+A seat that Cotal launched serves Claude's tool permissions on its own `agent`
 endpoint ([SPEC §13.22](../SPEC.md#1322-the-agent-endpoint)). The agent's owner can read and answer
 them from another session. No Manager has to run, and nothing is stored on the broker. A managed seat
 launches with `bypassPermissions` and asks nothing, so launch it with `askPermissions`, or pass
@@ -740,7 +740,7 @@ seat's presence still carries `prompts`, with `open` at 0.
 
 ## Agent commands [#agent-commands]
 
-On a signed-in space, a seat and a plain Claude Code session run
+A seat and a plain Claude Code session run
 [agent commands](connector-runtime-reference.mdx#agent-commands) through the plugin's command mod,
 `hooks/commands.js`. The mod needs Claude Code 2.1.330 or later with mods on. The session's MCP
 server serves a command socket for its Claude Code process, in a private directory under the

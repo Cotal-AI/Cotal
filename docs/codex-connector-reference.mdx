@@ -200,13 +200,13 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 
 | Default | What it means |
 | --- | --- |
-| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. On a space where people sign in, an asking policy is honored through the prompt desk (see [Answering approvals](#answering-approvals)). Elsewhere it is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
+| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An asking policy is answered through the prompt desk (see [Answering approvals](#answering-approvals)). |
 | `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is the part that is actually enforced; see below for the (real) exposure it leaves. |
 | `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. Applied only when the sandbox is actually `workspace-write`: tighten the mode and no network grant is emitted at all. |
 
 ### Answering approvals
 
-With an asking `approval_policy` on a space where people sign in, the seat serves Codex's requests
+With an asking `approval_policy`, the seat serves Codex's requests
 on its `agent` endpoint (SPEC 13.22) and declares `prompts`.
 
 The connector declares `supportsAskPermissions`. A Manager launch with `askPermissions` starts the
@@ -250,9 +250,10 @@ The answer goes back as the request's result. The attached TUI shows the same re
 whichever answer reaches Codex first applies. Codex reports only that the request was resolved,
 not who answered, so a prompt the TUI answered first closes `withdrawn`, and one answered remotely
 closes unconfirmed. A request nobody answers stays open for seven days and is then declined, or
-cancelled when it is an MCP elicitation. An asking policy on any other space is refused at launch. A
-permissions request that no prompt desk holds grants nothing, and an MCP elicitation that no prompt
-desk holds is cancelled.
+cancelled when it is an MCP elicitation. A seat whose `agent` endpoint the broker refused, which its
+log reports when it joins, holds no prompt desk. A permissions request that no prompt desk holds
+grants nothing, an MCP elicitation that no prompt desk holds is cancelled, and any other request is
+declined.
 
 What the sandbox guarantees, stated literally: it **blocks out-of-workspace local filesystem
 writes**. It does **not** block reads, exfiltration, or networked side effects.

@@ -104,9 +104,26 @@ export function defaultManager(managers: readonly ManagerChoice[]): ManagerChoic
 }
 
 /** Why a thread with no manager chosen starts no agent. It never leaves the spawn unpinned, which
- *  would let the space's exchange pick any manager. */
-export function noMachine(space: string): string {
+ *  would let the space's exchange pick any manager. `unreadable` is why this machine's identity could
+ *  not be read, when it could not. */
+export function noMachine(space: string, unreadable?: string): string {
+  if (unreadable !== undefined) return machineUnknown(unreadable, "", "choose a machine in the Machine option");
   return `No manager of yours runs on this machine. Start one with \`cotal manager start --space ${space}\`, or choose another computer in the Machine option.`;
+}
+
+/** Why a new thread starts no manager when this machine's identity could not be read and no manager is
+ *  listed. One started here would name no machine either, so it would never read as this machine's
+ *  and every thread would start another. */
+export function noManagerKnownHere(space: string, unreadable: string): string {
+  return machineUnknown(unreadable, " and starts none", `start a manager with \`cotal manager start --space ${space}\` and choose it in the Machine option`);
+}
+
+/** That this machine's identity could not be read, so no manager is known to run here, and what to do:
+ *  make it readable, where Cotal knows how, or `instead`. */
+function machineUnknown(unreadable: string, starts: string, instead: string): string {
+  const head = `This machine's identity could not be read (${unreadable}), so Cotal cannot tell which manager runs here${starts}.`;
+  if (process.platform === "linux") return `${head} Create /etc/machine-id with \`systemd-machine-id-setup\` and open a new thread, or ${instead}.`;
+  return `${head} ${instead.charAt(0).toUpperCase()}${instead.slice(1)}.`;
 }
 
 /** The selection a new session starts with. */
