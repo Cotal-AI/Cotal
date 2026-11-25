@@ -18,6 +18,7 @@ import { maintenanceStackView, STACK_DEFINITION, stackMemberRecord } from "./sta
 import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, startCustodiedService } from "./service-custody-win32.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, privateLog } from "./private-log.js";
+import { targetWords } from "./confirmation-required.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -213,10 +214,13 @@ export function settleExitedInstances(definition: ServiceDefinitionSnapshot): vo
   finally { hold.release(); }
 }
 
-export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
+export function selectServiceInstance(rows: ServiceInstanceSnapshot[], target: { space: string; name: string; requested?: string }, id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
   if (id !== undefined) {
     const found = rows.find((row) => row.name === id);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space");
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", {
+      target: { ...target, instanceId: id },
+      remedy: `cotal service${targetWords({ space: target.space })} --json`, remedyIsCommand: true,
+    });
     return found;
   }
   if (!rows.length) { if (allowMissing) return undefined; throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition"); }
@@ -595,7 +599,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (rows.some((row) => row.record.value.state !== "stopped" || !row.record.value.kernelStop || !gone(observeServiceProcess(row.record.value)))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another record of this broker definition is not a stopped one with its own kernel-exit receipt; no new broker instance was allocated");
     }
     if (options.replacement && rows.length) throw new CommandFailure("refused", "CONFLICT", "the definition already has an instance record; the journaled replacement was not launched beside it", { target: { space: value.space, definition: definition.name, candidates: rows.map((row) => row.name) } });
-    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, options.instance, true);
+    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, { space: value.space, name: definition.name }, options.instance, true);
     // A retained native stop is decided only by its own receipt, so no start probes, reuses or
     // replaces it, and its record is not written.
     const retained = chosen && retainedStopRequest(chosen.record.value);
@@ -781,7 +785,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
       const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
       // A foreground child wrote to this terminal, so its log holds nothing from this launch.
-      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "its log records the cause";
+      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "no log line was available from this start";
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` }) });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
@@ -1134,10 +1138,10 @@ export function removeStoppedInstanceRecords(space: string, name: string): strin
 const LOG_TAIL_BYTES = LOG_ROTATE_BYTES;
 
 /** Read only bounded regular-file bytes; log data is not promised to be secret-redacted. */
-export function readServiceLog(space: string, id: string, tail: number) {
+export function readServiceLog(space: string, id: string, tail: number, requireFile = false) {
   const path = serviceLogPath(space, id);
   if (!path) return { lines: [] as string[], omittedBytes: 0, path: null };
-  return readOwnedLogTail(path, tail);
+  return readOwnedLogTail(path, tail, requireFile);
 }
 
 /** The refusal for a log this account cannot open, with the step that gives its owner read and write back. */
@@ -1147,12 +1151,15 @@ function unreadableLog(path: string, code: string) {
 
 /** The last `tail` lines of an owned private log file, from at most its last 1 MiB. A log this
  *  account cannot read is refused with the step that gives its owner read and write back. */
-export function readOwnedLogTail(path: string, tail: number) {
+export function readOwnedLogTail(path: string, tail: number, requireFile = false) {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { lines: [] as string[], omittedBytes: 0, path };
+    if (code === "ENOENT") {
+      if (requireFile) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the captured service log ${path} does not exist`, { target: { path } });
+      return { lines: [] as string[], omittedBytes: 0, path };
+    }
     if (code === "EACCES" || code === "EPERM") throw unreadableLog(path, code);
     throw error;
   }

@@ -59,6 +59,7 @@ try {
   }
   check("the detached manager answers", answered);
   check("general starts durable with replay off", cli("channel", "set", "general", "--delivery", "durable", "--no-replay").status === 0);
+  check("the channel #-audit is registered", cli("channel", "set", "#-audit", "--desc", "Audit channel").status === 0);
 
   const chat = spawn(TSX, [CLI, "chat", "general", "--plain", "--name", "static-chat"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "";
@@ -87,6 +88,8 @@ try {
       return false;
     };
     check("the chat establishes a durable membership", await membersUntil((members) => members.some((m) => m.name === "static-chat" && m.durable)));
+    const initialJoin = await say("/join general");
+    check("/join reports the channel the chat opened on as already joined", initialJoin.includes("already on #general"), initialJoin);
     check("general switches to live", cli("channel", "set", "general", "--delivery", "live").status === 0);
     const left = await say("/leave general");
     check("/leave of its own channel leaves it", left.includes("left #general"), left);
@@ -96,9 +99,14 @@ try {
     check("a post is accepted while chat has left", cli("send", "-c", "general", gap).status === 0);
     const back = await say("/join general");
     check("/join returns to the channel it left", back.includes("joined #general") && !back.includes("denied"), back);
+    const repeatJoin = await say("/join general");
+    check("a repeated /join reports that the chat is already on the channel", repeatJoin.includes("already on #general"), repeatJoin);
     const family = await say("/join family.>");
     check("/join refuses a channel family without suggesting an unusable chat command",
       family.includes("/join denied (USAGE_INVALID): name one concrete channel, without wildcards") && !family.includes("cotal chat"), family);
+    const audit = await say("/join #-audit");
+    check("a denied join gives a copyable reopen command for a channel starting with a hyphen",
+      audit.includes("/join denied (PERMISSION_DENIED): #-audit is outside this session's read grant. Leave and run `cotal chat '#-audit' --plain --name static-chat` to open a session on it"), audit);
     const fresh = "fresh post after rejoin";
     check("a fresh post is accepted after rejoin", cli("send", "-c", "general", fresh).status === 0);
     for (let i = 0; i < 150 && !out.includes(fresh); i++) await sleep(200);
@@ -143,6 +151,12 @@ try {
   } finally {
     if (chat.exitCode === null && chat.signalCode === null) chat.kill("SIGTERM");
   }
+
+  const reopened = spawnSync(TSX, [CLI, "chat", "#-audit", "--plain", "--name", "static-chat"], {
+    cwd: root, env, encoding: "utf8", timeout: 120_000, input: "/quit\n",
+  });
+  check("the suggested reopen command opens #-audit and exits cleanly on /quit",
+    reopened.status === 0 && plain(reopened.stdout).includes("[to #-audit] type a message"), plain(reopened.stdout + reopened.stderr));
 
   // A peer's presence records, as a second `chat --stdio` session writes them.
   const watcher = spawn(TSX, [CLI, "chat", "--stdio", "--name", "watcher"], { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });

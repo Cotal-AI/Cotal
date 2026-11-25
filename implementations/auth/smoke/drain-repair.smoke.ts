@@ -28,13 +28,12 @@ import { contractDigest, createSpaceAuth, ensureAuthorityStores, epfStreamName, 
 import { openAuthorityClient } from "../src/authority-client.js";
 import { assertAppliableCommitKey, assertEffectsCancelSubject, assertPoolRepairSubject, drainApplierGrants, drainCancellerGrants, drainReconcilerGrants, makeDrainRepairers } from "../src/drain-repair.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
+const { check, finish, passed, failed } = createSuite();
 const rejects = async (fn: () => Promise<unknown> | unknown): Promise<string> => { try { await fn(); return ""; } catch (e) { return (e as Error)?.message ?? String(e); } };
 const quiet = () => {};
 
@@ -230,5 +229,6 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
-console.log(fail === 0 ? `\nDRAIN-REPAIR SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDRAIN-REPAIR SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-if (fail > 0) process.exit(1);
+console.log(failed() === 0 ? `\nDRAIN-REPAIR SMOKE OK ✅  (${passed()} passed, ${failed()} failed)` : `\nDRAIN-REPAIR SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
+finish();
+if (failed() > 0) process.exit(1);

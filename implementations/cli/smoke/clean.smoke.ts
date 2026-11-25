@@ -18,7 +18,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,8 +97,27 @@ function checkCleanStoreCli(): void {
     const store = join(root, fixture);
     const force = `cotal clean store --store-dir='${fixture}' --force`;
     const flag = `--store-dir=${fixture}`;
+    const data = join(store, "jetstream");
+    mkdirSync(data, { recursive: true });
+    const notFolder = join(root, "not-folder");
+    writeFileSync(notFolder, "not a directory\n");
+    for (const target of ["store", "all"]) {
+      for (const mode of ["--dry-run", "--force"]) {
+        const badPath = mode === "--dry-run" ? "./not-folder/child" : "./not-folder/nested/child";
+        const invalid = spawnSync(process.execPath, [cli, "clean", target, mode, "--store-dir", badPath], options);
+        check(`clean ${target} ${mode} names the non-directory ancestor and how to correct the store path`,
+          invalid.status === 1 && invalid.stdout === "" && invalid.stderr.includes("USAGE_INVALID")
+            && invalid.stderr.includes(`${notFolder} is not a directory`)
+            && invalid.stderr.includes("correct --store-dir, or omit it if you intend to use the recorded store")
+            && readFileSync(notFolder, "utf8") === "not a directory\n" && existsSync(data), invalid.stderr);
+        const result = spawnSync(process.execPath, [cli, "clean", target, flag, mode, "--attempt", `restore-${randomUUID()}`], options);
+        check(`clean ${target} ${mode} rejects --attempt and leaves the store intact`,
+          result.status === 1 && result.stdout === "" && result.stderr.includes(`clean ${target} cannot be scoped by --attempt.`) &&
+            result.stderr.includes("That option selects a restore for clean restore-attempt or clean restore-fallback.") && existsSync(data), result.stderr);
+      }
+    }
     for (const preview of [true, false]) {
-      mkdirSync(join(store, "jetstream"), { recursive: true });
+      mkdirSync(data, { recursive: true });
       const result = preview ? run(flag, "--dry-run") : run(flag);
       const output = preview ? result.stdout : result.stderr;
       assert.equal(result.status, preview ? 0 : 1, output);
@@ -110,13 +129,41 @@ function checkCleanStoreCli(): void {
       check(`the ${preview ? "dry run" : "missing-force refusal"} prints a runnable command for a hyphen-led store`, retry.status === 0 && !existsSync(store), retry.stderr);
     }
 
+    const link = join(root, ".cotal", "nats");
+    const parked = "parked store";
+    mkdirSync(join(root, parked, "jetstream"), { recursive: true });
+    mkdirSync(join(root, ".cotal"), { recursive: true });
+    symlinkSync("missing-store", link);
+    for (const mode of ["--dry-run", "--force"]) {
+      const result = run(mode);
+      check(`${mode} names the dangling store link, its target and the real-store remedy`,
+        result.status === 2 && result.stdout === "" && result.stderr.includes("CONFLICT")
+          && result.stderr.includes(`${link} is an unresolved link to missing-store`)
+          && result.stderr.includes("pass its real location with --store-dir")
+          && readlinkSync(link) === "missing-store" && existsSync(join(root, parked, "jetstream")), result.stderr);
+    }
+    const parkedPreview = run("--store-dir", parked, "--dry-run");
+    check("an explicit real store can be previewed without changing the dangling link",
+      parkedPreview.status === 0 && parkedPreview.stdout.includes(join(root, parked)) && readlinkSync(link) === "missing-store", parkedPreview);
+
     if (process.getuid?.() !== 0) {
       const parent = join(root, "locked parent");
       const dir = "./locked parent/store";
       const data = join(root, dir, "jetstream");
       mkdirSync(data, { recursive: true, mode: 0o700 });
-      chmodSync(parent, 0o500);
+      const nestedStore = "./locked parent/intermediate/store";
+      mkdirSync(join(root, nestedStore, "jetstream"), { recursive: true, mode: 0o700 });
+      chmodSync(parent, 0o400);
       try {
+        for (const mode of ["--dry-run", "--force"]) {
+          const result = run("--store-dir", nestedStore, mode);
+          check(`${mode} names the unsearchable ancestor and gives a quoted chmod remedy`,
+            result.status === 2 && result.stdout === "" && result.stderr.includes("PERMISSION_DENIED")
+              && result.stderr.includes(`this account cannot search ${parent} (`)
+              && result.stderr.includes(`chmod u+x '${parent}'`), result.stderr);
+        }
+        chmodSync(parent, 0o500);
+        check("permission refusals leave the inaccessible store in place", existsSync(join(root, nestedStore, "jetstream")));
         for (const mode of ["--dry-run", "--force"]) {
           const result = run("--store-dir", dir, mode);
           check(`${mode} refuses a read-only store parent without listing or moving the store`,

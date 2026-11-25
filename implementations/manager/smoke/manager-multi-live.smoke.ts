@@ -87,7 +87,7 @@ const mkRoot = (tag: string, agentName: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean; agents: Map<string, unknown> };
+type MgrPriv = { managerInstanceId: string; leaseStopping: boolean; agents: Map<string, unknown>; servePlane: { serviceServe?: { nc: NatsConnection }; } };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -189,7 +189,7 @@ try {
   // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
   // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
   (m2 as unknown as MgrPriv).leaseStopping = true;
-  await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((m2 as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const scatter2 = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });
   check("the live manager still answers with its agent a1", names2(scatter2, IID1)[0] === "a1", names2(scatter2, IID1));

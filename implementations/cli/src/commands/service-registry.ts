@@ -3,17 +3,18 @@ import * as prompts from "../lib/prompts.js";
 import { parseCommandArgs, registry, type Command, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { codeSpan, ConfirmationRequired, CommandFailure, recordOperationSpace, isCommandFailure, hasUserAuthState, jsonFlag, loadMeshes, localProcessPath, localProcessVisible, oneLine, parsePid, plainFlag, presentationOf, probeLiveness, readPidfile, spaceFlag, writeResult, type LocalProcess, type LocalProcessContext, type Report, type ServiceDefinitionInput, type ServicePreset } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { serviceConfirmCommand } from "../lib/confirmation-required.js";
-import { assertManagerStartOptions, describeDefault, findServicePreset, presetFlagName, presetMissingOptions, presetOptionRefusal, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
+import { serviceConfirmCommand, targetWords } from "../lib/confirmation-required.js";
+import { assertManagerStartOptions, checkManagerStartRoster, describeDefault, findServicePreset, presetFlagName, presetOptionRefusal, presetRequiredInputs, presetStartFlags, presetUnfilledDefaults, resolveServicePreset, servicePresetDefinition, servicePresetFlags, servicePresets } from "../lib/service-presets.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { forgetRefusedPresetService, presetDefinition, presetDefinitions, recordedPresetProcess, resolvePresetService, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { execWords } from "../lib/exec-words.js";
 import { resolveServiceAdapter } from "../lib/service-adapters.js";
-import { personaCatalog } from "../lib/persona-files.js";
+import { personaCatalog, personaCatalogContext } from "../lib/persona-files.js";
 import { definitionRootMatch, execServiceDefinition, importServiceDefinition, serviceDefinitionProjection, serviceDefinitionStore, validateServiceDefinition, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { serviceAction } from "./service-actions.js";
 import { followRecordedLog } from "./service-log-follow.js";
 import { managerLogPath } from "../lib/manager-proc.js";
+import { serviceStartAllowsNoOpen } from "../lib/service-start-options.js";
 import { observeServiceProcess, serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { pruneEmptyServiceSpace, readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
@@ -39,7 +40,7 @@ export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
 export function validateServiceArguments(args: ParsedArgs): void {
-  presentationOf(args.values);
+  const presentation = presentationOf(args.values);
   const [mode = "list", name, ...extra] = args.positionals;
   if (!["list", "show", "add", "remove", "start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode) || extra.length || (mode === "list" ? name !== undefined : mode !== "add" && name === undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "use service, or service show/add/remove/start/stop/restart/status/logs/install/uninstall with a definition name");
   if (name !== undefined) localRecordName(name);
@@ -54,19 +55,28 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.file !== undefined && !String(args.values.file).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--file cannot be empty", { remedy: "pass --file <definition.json> with the path to a service definition" });
   if (args.values.exec !== undefined && (mode !== "add" || args.values.file !== undefined || args.values.preset !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--exec belongs to service add and cannot combine with --file or --preset");
   if (args.values.cwd !== undefined && args.values.exec === undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd belongs to service add --exec");
-  if (args.values.cwd !== undefined && !String(args.values.cwd).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty");
+  if (args.values.cwd !== undefined && !String(args.values.cwd).trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--cwd cannot be empty. Omit --cwd to use the directory where you run the command, or pass --cwd <dir> to use another directory.");
   if (mode === "start" && name !== undefined && (args.values.instance !== undefined || args.values["new-instance"]) && presetStartFlags(name).some((flag) => args.values[flag] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "a preset's options on start cannot be combined with --instance or --new-instance");
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
-  if (args.values["no-open"] !== undefined && (mode !== "start" || name !== "web")) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
+  if (args.values["no-open"] !== undefined && mode !== "start") throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
   if (args.values.foreground && (mode !== "start" || args.values.json && !args.values["dry-run"])) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
   if (mode === "uninstall" && args.values["dry-run"] && args.values.yes) throw new CommandFailure("refused", "USAGE_INVALID", "--yes cannot confirm a read-only native uninstall inspection");
   if ((args.values.tail !== undefined || args.values.follow !== undefined) && mode !== "logs") throw new CommandFailure("refused", "USAGE_INVALID", "--tail and --follow belong to service logs");
   if (args.values.tail !== undefined && (!/^[1-9][0-9]*$/.test(String(args.values.tail)) || Number(args.values.tail) > 1000)) throw new CommandFailure("refused", "USAGE_INVALID", "--tail needs an integer from 1 to 1000");
-  if (mode === "add" && (!name || args.values.file === undefined && args.values.preset === undefined && args.values.exec === undefined) && (!canPrompt() || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", { remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"`, remedyIsCommand: true });
+  if (mode === "add" && (!canPrompt() || args.values.json)) {
+    const hasSource = args.values.file !== undefined || args.values.preset !== undefined || args.values.exec !== undefined;
+    if (!name && hasSource) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a definition name", {
+      remedy: "insert your definition name immediately after `add` in the original command, keeping all flags and values unchanged",
+    });
+    if (!hasSource) throw new CommandFailure("refused", "USAGE_INVALID", "scripted service add needs a name and --exec <command>, --preset <preset> or --file <definition.json>; guided input requires an interactive terminal", {
+      remedy: `cotal service add ${name ?? "<name>"} --exec "<command>"${targetWords({ space: args.values.space })}${presentation === "rich" ? "" : ` --${presentation}`}`,
+      remedyIsCommand: true,
+    });
+  }
 }
 
 /** Whether a start or restart of `name` would launch a manager: its saved definition, or the preset
@@ -79,6 +89,15 @@ function launchesManager(space: string, root: string, name: string, mode: string
   const manager = findServicePreset("manager");
   if (mode === "restart" && (saved || manager && presetDefinitions(space, root, manager).length)) return true;
   return manager === undefined || recordedPresetProcess(space, root, manager) === undefined;
+}
+
+/** Do not print a shortened Manager retry when it would discard launch settings or an instance pin. */
+function managerLoginRetry(commandName: string, mode: string, name: string, values: ParsedArgs["values"]): string {
+  const switches = ["dry-run", "yes", "foreground", "with-agents", "plain", "json"];
+  if (name.startsWith("-") || Object.keys(values).some((key) => key !== "space" && !switches.includes(key)))
+    return "retry the original command with all its options unchanged";
+  const command = commandName === "manager" ? `cotal manager ${mode}` : `cotal service ${mode} ${shellWord(name)}`;
+  return codeSpan(command + targetWords({ space: values.space }) + switches.filter((key) => values[key] === true).map((key) => ` --${key}`).join(""));
 }
 
 function legacyProcesses(context: LocalProcessContext) {
@@ -99,12 +118,14 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   const presentation = presentationOf(args.values);
   // Only --space selects the space: a preset's own options, such as the broker's --server and --root,
   // describe the service and never the target.
-  const catalog = personaCatalog({ space: args.values.space as string | undefined });
+  const { catalog, prepared } = personaCatalogContext({ space: args.values.space as string | undefined });
   const { space, root } = catalog;
   recordOperationSpace(space);
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   const [mode = "list", suppliedName] = args.positionals;
   const target = { space, executionHost: "this-machine" };
+  if (mode === "start" && args.values["no-open"] !== undefined && !serviceStartAllowsNoOpen(suppliedName!, store.read(suppliedName!)?.record.value.launch))
+    throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web or a saved dashboard service");
   if (["start", "stop", "restart", "status", "logs", "install", "uninstall"].includes(mode)) {
     // A user-auth space's manager is read as your signed-in, granted login, so a start or restart
     // without one is refused here, before a definition is saved, a manager stopped or a child launched.
@@ -112,16 +133,18 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       // A refused restart stops nothing, so over a running manager it says that manager was left running.
       const manager = findServicePreset("manager");
       const running = mode === "restart" && manager !== undefined && recordedPresetProcess(space, root, manager) !== undefined;
-      await assertManagerLogin(root, space, commandName === "manager" ? `\`cotal manager ${mode}\`` : `\`cotal service ${mode} ${suppliedName}\``, running ? "the running manager was left running" : undefined);
+      await assertManagerLogin(root, space, managerLoginRetry(commandName, mode, suppliedName!, args.values), running ? "the running manager was left running" : undefined);
     }
-    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values);
+    const resolved = resolvePresetService(space, root, suppliedName!, mode, args.values, prepared);
     if (resolved?.recorded) return mode === "logs" && resolved.preset === "manager" ? recordedManagerLogs(resolved.requested, { ...resolved.recorded, state: "running" }, space, root, args.values, presentation, commandName) : recordedPresetProcessReport(resolved, resolved.recorded, space, mode, presentation, commandName);
-    if (resolved?.stopped) return recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
+    if (resolved?.stopped) return mode === "status"
+      ? stoppedManagerStatus(resolved, resolved.stopped, space, root, presentation, commandName)
+      : recordedManagerLogs(resolved.requested, { ...resolved.stopped, state: "stopped" }, space, root, args.values, presentation, commandName);
     if (resolved) announcePresetTarget(resolved, space, presentation, args.values.space !== undefined);
     // A preset name reaches the stack member built on it. Starting that member by itself launches
     // its process and leaves the space unregistered, so it refuses before the start saves or launches.
     // A running member needs no start: the start reports it running, as for any running service.
-    // A restart of a running member names the stop and the `cotal up` that restart it (#7057).
+    // A running broker's restart preview points to a whole-stack stop preview.
     const member = resolved?.name ?? suppliedName!;
     if ((mode === "start" || mode === "restart") && isStackMember(space, member)) {
       const memberTarget = { space, name: member, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) };
@@ -136,7 +159,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
         const stopStep = member === STACK_DEFINITION.broker
           ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then review and stop the whole stack with \`cotal down\``
           : `stop it with ${codeSpan(`${stop} --space ${shellWord(space)}${instance}${withAgents} --yes`)}`;
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy: `${stopStep}, then run ${up} to start it again with its stack` });
+        const remedy = member === STACK_DEFINITION.broker && args.values["dry-run"]
+          ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then run ${codeSpan(`cotal down --dry-run${presentation === "rich" ? "" : ` --${presentation}`} --space ${shellWord(space)}`)}. This previews only the stop part of a restart.`
+          : `${stopStep}, then run ${up} to start it again with its stack`;
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy });
       }
       if (!live)
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: memberTarget, remedy: `start the stack with ${up}` });
@@ -194,7 +220,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
   }
   if (mode === "show") {
     const row = savedService(suppliedName!);
-    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: "see the saved definitions with `cotal service`" });
+    if (!row) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no saved service definition has this full name in the selected space", { target: { ...target, name: suppliedName }, remedy: `see the saved definitions with ${codeSpan(`cotal service${targetWords({ space })}`)}` });
     writeResult(presentation, { command: "service", target: { ...target, name: row.name }, result: { ...serviceDefinitionProjection(row), rootMatch: definitionRootMatch(row.record.value, root) } }, (result): Report => ({ sections: [
       { title: "Service definition", blocks: [{ kind: "fields", rows: [["Name", result.name], ["Space", result.space], ["Execution host", "this machine"], ["Revision", result.revision], ["Launch", result.launch.type], ...(result.launch.type === "process" ? [["Executable", result.launch.executable], ["Arguments", `${result.launch.argumentCount} declared; values omitted`], ["Working directory", result.launch.cwd]] as const : [["Adapter", result.launch.adapter], ["Options", `${result.launch.optionCount} declared; values omitted`]] as const), ["Readiness policy", result.readiness.type], ["Readiness deadline", `${result.readiness.timeoutMs} ms`], ["Environment references", Object.entries(result.environmentReferences).map(([destination, source]) => `${destination} from ${source}`).join(", ") || "none"], ["Caller reference", result.credentialRef ? "protected file reference; not checked" : "none"], ["Added in", result.root === null ? "root not recorded" : result.rootMatch === "inherited" ? `${result.root}, not this space's root; it does not start here` : result.root], ["Live state", "not checked"]] }, { kind: "lines", lines: [{ text: "Saved policy is not proof of process ownership, OS supervision or endpoint registration. Argument bodies, adapter option values and credential contents are omitted.", tone: "hint" }] }] },
     ] }));
@@ -209,7 +235,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
       removableServiceInstances(space, row.name, id);
       if (!args.values.yes) {
-        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id })}\`` });
+        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id }, presentation)}\`` });
         const answer = await prompts.confirm({ message: `Forget stopped instance ${id} of ${oneLine(row.name)}? No process or OS unit will be removed.`, initialValue: false });
         if (prompts.isCancel(answer) || !answer) return cancelled("Instance record kept");
       }
@@ -221,7 +247,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {})}\`` });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {}, presentation)}\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)} and delete its instances' logs? No process or OS unit will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled("Service definition kept");
     }
@@ -355,8 +381,7 @@ function serviceRows(space: string, root: string, catalog: readonly ServicePrese
     const recorded = recordedPresetProcess(space, root, preset);
     let needs: string[] = [], several = false;
     try {
-      const flags = servicePresetFlags(preset), missing = new Set(presetMissingOptions(preset, {}));
-      needs = [...flags.filter((flag) => missing.has(flag.name)).map((flag) => `--${flag.name}${flag.value ? ` ${flag.value}` : ""}`), ...presetUnfilledDefaults(preset, space, root, {}).map((row) => `--${row.name} ${row.value}`)];
+      needs = presetRequiredInputs(preset, space, root);
       several = resolveServiceAdapter(preset.adapter, {}, false).declaration.capabilities.multiInstance;
     } catch { needs = ["its options"]; }
     // A preset that runs many instances is added under a name of your own; any other starts by its name.
@@ -388,9 +413,19 @@ function recordedPresetProcessReport(resolved: PresetServiceTarget, recorded: { 
   const target = { space, name: resolved.requested, executionHost: "this-machine", pid: recorded.pid };
   const stop = "it stops with its stack through `cotal down`, or where `cotal supervise` runs it";
   if (mode !== "start" && mode !== "status") throw recordedProcessRefusal(resolved.requested, recorded, space, `${commandName} ${mode}`);
-  writeResult(presentation, { command: commandName, target, result: { kind: mode === "start" ? "service-start" : "service-status", name: resolved.requested, preset: resolved.preset, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, started: false }, noOp: mode === "start" }, (): Report => ({ sections: [
+  writeResult(presentation, { command: commandName, target, result: { kind: mode === "start" ? "service-start" : "service-status", name: resolved.requested, preset: resolved.preset, recordedProcess: { pid: recorded.pid, label: recorded.label, startedBy: "cotal up or cotal supervise", savedService: false }, started: false, ...(mode === "status" ? { observedProcess: "running" } : {}) }, noOp: mode === "start" }, (): Report => ({ sections: [
     { title: mode === "start" ? `The ${recorded.label} is already running; nothing was started` : `The ${recorded.label} is running`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Stop", stop]] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal status", description: "See it with the rest of this space" }, { command: "cotal ps", description: "List the agents it runs" }] }] },
+  ] }));
+}
+
+function stoppedManagerStatus(resolved: PresetServiceTarget, recorded: NonNullable<PresetServiceTarget["stopped"]>, space: string, root: string, presentation: ReturnType<typeof presentationOf>, commandName: string): void {
+  const name = resolved.requested;
+  const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
+  const next = `cotal up --root ${shellWord(root)} --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-status", name, preset: resolved.preset, recordedProcess: { ...recorded, startedBy: "cotal up or cotal supervise", savedService: false }, started: false, observedProcess: "gone" } }, (): Report => ({ sections: [
+    { title: `The ${recorded.label} is stopped`, blocks: [{ kind: "fields", rows: [["Space", space], ["PID", recorded.pid === null ? "not recorded" : String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"]] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: next, description: "Start the stack again" }] }] },
   ] }));
 }
 
@@ -409,7 +444,7 @@ async function recordedManagerLogs(name: string, recorded: { pid: number | null;
   const target = { space, name, executionHost: "this-machine", pid: recorded.pid };
   const path = managerLogPath(space, root), tail = values.tail === undefined ? 100 : Number(values.tail);
   if (values.follow) return followRecordedLog(path, recorded.pid, target, presentation, tail);
-  const log = readOwnedLogTail(path, tail), stopped = recorded.state === "stopped";
+  const log = readOwnedLogTail(path, tail, true), stopped = recorded.state === "stopped";
   writeResult(presentation, { command: commandName, target, result: { kind: "service-logs", name, recordedProcess: { pid: recorded.pid, label: recorded.label, state: recorded.state, startedBy: "cotal up or cotal supervise", savedService: false }, ...log, encoding: "utf8-with-replacement", collection: "the manager's output, in the log `cotal up` opened for it" }, ...(log.omittedBytes && log.lines.length < tail ? { completeness: "partial" as const, partial: { message: "The 16 MiB bounded read holds fewer lines than the requested tail; earlier bytes were omitted." } } : {}) }, (result): Report => ({ sections: [{ title: stopped ? "Manager log tail, from a stopped manager" : "Manager log tail", blocks: [
     { kind: "fields", rows: [["Space", space], ["State", recorded.state], ["PID", recorded.pid === null ? "no longer recorded" : stopped ? `${recorded.pid}, no longer running` : String(recorded.pid)], ["Started by", "cotal up or `cotal supervise`, not as a saved service"], ["Log", path]] },
     { kind: "lines", lines: result.lines.length ? result.lines : ["No captured log lines in this bounded read."] },
@@ -424,11 +459,19 @@ function previewPresetStart(resolved: PresetServiceTarget, space: string, root: 
   const launch = definition.launch as Extract<ServiceDefinitionInput["launch"], { type: "adapter" }>;
   const target = { space, name: resolved.name, executionHost: "this-machine" };
   const { capabilities } = resolveServiceAdapter(launch.adapter, launch.options, false).declaration;
-  if (args.values["new-instance"] && !capabilities.multiInstance || args.values.foreground && !capabilities.foreground) throw new CommandFailure("refused", "UNSUPPORTED", "the adapter does not declare the requested multi-instance or foreground capability; no provider code was loaded", { target });
-  if (launch.adapter === STACK_ADAPTER.manager) assertManagerStartOptions(space, launch.options);
-  writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved: true, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
-    { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", `would be saved from the ${resolved.preset} preset`], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
-    { kind: "lines", lines: ["Nothing was saved, launched or loaded. The real start saves this definition first, then starts it."] },
+  const unsupported = [args.values["new-instance"] && !capabilities.multiInstance ? "--new-instance" : null, args.values.foreground && !capabilities.foreground ? "--foreground" : null].filter(Boolean).join(" and ");
+  if (unsupported) throw new CommandFailure("refused", "UNSUPPORTED", `The adapter does not support ${unsupported}. No provider code was loaded. Retry without ${unsupported}, keeping --dry-run and the rest of the command unchanged.`, { target });
+  if (launch.adapter === STACK_ADAPTER.manager) {
+    assertManagerStartOptions(space, launch.options);
+    const host = launch.options["console-host"];
+    if (typeof host === "string" && /[\u0000- \u007f]/u.test(host)) throw new CommandFailure("refused", "USAGE_INVALID", "--console-host contains whitespace or controls; no native child was launched", {
+      target, selfContained: true, remedy: "replace the invalid host with `--console-host 127.0.0.1`, keeping the other flags unchanged",
+    });
+  }
+  const definitionWouldBeSaved = launch.adapter !== STACK_ADAPTER.manager || checkManagerStartRoster(launch.options.roster, target, true);
+  writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: "start", dryRun: true, definitionWouldBeSaved, preset: resolved.preset, adapter: launch.adapter, optionNames: Object.keys(launch.options).sort(), saved: false, allocated: false, providerCodeLoaded: false } }, (): Report => ({ sections: [{ title: "Service operation preview", blocks: [
+    { kind: "fields", rows: [["Action", "start"], ["Service", resolved.name], ["Space", space], ["Definition", definitionWouldBeSaved ? `would be saved from the ${resolved.preset} preset` : "would not be saved"], ["Options", Object.keys(launch.options).sort().map((name) => `--${name}`).join(", ") || "none"]] },
+    { kind: "lines", lines: [definitionWouldBeSaved ? "Nothing was saved, launched or loaded. The real start saves this definition first, then starts it." : "Nothing was saved or launched. Correct the roster before starting the manager."] },
   ] }] }));
 }
 

@@ -1,5 +1,6 @@
 import { spaceQuiescenceReaderGrants } from "./space-quiescence-resources.js";
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
+import { EVENT_CHANNEL_PREFIX } from "./event-channel.js";
 import { spacePrefix, chatSubject, assertValidChannel, principalKey, assertInboxConnId, unicastSubject, anycastSubject, controlServiceSubject, CONTROL_DELIVERY, CONTROL_DELIVERY_ADMIN, chatStream, dmStream, taskStream, dlvStream, chatHistDurable, historyReaderConsumer, HISTORY_READERS, dmDurable, taskDurable, dlvDurable, presenceBucket, presenceKeySubject, channelBucket, assertLifecycleToken, membershipBucket, deliveryBucket, livenessSubject, takeSubject } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import { epCallerGrantRows, epBaselineGrantRows, spawnCallerCapabilities, runCallerCapabilities, epRequestGrantRows, epPrincipalServeGrantRows, epPrincipalOwnerGrantRows, operatorInstrumentCapabilities, epDescribeAllGrantRow } from "./endpoint-grants.js";
@@ -12,7 +13,7 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile } from "./environment-manager-grants.js";
 import { backupProfilePermissions, restoreProfilePermissions } from "./backup.js";
 import type { MintOpts, MintPrincipal } from "./provision-jwt.js";
-import { managerCallerPermissions, supervisorPermissions, remoteManagerPermissions, operatorPermissions, probePermissions, channelWriterPermissions, channelPurgerPermissions, teardownPermissions, membershipStoreRecreatePermissions, issuedStoreRecreatePermissions, controlCallerPermissions, issuedCallerFor, listingGrantRows, deployerPermissions, purgerPermissions, provisionerPermissions, issuerPermissions, registryReaderPermissions, runAdmitterPermissions, lifecycleExecutorPermissions, goalWriterPermissions, sessionCallerPermissions, dmReaderPermissions, sessionServingPermissions, sessionLedgerPermissions, endpointServeExecutorPermissions, deprovisionerPermissions, deliveryPermissions, membershipRwPermissions } from "./provision-permission-builders.js";
+import { managerCallerPermissions, agentCallerPermissions, supervisorPermissions, remoteManagerPermissions, operatorPermissions, probePermissions, channelWriterPermissions, channelPurgerPermissions, teardownPermissions, membershipStoreRecreatePermissions, issuedStoreRecreatePermissions, controlCallerPermissions, issuedCallerFor, listingGrantRows, deployerPermissions, purgerPermissions, provisionerPermissions, issuerPermissions, registryReaderPermissions, runAdmitterPermissions, lifecycleExecutorPermissions, goalWriterPermissions, sessionCallerPermissions, dmReaderPermissions, sessionServingPermissions, sessionLedgerPermissions, endpointServeExecutorPermissions, deprovisionerPermissions, deliveryPermissions, membershipRwPermissions } from "./provision-permission-builders.js";
 
 
 /** Cred profiles. Each profile has an explicit permission arm and a lifetime classification. */
@@ -50,6 +51,9 @@ export type Profile =
   | "control-caller-privileged" // ps/start → the privileged instrument set, no any-mode row (no cross-agent reach)
   | "control-caller-admin" // stop/attach → the admin instrument set, adding the any-mode rows + manager.admin (cross-agent power)
   | "deployer" // spawn -f deploy authority: reads + admin-control launch on one ephemeral cred
+  // The person's caller of their agents' `agent` endpoints on a static space (SPEC 13.21): the
+  // `owner` rows and their reply read, nothing else. Only the person's own command mints it.
+  | "agent-caller"
   // v0.4 control surface (SPEC §13.9): the per-instance endpoint serve credential — EXACTLY the
   // instance's registered rails + epoch-pinned egress, no agent baseline. Consumes only an
   // authorizeServeGrant-branded tuple; re-minted on takeover with the new epoch.
@@ -144,6 +148,21 @@ const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "cont
 /** The operator instruments: the only profiles issued with no source and no presence key of their own. */
 const INSTRUMENT_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["control-caller-privileged", "control-caller-admin", "deployer"]);
 
+/** An `agent` credential's principal-route rows (SPEC 13.21): serve its own `agent` endpoint under
+ *  its own principal and lifecycle, the runtime spanned. A callout mint serves for a ledger row of
+ *  either kind, and an interactive row also calls its owner's agents with the `owner` word. A static
+ *  mint serves unless the issuance it renews was made without the rows, and never calls. The rows
+ *  carry the caller triple alone: the route has no versioned form, whatever rail the rest of the
+ *  credential rides. */
+function principalRouteRows(space: string, pr: MintPrincipal, opts: MintOpts, uid: string): { pub: string[]; sub: string[] } {
+  if (pr.readerId === undefined ? opts.principalServe === false : opts.ledgerKind === undefined) return { pub: [], sub: [] };
+  const self: EpCaller = { owner: pr.owner, actor: pr.actor, uid };
+  const serve = epPrincipalServeGrantRows(space, self);
+  if (opts.ledgerKind !== "interactive") return serve;
+  const own = epPrincipalOwnerGrantRows(space, self);
+  return { pub: [...serve.pub, ...own.pub], sub: [...serve.sub, ...own.sub] };
+}
+
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
  *  allow-all `manager` is gone (its roles split across supervisor/provisioner/operator/purger and the
@@ -182,8 +201,8 @@ export function permissionsFor(
   if (opts.listing && opts.issued)
     throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
   if (opts.ledgerKind !== undefined) {
-    if (profile !== "agent")
-      throw new Error(`permissionsFor: ledgerKind marks an agent-profile mint of a ledger row, not "${profile}" (SPEC 13.21)`);
+    if (profile !== "agent" && profile !== "manager-caller")
+      throw new Error(`permissionsFor: ledgerKind marks an agent or manager-caller mint of a ledger row, not "${profile}" (SPEC 13.21)`);
     // Only the auth callout reads a row's kind from the ledger, and only the callout sets a
     // connection's reader id. A static mint, whose connection is its own nkey, carries no kind.
     if (pr.readerId === undefined)
@@ -191,10 +210,13 @@ export function permissionsFor(
     if (opts.ledgerKind !== "interactive" && opts.ledgerKind !== "managed-agent")
       throw new Error(`permissionsFor: ledgerKind ${JSON.stringify(opts.ledgerKind)} is not "interactive" or "managed-agent"`);
   }
+  if (opts.principalServe !== undefined && (profile !== "agent" || pr.readerId !== undefined))
+    throw new Error(`permissionsFor: principalServe decides a static agent mint's serve rows; a ${profile === "agent" ? "callout" : `"${profile}"`} mint refuses it (SPEC 13.21)`);
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
+  if (profile === "agent-caller") return agentCallerPermissions(space, pr);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority
@@ -661,21 +683,9 @@ export function permissionsFor(
       pubAllow.push(...rows.pub);
       for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
     }
-  // THE PRINCIPAL ROUTE (SPEC 13.21), for a ledger row of either kind: serve its own `agent`
-  // endpoint under its own principal and lifecycle, the runtime spanned. An interactive row also
-  // calls its owner's agents with the `owner` word. The rows carry the caller triple alone: the
-  // route has no versioned form, whatever rail the rest of the credential rides.
-  if (opts.ledgerKind !== undefined) {
-    const self: EpCaller = { owner: pr.owner, actor: pr.actor, uid };
-    const serve = epPrincipalServeGrantRows(space, self);
-    pubAllow.push(...serve.pub);
-    epSub.push(...serve.sub);
-    if (opts.ledgerKind === "interactive") {
-      const own = epPrincipalOwnerGrantRows(space, self);
-      pubAllow.push(...own.pub);
-      epSub.push(...own.sub);
-    }
-  }
+  const principalRoute = principalRouteRows(space, pr, opts, uid);
+  pubAllow.push(...principalRoute.pub);
+  epSub.push(...principalRoute.sub);
   if (opts.endpointCapabilities?.length) {
     if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
       throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);
@@ -719,6 +729,16 @@ export function permissionsFor(
       `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${name}`,
     ]),
   );
+  // A person reads the event channels of every agent under their own owner (SPEC 13.21), keyed on
+  // the ledger row's kind: live, and from history through this lifecycle's own `chathist_` reader,
+  // whose info, fetch and delete rows are above. Only an agent publishes on its own event channel,
+  // so the sender's owner is pinned to the person's too. Their payloads already ride the own-owner
+  // read above.
+  if (opts.ledgerKind === "interactive") {
+    const ownEvents = chatSubject(space, pr.owner, "*", `${EVENT_CHANNEL_PREFIX}${pr.owner}.*`);
+    subChat.push(ownEvents);
+    pubAllow.push(`$JS.API.CONSUMER.CREATE.${CHAT}.${chatHistD}.${ownEvents}`);
+  }
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;

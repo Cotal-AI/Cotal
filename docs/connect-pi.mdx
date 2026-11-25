@@ -15,15 +15,17 @@ Cotal does not bundle the pi runtime.
 <Callout type="info" title="Alpha connector">
 
 This release targets pi `0.79.10`.
-Persona files, model selection, initial prompts, and session forks are supported.
-Model variants, MCP tool sharing, and arbitrary launch options are refused.
+Persona files, model selection, thinking levels, initial prompts, and session forks are supported.
+MCP tool sharing and arbitrary launch options are refused.
 
 </Callout>
 
 ## Choose how to run pi [#surfaces]
 
 For a managed seat, use `cotal spawn --harness pi --detach` after the installation below.
-Cotal launches the installed `pi` binary and loads its bundled Cotal extension.
+Cotal launches npm-installed `pi` on Node and loads its bundled Cotal extension.
+You can keep the standalone copy installed.
+Spawn leaves discovered copies of Cotal's released standalone bundle inactive and keeps Pi's other extensions enabled.
 
 For an existing interactive pi installation, copy the standalone extension into pi's extension directory.
 SDK applications using pi's default resource loader discover that same copy.
@@ -33,6 +35,8 @@ See the [pi host reference](pi-connector-reference.mdx#host-integration) for act
 ## Install pi [#install]
 
 Use Node 22.19 or later, which satisfies both Cotal and this pi release.
+Foreground spawn is also tested with npm Pi `0.84.3` and `1.6.0`.
+The standalone Pi release executable lacks the Node loader hooks `cotal spawn` needs to skip duplicate copies.
 Install Cotal and the supported host:
 
 ```bash
@@ -54,9 +58,21 @@ To use a persona file on the execution host, add `--file <persona-file>`.
 The connector passes the model name to pi unchanged.
 To list the models your pi can run, use `cotal models --harness pi`.
 It lists each model as `provider/id` for the providers pi holds credentials for.
-With no credentials, it reports `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
+With no credentials, the read fails with `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
 Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
+The list is read with the environment a seat gets, so a `PI_CODING_AGENT_DIR` named in `spawn.env` selects its models too.
 See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
+
+`--variant <level>` sets pi's thinking level, which the connector passes as `--thinking`:
+
+```bash
+cotal spawn --harness pi --model anthropic/claude-opus-4-6 --variant high
+```
+
+`cotal models --harness pi` lists the levels pi offers for each model as its variants.
+It needs pi 0.81.0 or later, the first pi that lists them; with an older pi the list is unavailable and names the command pi refused.
+A level that is not one of pi's own (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is refused before launch.
+A restarted or resumed seat passes the level again, so it runs the level it was launched with.
 
 To give pi an initial task, add `--prompt`:
 
@@ -123,8 +139,9 @@ The [delivery reference](pi-connector-reference.mdx#delivery-confirmation) expla
 
 ## Watch events [#event-plane]
 
-A managed pi seat publishes run boundaries, completed assistant text, and tool boundaries on `events.<owner>.<actor>`.
-It does not publish live text deltas, user prompts, reasoning, usage, tool arguments, or tool results.
+A managed pi seat publishes run boundaries, assistant text as pi streams it, and tool boundaries on `events.<owner>.<actor>`.
+Each tool call's arguments and result go on the separate payload rail, and the channel marks each finished call and whether it failed.
+It does not publish user prompts or usage, and it publishes pi's reasoning only for a seat launched with the [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields).
 The thread ID is pi's session ID.
 
 The event plane is enabled by default.
@@ -141,7 +158,7 @@ Pi's chat output is not automatically sent to peers; replies use `cotal_dm`, `co
 `cotal_inbox` returns and clears quiet ambient traffic.
 The driver keeps ownership of automatic messages, while focus recall remains read-only.
 A partially configured managed control endpoint is refused.
-Model variants, MCP sharing, and raw launch options are also refused.
+MCP sharing and raw launch options are also refused.
 
 ## Continue [#see-also]
 

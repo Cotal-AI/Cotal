@@ -51,7 +51,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
  * guarantee is the false-green shape this package keeps being bitten by. Pinning the floor turns a
  * smaller green into a red. Raise it deliberately when you add a cell; a drop means one vanished.
  */
-const EXPECTED_CELLS = 179;
+const EXPECTED_CELLS = 191;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; buildLaunch throws");
 
@@ -99,7 +99,7 @@ process.env.COTAL_HERMES_SEAT_HOME = "parent-profile";
 const owned: string[] = [];
 process.once("exit", () => discardLaunchArtifacts(owned));
 function buildLaunch(opts: LaunchOpts) {
-  const spec = hermesConnector.buildLaunch(opts);
+  const spec = hermesConnector.buildLaunch({ events: false, ...opts });
   owned.push(...spec.artifacts ?? []);
   return spec;
 }
@@ -114,6 +114,12 @@ assert.ok(spec.artifacts?.includes(dirname(env.COTAL_LAUNCH_MATERIAL!)), "the ca
 assert.ok(spec.artifacts?.includes(dirname(dirname(env.COTAL_HERMES_SEAT_HOME!))), "the disposable profile is tracked");
 assert.notEqual(env.COTAL_HERMES_SEAT_HOME, process.env.COTAL_HERMES_SEAT_HOME, "the child receives its own profile");
 assert.ok(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).controlKey, "the same carrier contains the control key");
+assert.equal(hermesConnector.supportsReasoningEvents, true, "the connector takes reasoningEvents: its journal records the reasoning a provider returns");
+assert.equal(readLaunchMaterial(env.COTAL_LAUNCH_MATERIAL!).reasoningEvents, undefined, "a launch that does not ask carries no reasoningEvents");
+{
+  const reasoned = buildLaunch({ space: "smoke", name: "hermes-reasoning", events: undefined, workspaceRoot: "/srv/smoke-root", reasoningEvents: true });
+  assert.equal(readLaunchMaterial(reasoned.env!.COTAL_LAUNCH_MATERIAL!).reasoningEvents, true, "a launch that asks carries reasoningEvents to the seat");
+}
 
 for (const k of PROVIDER_KEYS)
   assert.equal(env[k], `smoke-${k}`, `${k} must reach the child: this connector declares it`);
@@ -132,6 +138,13 @@ assert.ok(env.PATH !== undefined, "PATH is forwarded so the seat can still launc
 
 for (const k of OPERATOR_KNOBS)
   assert.equal(env[k], `parent-${k}`, `${k} is a machine-wide operator knob and must cross`);
+
+// The event plane is armed unless the launch opts out, and its state needs the workspace root.
+assert.equal(env.COTAL_EVENTS, undefined, "events: false leaves the event plane unarmed");
+const armed = buildLaunch({ space: "smoke", name: "hermes-events", events: undefined, workspaceRoot: "/srv/smoke-root" }).env ?? {};
+assert.equal(armed.COTAL_EVENTS, "1", "a launch that does not opt out arms the event plane");
+assert.equal(armed.COTAL_WORKSPACE_ROOT, "/srv/smoke-root", "the event plane's write-ahead log lives under the workspace root");
+assert.throws(() => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-events" }), /workspace root/, "an armed launch without a workspace root is refused");
 
 // A floor request DOES forward, distinct from the per-session ambient reset asserted above.
 const withFloor = buildLaunch({ space: "smoke", name: "hermes-1", backfillFloor: 42 }).env ?? {};
@@ -163,10 +176,12 @@ assert.equal(bare.NOUS_API_KEY, "smoke-NOUS_API_KEY", "empty spawn.env does not 
 assert.ok(!("GH_TOKEN" in bare), "empty spawn.env still withholds undeclared names");
 assert.ok(bare.PATH !== undefined, "an empty spawn.env still carries the OS allow-list");
 
+assert.equal(buildLaunch({ space: "smoke", name: "hermes-1", prompt: "  greet the operator\n" }).env?.COTAL_HERMES_PROMPT, "greet the operator", "an initial prompt reaches the launcher, which submits it as the first turn");
+assert.equal(env.COTAL_HERMES_PROMPT, undefined, "a launch without a prompt carries none");
 assert.throws(
-  () => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", prompt: "greet the operator" }),
-  /initial prompt/,
-  "a prompt the connector cannot submit must refuse the launch",
+  () => buildLaunch({ space: "smoke", name: "hermes-1", prompt: "   " }),
+  /empty initial prompt/,
+  "an empty prompt would start no turn, so it refuses the launch",
 );
 
 const bootResolved = buildLaunch({
@@ -357,9 +372,40 @@ rmSync(mgdFresh, { recursive: true, force: true });
 assert.throws(() => setupProfile(mgdFresh, { model: undefined, config: mgdConfig }), LaunchRefused, "the refusal is the connector's own class, so the launcher prints it as a diagnosis rather than a stack");
 assert.equal(existsSync(mgdFresh), false, "a profile directory that did not exist before the refusal does not exist after it");
 
+// The launcher's own COTAL_EVENTS, which the connector sets only for an armed plane, decides
+// whether a profile streams; the leak cells above left a stand-in value there.
+delete process.env.COTAL_EVENTS;
 const mgdSet = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-set-"));
 setupProfile(mgdSet, { model: "vendor/some-model", config: mgdConfig });
 assert.match(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^model: "vendor\/some-model"$/m, "a resolved model is written as a quoted scalar");
+assert.doesNotMatch(readFileSync(join(mgdSet, "config.yaml"), "utf8"), /^streaming:/m, "with no event plane to stream to, the profile leaves Hermes's streaming off");
+// The gateway inherits the launcher's folder, but Hermes runs its terminal and file tools in
+// `terminal.cwd` and gives a gateway with none set the home folder.
+const seatFolder = mkdtempSync(join(tmpdir(), 'cotal-hermes-seat "folder"-'));
+const mgdCwd = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-cwd-"));
+const smokeCwd = process.cwd();
+process.chdir(seatFolder);
+const seatCwd = process.cwd();
+try {
+  setupProfile(mgdCwd, { model: "vendor/some-model", config: mgdConfig });
+} finally {
+  process.chdir(smokeCwd);
+}
+assert.match(
+  readFileSync(join(mgdCwd, "config.yaml"), "utf8"),
+  new RegExp(`^terminal:\\n  cwd: ${JSON.stringify(seatCwd).replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`, "m"),
+  "the profile runs Hermes's terminal and file tools in the folder the seat was launched in",
+);
+rmSync(mgdCwd, { recursive: true, force: true });
+rmSync(seatFolder, { recursive: true, force: true });
+const mgdStream = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-stream-"));
+setupProfile(mgdStream, { model: "vendor/some-model", config: { ...mgdConfig, eventsRequired: true } });
+assert.match(
+  readFileSync(join(mgdStream, "config.yaml"), "utf8"),
+  /^streaming:\n  enabled: true\n  transport: draft\n  cursor: ""\n  edit_interval: 0\.25$/m,
+  "an armed event plane turns on Hermes's draft streaming, which hands the adapter a reply as the model writes it",
+);
+rmSync(mgdStream, { recursive: true, force: true });
 const mgdPersona = mkdtempSync(join(tmpdir(), "cotal-hermes-managed-persona-"));
 setupProfile(mgdPersona, { model: "vendor/some-model", persona: "I review changes.", config: mgdConfig });
 const soul = readFileSync(join(mgdPersona, "SOUL.md"), "utf8");

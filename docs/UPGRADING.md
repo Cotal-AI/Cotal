@@ -1,5 +1,48 @@
 # Upgrading a running deployment
 
+## The agent endpoint on every space
+
+Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
+people sign in. A static agent started by an older release keeps a credential without the serve
+rows, because a renewal keeps what its first issuance recorded. It runs on, and its connector logs
+that the broker refused the serve and says to respawn the agent. Despawn it and start it again to
+give it the endpoint.
+
+On a static space, `cotal acp` calls agents through an `agent-caller` credential it mints in memory
+from the space's signing key, so a thread there shows the agent's questions and commands, and `/name`
+renames a running agent. On an open mesh any client that reaches the broker can answer an agent's
+questions and run its commands.
+
+The Manager's `status.connectors[].prompts` is now the connector's declaration on every mesh mode.
+Its schema and the Manager cluster revision are unchanged.
+
+## Opt-in launch fields
+
+The Manager cluster advances to revision 56. Its `spawn` takes the optional `askPermissions` and
+`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 55
+reject either, so update Managers and their callers together. A launch without the fields runs as
+before.
+
+## Agents that label themselves
+
+The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, and a revision-54
+Manager refuses the field. Check that a Manager reports revision 55 or later before you send it.
+A seat labels itself only when the Manager and the seat's connector are both updated. An older
+connector ignores `COTAL_AUTO_NAME` and shows no label. The label is card metadata,
+`meta["ai.cotal.label"]`, and the seat keeps its launch name as its address. A client that lists
+agents shows `meta["ai.cotal.label"] ?? name`.
+
+## A person's control of their own agents
+
+On a space where people sign in, a person can now stop, attach to, type into and interrupt every
+agent under their own owner, whatever their scope, and read those agents' event channels. The auth
+callout issues these permissions. Update and restart every member of the callout queue, the full auth
+service and each `--callout-only` replica, then reconnect each person's clients. A connect that an
+old member answers still gets the old permissions.
+
+The Manager cluster advances to revision 53 with the targeted `interrupt` command. An older Manager
+does not serve it, so update Managers before a client interrupts a turn through them.
+
 ## Tool permissions on the agent endpoint
 
 A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
@@ -1099,7 +1142,7 @@ nothing on a running mesh changes.
 
 - If a script read the refusal from stderr, change it to read `error.message` and `error.remedy` from
   the envelope.
-- When the envelope cannot be written to stdout, the text report still goes to stderr.
+- When the envelope cannot be written to stdout, the text report goes to stderr unless the reader closed the pipe early.
 
 ## Endpoint caller files after 0.99.0
 
@@ -3408,7 +3451,8 @@ them before anything stops.
 - **The trust records and credential directory** under `.cotal/auth` on the manager host, including
   the per-space material directory. A re-mint would otherwise have to replace them.
 - **A copy of the channel registry**, so you can verify that it came back instead of assuming it
-  did. Save the output of `cotal channels list` before the upgrade, and compare it afterwards.
+  did. Save the output of `cotal channels list` before the upgrade. Compare the channel names and
+  settings afterwards, not the output formatting.
 - **The output of `cotal ps`**, so you know how many seats you expect to see afterwards and can tell
   a lost view from a lost agent.
 
@@ -3535,7 +3579,9 @@ cotal down manager                                      # broker + delivery rema
 #    `ps` is also the signature of the broker/manager mismatch described
 #    above. The two are indistinguishable here, so compare what the mesh
 #    itself should have carried across instead:
-cotal channels list # compare against channels.before: this SHOULD match now
+#    On 0.49.0, run `cotal channels list` instead. Compare the channel names
+#    and settings with channels.before, not the output formatting.
+cotal channel       # current CLI
 cotal ps            # expect it to be EMPTY here; ps.before is the target for
                     # step 5, not for this step
 

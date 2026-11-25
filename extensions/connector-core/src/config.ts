@@ -51,6 +51,9 @@ export interface AgentConfig {
    *  gave this seat, which its launcher restores on a restart (`COTAL_DISPLAY_NAME`). `name` stays
    *  the launch name, which in user mode is also the actor. */
   displayName?: string;
+  /** Name the seat from its first message (`COTAL_AUTO_NAME`, SPEC 13.22). Off when the launcher
+   *  restored a display name (`COTAL_DISPLAY_NAME`): the seat keeps the name it last showed. */
+  autoName?: boolean;
   role?: string;
   description?: string;
   tags?: string[];
@@ -88,6 +91,10 @@ export interface AgentConfig {
   eventsRequired?: boolean;
   /** Trusted or explicit local decision to retain status without tool payloads. */
   eventPayloadsWithheld?: boolean;
+  /** The launcher asked the harness to ask before it uses a tool (launch material only). */
+  askPermissions?: boolean;
+  /** The launcher asked for the model's reasoning on the event plane (launch material only). */
+  reasoningEvents?: boolean;
   /** Per-channel attention DEFAULTS (operator, one-way from the agent file): channels to receive but
    *  never wake on ({@link quiet}) / to drop on receive ({@link muted}). Seeds {@link MeshAgent}'s
    *  runtime map; the runtime never writes them back. Concrete channels within {@link allowSubscribe}.
@@ -227,6 +234,20 @@ export function scrubLaunchMaterial(env: NodeJS.ProcessEnv = process.env): void 
   if (path) discardLaunchMaterial(path);
 }
 
+/** The launcher's `COTAL_BACKFILL_FLOOR`, a non-negative stream sequence, or undefined when it set
+ *  none. Anything else is a broken launcher and throws. */
+function backfillFloorFromEnv(env: NodeJS.ProcessEnv): number | undefined {
+  const backfillFloorRaw = env.COTAL_BACKFILL_FLOOR?.trim() || undefined;
+  let backfillFloor: number | undefined;
+  if (backfillFloorRaw !== undefined) {
+    const n = Number(backfillFloorRaw);
+    if (!Number.isInteger(n) || n < 0)
+      throw new Error(`COTAL config: COTAL_BACKFILL_FLOOR must be a non-negative integer stream sequence, got "${backfillFloorRaw}" (a broken launcher, not a mode)`);
+    backfillFloor = n;
+  }
+  return backfillFloor;
+}
+
 /** Build an {@link AgentConfig} from `COTAL_*` environment variables. Two refs
  *  fill many fields at once: `COTAL_LINK` (cotal://token@host/space) supplies the
  *  *where* (server, auth, space); `COTAL_AGENT_FILE` (.cotal/agents/<name>.md)
@@ -326,14 +347,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   // only die later at the endpoint's fail-before-presence gate with a worse operator signal.
   // Open mode stays uid-less here (the endpoint self-mints its per-session identity).
   const lifecycleUid = env.COTAL_LIFECYCLE_UID?.trim() || undefined;
-  const backfillFloorRaw = env.COTAL_BACKFILL_FLOOR?.trim() || undefined;
-  let backfillFloor: number | undefined;
-  if (backfillFloorRaw !== undefined) {
-    const n = Number(backfillFloorRaw);
-    if (!Number.isInteger(n) || n < 0)
-      throw new Error(`COTAL config: COTAL_BACKFILL_FLOOR must be a non-negative integer stream sequence, got "${backfillFloorRaw}" (a broken launcher, not a mode)`);
-    backfillFloor = n;
-  }
+  const backfillFloor = backfillFloorFromEnv(env);
   const acceptedToken = env.COTAL_ACCEPTED_TOKEN?.trim() || undefined;
   const managerInstanceId = env.COTAL_MANAGER_INSTANCE?.trim() || undefined;
   if (managerInstanceId !== undefined) assertLifecycleToken(managerInstanceId, "COTAL_MANAGER_INSTANCE");
@@ -387,6 +401,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     userAuth,
     name,
     ...(displayName !== undefined && displayName !== name ? { displayName } : {}),
+    ...(envFlag(env, "COTAL_AUTO_NAME") === true && displayName === undefined ? { autoName: true } : {}),
     // Untrimmed: a role is an address, so the endpoint refuses a padded one rather than routing it.
     role: env.COTAL_ROLE || def?.role || undefined,
     description: def?.description,
@@ -404,6 +419,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     allowPublish: resolvedAllowPub,
     eventsRequired,
     eventPayloadsWithheld: material?.eventPayloadsWithheld === true || envFlag(env, "COTAL_EVENT_PAYLOADS") === false,
+    askPermissions: material?.askPermissions === true, reasoningEvents: material?.reasoningEvents === true,
     quiet: resolvedQuiet,
     muted: resolvedMuted,
     kind: assertValidKind(env.COTAL_KIND?.trim() || def?.kind || "agent"),

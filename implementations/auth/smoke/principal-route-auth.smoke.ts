@@ -5,6 +5,9 @@
  * bob's `builder` are managed-agent rows, alice's `web`, `term` and `oldweb` and bob's `web` are
  * interactive rows, and bob and alice also connect through an admin and a manager-caller view.
  *
+ * Cell 18 adds static credentials, minted as a static space mints them (agents, one issued before
+ * the serve rows existed, and the person's `agent-caller`), and an open mesh.
+ *
  * Two things are added in this suite and nowhere else. `builder` holds `grant` rows for one of
  * alice's agent lifecycles, built by the shipped `epPrincipalGrantRows`, because issuing a grant is
  * later work. And `legacy` and `oldweb` connect with those rows stripped, the credential an auth
@@ -157,6 +160,23 @@ async function bearer(w: Who): Promise<string> {
     .sign(privateKey as CryptoKey);
 }
 
+// ---- a person's manager view controls their own agents, from the row kind (SPEC 13.21) ----------
+{
+  const PERSON = mintLifecycleUid(), AGENT = mintLifecycleUid(), INSTANCE = mintLifecycleUid();
+  const kinds = new Map<string, "interactive" | "managed-agent">([[PERSON, "interactive"], [AGENT, "managed-agent"]]);
+  const mintView = calloutPermissions((t) => ({ allowSubscribe: [], allowPublish: [], lifecycleUid: t.act.lifecycleUid!, scope: ["spawn"], kind: kinds.get(t.act.lifecycleUid!) }), async () => {});
+  const view = async (actor: string, uid: string) => ((await mintView({
+    owner: A, space, scope: ["spawn"], ver: USER_TOKEN_VER, exp: Math.floor(Date.now() / 1000) + 600,
+    act: { owner: A, actor, scope: ["spawn"], lifecycleUid: uid, view: "manager-caller", managerInstanceId: INSTANCE },
+  } as ValidatedUserToken, `ibx${hex(16)}`, `rdr${hex(8)}`)) as Perm).pub?.allow ?? [];
+  const seat = (rows: string[], cmd: string) => rows.some((r) => r.includes(`.manager.${INSTANCE}.${cmd}.owner.${A}.`));
+  const person = await view("cli", PERSON), agent = await view("helper", AGENT);
+  check("the callout mints a person's manager view with owner-mode input, interrupt, despawn and attach on their own agents",
+    ["input", "interrupt", "despawn", "attach"].every((cmd) => seat(person, cmd)), person.filter((r) => r.includes(`.manager.${INSTANCE}.`)));
+  check("the callout mints an agent's manager view with no input or interrupt row, at the same scope",
+    !seat(agent, "input") && !seat(agent, "interrupt") && seat(agent, "despawn"));
+}
+
 // ---- raw connections, for the forged publishes and subscriptions ----------------------------
 interface Seat { label: string; nc: NatsConnection; refused: { operation: string; subject: string }[] }
 const raws: NatsConnection[] = [];
@@ -258,6 +278,8 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
       handler: () => { throw new EpEnvelopeError("not-found", "this test agent queues no commands", undefined, "not-executed"); } })),
     { command: "interrupt", contract: AGENT_CONTRACTS.interrupt, handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent cannot interrupt a turn", undefined, "not-executed"); } },
     { command: "set-name", contract: AGENT_CONTRACTS["set-name"], handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent keeps its name", undefined, "not-executed"); } },
+    { command: "turn", contract: AGENT_CONTRACTS.turn, handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent takes no turn", undefined, "not-executed"); } },
+    { command: "usage", contract: AGENT_CONTRACTS.usage, handler: () => ({ supported: false }) },
   ];
   agent.serve = ep.servePrincipal({ handlers });
   return agent;
@@ -356,7 +378,7 @@ try {
   check("cell 1: describe answers the fixed cluster inline, public, under the agent's owner",
     answer?.public === true && answer.descriptor.endpoint === "agent" && answer.descriptor.owner === A
     && answer.descriptor.clusters[0].digest === agentClusterArtifacts().closureDigest
-    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name"]), describe);
+    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage"]), describe);
   check("cell 1: the agent's handlers saw three requests, each under the owner word from alice.web's triple",
     coder.calls.length === 3 && coder.calls.every((c) => c.authority === "owner" && c.caller === `${A}.web.${W.web.uid}`), coder.calls);
   await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, 8000);
@@ -522,7 +544,7 @@ try {
     check("control: the same request with deadlineMs 30000 is answered ok", atCap !== "none" && atCap.ok, atCap);
 
     // cell 41: the caller refuses the same deadline before it publishes anything.
-    const webNc = (webEp as unknown as { nc: NatsConnection }).nc;
+    const webNc = (webEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const publish = webNc.publish.bind(webNc);
     let published = 0;
     webNc.publish = (subject, ...rest) => { if (subject.startsWith(`${P}.ep.prin.`)) published++; return publish(subject, ...rest); };
@@ -621,40 +643,68 @@ try {
     check(`cell 17: ${r.filter(Boolean).length}/3 grant publishes off the named lifecycle refused (sibling, later lifecycle, other owner)`, r.every(Boolean));
   }
 
-  // ── cell 18: a static credential and an open mesh ──
+  // ── cell 18: a static space and an open mesh serve; on a static space only the person's agent-caller calls ──
   {
-    const staticUid = mintLifecycleUid(), openUid = mintLifecycleUid();
-    const staticCreds = await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "local", actor: "stat" }, lifecycleUid: staticUid });
-    const staticEp = own(new CotalEndpoint({ space, servers: SERVERS, creds: staticCreds, lifecycleUid: staticUid, card: { owner: "local", actor: "stat", name: "stat", kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "static");
-    await staticEp.start();
+    const staticAgent = async (actor: string, opts: { principalServe?: false; capabilities?: string[] } = {}) => {
+      const uid = mintLifecycleUid(), id = newIdentity();
+      const creds = await mintCreds(auth, id, "agent", { principal: { owner: "local", actor }, lifecycleUid: uid, ...opts });
+      const ep = own(new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid: uid, card: { owner: "local", actor, name: actor, kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), actor);
+      await ep.start();
+      const nc = await connect({ servers: SERVERS, inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(creds)) });
+      const w = { name: `local.${actor}`, owner: "local", actor, kind: "managed-agent", uid } as Who;
+      return { ep, w, at: { owner: "local", actor, uid, runtimeId: processRuntime(uid).id } as EpPrincipal, raw: watchRefusals(actor, nc) };
+    };
+    const stat = await staticAgent("stat");
+    const statAgent = testAgent(stat.ep, stat.w);
+    check("cell 18: a static agent credential serves its own agent endpoint: ready resolves", (await settle(statAgent.serve.ready)).ok);
+    const old = await staticAgent("oldstat", { principalServe: false });
+    const oldReady = await settle(testAgent(old.ep, old.w).serve.ready);
+    check("cell 18: a static credential issued without the serve rows is refused by the broker, and the refusal says to respawn the agent",
+      !oldReady.ok && oldReady.error instanceof EpEnvelopeError && oldReady.error.code === "permission-denied" && /respawn the agent/.test(oldReady.error.message), oldReady.ok ? "served" : (oldReady.error as Error).message);
+
+    // An agent credential, even one holding spawn, run and admin, calls no other agent's endpoint.
+    const peer = await staticAgent("peer", { capabilities: ["spawn", "run", "admin"] });
+    const before = statAgent.calls.length;
+    const forged = await Promise.all(["prompt-answer", "interrupt", "command", "turn", "set-name", "prompts"].flatMap((cmd) =>
+      ["owner", "grant"].map((word) => publishRefused(peer.raw, epPrincipalRequestSubject(space, { endpoint: AGENT_ENDPOINT, principal: stat.at, command: cmd, authority: word as "owner", caller: peer.w, nonce: nonce() })))));
+    check(`cell 18: ${forged.filter(Boolean).length}/12 publishes from a static agent holding spawn, run and admin to another agent's endpoint refused by the broker`, forged.every(Boolean));
+    const viaCore = await settle(call(peer.ep, stat.at, "prompt-answer", "owner", { id: statAgent.prompt.id, digest: statAgent.prompt.digest, option: "allow" }));
+    check("cell 18: its prompt-answer through callPrincipal is permission-denied, not-executed", !viaCore.ok && codeOf(viaCore.error) === "permission-denied/not-executed", viaCore.ok ? viaCore.value : codeOf(viaCore.error));
+    check("cell 18: the served agent received none of them", statAgent.calls.length === before, statAgent.calls.slice(before));
+
+    // The person's agent-caller: the owner rows over every agent under local, and nothing else.
+    const callerUid = mintLifecycleUid(), callerId = newIdentity();
+    const callerCreds = await mintCreds(auth, callerId, "agent-caller", { lifecycleUid: callerUid });
+    const person = own(new CotalEndpoint({ space, servers: SERVERS, creds: callerCreds, lifecycleUid: callerUid, card: { name: "acp", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "agent-caller");
+    await person.start();
+    const listed = await call(person, stat.at, "prompts", "owner", {});
+    const answer = await call(person, stat.at, "prompt-answer", "owner", { id: statAgent.prompt.id, digest: statAgent.prompt.digest, option: "allow" });
+    const by = answer.ok ? (answer.data as { state: PromptState }).state : undefined;
+    check("cell 18: the agent-caller reads an agent's prompts and answers one, as the owner, under its own triple",
+      listed.ok && (listed.data as { open: unknown[] }).open.length === 1 && by?.kind === "sent" && by.answer.by.id === `local.${callerId.id}` && by.answer.by.uid === callerUid && by.answer.by.authority === "owner",
+      { listed, answer });
+    const personRaw = watchRefusals("agent-caller", await connect({ servers: SERVERS, inboxPrefix: `_INBOX_${callerId.id}`, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(callerCreds)) }));
+    const personCaller = { owner: "local", actor: callerId.id, uid: callerUid };
+    const personRefused = await Promise.all([
+      subscribeRefused(personRaw, `${P}.ep.prin.agent.local.stat.${stat.w.uid}.*.*.*.*.*.*.*`),
+      publishRefused(personRaw, epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: stat.at, caller: personCaller, nonce: nonce() })),
+      publishRefused(personRaw, epPrincipalRequestSubject(space, { endpoint: AGENT_ENDPOINT, principal: stat.at, command: "prompts", authority: "grant", caller: personCaller, nonce: nonce() })),
+      publishRefused(personRaw, presenceKeySubject(space, "local", callerId.id)),
+    ]);
+    check(`cell 18: ${personRefused.filter(Boolean).length}/4 agent-caller operations beyond its owner rows refused: serving a head, a reply under an agent's head, the grant word, presence`, personRefused.every(Boolean));
+    const gone = await settle(call(person, old.at, "prompts", "owner", {}));
+    check("cell 18: an agent that does not serve answers the agent-caller unavailable, not-executed", !gone.ok && codeOf(gone.error) === "unavailable/not-executed", gone.ok ? gone.value : codeOf(gone.error));
+
+    // An open mesh: the agent serves, and a client with no credential calls it.
+    const openUid = mintLifecycleUid();
     const openEp = own(new CotalEndpoint({ space, servers: OPEN_SERVERS, lifecycleUid: openUid, card: { actor: "open", name: "open", kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "open");
     await openEp.start();
-    const handlers = (["prompts", "prompt", "prompt-answer"] as const).map((command) => ({ command, contract: AGENT_CONTRACTS[command], handler: () => undefined }));
-    let staticRefusal = "", openRefusal = "";
-    try { staticEp.servePrincipal({ handlers }); } catch (e) { staticRefusal = (e as Error).message; }
-    try { openEp.servePrincipal({ handlers }); } catch (e) { openRefusal = (e as Error).message; }
-    check("cell 18: servePrincipal throws on a static credential", staticRefusal.includes("static credential"), staticRefusal);
-    check("cell 18: servePrincipal throws on an open mesh", openRefusal.includes("open mesh"), openRefusal);
-    // Nothing subscribed the would-be subjects: the broker answers no responders for each.
-    const probe = async (nc: NatsConnection, subject: string) => {
-      const inbox = `probe.${hex(8)}`;
-      let code: number | undefined;
-      const sub = nc.subscribe(inbox, { callback: (_e, m) => { code = (m.headers as { code?: number } | undefined)?.code; } });
-      nc.publish(subject, enc("{}"), { reply: inbox });
-      await nc.flush();
-      await until(() => code !== undefined, 2000);
-      sub.unsubscribe();
-      return code;
-    };
-    const inspector = (await staticSeat("inspector", { pub: { allow: [">"] }, sub: { allow: [">"] } })).nc;
-    const openRaw = await connect({ servers: OPEN_SERVERS, maxReconnectAttempts: 0 });
-    raws.push(openRaw);
-    // The exact subjects these processes would serve: their own principal, lifecycle and runtime id.
-    const wouldServe = (actor: string, uid: string) => epPrincipalRequestSubject(space, { endpoint: AGENT_ENDPOINT, principal: { owner: "local", actor, uid, runtimeId: processRuntime(uid).id },
-      command: "prompts", authority: "owner", caller: { owner: "local", actor: "x", uid: mintLifecycleUid() }, nonce: nonce() });
-    const staticCode = await probe(inspector, wouldServe("stat", staticUid));
-    const openCode = await probe(openRaw, wouldServe("open", openUid));
-    check("cell 18: no principal-route subject is served on either mesh (the broker answers no responders)", staticCode === 503 && openCode === 503, { staticCode, openCode });
+    const openAgent = testAgent(openEp, { name: "local.open", owner: "local", actor: "open", kind: "managed-agent", uid: openUid } as Who);
+    check("cell 18: an open mesh serves: ready resolves", (await settle(openAgent.serve.ready)).ok);
+    const anyone = own(new CotalEndpoint({ space, servers: OPEN_SERVERS, lifecycleUid: mintLifecycleUid(), card: { actor: "anyone", name: "anyone", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "anyone");
+    await anyone.start();
+    const openList = await call(anyone, { owner: "local", actor: "open", uid: openUid, runtimeId: processRuntime(openUid).id }, "prompts", "owner", {});
+    check("cell 18: on an open mesh a client with no credential reads the agent's prompts as the owner", openList.ok && (openList.data as { open: unknown[] }).open.length === 1, openList);
   }
 
   // ── cell 19, also the mixed-version case of an agent whose credential predates the rows ──
@@ -812,7 +862,7 @@ try {
   }
 
   // ── cell 30: stopping the endpoint ends its principal serve ──
-  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name"] as const).map((command) => ({
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage"] as const).map((command) => ({
     command, contract: AGENT_CONTRACTS[command],
     handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
   }));
@@ -874,7 +924,7 @@ try {
   {
     deaf.add(W.deaf.uid);
     const deafEp = await userEndpoint(W.deaf);
-    const nc = (deafEp as unknown as { nc: NatsConnection }).nc;
+    const nc = (deafEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     const flush = nc.flush.bind(nc);
     nc.flush = () => new Promise<void>(() => {});
     const r = await settle(call(deafEp, coderAt, "prompts", "owner", {}, 1500));
@@ -983,15 +1033,15 @@ try {
     check("a caller minted before the rows: permission-denied, not-executed", !oldCaller.ok && codeOf(oldCaller.error) === "permission-denied/not-executed", oldCaller);
     const laterContract = { input: AGENT_CONTRACTS.prompts.input, output: compileContract({ root: { type: "object", properties: { runtime: {}, seq: {}, open: {}, closed: {}, interrupted: {} } } }) };
     const pinned = await webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 4000, contract: laterContract });
-    check("a revision-5 caller and a revision-4 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
+    check("a caller pinned to a later prompts contract and a revision-5 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
     const d = await call(webEp, coderAt, "describe", "owner");
     const doc = d.ok ? (d.data as DescribeAnswer).descriptor.clusters[0] : undefined;
     const parsed = doc?.document ? parseClusterDocument(doc.document) : undefined;
-    check("then describe: the agent serves revision 4, and the document matches the caller's embedded artifacts",
-      parsed?.revision === 4 && doc?.digest === agentClusterArtifacts().closureDigest
+    check("then describe: the agent serves revision 5, and the document matches the caller's embedded artifacts",
+      parsed?.revision === 5 && doc?.digest === agentClusterArtifacts().closureDigest
       && parsed.commands.every((c) => c.inputDigest === AGENT_CONTRACTS[c.name].input.closureDigest && c.outputDigest === AGENT_CONTRACTS[c.name].output.closureDigest), d);
     const current = await call(webEp, coderAt, "prompts", "owner", {});
-    check("then revision 4 answers", current.ok, current);
+    check("then revision 5 answers", current.ok, current);
   }
 
   // ── a reconnect that rebinds ──
@@ -1009,7 +1059,7 @@ try {
     }
     check("a rebuilt connection subscribes again: the agent answers on the same runtime id", after?.ok === true && (after.data as { runtime: { id: string } }).runtime.id === oldRuntime, after);
     // The serve keeps a handle per connection only until that connection is replaced.
-    const handles = () => (coderEp as unknown as { principalServes: Map<string, { handles: unknown[] }> }).principalServes.get(AGENT_ENDPOINT)?.handles.length;
+    const handles = () => (coderEp as unknown as { delivery: { principalServes: Map<string, { handles: unknown[] }> } }).delivery.principalServes.get(AGENT_ENDPOINT)?.handles.length;
     await coderEp.reconnect();
     for (let i = 0, done = false; i < 50 && !done; i++) {
       const r = await settle(call(webEp, coderAt, "prompts", "owner", {}, 1500));
@@ -1023,7 +1073,7 @@ try {
     check("on the new connection presence carried no prompts field until the broker accepted the new subscription, then the field again",
       shown.includes(undefined) && shown.lastIndexOf(coder.seq) > shown.indexOf(undefined) && webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, shown);
     // The library reconnects in place and re-subscribes on a connection the broker authorized again.
-    const raw = (coderEp as unknown as { nc: NatsConnection }).nc;
+    const raw = (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc;
     await raw.reconnect();
     let inPlace = false;
     for (let i = 0; i < 50 && !inPlace; i++) {
@@ -1031,7 +1081,7 @@ try {
       inPlace = r.ok && r.value.ok;
       if (!inPlace) await wait(100);
     }
-    check("an in-place reconnect re-runs the check and keeps serving", inPlace && (coderEp as unknown as { nc: NatsConnection }).nc === raw);
+    check("an in-place reconnect re-runs the check and keeps serving", inPlace && (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc === raw);
     // The next credential predates the rows: the check fails, the serve ends, the field goes.
     stripped.add(W.coder.uid);
     await raw.reconnect();

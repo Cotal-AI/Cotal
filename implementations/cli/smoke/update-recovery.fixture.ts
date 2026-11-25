@@ -12,7 +12,7 @@ Object.assign(updateRuntime, {
   isCurrent: () => false,
   preflightReplacement: async () => {},
   reconcile: async () => { console.log("ordinary reconciliation completed"); },
-  refreshConnectors: async () => [],
+  refreshConnectors: async () => {}, refreshClients: async () => [],
   reportRunningManager: async () => "none",
   extensions: () => [],
   installPrefix: () => undefined,

@@ -22,6 +22,10 @@ it is not limited to child processes owned by the manager. The Participant colum
 that `endpoint describe` takes, and the role has its own column. A name that is only whitespace is
 shown as the id, and a role or activity that is only whitespace is shown as none or not reported.
 `result.items` keeps the name, role, and activity from the presence record.
+The plain and terminal reports keep the same space and broker in the `endpoint describe` shortcut.
+If the target or caller cannot be carried over, the report names the selectors to supply. A raw
+presence credential is not a paired native caller file.
+The `who` command in Next keeps the explicit target flags from this read.
 
 
 ## who [#who]
@@ -75,7 +79,8 @@ A part `who` could not read makes the run `partial` (exit 4): a roster snapshot 
 (`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
 `ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
 never shown an empty roster.
-A mesh where nobody is present is a complete roster: `who` says so and exits 0.
+A mesh where nobody is present is a complete roster: `who` without `--waiting` says so and exits 0.
+With `--waiting`, an empty report says that no rows match the filter, not that nobody is present.
 If `--server` matches several registered spaces, `who` refuses with `TARGET_AMBIGUOUS` (exit 2).
 Its Next section gives a roster command for each space with the same broker and output flags.
 Run one to read that space without changing the saved selection.
@@ -136,6 +141,10 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
+For a stopped local open or static-auth stack, the report says it is stopped. If the stack runs
+without a Manager, the restart step names `cotal up --no-manager` in its project folder.
+If a local user-auth space has stopped and lost its registration, the restart command names
+`--user-auth`, the space and its last broker address.
 In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` reports the space
 named by `--space` or, if none is named, the saved selection. If neither names a space, it refuses
 with `TARGET_NOT_FOUND`, names the folder and does not assume `main`. See
@@ -151,10 +160,11 @@ permissions name no single space, `space`, `read`, `post` and `dms` are `null`, 
 `partial` (exit 4) with `CREDENTIAL_SPACE_UNKNOWN`. `--creds` takes no `--space` or `--server`.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments, and escape terminal
-controls. Addresses need a host and a supported broker scheme. TCP addresses cannot have a path;
-WebSocket routes and bare host addresses remain supported. Invalid addresses make `whoami` refuse
-rather than print the raw value. Recovery instructions use a `<url>` placeholder rather than a
-secret-stripped connection address.
+controls. `--server` requires a host and a `nats://`, `tls://`, `ws://` or `wss://` scheme, as in
+`nats://127.0.0.1:4222`. Bare host addresses are refused. TCP addresses cannot have a path.
+WebSocket paths are allowed for proxy routes. Invalid addresses make `whoami` refuse rather than
+print the raw value. Recovery instructions use a `<url>` placeholder rather than a secret-stripped
+connection address.
 
 
 ### Local registry failures
@@ -246,10 +256,11 @@ cotal endpoint check <contract-file> [--json|--plain]
 ```
 
 `init` creates `contract.json` and an executable `handler.mjs` template. The default directory is
-the supplied name. Use `--dir` to choose another one. If its parent is missing, `init` creates
-nothing and prints a command to create the parent and retry. Files are created exclusively,
-without following a pre-planted symlink or replacing an existing file. A partial
-write retains the named created material for review rather than deleting it automatically.
+the supplied name. Use `--dir` to choose another one. `init` creates missing directories with
+mode `0700`. If the path crosses a symlink or a non-directory, `init` names the blocked component.
+Retry with `--dir` set to a real directory path. If a scaffold file already exists, `init` leaves it
+unchanged and suggests `--dir <new-directory>` with the same endpoint name. The receipt lists the
+paths created. A partial write leaves those paths in place for review.
 
 A simple scaffold name such as `reviews` declares `com.example.reviews`. A full reverse-DNS name
 is kept. Choose a namespace you control before requesting serving authority. Scaffolding creates
@@ -271,10 +282,18 @@ with the installed schema profile and reports the derived cluster closure. All s
 must resolve inside their bundle; no URL or adjacent file is fetched. Attribute and event
 semantics remain opaque to the native parser, so a file declaring them produces a partial result,
 exit 4, rather than a claim that those semantics were checked. If the file is missing, `check`
-names the path and asks you to retry with an existing contract file.
+names the path and asks you to retry with an existing contract file. If you pass a directory,
+`check` names it and asks for a contract file. If the directory contains a regular `contract.json`,
+the refusal shows how to check that file and keeps `--json` or `--plain` if you requested it.
+On Windows, for paths containing a backslash, or when a terminal report must escape characters
+in the path, use shell completion to enter the directory and run the suggested command there.
+`check` never selects a file for you.
 
 Neither authoring command contacts a broker, loads the handler, starts a service or registers an
 endpoint. Authoring takes no space, broker, caller or invocation flags.
+
+With `--json`, the receipt's `command` is `endpoint init` or `endpoint check`, including when
+the operation is refused.
 
 
 ### Check results
@@ -376,7 +395,11 @@ digests - and prints each command with its capability class and targeting shape.
 pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
 `manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
 unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
-calls one command by name. When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
+calls one command by name. If either command refuses an invalid pin, use the full instance ID of
+the selected endpoint. For the native `manager` endpoint without a credential file, the lookup
+keeps the selected space and broker. A Manager roster cannot identify a different endpoint.
+
+When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
 once more to the instance that answered its describe; a caller whose grants name only that instance, such as a service
 caller grant, therefore needs no `--on`. It fetches only that command's cluster and schema closures,
 plus those of `inspect` when `--name` names a manager target. `--args` is a JSON object validated against the fetched input schema
@@ -491,11 +514,22 @@ complete endpoint namespace.
 `endpoint` (`ep`) reads local references only and labels live state Not checked. `show <name>`
 shows the saved space, native class, full instance pin and storage revision. These commands do
 not connect to a broker or infer registrations from participant presence.
+If `show <name>` cannot find the reference in the resolved space, Next shows how to list the saved
+references with `cotal endpoint --space <space>` and keeps `--json` or `--plain` if you passed it.
 If the inventory cannot find the named space, it refuses with `TARGET_NOT_FOUND` and keeps the
 name in JSON as `target.requested`. Run `cotal space` to find the name, then retry with
 `cotal endpoint --space <name>`. The retry guidance keeps `--json` or `--plain` if you passed it.
+If several registered spaces match the project folder, the inventory refuses with `TARGET_AMBIGUOUS`.
+Next names a command for each space and keeps the original inventory options. `show <name>` refuses the same way, naming each matching space and the retry for it.
 
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
+If space selection is ambiguous and you did not pass `--space`, the import uses the file's
+space only if it matches one of the registered candidates. It does not change the current selection.
+If no local space resolves, pass the file's space with `--space`. For a new local space,
+prepare it with `cotal space create <space> --root <project-directory>` first. The import needs no running broker.
+If a stopped project still records its last broker and space but has no registration, the refusal
+names that space. If it matches the reference, prepare it again from its project folder and retry the import.
+An empty `--file` is refused with `USAGE_INVALID` (exit 1) before the command resolves a space.
 Guided add is available in an interactive terminal. The class, instance pin and credential path
 are checked at their questions. Invalid answers are asked for again without losing earlier answers.
 Names use case-safe hexadecimal
@@ -507,6 +541,9 @@ Existing names are not silently overwritten.
 `endpoint remove <name>` defaults to cancel, or takes `--yes` for scripted confirmation. It
 compares the held revision and content under the private writer lock before forgetting metadata.
 It never deregisters a native endpoint, stops a process, removes credential files or revokes grants.
+The confirmation command keeps `--json` or `--plain` if you passed it.
+If several spaces match, Next lists a retry for each space in the same output format without
+`--yes`. Choose a space before confirming removal.
 
 Protected no-follow/nonblocking file access supports POSIX hosts. Windows uses its access-list
 model for local records instead: a credential reference there must be a regular file, and its
@@ -527,6 +564,8 @@ existing native caller and digest-verified contracts. `ref:<name>` requires a sa
 `ep:<class>` bypasses local references. An unprefixed name checks the selected space's saved
 references first, then uses the native class only when no reference exists. An unreadable or
 invalid reference refuses instead of selecting another target.
+If several spaces match, `endpoint describe` names them and shows how to retry with `--space`.
+If the requested space is not registered, the refusal names it and points to `cotal space`.
 
 A selected reference is disclosed on stderr and in `result.resolution`, with its revision and
 resolved native class, instance and epoch. The CLI holds its cooperative writer lock and checks
@@ -536,12 +575,16 @@ instance does not fall back to the class queue. Unknown native effects are not b
 Both read the endpoint's contract first, and so do `describe`, `invoke` and `auth mint --endpoint`.
 `endpoint invoke` and `invoke` give that read their `--timeout` (default 10000 ms), the one deadline
 for the whole call. `endpoint describe`, `describe` and `auth mint --endpoint` have no `--timeout`
-and give it 10 seconds. When no instance answers that read within its deadline, the command refuses
+and give it 10 seconds. When no instance answers an unpinned read within its deadline, the command refuses
 with `TARGET_UNAVAILABLE`: nothing is serving the endpoint, or nothing could reach this caller. Its
 Next says to start the service that serves the endpoint. When you set `--timeout`, the refusal
 names it, because a deadline that short can also end before a served endpoint answers, and its Next
 suggests rerunning the original command with a longer `--timeout` and all other arguments and
 flags unchanged. Nothing was invoked or issued.
+If a pinned instance does not answer a contract read, the refusal names that instance.
+Check the full instance ID with `cotal endpoint list --live --space <space>` on the same broker.
+For invocation, the refusal also says no command was sent. Use a longer `--timeout` only if you
+expect that instance to answer.
 
 A reference's file credential uses the [paired native caller adapter](cli-auth.mdx#endpoint-caller-credentials).
 It must match the selected registered static root, space, endpoint and signed native scope. A
@@ -560,6 +603,9 @@ The CLI grammar also names `endpoint watch <target> <record-key-or-topic> [--sin
 The current resolver supplies command contracts, not a verified mapping of these application
 capabilities. This is a CLI integration limit, not a claim that the selected endpoint lacks them.
 No arbitrary subject, pool implementation or remote execution is guessed.
+The suggested `endpoint describe` keeps the original target, space, broker and instance pin.
+If you supplied a credential file or a broker address that cannot be displayed unchanged, the
+refusal tells you to keep the original selection options without printing their values.
 
 `endpoint invoke --handle <private-file>` is also an explicit unsupported boundary, because no
 verified native auth-slot adapter is connected. It opens no file, redeems no handle and publishes no call.
@@ -570,6 +616,8 @@ and is not a substitute for that gate.
 
 `endpoint describe --refresh` performs the same fresh native resolution and contract fetch as bare
 `endpoint describe`, because this CLI keeps no resolved contract cache between calls.
+Use `endpoint describe` without `--live` to read a contract, or use `cotal endpoint list --live`
+to list registrations.
 
 A saved-reference or paired-file invocation uses the described instance and epoch without bind-repair
 to a different handle. A pre-effect bind refusal remains a refusal, not permission to choose another
@@ -578,6 +626,8 @@ instance. Invocation receipts attribute resolution to the native responder that 
 
 ### Native registration inventory
 
+`endpoint --space <s>` lists saved references for that space without contacting a broker.
+For inventory, `--server` and `--creds` require `--live`.
 `endpoint --live` adds authorized native service-registration metadata to the local reference
 inventory. It uses the existing scoped service-record read rows, without adding grants or reading
 message bodies. The SDK paginates the filtered metadata list; per-key spec/status reads come from
@@ -586,7 +636,8 @@ the leader. The list can lag concurrent changes and is not an atomic whole-space
 The snapshot reads at most 1000 registration keys. Omitted keys, unreadable records or unavailable
 registry access make the requested live portion partial and return exit 4, while preserving the
 local references. If a broker connection fails, the report shows the diagnostic and any recovery
-step. For example, if an explicit `--server` does not answer and the selected space has a recorded
+step. If the selected local space was stopped, the report names the completed stop and the project
+folder where you can restart it. If an explicit `--server` does not answer and the selected space has a recorded
 broker, the report suggests dropping `--server` and using the named `--space` on the retry.
 That keeps the inventory on the same space even if you selected a different one with `cotal use`.
 Status projection, reported state, process ownership and a serving response are separate.
@@ -627,6 +678,9 @@ It freezes the expected live instance set, gathers attributed replies and reconc
 currency through the native SDK. It does not probe additional instance rails or retry a mutation.
 Instance pins, targeted commands, `--cast` and `--wait` cannot combine with a class scatter.
 The installed helper does not submit journaled commands through this route.
+On a static-auth space, a caller without the class scatter grant for the command gets
+`PERMISSION_DENIED` before the scatter is sent. Permission to call one instance does not grant
+permission to scatter to the class.
 
 Finite JSON retains the original request, each valid member result and the native missing, churn,
 unexpected, duplicate, late and invalid buckets. Invalid-reply diagnostic bodies are omitted.

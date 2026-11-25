@@ -18,7 +18,8 @@ cotal console --plain            # the passive line stream with plain formatting
 cotal console                    # no --space on an open mesh → the admin overview first
 ```
 
-A real terminal opens the interactive console by default. Piped output, `--plain` and `--no-input` select the timestamped line stream.
+The interactive console requires a terminal on both stdin and stdout.
+Piping or redirecting either stream, or passing `--plain` or `--no-input`, selects the timestamped line stream.
 The line stream does not accept console commands.
 The stream contains presence changes and chat messages, without the console's signal tiles.
 Press Ctrl-C to stop the stream. The broker keeps running and the console reports no outage.
@@ -30,6 +31,7 @@ Press Ctrl-C to stop the stream. The broker keeps running and the console report
 In the interactive console on an open mesh, omit `--space` to open the admin overview.
 It lists spaces found through the server's `CHAT_*` streams and presence buckets, with agent, channel, and message counts.
 Select a space to open its console. Press `b` to return to the overview.
+Press `q` from the overview to return to the shell, even if you left a space while it was still connecting.
 Use `--space X` to skip the picker. An authenticated connection opens its selected space directly.
 This scopes the view; one broker can host several accounts and spaces.
 
@@ -47,7 +49,8 @@ Other space deletions use the console's connection, either open or supplied with
 
 ### Inspect activity
 
-The console has a roster, live feed, channel tabs, signal tiles, and optional views:
+The console has a roster, live feed, channel tabs, signal tiles, and optional views.
+The `all` tab shows the aggregate feed. A tab labeled `#<channel>` shows posts on that channel only, including `#all` if the space has a channel named `all`.
 
 | Key | Action |
 | --- | --- |
@@ -59,6 +62,8 @@ The console has a roster, live feed, channel tabs, signal tiles, and optional vi
 | `Ctrl-P` | Open the modal command palette. |
 | Arrows, `h`, or `l` | Move focus and select a detail card. |
 | `?`, `b`, or `q` | Open help, return to the overview, or quit. |
+
+Press `q` to quit even if the broker is disconnected.
 
 The roster and DM list sit beside content on wide terminals and above it below 80 columns.
 An agent suggestion whose name is only whitespace shows that agent's id.

@@ -108,6 +108,32 @@ try {
     } catch (error) { check(`${kind}: directory handling`, false, error); }
   }
 
+  // Exercise the native lock write without starting a broker if the fault is not injected.
+  {
+    const project = join(root, "lock-write");
+    mkdirSync(project, { mode: 0o700 });
+    const lock = join(project, ".cotal", "maintenance", "lock.json");
+    const trace = join(root, "lock-write-ENOSPC.trace");
+    const probe = `import { acquireMaintenanceLock, releaseMaintenanceLock } from ${JSON.stringify(import.meta.resolve("@cotal-ai/workspace"))};
+      try { releaseMaintenanceLock(acquireMaintenanceLock(process.argv[1])); }
+      catch (error) { console.log(JSON.stringify({ code: error.code, native: error.native, target: error.target, remedy: error.remedy })); }`;
+    const child = [process.execPath, "--input-type=module", "-e", probe, project];
+    const options = { cwd: project, encoding: "utf8", timeout: 30_000 };
+    const failed = spawnSync("strace", ["-f", "-P", lock, "-e", "trace=write", "-e", "inject=write:error=ENOSPC:when=1", "-o", trace, ...child], options);
+    assert.equal(failed.status, 0, failed.stderr);
+    assert.match(readFileSync(trace, "utf8"), /write\(.* = -1 ENOSPC.*INJECTED/);
+    const error = JSON.parse(failed.stdout);
+    assert.equal(error.code, "OPERATION_FAILED");
+    assert.equal(error.native.code, "ENOSPC");
+    assert.equal(error.target.path, lock);
+    assert.match(error.remedy, /free space.*retry/);
+    assert.equal(existsSync(lock), false);
+    const retry = spawnSync(child[0], child.slice(1), options);
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(retry.stdout, "");
+    check("a full initial lock write names its destination, leaves no lock, and can be retried", true);
+  }
+
   for (const kind of ["persona", "preferences", "prepared"]) {
     try {
       const home = join(root, kind);

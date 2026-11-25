@@ -1,0 +1,2 @@
+# Dash-prefixed channels keep join's printed mint remedies pasteable (#9941).
+smoke:join-grant-remedy

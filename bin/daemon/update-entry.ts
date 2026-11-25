@@ -121,13 +121,19 @@ async function collectConnectorSets(): Promise<void> {
   } catch { /* An incomplete inventory or failed collection never fails the update. */ }
 }
 
+function preflightExecutionWithCleanup(): boolean {
+  const repaired = preflightExecutionUpdate();
+  if (!process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  return repaired;
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
   let preparedRestart = false;
-  let currentPackages = false;
+  let packageCheck: "current" | "offline" | undefined;
   let retainedReconciliation = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
@@ -281,8 +287,8 @@ const composed: Command = { ...command, async run(args) {
       }
       console.log("Retaining the interrupted update marker after confirming this account has no other application process.");
     } } : {}) }),
-    ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
-      preflightExecution: preflightExecutionUpdate,
+    ...(staged ? {
+      preflightExecution: preflightExecutionWithCleanup,
       repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       globalVersion: () => observeExecutionVersion(executionInstallRoot()),
@@ -338,9 +344,9 @@ const composed: Command = { ...command, async run(args) {
         : `\`cd ${shellPath(manager.root)} && cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}\``;
       console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: ${command}`);
     }
-  }, isCurrent() {
-    currentPackages = updateRuntime.isCurrent?.() === true;
-    return currentPackages;
+  }, onOfflineVersionCheckSkipped() { packageCheck = "offline"; }, isCurrent() {
+    packageCheck = updateRuntime.isCurrent?.() ? "current" : undefined;
+    return packageCheck === "current";
   }, async automaticUpdateAdvice() {
     const systemdAdvice = () => {
       const requirement = daemonServiceRequirement();
@@ -599,10 +605,10 @@ const composed: Command = { ...command, async run(args) {
     const release = runtime.claimGlobalUpdate(interruptedChildRoot);
     release();
   }
-  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  if (!(staged && args.values.self === true) && logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   await update(args, runtime);
-  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
-  if (!currentPackages) await collectConnectorSets();
+  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode || packageCheck === "offline") return;
+  if (packageCheck !== "current") await collectConnectorSets();
   if (admission && recoveryAdmission?.execution && recoveryAdmission.phase !== "restoring" && process.env.COTAL_UPDATE_PARENT === String(process.ppid)) {
     try {
       const installed = executionInstallRoot();
@@ -624,7 +630,7 @@ const composed: Command = { ...command, async run(args) {
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
   // Current packages need no Manager census or restart. Keep the guarded start of a stopped native service.
-  if (currentPackages) {
+  if (packageCheck === "current") {
     const state = join(homeCotalDir(), "daemon");
     if (daemonObserved || !existsSync(unitReceiptFile({ state })) || await observeUpdateDaemon()) return;
   }

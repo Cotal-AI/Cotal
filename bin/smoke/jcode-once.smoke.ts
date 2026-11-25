@@ -102,7 +102,7 @@ try {
   manager = new Manager({ space, servers: broker.servers, runtime: "pty", workspaceRoot });
   await manager.start();
   type Seat = { lifecycleUid: string; handle: { pid?: number; status(): string } };
-  const M = manager as unknown as { agents: Map<string, Seat>; goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } };
+  const M = manager as unknown as { agents: Map<string, Seat>; goalWriterComponent: { goalWriter: { ctx: Parameters<typeof readGoalResult>[0] }; } };
 
   // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
   // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
@@ -115,7 +115,7 @@ try {
   const refOf = (goalId: string) => ({ endpoint: MANAGER_ENDPOINT, caller: runner, goalId });
   const resultOf = async (goalId: string, ms: number) => {
     let fact: Awaited<ReturnType<typeof readGoalResult>>;
-    await until(async () => (fact = await readGoalResult(M.goalWriter.ctx, refOf(goalId))) !== undefined, ms);
+    await until(async () => (fact = await readGoalResult(M.goalWriterComponent.goalWriter.ctx, refOf(goalId))) !== undefined, ms);
     return fact;
   };
   let seq = 0;
@@ -165,7 +165,7 @@ try {
     return { id, name, seat, terminal, readyAt, task, runsOf, identities, entries, accepted, refusals };
   };
   const goneSeat = (name: string, seat: Seat) => until(() => seat.handle.status() === "exited" && M.agents.get(name) !== seat, 30_000);
-  const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriter.ctx, refOf(task))) === undefined, 60_000);
+  const debtCleared = (task: string) => until(async () => (await readGoalIndex(M.goalWriterComponent.goalWriter.ctx, refOf(task))) === undefined, 60_000);
 
   console.log("1. the task reaches the harness once, its turn ends, and the seat and its tree are gone");
   // The turn is held open until the launch is checked, or a fast harness ends it, and the seat's tree

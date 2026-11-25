@@ -1,26 +1,26 @@
+import type { LifecycleState } from "./endpoint-lifecycle-state.js";
+import type { ConnectionState } from "./endpoint-connection-state.js";
 import type { EndpointIdentity } from "./endpoint-identity.js";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { KV, KvEntry } from "@nats-io/kv";
-import { TimeoutError, type NatsConnection } from "@nats-io/transport-node";
-import type { Presence, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
+import { TimeoutError } from "@nats-io/transport-node";
+import type { Presence, PresenceAgentEndpoint, PresenceStatus, PresenceCondition, PresencePrompts, AttentionMode, ChannelMode } from "./types.js";
 import { processRuntime } from "./process-runtime.js";
 import { lastKvEntries } from "./kv-scan.js";
 import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import { presenceBucket } from "./subjects.js";
 import { isPresenceRow, assertPresenceRow } from "./subjects.js";
 import { assertValidName } from "./resolve.js";
+import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
 
 type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
 /** Live connection dependencies shared with the endpoint's other broker readers. */
 export interface EndpointPresenceDeps {
-  bucket: () => KV | undefined;
-  connection: () => NatsConnection | undefined;
   /** The `prompts` field this process's presence carries now, or none (SPEC §6). */
   prompts: () => PresencePrompts | undefined;
-  stopped: () => boolean;
-  reconnecting: () => boolean;
-  epoch: () => number;
+  /** The `agentEndpoint` field this process's presence carries now, or none (SPEC §6). */
+  agentEndpoint: () => PresenceAgentEndpoint | undefined;
   notLiveMsg: () => string;
   bindWatch: (kv: KV) => Promise<{ iter: PresenceWatch; info: ConsumerInfo } | undefined>;
   retireWatch: (iter: PresenceWatch) => void;
@@ -28,6 +28,9 @@ export interface EndpointPresenceDeps {
   recoverable: (error: Error) => void;
   isPublishPermissionDenied: (error: unknown) => boolean;
 }
+
+/** Changes to a card's advisory `meta`: each key set to its string value, or removed with `undefined`. */
+export type CardMetaChanges = Readonly<Record<string, string | undefined>>;
 
 /** Trust state of this endpoint's local presence roster. `fresh` remains for older consumers:
  * unpopulated is deliberately false so they fail toward unknown rather than treating a partial
@@ -158,13 +161,8 @@ export class EndpointPresence {
    *  `DrainingConnectionError` out of `reset()` on a timer nothing awaits. */
   private presenceWatchIter?: Awaited<ReturnType<KV["watch"]>>;
 
-  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly deps: EndpointPresenceDeps) {}
+  constructor(private readonly identity: Readonly<EndpointIdentity>, private readonly conn: Readonly<ConnectionState>, private readonly lifecycle: Readonly<LifecycleState>, private readonly deps: EndpointPresenceDeps) {}
 
-  private get kv() { return this.deps.bucket(); }
-  private get nc() { return this.deps.connection(); }
-  private get stopped() { return this.deps.stopped(); }
-  private get reconnecting() { return this.deps.reconnecting(); }
-  private get presenceEpoch() { return this.deps.epoch(); }
   private notLiveMsg() { return this.deps.notLiveMsg(); }
   private bindKvWatch(kv: KV) { return this.deps.bindWatch(kv); }
   private retireKvWatch(iter: PresenceWatch) { this.deps.retireWatch(iter); }
@@ -227,8 +225,8 @@ export class EndpointPresence {
   async readPresence(): Promise<Presence[]> {
     if (this.identity.doWatch && !this.identity.readOnce)
       throw new Error("readPresence is for an endpoint that does not watch presence; this one keeps its roster live (getRoster)");
-    const kv = this.kv;
-    if (!kv) throw new Error(this.nc ? "readPresence needs the presence bucket open (registerPresence or watchPresence)" : this.notLiveMsg());
+    const kv = this.conn.kv;
+    if (!kv) throw new Error(this.conn.nc ? "readPresence needs the presence bucket open (registerPresence or watchPresence)" : this.notLiveMsg());
     if (this.presenceRead) return this.presenceRead;
     const generation = ++this.presenceReadGeneration;
     const roster = (async () => {
@@ -379,18 +377,48 @@ export class EndpointPresence {
     await this.publishPresence();
   }
 
-  /** Change the card's display name and republish presence at once (SPEC §6). The principal, and so
-   *  `card.id`, stays as it is. Throws on a name {@link assertValidName} refuses, before anything
-   *  changes. The same name changes nothing. Every later message carries the new `from.name`. */
-  async setCardName(name: string): Promise<void> {
-    assertValidName(name);
-    if (this.identity.card.name === name) return;
-    this.identity.card.name = name;
+  /** Apply `changes` to the card's advisory `meta`, each key set to its value or removed with
+   *  `undefined`, then republish presence once, so no record shows part of them. Like
+   *  {@link setCardModel}, the card changes before the write, so a call made before the first connect
+   *  shows on the first presence record. Values the card already has change nothing. Throws on an
+   *  empty key, before anything changes. */
+  async setCardMeta(changes: CardMetaChanges): Promise<void> {
+    const meta = this.metaWith(changes);
+    if (meta === this.identity.card.meta) return;
+    this.identity.card.meta = meta;
     await this.publishPresence();
   }
 
+  /** Change the card's display name, and its `meta` by `meta` as {@link setCardMeta} does, then
+   *  republish presence at once in one record (SPEC §6). The principal, and so `card.id`, stays as it
+   *  is. Throws on a name {@link assertValidName} refuses or an empty meta key, before anything
+   *  changes. A name and meta the card already has change nothing. Every later message carries the
+   *  new `from.name`. */
+  async setCardName(name: string, meta?: CardMetaChanges): Promise<void> {
+    assertValidName(name);
+    const next = meta ? this.metaWith(meta) : this.identity.card.meta;
+    if (this.identity.card.name === name && next === this.identity.card.meta) return;
+    this.identity.card.name = name;
+    this.identity.card.meta = next;
+    await this.publishPresence();
+  }
+
+  /** The card's `meta` with `changes` applied, or the card's own object when they change nothing. */
+  private metaWith(changes: CardMetaChanges): Record<string, unknown> | undefined {
+    if (Object.keys(changes).some((key) => !key)) throw new TypeError("card meta keys must be non-empty strings");
+    const meta = this.identity.card.meta ?? {};
+    const changed = Object.entries(changes).filter(([key, value]) => (value === undefined ? Object.hasOwn(meta, key) : meta[key] !== value));
+    if (!changed.length) return this.identity.card.meta;
+    const next: Record<string, unknown> = { ...meta };
+    for (const [key, value] of changed) {
+      if (value === undefined) delete next[key];
+      else next[key] = value;
+    }
+    return Object.keys(next).length ? next : undefined;
+  }
+
   async publishPresence(): Promise<void> {
-    if (!this.identity.doRegister || !this.kv) return; // observers watch but never publish their own record
+    if (!this.identity.doRegister || !this.conn.kv) return; // observers watch but never publish their own record
     const p: Presence = {
       card: this.identity.card,
       // SPEC §6: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
@@ -407,6 +435,7 @@ export class EndpointPresence {
       attention: this.attentionMode,
       channelModes: this.channelModes,
       prompts: this.deps.prompts(),
+      agentEndpoint: this.deps.agentEndpoint(),
       ts: Date.now(),
     };
     // Wire contract (SPEC §6): an OFFLINE record must not carry the advisory attention fields or
@@ -421,7 +450,7 @@ export class EndpointPresence {
     // its caller but no longer writes presence-refusal state belonging to a later connection. Without
     // it, a heartbeat put (default 2s) whose ~5s JetStream timeout elapses after a rebuild plants a
     // refusal on the connection that just published successfully.
-    const epoch = this.presenceEpoch;
+    const epoch = this.lifecycle.presenceEpoch;
     const conditionRevision = this.conditionRevision;
     // #1461: snapshot the put's generation BEFORE the put. A settle (success or rejection) is the
     // latest evidence on its epoch only while no put that started after it has ALREADY settled -
@@ -429,7 +458,7 @@ export class EndpointPresence {
     // (heartbeat 2s against a ~5s JetStream put timeout), so "succeeded" alone is not "newest".
     const generation = ++this.presencePutGeneration;
     try {
-      await this.kv.put(this.identity.card.id, JSON.stringify(record));
+      await this.conn.kv.put(this.identity.card.id, JSON.stringify(record));
     } catch (e) {
       // #1356: a broker can put this bucket into a state where it refuses every write and never
       // recovers, and the write is the ONLY thing that fails - open and watch both still succeed, so
@@ -442,7 +471,7 @@ export class EndpointPresence {
       // does.
       const superseded = (this.presencePutSettled ?? 0) > generation;
       this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
-      if (epoch === this.presenceEpoch && !this.stopped && !superseded) {
+      if (epoch === this.lifecycle.presenceEpoch && !this.lifecycle.stopped && !superseded) {
         this.presenceWriteFailingSince ??= Date.now();
         this.lastPresenceWriteError = (e as Error)?.message ?? String(e);
         this.presenceWriteFailures++;
@@ -467,7 +496,7 @@ export class EndpointPresence {
     // so the overlap is routine rather than a corner).
     const superseded = (this.presencePutSettled ?? 0) > generation;
     this.presencePutSettled = Math.max(this.presencePutSettled ?? 0, generation);
-    if (epoch !== this.presenceEpoch || this.stopped || superseded) return;
+    if (epoch !== this.lifecycle.presenceEpoch || this.lifecycle.stopped || superseded) return;
     // Presence writes may overlap. If this put carried an older condition, repair the KV with the
     // latest local state before returning so a late failure publish cannot resurrect after a new
     // turn cleared it. The revision is condition-specific; unrelated heartbeat overlap is unchanged.
@@ -550,10 +579,10 @@ export class EndpointPresence {
    *  endpoint shutdown would resurrect a watch on a stopped endpoint, and one that completes after a
    *  rebuild would overwrite the fresh epoch's watch with a dead-connection iterator. */
   async startPresenceWatch(): Promise<ConsumerInfo | undefined> {
-    if (!this.kv) return undefined;
+    if (!this.conn.kv) return undefined;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
-    const bound = await this.bindKvWatch(this.kv);
+    const bound = await this.bindKvWatch(this.conn.kv);
     if (!bound) {
       hydrated();
       return undefined;
@@ -592,7 +621,7 @@ export class EndpointPresence {
   /** `readOnce`: fill the roster from one read of the presence bucket. Stale
    *  and offline records resolve as they do in a watch's initial replay. */
   async readPresenceOnce(): Promise<void> {
-    if (this.kv) for (const e of await lastKvEntries(this.kv)) this.handleKvEntry(e);
+    if (this.conn.kv) for (const e of await lastKvEntries(this.conn.kv)) this.handleKvEntry(e);
     this.presenceSnapshotPopulated = true;
     // No record reached the roster (an empty bucket, or only the TTL canary): nobody is present.
     if (this.lastPresenceWatchAt === 0) this.markPresenceBucketEmpty();
@@ -611,11 +640,11 @@ export class EndpointPresence {
    * the view stays stale.
    */
   private rebindStalePresenceWatch(now: number): void {
-    if (this.stopped || this.reconnecting || !this.kv || !this.nc || this.nc.isClosed()) return;
+    if (this.lifecycle.stopped || this.lifecycle.reconnecting || !this.conn.kv || !this.conn.nc || this.conn.nc.isClosed()) return;
     if (this.presenceRebind || now - this.presenceRebindAt < this.identity.ttlMs) return;
     this.presenceRebindAt = now;
     const old = this.presenceWatchIter;
-    const epoch = this.presenceEpoch;
+    const epoch = this.lifecycle.presenceEpoch;
     this.presenceRebind = (async () => {
       try {
         const silentMs = now - this.lastPresenceWatchAt;
@@ -642,11 +671,11 @@ export class EndpointPresence {
       } catch (e) {
         // A bind the epoch swap itself rejected (connection drained under it) is not a fault of
         // the epoch that replaced it; only a refusal on a still-current epoch is reported.
-        if (epoch === this.presenceEpoch) this.emit("error", e as Error);
+        if (epoch === this.lifecycle.presenceEpoch) this.emit("error", e as Error);
       } finally {
         // An epoch swap already disowned this flight (and may own a successor's by now); only
         // a flight still in its own epoch clears the slot. Within one epoch there is one flight.
-        if (epoch === this.presenceEpoch) this.presenceRebind = undefined;
+        if (epoch === this.lifecycle.presenceEpoch) this.presenceRebind = undefined;
       }
     })();
   }
@@ -773,12 +802,15 @@ export class EndpointPresence {
     // left a same-principal successor invisible to presence-event consumers (e.g. the manager's
     // readiness race), which then timed out "uncertain" on a healthy agent (#29). A changed display
     // name is never a heartbeat either: `set-name` changes nothing else, and a watcher keyed on these
-    // events, such as the manager keeping a seat's name, would never see the rename.
+    // events, such as the manager keeping a seat's name, would never see the rename. Nor is a changed
+    // label or naming mark (SPEC 13.22): readers show the label in place of the name.
     if (
       prev &&
       prev.status !== "offline" &&
       p.status !== "offline" &&
       prev.card.name === p.card.name &&
+      prev.card.meta?.[AGENT_LABEL_META_KEY] === p.card.meta?.[AGENT_LABEL_META_KEY] &&
+      prev.card.meta?.[AGENT_NAMING_META_KEY] === p.card.meta?.[AGENT_NAMING_META_KEY] &&
       prev.lifecycleUid === p.lifecycleUid &&
       sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&
@@ -788,7 +820,8 @@ export class EndpointPresence {
       prev.attention === p.attention &&
       sameChannelModes(prev.channelModes, p.channelModes) &&
       prev.prompts?.open === p.prompts?.open &&
-      prev.prompts?.seq === p.prompts?.seq
+      prev.prompts?.seq === p.prompts?.seq &&
+      sameAgentEndpoint(prev.agentEndpoint, p.agentEndpoint)
     ) {
       this.roster.set(id, p);
       return;
@@ -809,9 +842,9 @@ export class EndpointPresence {
    *  not show a stale `[focus]` or "locally muted #x" hint - SPEC: attention removed on offline sweep,
    *  channel modes reset on restart. `statusSince` goes too: it dated the live status, and an observer
    *  that derives offline from a stale heartbeat does not know when the peer left. `prompts` goes as
-   *  well: an offline process serves nothing. card/activity/ts are kept. */
+   *  well, with `agentEndpoint`: an offline process serves nothing. card/activity/ts are kept. */
   private toOffline(p: Presence): Presence {
-    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined };
+    return { ...p, status: "offline", statusSince: undefined, attention: undefined, channelModes: undefined, prompts: undefined, agentEndpoint: undefined };
   }
 
   /** Mark a known peer offline (on KV delete/purge), keeping it in the roster. */
@@ -893,4 +926,8 @@ function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | 
     && a?.source === b?.source
     && a?.message === b?.message
     && a?.since === b?.since;
+}
+
+function sameAgentEndpoint(a: PresenceAgentEndpoint | undefined, b: PresenceAgentEndpoint | undefined): boolean {
+  return a?.interrupt === b?.interrupt && a?.turn === b?.turn && a?.images === b?.images && a?.usage === b?.usage;
 }

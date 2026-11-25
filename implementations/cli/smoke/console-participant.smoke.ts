@@ -14,6 +14,7 @@
  *   C. LEAVE: stopping the peer publishes an offline record a watcher sees, not a lapsed TTL.
  *   D. The interactive console activates the participant when a human sends.
  *   E. Both placements of --no-input keep the console passive on a terminal.
+ *   F. Redirected stdin keeps the console passive even with terminal stdout.
  */
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -59,29 +60,31 @@ const rosterOf = (ep: CotalEndpoint, name: string): Presence | undefined => ep.g
 const cHome = join(dir, "console-home");
 const homeEnv = { HOME: cHome, XDG_RUNTIME_DIR: cHome, COTAL_HOME: cHome, XDG_CONFIG_HOME: cHome, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-async function checkPassiveConsole(args: string[], space: string, sender: CotalEndpoint): Promise<void> {
-  const name = args.join(" ");
+async function checkPassiveConsole(args: string[], space: string, sender: CotalEndpoint, redirectStdin = false): Promise<void> {
+  const name = args.join(" ") + (redirectStdin ? " </dev/null" : "");
   const marker = `input attempted by ${name}`;
   const observed = `live message for ${name}`;
   const pty = cotalPty([...args, "--space", space, "--server", OPEN], {
     cwd: cHome,
     env: { PATH: process.env.PATH ?? "", ...homeEnv },
+    redirectStdin,
   });
   let out = "";
   let exit: { exitCode: number } | undefined;
   pty.onData((data) => { out += data; });
   pty.onExit((result) => { exit = result; });
   try {
-    const see = (text: string) => until(() => clean(out).includes(text) ? true : undefined, 15_000);
+    const see = (text: string) => until(() => clean(out).includes(text) ? true : exit ? false : undefined, 15_000);
     const passive = await see(`watching space ${space} - Ctrl-C to stop`);
     check(`${name} opens the passive line stream`, passive === true, clean(out).slice(-500));
     if (!passive) return;
-    pty.write(`\x10msg #general ${marker}\r`);
+    if (!redirectStdin) pty.write(`\x10msg #general ${marker}\r`);
     await sender.multicast(observed, { channel: "general" });
     check(`${name} still streams live messages`, await see(observed) === true, clean(out).slice(-500));
     pty.write("\x03");
     check(`${name} exits 130 on Ctrl-C`, (await until(() => exit, 8_000))?.exitCode === 130, exit);
     check(`${name} opens neither the alternate screen nor the palette`, !out.includes("\x1b[?1049h") && !clean(out).includes("Commands"));
+    if (redirectStdin) return;
     const history = (await sender.channelHistory("general")).flatMap((m) => m.parts.map((part) => part.kind === "text" ? part.text : undefined));
     check(`${name} keeps the live message and not the typed command in history`, history.includes(observed) && !history.includes(marker));
   } finally {
@@ -176,7 +179,7 @@ try {
   mkdirSync(join(cHome, ".cotal"), { recursive: true, mode: 0o700 });
   const cs = new ConsoleSession(["--space", space, "--server", OPEN], cHome, homeEnv, { cols: 140, rows: 36, cwd: cHome });
   stops.push(async () => cs.close());
-  check("the console opens on the all feed", await cs.waitFor(`${space} · #all`, 40_000), clean(cs.out).slice(-200));
+  check("the console opens on the all feed", await cs.waitFor(`${space} · all`, 40_000), clean(cs.out).slice(-200));
 
   // Identify the console's peer by what it IS, not by a name this file already used: section A's
   // own operator is still on the roster as an offline record, and the console names its peer after
@@ -236,6 +239,10 @@ try {
   console.log("E. --no-input keeps the console passive on a terminal");
   for (const args of [["--no-input", "console"], ["console", "--no-input"]]) {
     await checkPassiveConsole(args, space, alice);
+  }
+  if (process.platform !== "win32") {
+    console.log("F. Redirected stdin keeps the console passive with stdout on a terminal");
+    await checkPassiveConsole(["console"], space, alice, true);
   }
 
 } catch (e) {

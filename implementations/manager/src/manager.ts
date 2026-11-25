@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { CotalEndpoint, accountFromCreds, DEFAULT_SERVER, DEV_OWNER, injectedSecretStoreIdentity, type DeprovisionResourceAccounting, type IssuedBinding, type IssuedStore, mintLifecycleUid, parsePrincipalKey, principalKey, probeConnect, resolveAuthProvider } from "@cotal-ai/core";
 import { retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentSecretKeyForFile, DEFAULT_SEAT_CAP, findCotalRoot, loadManagerInstanceIdentity, manifestExtensionNames, materializeFromManifest, runtimeInstallHint, spaceKey, userAuthStateDir, workspaceSecretStore, type ManagerInstanceIdentity, type SeatCap } from "@cotal-ai/workspace";
-import type { ActionContext, EpCapability, PersonaEndpoint, RunAdmission, Connector, ControlReply, DelegatedGrant, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { PersonaEndpoint, RunAdmission, Connector, ControlReply, EpCaller, LaunchSpec, Presence, RuntimeProvider, RuntimeReference, SecretStore, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   isCustodialRuntime,
@@ -16,7 +16,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { Retirement, retirementDeps, type TeardownTarget } from "./retirement.js";
-import type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
+import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 export type { ManagedAgent, SpawnAcceptance, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { ServePlane, servePlaneDeps } from "./serve-plane.js";
 import { NamesCapacity, namesCapacityDeps, type Occupancy } from "./names-capacity.js";
@@ -41,6 +41,7 @@ import { StartDoors, startDoorsDeps } from "./start-doors.js";
 import { HarnessResolution, harnessResolutionDeps } from "./harness-resolution.js";
 import { ConnectorInventory } from "./connector-inventory.js";
 import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 import { Preservation, preservationDeps } from "./preservation.js";
 import { PreservedResume, preservedResumeDeps } from "./preserved-resume.js";
 export { PASTE_END, PASTE_START, RUNTIME_NO_TERMINAL_DETAIL } from "./terminal-input.js";
@@ -60,14 +61,14 @@ import { type LifecycleStateTransport, type StaticManagedSlotRow } from "@cotal-
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
-import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type EpIssuanceGate, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
+import { readEndpointGateGeneration, deregisterServiceInstance, type ServiceDeregistration, type GoalIndexEntry, turnNoticeSubject, EpEnvelopeError, type EpServeContext, type EpServeGrant, type EpServeHandle, type GoalRef, type Identity } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT, type ManagerStaticReconciliationStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 import type { NatsConnection } from "@nats-io/transport-node";
 import type { KV } from "@nats-io/kv";
+import type { ManagerConfig } from "./manager-config.js";
 
 /** The bound on one {@link Connector.retireAfterExit} call. An expired bound is not proof: the debt
  *  stays and the turn sweep asks again. */
@@ -77,7 +78,7 @@ const ONCE_RETIRE_MS = 60_000;
  *  liveness-inferring timer. This is only the last-resort bound for "neither happened in time": the launch
  *  is then reported UNCERTAIN (a non-success reply that does NOT deprovision — it may still be booting, or
  *  stuck before connector startup). Generous, since a real cold agent join can take several seconds. Held
- *  as an instance field ({@link Manager.readinessTimeoutMs}) so a test can shorten it. Exported so the
+ *  on the Manager's config ({@link ManagerConfig.readinessTimeoutMs}) so a test can shorten it. Exported so the
  *  launch-parity smoke can assert every launch client's request timeout OUTLIVES this window — the tier
  *  rule forbids the clients importing it directly. */
 export const READINESS_TIMEOUT_MS = 30_000;
@@ -402,6 +403,8 @@ export interface ManagerResumeAgent {
     endpoints?: PersonaEndpoint[];
     events: boolean;
     eventPayloads?: boolean;
+    askPermissions?: true;
+    reasoningEvents?: true;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -520,6 +523,19 @@ async function awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readines
   }
 }
 
+/** A ManagerConfig the constructor may fill in. Only the Manager's constructor holds one. */
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/** The config members known before the Manager's constructor body runs. */
+type ManagerConfigSeed = Pick<ManagerConfig, "managerLifecycleUid" | "startedAtMs" | "shutdownReadiness" | "readinessTimeoutMs" | "staticReconcileRetryDelaysMs" | "goalAcceptanceRetentionMs">;
+
+/** The seed, typed as the whole config. The parts are built from field initializers that run before
+ *  the constructor body, so they receive the object while it holds only the seed; the constructor
+ *  assigns every other member before it returns, and no part reads one during construction. */
+function seededConfig(seed: ManagerConfigSeed): ManagerConfig {
+  return seed as ManagerConfig;
+}
+
 /**
  * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
  * It serves control requests on the "manager" service and spawns/kills agents
@@ -529,58 +545,30 @@ async function awaitStartupOutcome(a: ManagedAgent, launchedAt: number, readines
 export class Manager {
   /** The parts, filled at the end of the constructor once every part exists. Parts read a peer from it at use. */
   private readonly parts = {} as ManagerParts;
+  /** The Manager's identity, operator settings and timing (see {@link ManagerConfig}). Declared ahead of
+   *  the parts so each part built below receives this object; the constructor fills the rest in. */
+  protected readonly config = seededConfig({
+    managerLifecycleUid: mintLifecycleUid(),
+    startedAtMs: Date.now(),
+    shutdownReadiness: new AbortController(),
+    readinessTimeoutMs: READINESS_TIMEOUT_MS,
+    staticReconcileRetryDelaysMs: STATIC_RECONCILE_RETRY_DELAYS_MS,
+    goalAcceptanceRetentionMs: TURN_ANSWER_RETENTION_MS,
+  });
 
-  protected readonly space: string;
-  protected readonly servers: string | undefined;
-  /** The broker ws listener port (loopback) `cotal up` allocated, for the console session
-   *  client's wsUrl. Undefined ⇒ no console session client (POST /session 503s). */
-  protected readonly wsPort?: number;
-  protected readonly name: string;
-  protected readonly workspaceRoot: string;
-  protected readonly eventsRequired: boolean;
-  protected readonly eventPayloadsWithheld: boolean;
-  /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
-  protected readonly maxSessions?: number;
-  /** The operator-set per-owner seat ceiling (see {@link ManagerOptions.seatCap}). */
-  protected readonly seatCap: SeatCap;
-  /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
-   *  See {@link ManagerOptions.secretStore}. */
-  protected readonly secrets: SecretStore;
-  /** Named identity of {@link secrets}: the same coordinate the delivery daemon must reload from.
-   *  Set at construction for an injected store; the workspace store is named on first challenge. */
-  protected secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   protected readonly installedExtensions: boolean;
-  protected readonly expectedConnectorGeneration: string;
-  protected readonly machineSetupCommand?: string;
-  private readonly executionState: { kind: "none" } | { kind: "runtime" };
   // Declared only: no own Runtime slot exists in the none arm.
   declare private readonly runtime: Runtime;
   /** One backend per kind a seat has asked for, beside {@link runtime}. The manager's own runtime
    *  stays the default and is never replaced by a later seat's choice. */
   private readonly runtimes = new Map<string, Runtime>();
-  /** Hosted pooled control, recorded so a later seat cannot add a custodial runtime the constructor
-   *  already refused for the manager's own. */
-  private readonly pooled: boolean;
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   protected staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
-  protected readonly preserveStopTimeoutMs: number;
-  protected readonly endpointServeExecutorExpiresInSeconds?: number;
   protected readonly agents = new Map<string, ManagedAgent>();
   /** Lifecycle UIDs already handed to `Runtime.spawnDelegated`: a lifecycle is handed off at most
    *  once, so a lost create acknowledgement can never become a second create. */
   protected readonly delegatedLaunched = new Set<string>();
-  /** This manager process's own incarnation uid (SPEC 13.1; minted once per supervisor process,
-   *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
-   *  coordinate every static activation records. */
-  protected readonly managerLifecycleUid = mintLifecycleUid();
-  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
-   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
-   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
-   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
-   *  resolveExecutorEpoch key — DISTINCT from {@link managerLifecycleUid} (per-process: the presence
-   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(). */
-  protected managerInstanceId!: string;
   /** The persisted serve nkey identity: reusing the SAME principal across restart keeps
    *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
    *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
@@ -588,85 +576,31 @@ export class Manager {
   /** The local instance identity {@link admitExecutionState} already resolved. The ordinary start
    *  adopts it instead of reading the same record again. */
   protected admittedLocalIdentity?: ManagerInstanceIdentity;
-  protected readonly onServiceIdentity?: ManagerOptions["onServiceIdentity"];
-  /** The manager's v0.4 service-endpoint serve state — the serve handle +
-   *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
-   *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
-   *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
-   *  in user mode, and before registration completes. */
-  protected serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
   /** #1577: dedicated connections (serve, goal-writer, session-ledger) whose transport is down while
-   *  the client reconnects them, tracked by {@link trackTransport}. Such a connection is open
+   *  the client reconnects them, tracked by {@link BrokerTransport.trackTransport}. Such a connection is open
    *  (`isClosed()` is false under unbounded reconnects) yet the broker holds none of its rails, so
    *  the liveness responder must not grade the serve connection `bound`, and a stop closes rather
    *  than drains it ({@link retireConnection}). Keyed by the connection, so a re-dial that swaps in a
    *  fresh one starts from its own state. */
   protected readonly transportDown = new WeakSet<NatsConnection>();
-  /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
-   *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
-   *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
-   *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from).
-   *  `gate` (auth mode) is the own-issuance-gate READER for the own-gate currency belt — the
-   *  manager reads its OWN `epgate.<e>.<iid>` epoch over this connection before a terminal commit
-   *  and skips a superseded commit (the fast-fail belt paired with the (b) barrier-revoke fence). */
-  protected goalWriter?: { nc: NatsConnection; ctx: ActionContext; creds?: string; identity: Identity; gate?: EpIssuanceGate };
   /** The workflow-run host (SPEC 14.3): the drives this incarnation holds, each on its own
    *  per-run credential and connection. Absent under a remote authority, which mints no driver
    *  credentials, so the `run-*` family refuses there rather than connecting on a weaker identity. */
   protected runHosting?: RunHosting;
-  /** The STABLE goal-writer identity (auth mode) — minted once at
-   *  registration alongside the serve identity; a renewal re-mints the SAME nkey with a fresh
-   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
-   *  goal-writer credential is minted INSIDE {@link registerManagerService}'s run block (fence
-   *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
-  protected goalWriterIdentity?: Identity;
-  protected goalWriterCreds?: string;
-  /** The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
-   *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
-   *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
-  protected sessionPlane?: ManagerSessionPlane;
-  /** The standing session-LEDGER connection + its mutable creds holder (the authenticator
-   *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
-   *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
-  protected sessionLedgerConn?: { nc: NatsConnection; creds?: string };
-  /** Renews the session signing key long before its window closes. A key that expires unattended
-   *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
-  protected sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
-  /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
-   *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
-   *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
-   *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
-  protected sessionLedgerIdentity?: Identity;
-  protected sessionLedgerCreds?: string;
-  /** The acceptance replied for each goal this incarnation accepted, by {@link goalKey}, so an
-   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
-   *  without a second spawn. An entry lives while its goal is in flight and for
-   *  {@link goalAcceptanceRetentionMs} after its terminal commits; a later retry, or one at another
-   *  incarnation, is answered from the goal index while the goal runs and from its committed
-   *  result fact once it has ended. */
-  protected goalAcceptances = new Map<string, SpawnAcceptance>();
-  /** How long a terminal goal's acceptance stays in {@link goalAcceptances}: the retry window its
-   *  turn twin keeps a settled answer for. An instance field so a test can shorten it. */
-  protected goalAcceptanceRetentionMs = TURN_ANSWER_RETENTION_MS;
-  /** The boot reconcile of the durable goal index runs ONCE at start (a
-   *  fresh incarnation inherits the endpoint's accepted-but-unterminal goals from any predecessor).
-   *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
-   *  acceptance (settling one mid-flight would steal its real terminal). */
-  protected goalReconcileDone = false;
   /** The live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   protected agentGoals = new Map<string, GoalRef>();
   private turnRelayInstance?: TurnRelay;
   protected get turnRelay(): TurnRelay {
     return this.turnRelayInstance ??= new TurnRelay({
-      goalWriter: () => this.goalWriter,
-      serviceServe: () => this.serviceServe,
-      space: this.space,
+      goalWriter: () => this.goalWriterComponent.goalWriter,
+      serviceServe: () => this.servePlane.serviceServe,
+      space: this.config.space,
       managerInstanceId: () => this.managerInstanceId,
       execution: this.execution,
       executionRefusal: this.executionRefusal(),
-      goalReconcileDone: () => this.goalReconcileDone,
-      readinessTimeoutMs: () => this.readinessTimeoutMs,
+      goalReconcileDone: () => this.goalWriterComponent.goalReconcileDone,
+      readinessTimeoutMs: () => this.config.readinessTimeoutMs,
       adoptsSeats: () => this.auth !== undefined && !this.userMode,
       onceSeatReconciling: (uid) => this.staticLifecycle.pendingLifecycle(uid),
       assertGoalWriterEpochCurrent: (epoch) => this.assertGoalWriterEpochCurrent(epoch),
@@ -684,8 +618,6 @@ export class Manager {
   protected readonly participants = new Map<string, PersonalTurnParticipant>();
   /** Once tasks whose seat's exit is watched: that exit, not the spawn's outcome, settles the debt. */
   protected readonly onceWatched = new Set<string>();
-  /** Process start, for the served `status` uptime. */
-  protected readonly startedAtMs = Date.now();
   /** The complete boot task. stop() joins it after fencing static reconciliation, so a registration
    * already past an earlier shutdown check cannot finish after stop() returns. */
   private startTask?: Promise<void>;
@@ -695,30 +627,33 @@ export class Manager {
    *  of `agents` before they have exited, so a second teardown would find none and report success
    *  while the first still waits on a live seat. */
   private stopTask?: { withAgents: boolean; done: Promise<void> };
-  /** Held as an instance field so broker-owning smokes can compress the schedule without changing
-   *  production semantics. It is never a fence expiry: the durable non-retired row stays authoritative. */
-  protected staticReconcileRetryDelaysMs: readonly number[] = STATIC_RECONCILE_RETRY_DELAYS_MS;
   /** Retirements holding one of the {@link RETIREMENT_CONCURRENCY} slots. */
   private retirementsRunning = 0;
   /** Retirements waiting for a slot, oldest first. */
   private readonly retirementQueue: Array<() => void> = [];
   protected readonly attach: AttachEndpoint;
   protected ep!: CotalEndpoint;
-  /** Space trust material when the mesh runs in auth mode (`.cotal/auth` present);
-   *  the manager mints per-agent creds from it at spawn. Undefined when the mesh is open. */
-  protected auth?: SpaceAuth;
-  /** Readiness-race backstop (#159 B1) — the {@link READINESS_TIMEOUT_MS} constant, held as an instance
-   *  field so a test can shorten it (the join/exit signals are event-driven; only the backstop is timed).
-   *  Production leaves it at the constant. */
-  protected readinessTimeoutMs = READINESS_TIMEOUT_MS;
-  /** True on a USER-AUTH space (the on-disk marker; cross-checked against the registry at start).
-   *  Gates the whole spawn path: user mode grants ledger actors + bearer plumbing, never static mints. */
-  protected userMode = false;
-  protected readonly namesCapacity = new NamesCapacity(namesCapacityDeps(this));
-  private readonly servePlane = new ServePlane(servePlaneDeps(this), this.parts);
+  /** Written by ManagerBoot.start; declared ahead of the parts so each one built below receives it. */
+  private readonly startState: ManagerStartState = { userMode: false };
+  /** {@link ManagerStartState.auth}. */
+  protected get auth(): SpaceAuth | undefined { return this.startState.auth; }
+  protected set auth(value: SpaceAuth | undefined) { this.startState.auth = value; }
+  /** {@link ManagerStartState.userMode}. */
+  protected get userMode(): boolean { return this.startState.userMode; }
+  protected set userMode(value: boolean) { this.startState.userMode = value; }
+  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
+   *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
+   *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
+   *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
+   *  resolveExecutorEpoch key — DISTINCT from {@link ManagerConfig.managerLifecycleUid} (per-process: the presence
+   *  node uid + the managerInstance audit coordinate every static activation records). Set in start(); undefined before. */
+  protected get managerInstanceId(): string { return this.startState.managerInstanceId!; }
+  protected set managerInstanceId(value: string) { this.startState.managerInstanceId = value; }
+  protected readonly namesCapacity = new NamesCapacity(this.config, namesCapacityDeps(this), this.startState, this.parts);
+  private readonly servePlane = new ServePlane(this.config, servePlaneDeps(this), this.parts, this.startState);
 
   protected resolveServeTarget(t: { owner: string; actor: string }): { lifecycleUid: string; mappingRevision: number } | undefined {
-          if (this.remoteAuthority) {
+          if (this.config.remoteAuthority) {
             const key = principalKey(t.owner, t.actor).key;
             for (const a of this.agents.values()) if (a.id === key) return { lifecycleUid: a.lifecycleUid, mappingRevision: 0 };
             const participant = [...this.participants.values()].find((p) =>
@@ -734,29 +669,15 @@ export class Manager {
           return undefined;
 
   }
-  protected readonly retirement = new Retirement(retirementDeps(this));
-  private readonly lease = new LeaseKeeper(leaseKeeperDeps(this));
+  protected readonly retirement = new Retirement(this.config, retirementDeps(this), this.startState);
+  private readonly lease = new LeaseKeeper(this.config, leaseKeeperDeps(this), this.startState);
   /** Set at the top of `stop()`. `renewLease` returns at once once this is set, and its `gone` arm
    *  does not re-acquire: a manager that is stopping never puts its own key back. It also closes the
    *  lifecycle fence ({@link beginLifecycle}), so no spawn can launch a seat the stop never sees. */
   protected leaseStopping = false;
-  protected readonly shutdownReadiness = new AbortController();
   /** The class-2 renewal owner's half-TTL schedule; armed only on auth meshes. */
   protected credRenewTimer?: ReturnType<typeof setInterval>;
   protected resumeCredRenewal?: () => void;
-  /** #2073: the `endpoint-serve` credential's OWN renewal, armed from its `[renewAt, exp)` window
-   *  (`credsRenewalDelayMs`) rather than left to `credRenewTimer`'s boot-phased TTL/4 tick, which can
-   *  miss the window by ordering. Re-armed at registration and after every successful re-mint;
-   *  cleared in `stop()` beside `credRenewTimer`. */
-  protected endpointServeRenewalTimer?: ReturnType<typeof setTimeout>;
-  /** #1634: does THIS manager own the delivery daemon's credential renewal? True only while the
-   *  daemon reloads from this manager's store AND this manager holds the per-space renewal lease.
-   *  Starts false: a manager that has not proved both must not remint. */
-  protected daemonRenewalOwner = false;
-  /** #2561: may the lease heartbeat contend at all? Set by every claim, false while the daemon names
-   *  another store or the challenge refused. Without it the heartbeat re-takes the lease the claim
-   *  just released and holds it against every manager and `doctor auth --fix` that can remint. */
-  protected daemonRenewalEligible = false;
   protected daemonRenewalLeaseTimer?: ReturnType<typeof setInterval>;
   protected maintenanceState: ManagerMaintenanceState = "active";
   protected lifecycleInFlight = 0;
@@ -765,18 +686,8 @@ export class Manager {
   protected preservationAttemptId?: string;
   protected unverifiedStops: Array<{ name: string; id: string; handle: AgentHandle; authoritative?: boolean; error?: string }> = [];
   protected preservationInventory?: ManagerResumeInventory;
-  protected resumeAttemptId?: string;
   protected resumeRequired = false;
   protected resumeDurableCommitToken?: string;
-  protected readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
-  protected remoteExecutorCreds?: string;
-  protected remoteSupervisorCreds?: string;
-  protected remoteBundleRenewal?: Promise<void>;
-  protected remoteBundleAdoption?: Promise<void>;
-  protected finishRemoteBundleAdoption?: () => void;
-  /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
-   * family stays live and this records what the host may have signed but the manager never adopted. */
-  protected remoteRenewalDebt?: { at: number; processEpoch: number; reason: string; unadoptedSubjects: string[] };
 
   /** {@link BrokerTransport.dial}. */
   protected dial(...args: Parameters<BrokerTransport["dial"]>): ReturnType<BrokerTransport["dial"]> { return this.brokerTransportComponent.dial(...args); }
@@ -784,9 +695,9 @@ export class Manager {
   /** {@link BrokerTransport.dialRemoteStanding}. */
   protected dialRemoteStanding(...args: Parameters<BrokerTransport["dialRemoteStanding"]>): ReturnType<BrokerTransport["dialRemoteStanding"]> { return this.brokerTransportComponent.dialRemoteStanding(...args); }
 
-  protected readonly seatCustody = new SeatCustody(seatCustodyDeps(this));
+  protected readonly seatCustody = new SeatCustody(this.config, seatCustodyDeps(this), this.startState);
 
-  protected readonly sessionRecovery = new SessionRecovery(sessionRecoveryDeps(this));
+  protected readonly sessionRecovery = new SessionRecovery(this.config, sessionRecoveryDeps(this), this.startState, this.parts);
 
   get staticReconcileLastSweepResources(): {
     slots: {
@@ -813,64 +724,65 @@ export class Manager {
     deprovision?: DeprovisionResourceAccounting;
   } | undefined) { this.staticLifecycle.setResources(value); }
 
-  protected readonly staticLifecycle = new ManagedStaticLifecycle(managedStaticLifecycleDeps(this));
+  protected readonly staticLifecycle = new ManagedStaticLifecycle(this.config, managedStaticLifecycleDeps(this), this.startState, this.parts);
 
   /** User-mode provisioning owns no manager state: each dependency reads through at its use. */
-  protected readonly userProvision = new UserProvision(userProvisionDeps(this));
+  protected readonly userProvision = new UserProvision(this.config, userProvisionDeps(this), this.startState);
 
   /** Seat stop, exit, recursive reap and named despawn. Every dependency reads through at its use. */
-  private readonly seatStopComponent = new SeatStop(seatStopDeps(this));
+  private readonly seatStopComponent = new SeatStop(this.config, seatStopDeps(this), this.parts, this.startState);
 
   /** The typed command table and its admission. Every dependency reads through at its use. */
-  private readonly commandDispatch = new CommandDispatch(commandDispatchDeps(this));
+  private readonly commandDispatch = new CommandDispatch(this.config, commandDispatchDeps(this), this.parts, this.startState);
 
   /** The spawn and launch goal path. Every dependency reads through at its use. */
-  private readonly spawnGoalComponent = new SpawnGoal(spawnGoalDeps(this));
+  private readonly spawnGoalComponent = new SpawnGoal(this.config, spawnGoalDeps(this), this.parts, this.startState);
 
   /** The persona catalog doors. Every dependency reads through at its use. */
-  private readonly personaCatalogComponent = new PersonaCatalog(personaCatalogDeps(this));
+  private readonly personaCatalogComponent = new PersonaCatalog(this.config, personaCatalogDeps(this), this.startState, this.parts);
 
   /** Seat terminal input and attach sessions. Every dependency reads through at its use. */
-  private readonly terminalInputComponent = new TerminalInput(terminalInputDeps(this));
+  private readonly terminalInputComponent = new TerminalInput(this.config, terminalInputDeps(this), this.parts, this.startState);
 
   /** Status, seat list and model catalog reads. Every dependency reads through at its use. */
-  private readonly statusAndModelsComponent = new StatusAndModels(statusAndModelsDeps(this), this.parts);
+  private readonly statusAndModelsComponent = new StatusAndModels(this.config, statusAndModelsDeps(this), this.parts, this.startState);
 
   /** The launch readiness race and exit watch. Every dependency reads through at its use. */
-  private readonly readinessWaitComponent = new ReadinessWait(readinessWaitDeps(this));
+  private readonly readinessWaitComponent = new ReadinessWait(this.config, readinessWaitDeps(this));
 
   /** Broker dials and scoped executor connections. Every dependency reads through at its use. */
-  private readonly brokerTransportComponent = new BrokerTransport(brokerTransportDeps(this));
+  private readonly brokerTransportComponent = new BrokerTransport(this.config, brokerTransportDeps(this), this.parts, this.startState);
 
   /** The start and launch control doors. Every dependency reads through at its use. */
-  private readonly startDoorsComponent = new StartDoors(startDoorsDeps(this));
+  private readonly startDoorsComponent = new StartDoors(this.config, startDoorsDeps(this), this.startState);
 
   /** Connector and harness resolution for a launch. Every dependency reads through at its use. */
-  private readonly harnessResolutionComponent = new HarnessResolution(harnessResolutionDeps(this), this.parts);
+  private readonly harnessResolutionComponent = new HarnessResolution(this.config, harnessResolutionDeps(this), this.parts);
 
   /** The connector inventory. It owns the connector rows and the boot notes. */
   private readonly connectorInventory: ConnectorInventory;
 
 
   /** Manager preservation and released-seat adoption. Every dependency reads through at its use. */
-  private readonly preservationComponent = new Preservation(preservationDeps(this));
+  private readonly preservationComponent = new Preservation(this.config, preservationDeps(this), this.startState, this.parts);
 
   /** Preserved-manager resume and its control doors. Every dependency reads through at its use. */
-  private readonly preservedResumeComponent = new PreservedResume(preservedResumeDeps(this), this.parts);
+  private readonly preservedResumeComponent = new PreservedResume(this.config, preservedResumeDeps(this), this.parts, this.startState);
 
   /** The goal-writer connection and the goal index it reconciles. Every dependency reads through at its use. */
-  private readonly goalWriterComponent = new GoalWriter(goalWriterDeps(this));
+  private readonly goalWriterComponent = new GoalWriter(this.config, goalWriterDeps(this), this.parts, this.startState);
 
   /** Renewal of the manager's standing credentials. Every dependency reads through at its use. */
-  private readonly credentialRenewal = new CredentialRenewal(credentialRenewalDeps(this));
+  private readonly credentialRenewal = new CredentialRenewal(this.config, credentialRenewalDeps(this), this.parts, this.startState);
 
   /** The launch pipeline's leaf steps. Every dependency reads through at its use. */
-  private readonly seatLaunch = new SeatLaunch(seatLaunchDeps(this), this.parts);
+  private readonly seatLaunch = new SeatLaunch(this.config, seatLaunchDeps(this), this.parts, this.startState);
 
   /** Manager boot: execution admission, connect, registration and lease. Every dependency reads through at its use. */
-  private readonly bootComponent = new ManagerBoot(bootDeps(this), this.parts);
+  private readonly bootComponent = new ManagerBoot(this.config, bootDeps(this), this.parts, this.startState);
 
   constructor(opts: ManagerOptions) {
+    const config: Mutable<ManagerConfig> = this.config;
     if (opts.expectedConnectorGeneration !== undefined && opts.expectedConnectorGeneration !== MANAGER_VERSION)
       throw new Error(`expected connector generation ${opts.expectedConnectorGeneration} differs from this Manager's loaded generation ${MANAGER_VERSION}; restart from the installed CLI`);
     if (opts.onServiceIdentity !== undefined && typeof opts.onServiceIdentity !== "function") throw new Error("manager onServiceIdentity must be a trusted embedding callback");
@@ -888,58 +800,58 @@ export class Manager {
       throw new Error("pooled control requires signerless remote authority and an explicit non-PTY runtime; local custodial execution is forbidden");
     if (opts.pooled && !opts.remoteAuthority?.renewStandingBundle)
       throw new Error("pooled control requires a closed host-issued all-duty renewal callback before construction");
-    this.space = opts.space;
-    this.servers = opts.servers;
-    this.name = opts.name ?? "manager";
-    this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
-    this.onServiceIdentity = opts.onServiceIdentity;
-    this.eventsRequired = opts.eventsRequired === true;
-    this.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
-    this.maxSessions = opts.maxSessions;
-    this.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
-    this.remoteAuthority = opts.remoteAuthority;
-    this.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
-    this.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
+    config.space = opts.space;
+    config.servers = opts.servers;
+    config.name = opts.name ?? "manager";
+    config.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
+    config.onServiceIdentity = opts.onServiceIdentity;
+    config.eventsRequired = opts.eventsRequired === true;
+    config.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
+    config.maxSessions = opts.maxSessions;
+    config.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
+    config.remoteAuthority = opts.remoteAuthority;
+    this.credentialRenewal.remoteExecutorCreds = opts.remoteAuthority?.executorCreds;
+    this.credentialRenewal.remoteSupervisorCreds = opts.remoteAuthority?.supervisorCreds;
     if (opts.pooled && (!opts.remoteAuthority?.accountPublicKey ||
         accountFromCreds(opts.remoteAuthority.supervisorCreds) !== opts.remoteAuthority.accountPublicKey))
       throw new Error("pooled control requires a proved assigned account for its initial supervisor credential");
-    if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
-    this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
-    if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
+    if (opts.remoteAuthority) config.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
+    config.secrets = opts.secretStore ?? workspaceSecretStore(this.config.workspaceRoot);
+    if (opts.secretStore) this.credentialRenewal.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
-    this.expectedConnectorGeneration = MANAGER_VERSION;
-    this.machineSetupCommand = opts.machineSetupCommand;
-    this.pooled = opts.pooled === true;
-    this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
-    if (!this.remoteAuthority) {
+    config.expectedConnectorGeneration = MANAGER_VERSION;
+    config.machineSetupCommand = opts.machineSetupCommand;
+    config.pooled = opts.pooled === true;
+    config.execution = opts.execution === "none" ? "none" : "runtime";
+    if (!this.config.remoteAuthority) {
       // A fresh root has no execution record, so construction does not read the identity. Records
       // survive identity retirement; only the currently stored identity's record can be claimed.
-      const prefix = `manager-execution.${spaceKey(this.space)}.`;
-      const dir = join(this.workspaceRoot, ".cotal");
+      const prefix = `manager-execution.${spaceKey(this.config.space)}.`;
+      const dir = join(this.config.workspaceRoot, ".cotal");
       const hasRecord = existsSync(dir) && readdirSync(dir).some((name) => name.startsWith(prefix) && name.endsWith(".json"));
       if (hasRecord) {
-        const local = loadManagerInstanceIdentity(this.workspaceRoot, this.space);
+        const local = loadManagerInstanceIdentity(this.config.workspaceRoot, this.config.space);
         if (local && existsSync(this.executionRecordPath(local.instanceId))) {
-          this.claimExecutionRecord(local.instanceId);
+          this.bootComponent.claimExecutionRecord(local.instanceId);
           this.admittedLocalIdentity = local;
         }
       }
     }
-    if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
-    if (opts.pooled && this.executionState.kind === "runtime" && isCustodialRuntime(this.requiredRuntime))
+    if (this.config.execution === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.config.space}`);
+    if (opts.pooled && this.config.execution === "runtime" && isCustodialRuntime(this.requiredRuntime))
       throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
-    this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
-    this.endpointServeExecutorExpiresInSeconds = opts.endpointServeExecutorExpiresInSeconds;
+    config.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
+    config.endpointServeExecutorExpiresInSeconds = opts.endpointServeExecutorExpiresInSeconds;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
       throw new Error("resumeAttemptId must be a safe token (letters, digits, _, -; max 128)");
     if (opts.resumeDurableCommitToken && !/^[a-f0-9]{64}$/.test(opts.resumeDurableCommitToken))
       throw new Error("resumeDurableCommitToken must be a lowercase 32-byte token");
     if (opts.resumeDurableCommitToken && !opts.resumeAttemptId)
       throw new Error("resumeDurableCommitToken requires resumeAttemptId");
-    this.resumeAttemptId = opts.resumeAttemptId;
+    config.resumeAttemptId = opts.resumeAttemptId;
     this.resumeRequired = opts.resumeAttemptId !== undefined;
     this.resumeDurableCommitToken = opts.resumeDurableCommitToken;
-    this.wsPort = opts.wsPort;
+    config.wsPort = opts.wsPort;
     this.attach = new AttachEndpoint(
       () => this.list(),
       // Initial /feed replay for a connecting console: the current peer roster.
@@ -957,32 +869,40 @@ export class Manager {
       opts.attachHost ?? "127.0.0.1",
     );
     this.connectorInventory = new ConnectorInventory(
-      { execution: this.execution, installedExtensions: this.installedExtensions, machineSetupCommand: this.machineSetupCommand, expectedConnectorGeneration: this.expectedConnectorGeneration },
+      { execution: this.execution, installedExtensions: this.installedExtensions, machineSetupCommand: this.config.machineSetupCommand, expectedConnectorGeneration: this.config.expectedConnectorGeneration },
       this.parts,
       (resumeOperation) => this.beginLifecycle(resumeOperation),
     );
     Object.assign(this.parts, {
+      brokerTransport: this.brokerTransportComponent,
       connectorInventory: this.connectorInventory,
+      credentialRenewal: this.credentialRenewal,
+      goalWriter: this.goalWriterComponent,
       harnessResolution: this.harnessResolutionComponent,
       lease: this.lease,
+      namesCapacity: this.namesCapacity,
+      personaCatalog: this.personaCatalogComponent,
+      preservation: this.preservationComponent,
       seatLaunch: this.seatLaunch,
+      seatStop: this.seatStopComponent,
       servePlane: this.servePlane,
+      spawnGoal: this.spawnGoalComponent,
     } satisfies ManagerParts);
   }
 
   get runtimeKind(): string {
-    return this.executionState.kind === "none" ? "none" : this.requiredRuntime.kind;
+    return this.config.execution === "none" ? "none" : this.requiredRuntime.kind;
   }
 
   /** Whether this manager's runtime opens a terminal stream on the seats it spawns, so a caller
    *  knows before it asks whether `attach` can open one here. A control instance with no execution
    *  spawns no seat, so it streams no terminal either. */
   get streamsTerminal(): boolean {
-    return this.executionState.kind !== "none" && this.requiredRuntime.streamsTerminal;
+    return this.config.execution !== "none" && this.requiredRuntime.streamsTerminal;
   }
 
   get execution(): "runtime" | "none" {
-    return this.executionState.kind;
+    return this.config.execution;
   }
 
   protected executionRefusal(): string {
@@ -991,7 +911,7 @@ export class Manager {
 
   /** A defensive last barrier, not a substitute Runtime. Entry admission runs before effects. */
   protected get requiredRuntime(): Runtime {
-    if (this.executionState.kind === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     return this.runtime;
   }
 
@@ -1004,9 +924,9 @@ export class Manager {
    *  resolves only what its root imported. The refusal names an official runtime's package. */
   protected async loadSeatRuntime(kind: string | undefined): Promise<void> {
     const asked = kind?.trim();
-    if (!this.installedExtensions || this.executionState.kind === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
+    if (!this.installedExtensions || this.config.execution === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
     if (!manifestExtensionNames("runtime").includes(asked)) throw new Error(runtimeInstallHint(asked));
-    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
+    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name), expectedGeneration: this.config.expectedConnectorGeneration });
   }
 
   /** The backend one seat launches, restarts, and is reaped through. An omitted or blank choice is
@@ -1015,7 +935,7 @@ export class Manager {
    *  unreachable runtime throws, and pooled control refuses a custodial one by the same rule the
    *  constructor applied to the manager's own. */
   protected runtimeFor(kind: string | undefined): Runtime {
-    if (this.executionState.kind === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const asked = kind?.trim();
     if (!asked) return this.runtime;
     if (asked === "auto")
@@ -1023,8 +943,8 @@ export class Manager {
     if (asked === this.runtime.kind) return this.runtime;
     const cached = this.runtimes.get(asked);
     if (cached) return cached;
-    const runtime = createRuntime(asked, `cotal-${this.space}`);
-    if (this.pooled && isCustodialRuntime(runtime))
+    const runtime = createRuntime(asked, `cotal-${this.config.space}`);
+    if (this.config.pooled && isCustodialRuntime(runtime))
       throw new Error(`pooled control refuses custodial runtime "${runtime.kind}" before starting agents`);
     this.runtimes.set(runtime.kind, runtime);
     return runtime;
@@ -1049,7 +969,7 @@ export class Manager {
    *  response, registration-leader read or authorization for another process to act. Wire callers
    *  still use status through its fresh owner/admin visibility gate. No credential or URL leaves. */
   localServiceObservation(): ManagerServiceObservation | undefined {
-    const state = this.serviceServe;
+    const state = this.servePlane.serviceServe;
     if (!state) return undefined;
     const identity = this.serviceIdentityObservation();
     if (state.grant.endpoint !== identity.endpoint || state.grant.instanceId !== identity.instanceId || state.grant.owner !== identity.principal.owner) throw new Error("the manager's local service observation does not match its owned serve incarnation");
@@ -1069,9 +989,9 @@ export class Manager {
 
   protected serviceIdentityObservation(): ManagerServiceIdentity {
     if (!this.managerInstanceId || !this.managerServeIdentity) throw new Error("manager native service identity has not been selected");
-    const principal: EpCaller = this.remoteAuthority
-      ? { owner: this.remoteAuthority.owner, actor: this.remoteAuthority.actors.serve, uid: this.managerLifecycleUid }
-      : { owner: DEV_OWNER, actor: this.managerServeIdentity.id, uid: this.managerLifecycleUid };
+    const principal: EpCaller = this.config.remoteAuthority
+      ? { owner: this.config.remoteAuthority.owner, actor: this.config.remoteAuthority.actors.serve, uid: this.config.managerLifecycleUid }
+      : { owner: DEV_OWNER, actor: this.managerServeIdentity.id, uid: this.config.managerLifecycleUid };
     return Object.freeze({ endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId, principal: Object.freeze(principal) });
   }
 
@@ -1152,7 +1072,7 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    const task = this.runStart();
+    const task = this.bootComponent.runStart();
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
       if (this.startTask === wrapped) this.startTask = undefined;
@@ -1162,15 +1082,9 @@ export class Manager {
   }
 
   protected executionRecordPath(instanceId: string): string {
-    return join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${instanceId}.json`);
+    return join(this.config.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.config.space)}.${instanceId}.json`);
   }
 
-  /** {@link ManagerBoot.claimExecutionRecord}. */
-  private claimExecutionRecord(...args: Parameters<ManagerBoot["claimExecutionRecord"]>): ReturnType<ManagerBoot["claimExecutionRecord"]> { return this.bootComponent.claimExecutionRecord(...args); }
-
-
-  /** {@link ManagerBoot.runStart}. */
-  private runStart(...args: Parameters<ManagerBoot["runStart"]>): ReturnType<ManagerBoot["runStart"]> { return this.bootComponent.runStart(...args); }
 
   /** The delivery shard whose lease names the process that reloads the standing credentials.
    *  Delivery is single-shard today and the endpoint's own responder reads row 0; naming it here
@@ -1178,18 +1092,9 @@ export class Manager {
   static readonly DELIVERY_SHARD = 0;
   /** {@link CredentialRenewal.absentByLeaseRow}. */
   absentByLeaseRow(...args: Parameters<CredentialRenewal["absentByLeaseRow"]>): ReturnType<CredentialRenewal["absentByLeaseRow"]> { return this.credentialRenewal.absentByLeaseRow(...args); }
-  /** {@link CredentialRenewal.keepDaemonRenewalLease}. */
-  protected keepDaemonRenewalLease(...args: Parameters<CredentialRenewal["keepDaemonRenewalLease"]>): ReturnType<CredentialRenewal["keepDaemonRenewalLease"]> { return this.credentialRenewal.keepDaemonRenewalLease(...args); }
   /** {@link CredentialRenewal.claimDaemonRenewalOwnership}. */
   protected claimDaemonRenewalOwnership(...args: Parameters<CredentialRenewal["claimDaemonRenewalOwnership"]>): ReturnType<CredentialRenewal["claimDaemonRenewalOwnership"]> { return this.credentialRenewal.claimDaemonRenewalOwnership(...args); }
-  /** {@link CredentialRenewal.scheduleServeRenewal}. */
-  protected scheduleServeRenewal(...args: Parameters<CredentialRenewal["scheduleServeRenewal"]>): ReturnType<CredentialRenewal["scheduleServeRenewal"]> { return this.credentialRenewal.scheduleServeRenewal(...args); }
 
-  protected credentialPushRetry?: ReturnType<typeof setTimeout>;
-  protected readonly credentialPushes = new Map<NatsConnection, Promise<void>>();
-  protected supervisorCredentialPush?: Promise<void>;
-  protected readonly pendingCredentialPushes = new Set<NatsConnection>();
-  protected supervisorCredentialPushPending = false;
   /** {@link CredentialRenewal.boundedReconnect}. */
   protected boundedReconnect(...args: Parameters<CredentialRenewal["boundedReconnect"]>): ReturnType<CredentialRenewal["boundedReconnect"]> { return this.credentialRenewal.boundedReconnect(...args); }
   /** {@link CredentialRenewal.renewDaemonCreds}. */
@@ -1230,7 +1135,7 @@ export class Manager {
 
   protected maintenanceError(): string {
     if (this.leaseStopping) return "manager is stopping; new lifecycle/control work is fenced";
-    if (this.resumeRequired) return `manager is waiting for resume attempt ${this.resumeAttemptId}; ordinary lifecycle/control work is fenced`;
+    if (this.resumeRequired) return `manager is waiting for resume attempt ${this.config.resumeAttemptId}; ordinary lifecycle/control work is fenced`;
     return `manager is in ${this.maintenanceState} mode; new lifecycle/control work is fenced`;
   }
 
@@ -1259,8 +1164,6 @@ export class Manager {
 
   protected fileDigest(path: string): string { return fileDigest(path); }
 
-  /** {@link Preservation.fileDigestOrEmpty}. */
-  protected fileDigestOrEmpty(...args: Parameters<Preservation["fileDigestOrEmpty"]>): ReturnType<Preservation["fileDigestOrEmpty"]> { return this.preservationComponent.fileDigestOrEmpty(...args); }
 
   /** {@link PreservedResume.resumeEntry}. */
   protected resumeEntry(...args: Parameters<PreservedResume["resumeEntry"]>): ReturnType<PreservedResume["resumeEntry"]> { return this.preservedResumeComponent.resumeEntry(...args); }
@@ -1274,11 +1177,6 @@ export class Manager {
   /** {@link Preservation.isProcessBoundSeat}. */
   protected isProcessBoundSeat(...args: Parameters<Preservation["isProcessBoundSeat"]>): ReturnType<Preservation["isProcessBoundSeat"]> { return this.preservationComponent.isProcessBoundSeat(...args); }
 
-  /** {@link Preservation.releaseManagedAgents}. */
-  private releaseManagedAgents(...args: Parameters<Preservation["releaseManagedAgents"]>): ReturnType<Preservation["releaseManagedAgents"]> { return this.preservationComponent.releaseManagedAgents(...args); }
-
-  /** {@link Preservation.adoptReleasedSeats}. */
-  protected adoptReleasedSeats(...args: Parameters<Preservation["adoptReleasedSeats"]>): ReturnType<Preservation["adoptReleasedSeats"]> { return this.preservationComponent.adoptReleasedSeats(...args); }
 
 
   private async stopRetainedAgentsOnExit(): Promise<void> {
@@ -1288,7 +1186,7 @@ export class Manager {
     await Promise.all(managed.map(async (a) => {
       try {
         // No cut holds a delegated seat (runPreparation refuses one), so stopping it is its retirement.
-        if (a.handedOff) await this.deprovision(this.teardownTarget(a));
+        if (a.handedOff) await this.deprovision(this.seatStopComponent.teardownTarget(a));
         else a.handle.stop({ graceful: false });
       } catch (e) {
         failures.push(`${a.name}: stop failed: ${rejectionText(e)}`);
@@ -1319,26 +1217,25 @@ export class Manager {
 
   private async stopOnce(withAgents: boolean): Promise<void> {
     this.leaseStopping = true;
-    this.shutdownReadiness.abort();
-    clearTimeout(this.credentialPushRetry);
-    this.credentialPushRetry = undefined;
+    this.config.shutdownReadiness.abort();
+    this.credentialRenewal.stopRetries();
     this.transcripts?.stop();
     this.staticLifecycle.stop();
     const starting = this.startTask;
-    await this.awaitStaticReconcileDrain();
+    await this.staticLifecycle.awaitStaticReconcileDrain();
     await starting?.catch(() => {});
     if (this.lease.leaseTimer) clearInterval(this.lease.leaseTimer);
     if (this.credRenewTimer) clearInterval(this.credRenewTimer);
-    if (this.endpointServeRenewalTimer) clearTimeout(this.endpointServeRenewalTimer);
+    if (this.credentialRenewal.endpointServeRenewalTimer) clearTimeout(this.credentialRenewal.endpointServeRenewalTimer);
     if (this.daemonRenewalLeaseTimer) clearInterval(this.daemonRenewalLeaseTimer);
-    if (this.sessionKeyRenewTimer) clearInterval(this.sessionKeyRenewTimer);
+    if (this.servePlane.sessionKeyRenewTimer) clearInterval(this.servePlane.sessionKeyRenewTimer);
     // A renew already in flight when the timer was cleared above must be awaited, not raced: it can
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
     await this.lease.leaseRenewTask?.catch(() => {});
     // Join the bounded Manager renewal. Its stop/deadline fence refuses late adoption, but the
     // host still owns any submitted issuance and its outcome can remain unknown after timeout.
-    await this.remoteBundleRenewal?.catch(() => {});
+    await this.credentialRenewal.remoteBundleRenewal?.catch(() => {});
     // A spawn admitted before the fence closed may still be launching. Its seat must be in the
     // snapshot below, or it would outlive a stop that reported success.
     await this.awaitLifecycleDrain();
@@ -1351,7 +1248,7 @@ export class Manager {
           // An in-process seat cannot be detached from the process that is exiting, and a released
           // seat that already exited cannot come back, so the default stop stops and deprovisions
           // both as `withAgents` does instead of orphaning their footprints.
-          const detached = this.releaseManagedAgents();
+          const detached = this.preservationComponent.releaseManagedAgents();
           releaseFailures = detached.failures;
           await this.teardownManagedAgents(detached.stop);
         }
@@ -1375,8 +1272,8 @@ export class Manager {
     // The expiry that would end a chat session stops with this process, and nothing can adopt one,
     // so an active stop retires every session this process admitted, under either agent policy, as
     // it does an in-process seat. A preserving stop leaves them to the next start's sweep.
-    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.retireChatSessionsOnStop());
-    else this.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
+    if (this.maintenanceState === "active" && !this.resumeRequired) await step("retire chat sessions", () => this.staticLifecycle.retireChatSessionsOnStop());
+    else this.staticLifecycle.reportChatSessionsLeftAtStop(this.resumeRequired ? "this manager is waiting for a resume" : "this manager is preserving its state");
     // A seat that may still be alive keeps this instance's leases and registration (see
     // teardownManagedAgents): they lapse on their TTL instead of being handed to a successor.
     if (seatFailure === undefined) {
@@ -1389,7 +1286,7 @@ export class Manager {
     // being asked here is "which registration did this process write", which only the state
     // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
     // in-flight command can write a status back onto the record it just removed.
-    const registrationRevision = this.serviceServe?.grant.registrationRevision;
+    const registrationRevision = this.servePlane.serviceServe?.grant.registrationRevision;
     await step("stop service serve", () => this.stopServiceServe());
     // The drives AFTER the serve loop (no new `run-start` can land) and BEFORE deregistration: a
     // released run's status write is the last thing this incarnation says about it.
@@ -1397,8 +1294,8 @@ export class Manager {
     this.runHosting = undefined;
     if (registrationRevision !== undefined && seatFailure === undefined)
       await step("deregister service", () => this.deregisterServiceOnStop(registrationRevision));
-    await step("stop goal writer", () => this.stopGoalWriter());
-    await step("stop session plane", () => this.stopSessionPlane());
+    await step("stop goal writer", () => this.goalWriterComponent.stopGoalWriter());
+    await step("stop session plane", () => this.servePlane.stopSessionPlane());
     await step("stop endpoint", () => this.ep.stop());
     await step("stop attach endpoint", () => this.attach.stop());
     const also = failures.length ? `; teardown also failed: ${failures.join("; ")}` : "";
@@ -1436,7 +1333,7 @@ export class Manager {
         observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid }),
       });
     try {
-      const outcome = await ((this.auth || this.remoteAuthority)
+      const outcome = await ((this.auth || this.config.remoteAuthority)
         ? this.withEndpointServeExecutor(dereg)
         : this.withOpenServeConnection(dereg));
       if (outcome.removed)
@@ -1449,7 +1346,7 @@ export class Manager {
     } catch (e) {
       console.error(
         `! could not deregister manager instance ${iid}: ${rejectionText(e)}\n` +
-          `  Its registration now outlives this process and will be frozen into every class scatter in space "${this.space}", each paying the full deadline.\n` +
+          `  Its registration now outlives this process and will be frozen into every class scatter in space "${this.config.space}", each paying the full deadline.\n` +
           `  NEXT: once this process is gone, start this manager again and stop it cleanly; on a static space \`cotal endpoint deregister manager ${iid} --yes\` from the space's own root also removes it.`,
       );
     }
@@ -1459,20 +1356,16 @@ export class Manager {
    *  and drop its dedicated connection, or only close the connection while its transport is down.
    *  Best-effort so a graceful stop completes its remaining teardown even when the broker is gone. */
   private async stopServiceServe(): Promise<void> {
-    const s = this.serviceServe;
+    const s = this.servePlane.serviceServe;
     if (!s) return;
-    this.serviceServe = undefined;
+    this.servePlane.serviceServe = undefined;
     await this.retireConnection(s.nc, () => s.handle.stop());
   }
 
   /** {@link BrokerTransport.retireConnection}. */
   protected retireConnection(...args: Parameters<BrokerTransport["retireConnection"]>): ReturnType<BrokerTransport["retireConnection"]> { return this.brokerTransportComponent.retireConnection(...args); }
 
-  /** {@link BrokerTransport.discardServeCandidate}. */
-  protected discardServeCandidate(...args: Parameters<BrokerTransport["discardServeCandidate"]>): ReturnType<BrokerTransport["discardServeCandidate"]> { return this.brokerTransportComponent.discardServeCandidate(...args); }
 
-  /** {@link BrokerTransport.trackTransport}. */
-  protected trackTransport(...args: Parameters<BrokerTransport["trackTransport"]>): ReturnType<BrokerTransport["trackTransport"]> { return this.brokerTransportComponent.trackTransport(...args); }
 
   /** {@link PreservedResume.opFinalizeResume}. */
   protected opFinalizeResume(...args: Parameters<PreservedResume["opFinalizeResume"]>): ReturnType<PreservedResume["opFinalizeResume"]> { return this.preservedResumeComponent.opFinalizeResume(...args); }
@@ -1543,10 +1436,10 @@ export class Manager {
   protected runHost(): RunHosting {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.runHosting) return this.runHosting;
-    if (this.remoteAuthority && !this.remoteAuthority.runHosting)
+    if (this.config.remoteAuthority && !this.config.remoteAuthority.runHosting)
       throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: its issuing host supplied no closed run callbacks, and a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
-    if (this.userMode && !this.remoteAuthority?.runHosting)
-      throw new EpEnvelopeError("unimplemented", `user-auth space "${this.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
+    if (this.userMode && !this.config.remoteAuthority?.runHosting)
+      throw new EpEnvelopeError("unimplemented", `user-auth space "${this.config.space}" hosts no workflow runs yet: a hosted run's seats would be spawned under the static owner, which a user mesh refuses; run programs on a static-auth mesh`);
     throw new EpEnvelopeError("unavailable", "the manager is still booting its workflow-run host; retry shortly (SPEC 14.3)");
   }
 
@@ -1606,11 +1499,11 @@ export class Manager {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal(), undefined, "not-executed");
     if (!/^pa_[a-z2-7]{26}$/.test(caller.actor))
       throw new EpEnvelopeError("permission-denied", "workflow turn participation is reserved for approved personal conversation actors", undefined, "not-executed");
-    if (!this.remoteAuthority)
+    if (!this.config.remoteAuthority)
       throw new EpEnvelopeError("unimplemented", "personal workflow participation requires a registered issuing host with fresh lifecycle authority", undefined, "not-executed");
-    if (!this.remoteAuthority.authorizeParticipation)
+    if (!this.config.remoteAuthority.authorizeParticipation)
       throw new EpEnvelopeError("unimplemented", "the issuing host supplies no closed personal participation authorization", undefined, "not-executed");
-    const authorized = await this.remoteAuthority.authorizeParticipation({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
+    const authorized = await this.config.remoteAuthority.authorizeParticipation({ owner: caller.owner, actor: caller.actor, lifecycleUid: caller.uid });
     if (!authorized)
       throw new EpEnvelopeError("permission-denied", "the exact personal lifecycle is not currently foreground-authorized with run scope", undefined, "not-executed");
     const presence = this.liveParticipantPresence(caller);
@@ -1681,7 +1574,7 @@ export class Manager {
    *  host callback with the full endpoint caller tuple. Error string when denied, `undefined` when
    *  allowed; remote host-state faults throw rather than being collapsed into a denial. */
   protected async authorizeNamed(target: ManagedAgent, caller: string, admin: boolean, epCaller?: EpCaller): Promise<string | undefined> {
-    if (this.remoteAuthority && epCaller && !admin) {
+    if (this.config.remoteAuthority && epCaller && !admin) {
       if (target.spawner === caller) return undefined;
       const principal = parsePrincipalKey(caller);
       if (principal && target.userOwner === principal.owner) return undefined;
@@ -1701,7 +1594,7 @@ export class Manager {
       admin,
       userMode: this.userMode,
       scopeOf: (owner, actor) =>
-        resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner, actor }),
+        resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner, actor }),
     });
   }
 
@@ -1723,8 +1616,6 @@ export class Manager {
   /** {@link SeatStop.stopWindowsSeat}. */
   protected stopWindowsSeat(...args: Parameters<SeatStop["stopWindowsSeat"]>): ReturnType<SeatStop["stopWindowsSeat"]> { return this.seatStopComponent.stopWindowsSeat(...args); }
 
-  /** {@link SeatStop.trackStoppedHandle}. */
-  protected trackStoppedHandle(...args: Parameters<SeatStop["trackStoppedHandle"]>): ReturnType<SeatStop["trackStoppedHandle"]> { return this.seatStopComponent.trackStoppedHandle(...args); }
 
   protected provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | UserAgentRefusal> { return this.userProvision.provisionUserAgent(name, opts); }
 
@@ -1732,7 +1623,7 @@ export class Manager {
    *  and each failure joins `unshredded`, so one fault cannot leave the rest of the family behind. */
   protected async shredUserSecrets(unshredded: CleanupFailure[], family: { actorToken?: string; sentinelCreds?: string; health?: string }): Promise<void> {
     for (const path of [family.actorToken, family.sentinelCreds])
-      if (path) await attemptCleanup(unshredded, `secret ${path}`, () => this.secrets.delete(agentSecretKeyForFile(path, this.space)));
+      if (path) await attemptCleanup(unshredded, `secret ${path}`, () => this.config.secrets.delete(agentSecretKeyForFile(path, this.config.space)));
     for (const path of [family.actorToken, family.sentinelCreds, family.health])
       if (path) await attemptCleanup(unshredded, `file ${path}`, () => rmSync(path, { force: true }));
   }
@@ -1743,15 +1634,11 @@ export class Manager {
   /** {@link SeatStop.logSeatMeshTransitions}. */
   protected logSeatMeshTransitions(...args: Parameters<SeatStop["logSeatMeshTransitions"]>): ReturnType<SeatStop["logSeatMeshTransitions"]> { return this.seatStopComponent.logSeatMeshTransitions(...args); }
 
-  /** {@link SeatStop.isOwnPresence}. */
-  protected isOwnPresence(a: ManagedAgent, p: Presence | undefined): p is Presence { return this.seatStopComponent.isOwnPresence(a, p); }
   protected freeSlot(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, acceptedBeforeFence = false): void { this.namesCapacity.freeSlot(a, floor, cause, acceptedBeforeFence); }
 
   /** {@link SeatStop.dropInlineSnapshot}. */
   protected dropInlineSnapshot(...args: Parameters<SeatStop["dropInlineSnapshot"]>): ReturnType<SeatStop["dropInlineSnapshot"]> { return this.seatStopComponent.dropInlineSnapshot(...args); }
 
-  /** {@link SeatStop.teardownTarget}. */
-  protected teardownTarget(...args: Parameters<SeatStop["teardownTarget"]>): ReturnType<SeatStop["teardownTarget"]> { return this.seatStopComponent.teardownTarget(...args); }
   protected deprovision(a: TeardownTarget): Promise<void> { return this.retirement.deprovision(a); }
 
   /** Run one retirement in a {@link RETIREMENT_CONCURRENCY} slot, oldest first: a seat's deprovision, a
@@ -1817,7 +1704,7 @@ export class Manager {
   protected inlineSnapshotChange(a: ManagedAgent): string | undefined {
     const source = a.launch.source;
     if (source.kind !== "inline") return undefined;
-    const path = resolve(inlineSnapshotPath(this.workspaceRoot, a.lifecycleUid));
+    const path = resolve(inlineSnapshotPath(this.config.workspaceRoot, a.lifecycleUid));
     if (resolve(source.configPath) !== path)
       return `its recorded inline persona snapshot ${source.configPath} is not this lifecycle's snapshot path`;
     if (a.restart !== undefined && resolve(a.restart.opts.configPath ?? "") !== path)
@@ -1859,21 +1746,14 @@ export class Manager {
 
   /** {@link StartDoors.opStart}. */
   protected opStart(...args: Parameters<StartDoors["opStart"]>): ReturnType<StartDoors["opStart"]> { return this.startDoorsComponent.opStart(...args); }
-  protected listSpawnDirectory(args: Record<string, unknown>): ReturnType<SeatLaunch["listSpawnDirectory"]> { return this.seatLaunch.listSpawnDirectory(args); }
-  /** {@link SeatLaunch.resolveSpawnCwd}. */
-  protected resolveSpawnCwd(value: unknown): { cwd: string; host: string } { return this.seatLaunch.resolveSpawnCwd(value); }
 
   /** {@link HarnessResolution.resolveConnector}. */
   protected resolveConnector(...args: Parameters<HarnessResolution["resolveConnector"]>): ReturnType<HarnessResolution["resolveConnector"]> { return this.harnessResolutionComponent.resolveConnector(...args); }
-  /** {@link SeatLaunch.connectorNames}. */
-  protected connectorNames(): string[] { return this.seatLaunch.connectorNames(); }
 
   /** {@link SeatLaunch.classSpawnEnabled}. */
   protected classSpawnEnabled(): boolean { return this.seatLaunch.classSpawnEnabled(); }
   protected omitClassCommands(): readonly string[] | undefined { return this.seatLaunch.omitClassCommands(); }
 
-  /** {@link HarnessResolution.launchHarness}. */
-  protected launchHarness(...args: Parameters<HarnessResolution["launchHarness"]>): ReturnType<HarnessResolution["launchHarness"]> { return this.harnessResolutionComponent.launchHarness(...args); }
 
   /** {@link HarnessResolution.hostLaunchFields}. */
   protected hostLaunchFields(...args: Parameters<HarnessResolution["hostLaunchFields"]>): ReturnType<HarnessResolution["hostLaunchFields"]> { return this.harnessResolutionComponent.hostLaunchFields(...args); }
@@ -1881,7 +1761,7 @@ export class Manager {
   /** {@link HarnessResolution.capabilityRefusal}. */
   protected capabilityRefusal(...args: Parameters<HarnessResolution["capabilityRefusal"]>): ReturnType<HarnessResolution["capabilityRefusal"]> { return this.harnessResolutionComponent.capabilityRefusal(...args); }
   /** {@link SeatLaunch.onceRefusal}. */
-  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
+  onceRefusal(connector: Connector, runtime: Runtime, launch: Pick<StartAgentOpts, "once" | "supervise" | "launchOptions" | "prompt" | "autoName">, spawner: string | undefined, hooks: SpawnHooks | undefined): string | undefined { return this.seatLaunch.onceRefusal(connector, runtime, launch, spawner, hooks); }
 
   /** {@link HarnessResolution.eventsRefusal}. */
   protected eventsRefusal(...args: Parameters<HarnessResolution["eventsRefusal"]>): ReturnType<HarnessResolution["eventsRefusal"]> { return this.harnessResolutionComponent.eventsRefusal(...args); }
@@ -1917,10 +1797,6 @@ export class Manager {
   protected spawnRun(caller: EpCaller | undefined, runId: string | undefined): Promise<SpawnRun | undefined> { return this.seatLaunch.spawnRun(caller, runId); }
   /** {@link SeatLaunch.staticSpawnBound}. */
   protected staticSpawnBound(caller: EpCaller | undefined, run: Extract<SpawnRun, { admission: RunAdmission }> | undefined): Promise<StaticSpawnBound> { return this.seatLaunch.staticSpawnBound(caller, run); }
-  /** {@link SeatLaunch.spawnBoundRefusal}. */
-  protected spawnBoundRefusal(bound: StaticSpawnBound, grant: DelegatedGrant, armsEvents: boolean, door: "spawn" | "define-persona" = "spawn"): string | undefined { return this.seatLaunch.spawnBoundRefusal(bound, grant, armsEvents, door); }
-  /** {@link SeatLaunch.managedStaticInstanceReads}. */
-  protected managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] { return this.seatLaunch.managedStaticInstanceReads(capabilities); }
 
   /** {@link PreservedResume.resumePreserved}. */
   resumePreserved(...args: Parameters<PreservedResume["resumePreserved"]>): ReturnType<PreservedResume["resumePreserved"]> { return this.preservedResumeComponent.resumePreserved(...args); }
@@ -1938,7 +1814,7 @@ export class Manager {
 
 
   protected probeStaticCredential(creds: string) {
-    return probeConnect(this.servers ?? DEFAULT_SERVER, { creds, timeoutMs: 5_000 });
+    return probeConnect(this.config.servers ?? DEFAULT_SERVER, { creds, timeoutMs: 5_000 });
   }
 
 
@@ -1951,13 +1827,9 @@ export class Manager {
   /** {@link ReadinessWait.watchExit}. */
   protected watchExit(...args: Parameters<ReadinessWait["watchExit"]>): ReturnType<ReadinessWait["watchExit"]> { return this.readinessWaitComponent.watchExit(...args); }
   protected occupancy(): Occupancy { return this.namesCapacity.occupancy(); }
-  protected occupancyText(o: Occupancy): string { return this.namesCapacity.occupancyText(o); }
-  protected capacityRefusal(o: Occupancy): string { return this.namesCapacity.capacityRefusal(o); }
 
   /** The owner a launch belongs to: {@link NamesCapacity.launchOwner}. */
   protected launchOwner(opts: Pick<StartAgentOpts, "owner">, spawner?: string): string { return this.namesCapacity.launchOwner(opts, spawner); }
-  /** The per-owner ceiling at accept: {@link NamesCapacity.seatCapRefusal}. */
-  protected seatCapRefusal(owner: string): EpEnvelopeError | undefined { return this.namesCapacity.seatCapRefusal(owner); }
 
   /** {@link SeatStop.opStop}. */
   // @ts-expect-error TS6133: retained fixtures call this private adapter through structural views.
@@ -1978,8 +1850,6 @@ export class Manager {
   /** {@link BrokerTransport.withIssuer}. */
   protected withIssuer<T>(fn: (i: { store: IssuedStore; accepted: KV }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withIssuer(fn); }
 
-  /** {@link BrokerTransport.issuanceSeam}. */
-  protected issuanceSeam(...args: Parameters<BrokerTransport["issuanceSeam"]>): ReturnType<BrokerTransport["issuanceSeam"]> { return this.brokerTransportComponent.issuanceSeam(...args); }
 
   /** {@link BrokerTransport.withEndpointServeExecutor}. */
   protected withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withEndpointServeExecutor(fn); }
@@ -2012,14 +1882,8 @@ export class Manager {
   /** {@link GoalWriter.mintAndStageGoalWriter}. */
   protected mintAndStageGoalWriter(...args: Parameters<GoalWriter["mintAndStageGoalWriter"]>): ReturnType<GoalWriter["mintAndStageGoalWriter"]> { return this.goalWriterComponent.mintAndStageGoalWriter(...args); }
 
-  /** {@link GoalWriter.startGoalWriter}. */
-  protected startGoalWriter(...args: Parameters<GoalWriter["startGoalWriter"]>): ReturnType<GoalWriter["startGoalWriter"]> { return this.goalWriterComponent.startGoalWriter(...args); }
 
-  /** {@link GoalWriter.stopGoalWriter}. */
-  private stopGoalWriter(...args: Parameters<GoalWriter["stopGoalWriter"]>): ReturnType<GoalWriter["stopGoalWriter"]> { return this.goalWriterComponent.stopGoalWriter(...args); }
   protected mintAndStageSessionLedger(authKv: KV): Promise<string> { return this.servePlane.mintAndStageSessionLedger(authKv); }
-  protected startSessionPlane(): Promise<void> { return this.servePlane.startSessionPlane(); }
-  private stopSessionPlane(): Promise<void> { return this.servePlane.stopSessionPlane(); }
 
   /** {@link GoalWriter.reconcileGoalIndex}. */
   protected reconcileGoalIndex(...args: Parameters<GoalWriter["reconcileGoalIndex"]>): ReturnType<GoalWriter["reconcileGoalIndex"]> { return this.goalWriterComponent.reconcileGoalIndex(...args); }
@@ -2038,8 +1902,6 @@ export class Manager {
 
 
 
-  /** {@link SpawnGoal.expireGoalAcceptance}. */
-  protected expireGoalAcceptance(...args: Parameters<SpawnGoal["expireGoalAcceptance"]>): ReturnType<SpawnGoal["expireGoalAcceptance"]> { return this.spawnGoalComponent.expireGoalAcceptance(...args); }
 
   // ---- the turn relay (§8 durable actions) ------------------------------------------------------
   //
@@ -2070,7 +1932,7 @@ export class Manager {
    *  connection that holds this instance's reply rows. The notice carries no turn and the seat
    *  pulls on it, so a lost notice delays that seat until its next pull, and nothing else. */
   protected noticeSeatTurns(seat: { name: string; owner: string; actor: string; uid: string }): void {
-    const serve = this.serviceServe;
+    const serve = this.servePlane.serviceServe;
     if (!serve) return;
     // An issued seat credential reads only the versioned rail, under the generation it was issued.
     const a = this.agents.get(seat.name);
@@ -2078,7 +1940,7 @@ export class Manager {
     const generation = a?.lifecycleUid === seat.uid ? a.issued?.generation : participant?.generation;
     const caller = { owner: seat.owner, actor: seat.actor, uid: seat.uid, ...(generation !== undefined ? { generation } : {}) };
     try {
-      serve.nc.publish(turnNoticeSubject(this.space, this.managerInstanceId, serve.grant.epoch, caller), new TextEncoder().encode(JSON.stringify({ v: 1 })));
+      serve.nc.publish(turnNoticeSubject(this.config.space, this.managerInstanceId, serve.grant.epoch, caller), new TextEncoder().encode(JSON.stringify({ v: 1 })));
     } catch (e) {
       console.error(`! turn notice for ${seat.actor} failed: ${rejectionText(e)}`);
     }
@@ -2168,15 +2030,15 @@ export class Manager {
     this.reapChildrenOf(this.managedPrincipal(a));
     const cause = { kind: "stopped-once", reason } as const;
     this.stopHandle(a, true, cause);
-    this.trackStoppedHandle(a, false, cause);
-    void this.cancelAgentGoal(a.name, "graceful");
+    this.seatStopComponent.trackStoppedHandle(a, false, cause);
+    void this.seatStopComponent.cancelAgentGoal(a.name, "graceful");
   }
 
   /** Stop a seat this spawn just placed and track its exit: the stop first, so the terminalizing
    *  latch is set before anything awaits, then the exit tracking. Both are synchronous. */
   protected stopAndTrack(a: ManagedAgent, cause: FreeSlotCause): void {
     this.stopHandle(a, false, cause);
-    this.trackStoppedHandle(a, true, cause);
+    this.seatStopComponent.trackStoppedHandle(a, true, cause);
   }
 
   /** End a once seat before its task is served: let go of the spawn goal, record why it stopped if
@@ -2222,7 +2084,7 @@ export class Manager {
     const connector = await this.resolveConnector(r.connector);
     if (!connector.retireAfterExit) throw new Error(`the ${r.connector} connector cannot prove seat ${r.name}'s launched processes gone`);
     return withTimeout(
-      connector.retireAfterExit({ space: this.space, name: r.name, lifecycleUid: r.uid, workspaceRoot: this.workspaceRoot }),
+      connector.retireAfterExit({ space: this.config.space, name: r.name, lifecycleUid: r.uid, workspaceRoot: this.config.workspaceRoot }),
       ONCE_RETIRE_MS,
       `seat ${r.name}'s launched processes were not proved gone within ${ONCE_RETIRE_MS}ms`,
     );
@@ -2231,9 +2093,6 @@ export class Manager {
   /** Make an adopted seat a once seat again: its exit settles its task, and the task is served to
    *  it. A task that ended before the restart owes the stop the predecessor may not have made. */
   protected bindOnceSeat(a: ManagedAgent): Promise<void> { return this.turnRelay.bindOnceSeat(a); }
-
-  /** {@link SeatStop.cancelAgentGoal}. */
-  private cancelAgentGoal(...args: Parameters<SeatStop["cancelAgentGoal"]>): ReturnType<SeatStop["cancelAgentGoal"]> { return this.seatStopComponent.cancelAgentGoal(...args); }
 
   protected recordSlotRuntime(a: ManagedAgent): Promise<void> {
     return this.seatCustody.recordSlotRuntime(a);
@@ -2267,7 +2126,7 @@ export class Manager {
    *  retirement that confirms the lifecycle is gone. */
   protected releasedSeatPending(a: { name: string; lifecycleUid: string }): boolean {
     try {
-      return readReleasedSeatReference(this.workspaceRoot, this.space, a.name)?.lifecycleUid === a.lifecycleUid;
+      return readReleasedSeatReference(this.config.workspaceRoot, this.config.space, a.name)?.lifecycleUid === a.lifecycleUid;
     } catch {
       return false;
     }
@@ -2301,24 +2160,12 @@ export class Manager {
     return this.staticLifecycle.retireStaticChatSession(raw);
   }
 
-  private retireChatSessionsOnStop(): Promise<void> {
-    return this.staticLifecycle.retireChatSessionsOnStop();
-  }
-
-  private reportChatSessionsLeftAtStop(why: string): void {
-    return this.staticLifecycle.reportChatSessionsLeftAtStop(why);
-  }
-
   protected renewManagedStaticCred(a: ManagedAgent): Promise<void> {
     return this.staticLifecycle.renewManagedStaticCred(a);
   }
 
   protected readStaticReconcileSlot(alias: string): Promise<StaticManagedSlotRow | undefined> {
     return this.staticLifecycle.readStaticReconcileSlot(alias);
-  }
-
-  private awaitStaticReconcileDrain(): Promise<void> {
-    return this.staticLifecycle.awaitStaticReconcileDrain();
   }
 
   protected reconcileStaticLifecycles(postAdoption = false): Promise<void> {
@@ -2331,8 +2178,6 @@ export class Manager {
   /** {@link BrokerTransport.withProvisioner}. */
   protected withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withProvisioner(fn); }
 
-  /** {@link BrokerTransport.withTransferReader}. */
-  protected withTransferReader<T>(fn: (nc: NatsConnection) => Promise<T>): Promise<T> { return this.brokerTransportComponent.withTransferReader(fn); }
 
   /** {@link SeatStop.opPurge}. */
   protected opPurge(...args: Parameters<SeatStop["opPurge"]>): ReturnType<SeatStop["opPurge"]> { return this.seatStopComponent.opPurge(...args); }
@@ -2344,17 +2189,11 @@ export class Manager {
   /** {@link PersonaCatalog.opRemovePersona}. */
   protected opRemovePersona(...args: Parameters<PersonaCatalog["opRemovePersona"]>): ReturnType<PersonaCatalog["opRemovePersona"]> { return this.personaCatalogComponent.opRemovePersona(...args); }
 
-  /** {@link PersonaCatalog.personaOwner}. */
-  protected personaOwner(...args: Parameters<PersonaCatalog["personaOwner"]>): ReturnType<PersonaCatalog["personaOwner"]> { return this.personaCatalogComponent.personaOwner(...args); }
 
   /** {@link PersonaCatalog.canReadPersona}. */
   protected canReadPersona(...args: Parameters<PersonaCatalog["canReadPersona"]>): ReturnType<PersonaCatalog["canReadPersona"]> { return this.personaCatalogComponent.canReadPersona(...args); }
 
-  /** {@link PersonaCatalog.opListPersonas}. */
-  protected opListPersonas(...args: Parameters<PersonaCatalog["opListPersonas"]>): ReturnType<PersonaCatalog["opListPersonas"]> { return this.personaCatalogComponent.opListPersonas(...args); }
 
-  /** {@link PersonaCatalog.opShowPersona}. */
-  protected opShowPersona(...args: Parameters<PersonaCatalog["opShowPersona"]>): ReturnType<PersonaCatalog["opShowPersona"]> { return this.personaCatalogComponent.opShowPersona(...args); }
 
   /** {@link TerminalInput.inputAuthorized}. */
   protected inputAuthorized(...args: Parameters<TerminalInput["inputAuthorized"]>): ReturnType<TerminalInput["inputAuthorized"]> { return this.terminalInputComponent.inputAuthorized(...args); }

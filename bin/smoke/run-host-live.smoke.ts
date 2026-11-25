@@ -35,7 +35,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
-  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter,
+  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter, writeRunStatus,
 } = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -100,6 +100,23 @@ const ownedSeats: OwnedSeatT[] = [];
 const spaceA = `runhost-${Math.random().toString(36).slice(2, 8)}`;
 const auth = await createSpaceAuth(spaceA);
 const brokerA = await bootBroker(auth);
+async function seedCompletedHistory(): Promise<void> {
+  const instanceId = mintLifecycleUid();
+  const now = Date.now();
+  const pins = { seed: "history", startedAt: now, yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" };
+  // Two keys per run put the inherited checkpoint records on a later batch page.
+  for (let i = 0; i < 520; i++) {
+    const runId = `run-history-${i}`;
+    const takeoverId = newTakeoverId();
+    const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId, takeoverId, instanceId, epoch: 1 } });
+    const writer = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const kv = await openRecordsBucket(writer, spaceA);
+      const observedSpecRevision = await createRunSpec(kv, "manager", runId, { pins, createdAt: now });
+      await writeRunStatus(kv, "manager", runId, { observedSpecRevision, state: "completed", holder: `fixture.${takeoverId}`, epoch: 1, fencingToken: 1, journalHigh: 1, at: now });
+    } finally { await writer.close(); }
+  }
+}
 const wsA = mkdtempSync(join(tmpdir(), "cotal-runhost-wsA-"));
 scratch.push(wsA);
 mkdirSync(join(wsA, ".cotal", "agents"), { recursive: true });
@@ -129,6 +146,15 @@ let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: brokerA.servers, space: spaceA, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
+  const startFile = join(wsA, "start.cotal.js");
+  writeFileSync(startFile, PURE);
+  const noManager = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "r", "start", startFile, "--json"], {
+    cwd: wsA, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  }).catch((error: { code?: number; stdout?: string }) => error);
+  const noManagerError = JSON.parse(noManager.stdout || "{}").error;
+  c("A0. Hosted start still points to the manager on a static-auth mesh without one",
+    "code" in noManager && noManager.code === 2 && noManagerError?.code === "TARGET_UNAVAILABLE"
+      && noManagerError?.remedy.endsWith("a stack started with --no-manager has none"), noManager);
   delivery = await bootDeliveryDaemon({
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: workspaceSecretStore(wsA).identity,
@@ -706,8 +732,9 @@ try {
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
   }
-  console.log("A5a. a dropped inventory connection does not strand inherited runs");
+  console.log("A5a. a fresh batched scan takes back inherited runs after a dropped connection");
   {
+    await seedCompletedHistory();
     const startPaused = async (file: string) => {
       const r = await callB("run-start", { source: CHECKPOINT, file });
       const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
@@ -722,7 +749,10 @@ try {
     const logs: string[] = [];
     const sockets = new Set<Socket>();
     let droppedJwt: string | undefined;
+    let retryJwt: string | undefined;
     let heldScan: (() => void) | undefined;
+    let batches = 0;
+    let pointReads = 0;
     const port = Number(new URL(brokerA.servers).port);
     const relay = createServer((client) => {
       const upstream = connectSocket(port, "127.0.0.1");
@@ -745,16 +775,23 @@ try {
           client.end("-ERR 'Authorization Violation'\r\n");
           return;
         }
-        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\.[^\r\n]+\r\n[^\r\n]*"next_by_subj":"[^"]*\.run\.manager\.\*\.spec"/.test(data)) {
+        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.DIRECT\.GET\.KV_cotal_records_/.test(data)) {
           if (droppedJwt === undefined) {
             droppedJwt = jwt;
             client.resetAndDestroy();
             return;
           }
           // Hold the retry's first inventory read until the gate and unchanged run are observed.
+          retryJwt = jwt;
+          batches++;
           client.pause();
           heldScan = () => { upstream.write(bytes); client.resume(); };
           return;
+        }
+        if (retryJwt !== undefined && jwt === retryJwt) {
+          const chunk = bytes.toString("latin1");
+          batches += (chunk.match(/(?:H?PUB) \$JS\.API\.DIRECT\.GET\.KV_cotal_records_/g) ?? []).length;
+          pointReads += (chunk.match(/(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\./g) ?? []).length;
         }
         upstream.write(bytes);
       });
@@ -779,6 +816,7 @@ try {
       const recovered = releaseScan && await until(async () => { const v = await successor.status({ runId }); return v.status?.epoch === 2 ? v : undefined; }, 10_000);
       c("a fresh scan takes back the admitted run once without another reconcile call",
         recovered?.status?.epoch === 2 && pending(recovered, "Ship it?") !== undefined && recovered.journal.filter((r) => r.kind === "activation").length === 2, { status: recovered?.status, logs });
+      c("the retry reads multiple batches without point reads for completed runs", batches > 1 && pointReads < 20, { batches, pointReads });
       const revoked = await successor.status({ runId: revokedId });
       c("the retry still leaves the revoked run parked", revoked.status?.epoch === 1 && revoked.revoked?.by === "operator"
         && revoked.journal.filter((r) => r.kind === "activation").length === 1, { status: revoked.status, logs });
@@ -1134,11 +1172,28 @@ try {
   scratch.push(wsB);
   mkdirSync(join(wsB, ".cotal", "agents"), { recursive: true });
   recordMesh({ space: spaceB, server, root: wsB, mode: "open", ts: new Date().toISOString() });
+  const file = join(wsB, "cp.cotal.js");
+  writeFileSync(file, CHECKPOINT);
+  const runCli = (...args: string[]) => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", ...args], {
+    cwd: wsB, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  });
+  const { stdout: localList } = await runCli("list", "--local", "--plain");
+  c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
+    localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
+      localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
+  const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
+  const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
+  const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
+  const openStartRemedy = "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run";
+  c("B0a. Hosted start on a broker-only open mesh gives the same simulation and static-auth guidance in JSON and plain output",
+    "code" in brokerOnlyStart && brokerOnlyStart.code === 2 && refusal.outcome === "refused" && refusal.target?.space === spaceB
+      && refusal.error?.code === "UNSUPPORTED" && refusal.error?.message === "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission"
+      && refusal.error?.remedy === openStartRemedy
+      && "code" in plainStart && plainStart.code === 2
+      && plainStart.stderr?.split("\n").some((line) => line.trim() === openStartRemedy) === true, { refusal, plainStart });
   mgr = new Manager({ space: spaceB, servers: server, runtime: "pty", workspaceRoot: wsB });
   await mgr.start();
 
-  const file = join(wsB, "cp.cotal.js");
-  writeFileSync(file, CHECKPOINT);
   const LOGS: string[] = [];
   const realLog = console.log;
   console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -1148,8 +1203,8 @@ try {
     return LOGS.join("\n");
   };
   // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
-  // no run and admits no local one: both refusals name the fact. The hosted one is the manager's
-  // refusal, thrown classified for the command kernel; the local one goes through `console.error` +
+  // no run and admits no local one: both refusals name the fact. The hosted one is classified for
+  // the command kernel; the local one goes through `console.error` +
   // `process.exit(1)`, captured here the way A7 captures them.
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -1180,7 +1235,7 @@ try {
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh is refused by the manager, UNSUPPORTED, naming the space and that runs need a static-auth mesh", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B1. `cotal run start` on an open mesh with a manager is still refused as UNSUPPORTED", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh cannot host workflow runs"), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
@@ -1220,7 +1275,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 109;
+const EXPECTED_CELLS = 113;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

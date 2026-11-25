@@ -1,6 +1,8 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import { shellPath } from "./local-record-source.js";
+import { codeSpan } from "./text-wrap.js";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { connectorConfigDir } from "./connector-retention.js";
@@ -61,6 +63,10 @@ export interface CachedConnector {
    *  endpoint. Absent in a manifest written before this was cached, which reads as false: no launch
    *  menu offers prompts on a guess. */
   readonly prompts?: boolean;
+  /** Whether the connector honors `askPermissions` and `reasoningEvents` at launch. Absent in a
+   *  manifest written before these were cached, which reads as false. */
+  readonly askPermissions?: boolean;
+  readonly reasoningEvents?: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
@@ -93,6 +99,19 @@ export interface ExtensionsManifest {
   readonly extensions: readonly InstalledExtension[];
 }
 
+/** A dot-relative or native absolute package path, including drive and UNC paths on Windows. */
+export function isExtensionPathSpec(spec: string, absolute: (p: string) => boolean = isAbsolute): boolean {
+  return spec.startsWith(".") || absolute(spec);
+}
+
+/** Recovery for a recorded extension. Do not echo a registry URL or opaque selector in advice. */
+export function extensionReinstallAdvice(entry: InstalledExtension): string {
+  if (entry.source === "seeded") return "Run `cotal ext seed --repair` to reinstall it.";
+  if (isExtensionPathSpec(entry.spec) || /^(?:@[a-z0-9._~-]+\/)?[a-z0-9._~-]+(?:@[a-z0-9._~^*<>=|+ -]+)?$/i.test(entry.spec))
+    return `Run ${codeSpan(`cotal ext add ${shellPath(entry.spec)}`)} to reinstall it.`;
+  return `Run ${codeSpan(`cotal ext remove ${shellPath(entry.pkg)}`)} to drop the record, or reinstall with the original spec.`;
+}
+
 /** The extensions prefix: `<config>/cotal/extensions` — its own npm installation root. */
 export function extensionsDir(): string {
   return join(connectorConfigDir(), "extensions");
@@ -118,13 +137,25 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
   return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
+export class CorruptExtensionsManifestError extends Error {
+  readonly diagnosis: string;
+  readonly remedy: string;
+
+  constructor(path: string, reason: string) {
+    const diagnosis = `corrupt extensions manifest ${path}: ${reason}`;
+    const remedy = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
+    super(`${diagnosis}. ${remedy}`);
+    this.diagnosis = diagnosis;
+    this.remedy = remedy;
+  }
+}
+
 /** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
  *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
  *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
-  const repair = "run `cotal ext seed --repair` to preserve the damaged file and rebuild the built-in inventory";
   let parsed: unknown;
   try {
     if (!statSync(p).isFile()) throw new Error("not a regular file");
@@ -138,10 +169,10 @@ export function loadExtensionsManifest(): ExtensionsManifest {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
     if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
-    throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message}. ${repair}`);
+    throw new CorruptExtensionsManifestError(p, (e as Error).message);
   }
   const m = parsed as ExtensionsManifest | null;
-  if (!Array.isArray(m?.extensions)) throw new Error(`corrupt extensions manifest ${p}: no "extensions" array. ${repair}`);
+  if (!Array.isArray(m?.extensions)) throw new CorruptExtensionsManifestError(p, 'no "extensions" array');
   return m;
 }
 
@@ -191,6 +222,8 @@ export function cacheConnector(connector: Connector): CachedConnector {
     requires: [...(connector.requires ?? [])],
     eventPlane: connector.eventChannel !== undefined,
     prompts: connector.prompts === true,
+    askPermissions: connector.supportsAskPermissions === true,
+    reasoningEvents: connector.supportsReasoningEvents === true,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
   };
 }

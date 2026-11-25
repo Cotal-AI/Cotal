@@ -43,8 +43,8 @@
     {
       "name": "the re-serve test goes back to an advancement comparison",
       "file": "packages/core/src/endpoint-credentials.ts",
-      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
-      "replace": "        if (expiryMs <= bearerExpiryMs(held) && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
+      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
+      "replace": "        if (expiryMs <= bearerExpiryMs(held) && Date.now() >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
       "expectRed": "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
       "cell": "a re-signed token carrying the same exp past its renewal window IS adopted, with no warning",
       "note": "The false refusal that advancement produces, and the reason the shipped test is byte identity. A token re-signed under a rotated key carries the same exp, so past the renewal window an advancement test calls it stale and backs off against material the broker has just started requiring. Inside the window neither test refuses, so only this cell tells them apart."
@@ -70,8 +70,8 @@
     {
       "name": "the window edge goes exclusive, so the same token at its renewal deadline is adopted",
       "file": "packages/core/src/endpoint-credentials.ts",
-      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
-      "replace": "        if (bearer === held && Date.now() > bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
+      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
+      "replace": "        if (bearer === held && Date.now() > bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
       "expectRed": "the SAME token back past its renewal window is refused (the edge is inclusive)",
       "cell": "the SAME token back past its renewal window is refused (the edge is inclusive)",
       "note": "The two branches differ only when now is the renewal deadline. The cell pins Date.now to that instant, so the refusal either fires or it does not."
@@ -79,8 +79,8 @@
     {
       "name": "the re-serve refusal starts one millisecond inside the renewal window",
       "file": "packages/core/src/endpoint-credentials.ts",
-      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
-      "replace": "        if (bearer === held && Date.now() + 1 >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
+      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
+      "replace": "        if (bearer === held && Date.now() + 1 >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
       "expectRed": "the same token 1ms inside its window is adopted, with no warning, and re-armed at the 5s floor",
       "cell": "the same token 1ms inside its window is adopted, with no warning, and re-armed at the 5s floor",
       "note": "The other side of the edge. The deadline cell catches a threshold moved later and this cell catches one moved earlier, so the boundary is pinned from both sides."
@@ -88,7 +88,7 @@
     {
       "name": "the re-serve refusal no longer asks how much life the token has left",
       "file": "packages/core/src/endpoint-credentials.ts",
-      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.bearerAdoptedAtMs))",
+      "find": "        if (bearer === held && Date.now() >= bearerRenewalDeadlineMs(held, this.cred.bearerAdoptedAtMs))",
       "replace": "        if (bearer === held)",
       "expectRed": "a re-served token with most of its life left is adopted, with no warning",
       "cell": "a re-served token with most of its life left is adopted, with no warning",
@@ -97,7 +97,7 @@
     {
       "name": "a failed refresh retries after ten minutes instead of 2.5s to 5s",
       "file": "packages/core/src/endpoint-credentials.ts",
-      "find": "      const delay = named > 0 ? named : jitteredBackoffMs(this.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);",
+      "find": "      const delay = named > 0 ? named : jitteredBackoffMs(this.cred.bearerRenewalFailures, EndpointCredentials.BEARER_RETRY_MS, EndpointCredentials.BEARER_RETRY_CAP_MS);",
       "replace": "      const delay = named > 0 ? named : 600_000;",
       "expectRed": "that refusal arms the first jittered retry, 2.5s to 5s, not the renewal window",
       "cell": "that refusal arms the first jittered retry, 2.5s to 5s, not the renewal window",

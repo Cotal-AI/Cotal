@@ -1,5 +1,125 @@
 # @cotal-ai/core
 
+## 0.179.0
+
+### Minor Changes
+
+- 3b5bde1: T3 Code and other ACP clients now get from every Cotal agent what that harness's own provider shows: replies streamed as they are written, tool calls with their arguments, results and diffs, plans, approvals, questions, the agent's own commands, cancel, later prompts with images, context usage, reasoning, and the model and effort pickers.
+  
+  - Core: the `agent` endpoint is at revision 5, with `turn` (the owner's next prompt, with images) and `usage` (context and cost). Presence gains `agentEndpoint: { interrupt, turn, images, usage }`, which says what a process serves now, so a caller picks one path per agent before it sends anything. `ModelCatalogOpts.envAllow` gives a model catalog read the `spawn.env` names a launch receives.
+  - Manager: cluster revision 56. `spawn` takes the opt-in `askPermissions` (ask before tool use) and `reasoningEvents` (publish the model's reasoning), and every `status.connectors` row says whether its connector takes them. Update Managers and their callers together. `@cotal-ai/workspace` carries the two fields in a managed launch and in the cached connector rows.
+  - connector-core: a delta journal beside each thread's journal streams harness text and reasoning before the harness saves it, merged into the durable source, and a connector may journal records of its own there. `JsonlFileSource.holdsSync` tells whether a cursor is on the file at the path now. A tool result marker may leave out `isError`, and `web` reads one without it.
+  - Claude Code: reply text streams while the command mod runs; the owner's turns take images as files the model reads; usage, both launch fields, `AskUserQuestion` as a question form, and the model list read with the launch's `spawn.env` names. Reply text that Claude Code does not show, such as "No response requested.", is not published. The release plugin tree now ships `hooks/stream.js`. The to-do tools stay off as Claude Code's terminal has them for current models; an operator turns them on with `CLAUDE_CODE_ENABLE_TODO_TOOLS` through `spawn.env`.
+  - Codex: replies and reasoning summaries stream; turns with images and usage; approval requests, questions, permissions requests and MCP elicitations go to the prompt desk; `askPermissions` launches in the approval-required mode; a code-mode script's calls and plan show as their own tool calls while they run. Codex now publishes reasoning only for a launch with `reasoningEvents`, where before it published every summary it recorded.
+  - Hermes: turns, interrupt, usage and the gateway's slash commands on the agent endpoint; streamed replies; reasoning with `reasoningEvents`; `askPermissions` for the commands Hermes stops; `clarify` questions on the prompt desk; the models of the provider a launch's environment selects, with Hermes's reasoning efforts as variants; tools run in the seat's folder; and a run shared by several messages ends with the outcome of the message that ends it.
+  - Jcode: native session commands, interrupt, turns with images, usage and streamed text and reasoning; a failed turn closes its run with the error; the seat's real home, so the shell tool runs on Jcode 1.1; and streaming keeps going across a journal fold that reuses the file's inode.
+  - OpenCode: agent commands and interrupt on 1.x; turns with images and usage, permission asks and questions on the agent endpoint, both launch fields, streamed replies and running tool calls on 2.x and 1.x. On 1.x, usage reads the newest step, and a command whose turn never starts frees the seat after 5 seconds. Before launch, `harness-commands` lists a 1.x install's commands and skills too, from a private server it starts and stops. The 2.x model list read stops its private server's whole process group, reports OpenCode's own error when that server fails to start, and gives up after 10 seconds in all.
+  - Pi: tool arguments and results on the payload rail, turns and usage, `askPermissions`, streamed replies, thinking with `reasoningEvents`, and the model catalog read with the launch's `spawn.env` names.
+  - `cotal acp`: picks each agent's cancel, prompt, image and usage path from its presence; sends a turn's usage before the prompt answers; gives each model's reasoning choices in the session's model state, so T3 shows the effort picker before a thread runs; launches with the two fields where the connector takes them; shows tool details, plans, Codex's change approvals as diffs, and the agent's own commands; asks an agent's approvals and questions, also ones it opens between the thread's turns, and asks a prompt again when its first read fails; keeps a prompt queued behind the agent's other work open until the agent runs it, and a cancel takes it out of the queue; never defaults a thread to another computer's manager; offers a short persona and channel select plus `/persona` and `/join` where the lists are too long for a select; and says what it cannot replay when an agent's tool details cannot be read.
+  - `cli`: the Hermes model remedy no longer suggests `--no-events`.
+- 0413abe: A new agent can now label itself from the first message it gets, using its own session's model, while it keeps its launch name as the name people mention and message. The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, which reaches the seat as `COTAL_AUTO_NAME=1` (`LaunchOpts.autoName`) and is refused on a `once` spawn and on a delegated runtime. The seat's connector makes one tool-less request to its own model, outside its conversation, about the launch prompt or else the first live direct message or mention from the seat's own owner, and shows the cleaned reply as the card's `meta["ai.cotal.label"]` (`AGENT_LABEL_META_KEY`), at most 40 code points. `card.name` never changes, so mentions, direct messages and name lookups keep resolving the launch name, and readers show `meta["ai.cotal.label"] ?? name`. The card carries `meta["ai.cotal.naming"] = "pending"` until naming settles, whatever the outcome, and the label and the key's removal reach presence in one record. An owner `set-name` still changes the name, ends naming when it is out, and drops the label in the record that carries the new name. A failed naming shows no label. Claude Code, Codex and OpenCode 2.x seats have the request; Hermes, Jcode, pi and OpenCode 1.x seats show no label and never show the key. A relaunch never labels the seat again, `COTAL_DISPLAY_NAME` turns naming off, and an agent file cannot set either key. `CotalEndpoint.setCardMeta` sets or removes card meta keys in one presence record, and `setCardName` takes meta changes for the record that carries the new name.
+- c7f487b: Agents on static spaces and open meshes now answer their owner's prompts, commands, turns, interrupts, usage reads and renames, as they do where people sign in. A static `agent` credential now carries the serve rows for the `agent` endpoint and no caller row. A renewal keeps the rows its first issuance recorded, so an agent an older release started keeps running without the endpoint until it is respawned, and its connector says so. Core adds the static `agent-caller` profile: the owner's calls to the agents under its own owner, their replies and its inbox, never minted by the auth callout. `openAgentCaller` in `@cotal-ai/workspace` opens it. `CotalEndpoint.servePrincipal` and `MeshAgent` serve on every mesh mode. On an open mesh any client may call, outside the security claims. The Manager's `status.connectors[].prompts` is the connector's declaration on every mesh mode, with the same schema and cluster revision. Codex accepts an asking `approval_policy` on every space. `cotal acp` calls agents through an in-memory `agent-caller` on a static space and through its observer elsewhere, so questions, the agent's commands, images and `/name` work in a thread on every space. The Manager now accepts a spawn's `firstCommand` on static spaces and open meshes too, and the agent runs it there as its first turn.
+
+## 0.178.0
+
+No changes in this release.
+
+## 0.177.0
+
+### Minor Changes
+
+- 0bb3186: A launcher can now list the commands and skills a harness offers in a directory before any agent starts, and start an agent with one of them as its first turn. The Manager's new `harness-commands` read (`{ agent, cwd }`) asks Claude Code, Codex, pi or OpenCode 2.x in that directory and answers the entries a seat's `command` takes, or `supported: false` with a reason for a harness whose seats run no commands; it starts no seat and is granted where `list-dir` is. `spawn` takes `firstCommand: { target, name, args? }` and its acceptance names `firstCommand.id`. The agent queues the command under that id before any other and runs it as its first turn through its own command lane once the harness runs commands, and `command-state` reports a refusal. The Manager cluster advances to revision 54.
+
+### Patch Changes
+
+- d03e96f: Report a missing persona name, not a missing closing fence, when the frontmatter is empty.
+
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- e0a0bb7: Plain chat accepts multiline drafts at the stated limit, chat retry guidance keeps your original options, and the terminal console quits cleanly after the broker stops.
+- 73f4306: All-channel history returns retained posts in order even when a deeply dotted channel shares a large history with other channels.
+
+## 0.176.3
+
+No changes in this release.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Minor Changes
+
+- e9bcb31: `cotal setup` now adds Cotal to T3 Code and Zed when it finds them, so a thread in either app can start and drive Cotal agents without editing their settings by hand. Setup installs `@cotal-ai/acp` and adds one entry per space that runs this computer's `cotal acp --space <space>` by absolute path. It updates an entry you added by hand in place instead of adding a second one, keeps your other settings and Zed's comments, and backs up each file before it changes it. `cotal update` points the entries at the Cotal it installed, and `cotal status` shows an entry whose command is gone. The ACP bridge gains `/name`, which names a thread's agent before it starts or renames a running one on a space where people sign in, and `/open`, which drives an agent that is already running from a new thread. A thread reopens on the agent it spawned or opened. `npx @cotal-ai/acp` starts the Cotal installed on this computer, and when there is none or it lacks the ACP extension, it offers a terminal sign-in that installs what is missing. Core adds the `client-setup` extension kind (`ClientSetupProvider`) and passes the space to a setup action.
+
+### Patch Changes
+
+- 089f68d: Foreground spawn and persona show explain how to recover from unreadable persona files, persona show suggests a valid name override when needed, and the local catalog flags blank filenames as invalid selectors.
+
+## 0.175.3
+
+### Patch Changes
+
+- 35e08ac: Durable channel delivery and the membership feed read only changed registry rows after their initial snapshot instead of listing every membership on each post or connection event.
+
+## 0.175.2
+
+### Patch Changes
+
+- 7ca1d02: The service-account and daemon permission builders now live in their own core module, with no change in behavior.
+- d4ecdff: Internal refactor: the endpoint's connection and the handles opened on it (JetStream clients, KV buckets, membership watches, owned connections and pending replies) live in one `ConnectionState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- c940ed9: Internal refactor: the endpoint's start/stop/rebuild state, its presented credential and renewal state, and its channel-registry cache each live in one state object (`LifecycleState`, `CredentialState`, `ChannelRegistryState`) that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+- a2486a2: Internal refactor: the endpoint's subscriptions, stream consumers, chat subscriptions, liveness responders, principal serves, durable-backstop channels, goal followers and DM-only handler live in one `DeliveryState` object that the endpoint's internal parts share by reference, replacing per-field getter and setter callbacks. No behaviour change.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+### Minor Changes
+
+- e91ed5b: T3 Code, Zed and other Agent Client Protocol clients can now spawn and drive Cotal agents through the new `@cotal-ai/acp` extension and its `cotal acp` command.
+  
+  `cotal acp` serves ACP v1 on standard input and output. A client thread is one managed agent: its first prompt spawns the agent through the space's manager in the thread's folder, with the model, reasoning variant, persona, channel and machine the thread chose, and the agent keeps running when the client closes. The thread follows the agent's event channel, so an application without an event plane is not offered. Session list shows the managed agents in a folder, loading one replays what its event channel still holds, deleting one hides that run, and `/despawn`, `/roster` and `/channels` answer in the thread. A later prompt is typed into the agent's terminal through the manager's `input` command, so it arrives as the user's own words, and its turn ends once the agent has started working and stopped again. An agent whose runtime owns no terminal input, such as tmux, refuses it, and the prompt fails with the manager's reason. A client that runs terminals is offered a sign-in that runs `cotal login` or, with no space recorded, `cotal setup`. Stopping a turn interrupts the agent through the manager's new `interrupt` command, and the turn ends as cancelled, also when the agent cannot be stopped. Forwarding an agent's questions is not available yet. `@cotal-ai/cli` names the package when `cotal acp` runs before the extension is added, and `@cotal-ai/workspace` records `acp` as a Cotal home entry and offers the `input` and `interrupt` control calls.
+  
+  The manager serves a new targeted `interrupt` command, contract revision 53. It writes the key a seat's connector declares in the new `Connector.interruptKey` into the seat's terminal, and it is granted as `input` is. The Claude Code and Pi connectors declare Escape.
+  
+  On a space where people sign in, a person now controls every agent under their own owner without the `admin` scope. Their manager view carries `inspect` and `ps` and owner-mode `input`, `interrupt`, `despawn` and `attach`, whatever their scope, and their sign-in reads those agents' event channels live and through its own history reader. These rights come from the ledger row being a person's, never from a scope token, so no agent credential holds them. They ride the person's sign-in, so a program running as that person where they are signed in can use them. `cotal acp` reads through that sign-in, takes your managers from the auth service's `/manager-instances` list, reads your agents from every live one, sends each agent's commands to the manager that holds it, and names each agent `acp_<id>`, a valid actor name there. A thread loaded without a grant that may spawn offers only the agent's own model and cannot start another, and `cotal acp` stops, sending nothing, when the machine's sign-in is granted again or changes account. `@cotal-ai/core` adds a `publisher` filter to `channelHistoryPage` and an optional `AuthProvider.listManagerInstances`, which `@cotal-ai/auth` implements. `@cotal-ai/workspace` adds `ownManagerInstances`, `userSignInAuth`, `signInChange`, an observer `lifecycleUid` option, and a `gone` list on the `ps` reply for registrations whose host is gone. A control call whose own chosen run was replaced is now reported as refused before submission, with `preSubmitRefusal` and `selectedSeatChanged`, so a picker `cotal attach` exits as a refusal (`TARGET_NOT_FOUND`) and `cotal team agent remove` reports refused where they reported a failure or an unknown outcome; nothing was ever sent in that case.
+
+### Patch Changes
+
+- 4907c2d: The subject token, channel and principal grammar now lives in its own core module, with no change in behavior.
+
+## 0.174.4
+
+### Patch Changes
+
+- 8aceac1: Give each remaining single-owner `CotalEndpoint` field to the internal part that reads and writes it: the connection part owns its timers, the observer taps and its watch-consumer and subscription-denial records; the reconnect part owns the retry count and backoff; the consumer part owns the task epoch, first-connect flag and chat subscription refusals; the control plane owns its service caches and split count; the credential part owns its transaction chain and renewal timer; the principal-serve part owns the `prompts` presence field. The package exports, public methods and wire behaviour are unchanged.
+- bd76aab: Persona listings report broken catalog links, channel errors name the frontmatter key, and local creation rejects invalid launch names while existing personas with hyphen-leading catalog names keep copyable follow-up commands.
+
+## 0.174.3
+
+### Patch Changes
+
+- 8a7bd4b: Persona show prints commands you can copy for names starting with a hyphen, and persona files reject a blank or null endpoints declaration instead of ignoring it.
+- ff4cd00: Persona retries keep the selected catalog and explain when to pipe input again, malformed closing fences are rejected, and blank connector pins use the default unless a harness is specified.
+
 ## 0.174.2
 
 ### Patch Changes

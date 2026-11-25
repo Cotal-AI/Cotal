@@ -68,7 +68,7 @@ symlinkSync(natsServer, join(bin, process.platform === "win32" ? "nats-server.ex
 // Do not expose ambient POSIX tools: `/usr/bin/orca` can be the GNOME screen reader.
 if (process.platform !== "win32") {
   symlinkSync(process.execPath, join(bin, "node"));
-  for (const name of ["npm", "sh", "ps", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
+  for (const name of ["npm", "sh", "ps", "mkdir", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
     const executable = resolveOnPath(name);
     if (!executable) throw new Error(`setup fixture requires ${name} on the host PATH`);
     symlinkSync(executable, join(bin, name));
@@ -216,6 +216,7 @@ if (seeded.status !== 0) {
 // to the newest fails. Every other package is not found. Set after the seed, so only the runtime
 // installs read it.
 const REPO = join(import.meta.dirname, "..", "..", "..");
+const installationDocs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
 const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
 const NEWER = "99.0.0";
 const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
@@ -264,6 +265,19 @@ const withMore = { PATH: [more, env.PATH].join(delimiter) };
 const installed = (pkg: string) => loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
 
 const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--destination", "local", "--harness", harness, "--project", dir, "--space", space];
+
+if (process.getuid && process.getuid() !== 0) {
+  const dir = project("p-readonly");
+  chmodSync(dir, 0o500);
+  try {
+    const setup = await json([...FULL("readonly-test", dir), "--yes"], dir);
+    check("setup recommends --project for a writable destination", refused(setup, 2, "PERMISSION_DENIED")
+      && setup.env?.error?.remedy?.endsWith("pass --project <dir>") && !existsSync(join(dir, ".cotal")), shown(setup));
+    const create = await json(["space", "create", "readonly-test", "--root", dir], dir);
+    check("space create recommends --root for a writable destination", refused(create, 2, "PERMISSION_DENIED")
+      && create.env?.error?.remedy?.endsWith("pass --root <dir>") && !existsSync(join(dir, ".cotal")), shown(create));
+  } finally { chmodSync(dir, 0o700); }
+}
 
 // ── A script names every input, and a refusal writes nothing ──────────────────────────────────────
 {
@@ -354,6 +368,21 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
 
+{
+  const dir = project("corrected-name");
+  const base = ["setup", "--destination", "local", "--harness", "codex", "--project", dir];
+  const bad = await json([...base, "--space=-my.space"]);
+  const remedy = bad.env?.error?.remedy;
+  check("a respelled local name does not start with a hyphen",
+    refused(bad, 1, "USAGE_INVALID") && remedy === "pass --space my_space, or another name of letters, digits, - and _", shown(bad));
+  const retry = await json([...base, "--space", /^pass --space ([^,]+),/.exec(remedy ?? "")?.[1] ?? "", "--yes"]);
+  check("the suggested name can be used as a flag value and prepared",
+    retry.status === 0 && retry.env?.result?.space === "my_space" && retry.env.result.spaceState === "created", shown(retry));
+  const long = await json([...base, `--space=${"a".repeat(64)}.`]);
+  check("setup does not suggest a concrete name too long for a local space",
+    refused(long, 1, "USAGE_INVALID") && /^choose a name/.test(long.env?.error?.remedy ?? ""), shown(long));
+}
+
 if (process.platform !== "win32") {
   const original = project("workshop's original");
   const other = project("workshop-other");
@@ -371,12 +400,18 @@ if (process.platform !== "win32") {
 
 // A confirmed scripted local setup creates its explicitly named project folder.
 {
-  const dir = join(home, "new-project");
-  const created = await json([...FULL("new-project", dir), "--yes"]);
+  const parent = join(home, "new-project");
+  const dir = join(parent, "nested");
+  const previousUmask = process.umask(0o000);
+  const creating = json([...FULL("new-project", dir), "--yes"]);
+  process.umask(previousUmask);
+  const created = await creating;
   check("--yes creates a missing local project and prepares its default persona",
     created.status === 0 && findPreparedSpace("new-project")?.root === dir &&
       existsSync(join(dir, ".cotal", "agents", "default.md")) &&
       created.env?.result?.written?.some((w: { what: string }) => w.what === "project folder"), shown(created));
+  if (process.platform !== "win32")
+    check("setup makes each missing project directory private under umask 000", created.status === 0 && [parent, dir].every((path) => (statSync(path).mode & 0o777) === 0o700));
   const file = join(home, "project-file");
   writeFileSync(file, "keep");
   const rejected = await json([...FULL("project-file", file), "--yes"]);
@@ -385,6 +420,23 @@ if (process.platform !== "win32") {
 }
 
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
+if (process.platform !== "win32") {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("bash\n") && /^cotal setup --destination local .* --no-input$/m.test(block))
+    ?.slice("bash\n".length);
+  const dir = join(home, "scripted-research");
+  check("the documented local example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const runExample = spawnSync("sh", ["-ec", `node=$1; cli=$2
+cotal() { "$node" "$cli" "$@"; }
+${example.replaceAll("research", "scripted-research")}`, "setup-example", process.execPath, BIN],
+    { cwd: home, env, encoding: "utf8", timeout: 180_000 });
+    check("the documented local example creates its folder and saves preparation before reporting missing Claude",
+      runExample.status === 4 && /saved scripted-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
+}
+
 {
   const dir = project("p-claude");
   const partial = await json(FULL("claudespace", dir, "claude"));
@@ -502,8 +554,7 @@ if (process.platform !== "win32") {
   const help = await run(["setup", "--help"]);
   check("setup help labels the self-hosted connection-file example as prompting in a terminal",
     help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
-  const docs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
-  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(docs)?.[0];
+  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(installationDocs)?.[0];
   check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
   const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
   const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);
@@ -798,6 +849,50 @@ if (process.platform !== "win32") {
   check("rerunning configure-only after moving the file seeds the persona and keeps the prepared record",
     retried.status === 0 && retried.env?.result?.spaceState === "prepared" && retried.env.result.startup?.state === "not-requested"
       && saved !== undefined && findPreparedSpace("blocked-persona")?.ts === saved.ts && existsSync(join(agents, "default.md")), shown(retried));
+}
+
+{
+  const dir = project("blocked-demo");
+  const agents = join(dir, ".cotal", "agents");
+  const path = join(agents, "david.md");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, "keep"), "untouched");
+  const args = [...FULL("blocked-demo", "."), "--yes", "--demo"];
+  const blocked = await json(args, dir);
+  check("a directory blocking a demo persona refuses before writing space or personas",
+    refused(blocked, 2, "CONFLICT") && blocked.env?.target?.space === "blocked-demo" && blocked.env.target.path === path
+      && blocked.env.error.message.includes(path) && blocked.env.error.remedy === `move the directory at ${path} aside, then run the same setup again`
+      && findPreparedSpace("blocked-demo") === undefined && !existsSync(join(agents, "default.md"))
+      && readFileSync(join(path, "keep"), "utf8") === "untouched", shown(blocked));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup prepare the space and seed the demo team",
+    retried.status === 0 && findPreparedSpace("blocked-demo")?.root === dir
+      && ["default", "david", "sven", "me"].every((name) => existsSync(join(agents, `${name}.md`))), shown(retried));
+}
+
+{
+  const dir = project("blocked-log");
+  const path = join(dir, ".cotal", "setup.log");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const args = [...FULL("blocked-log", "."), "--configure-only", "--yes"];
+  const blocked = await json(args, dir);
+  const saved = findPreparedSpace("blocked-log");
+  check("a blocked setup log reports the saved preparation and the path to repair",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL"
+      && blocked.env.target?.space === "blocked-log" && blocked.env.target.path === path
+      && blocked.env.error.remedy === `check and repair the log path ${path}, then run the same setup again`
+      && blocked.env.changed?.map((write: { what: string }) => write.what).join(", ") === "prepared space, default persona, harness preference of blocked-log"
+      && saved?.root === dir, shown(blocked));
+  const unchanged = await json(args, dir);
+  check("the same blocked log fails with no changes on a retry",
+    unchanged.status === 5 && unchanged.env?.outcome === "failed" && unchanged.env.error?.code === "OPERATION_FAILED"
+      && !unchanged.env.changed?.length, shown(unchanged));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup finish without replacing preparation",
+    retried.status === 0 && retried.env?.result?.spaceState === "prepared" && saved !== undefined
+      && findPreparedSpace("blocked-log")?.ts === saved.ts && existsSync(path), shown(retried));
 }
 
 if (process.platform !== "win32") {

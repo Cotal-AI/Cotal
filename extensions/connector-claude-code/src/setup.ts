@@ -29,7 +29,7 @@ const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 type PluginEntry = Record<string, unknown>;
 
 /** What the `cotal` plugin carries from this package. */
-const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"] as const;
+const COTAL_ASSETS = [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs", "dist/command-reader.cjs"] as const;
 
 /** The version the materialized `cotal` plugin carries: this release, then a digest of every file it
  *  holds, so `cotal status` can tell a copy an earlier release wrote. */
@@ -248,13 +248,12 @@ function pluginCacheDir(): string {
   return process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR?.trim() || join(config, "plugins");
 }
 
-/** Refuse before either shared registration moves, including a profile with only its MCP entry left. */
-function assertRegistrationHome(): void {
+/** The guidance when a shared registration belongs to another Cotal home, including a profile with
+ *  only its MCP entry left; undefined when every registration belongs to this home. */
+function foreignRegistration(): string | undefined {
   const canonical = (path: string) => existsSync(path) ? realpathSync(path) : resolve(path);
-  const check = (home: string, registration: string) => {
-    if (canonical(home) !== canonical(cotalHome()))
-      throw new Error(`${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`);
-  };
+  const check = (home: string, registration: string) => canonical(home) === canonical(cotalHome()) ? undefined
+    : `${registration} belongs to Cotal home ${home}, not ${cotalHome()}. Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home.`;
   const result = command("plugin", "marketplace", "list", "--json");
   if (result.status !== 0) throw new Error(`plugin marketplace list failed:\n${result.output}`);
   const entries: unknown = JSON.parse(result.output);
@@ -262,13 +261,23 @@ function assertRegistrationHome(): void {
   const market = entries.find((entry) => entry?.name === MARKETPLACE);
   if (market?.source === "directory") {
     if (typeof market.path !== "string" || !market.path) throw new Error("Claude's cotal-mesh marketplace has no directory path");
-    check(dirname(market.path), "Claude marketplace cotal-mesh");
+    const foreign = check(dirname(market.path), "Claude marketplace cotal-mesh");
+    if (foreign) return foreign;
   }
   const server = claudeUserMcpServers().cotal as { args?: unknown } | undefined;
   if (Array.isArray(server?.args)) for (const arg of server.args) {
-    if (typeof arg === "string" && /[\\/]claude-plugin[\\/]cotal[\\/]dist[\\/](?:seat|mcp)\.cjs$/.test(arg))
-      check(dirname(dirname(dirname(dirname(arg)))), "Claude user MCP entry cotal");
+    if (typeof arg === "string" && /[\\/]claude-plugin[\\/]cotal[\\/]dist[\\/](?:seat|mcp)\.cjs$/.test(arg)) {
+      const foreign = check(dirname(dirname(dirname(dirname(arg)))), "Claude user MCP entry cotal");
+      if (foreign) return foreign;
+    }
   }
+  return undefined;
+}
+
+/** Refuse before either shared registration moves. */
+function assertRegistrationHome(): void {
+  const foreign = foreignRegistration();
+  if (foreign) throw Object.assign(new Error(foreign), { name: "ForeignConnectorRegistrationError" });
 }
 
 /** Keep materialization, native registration and verification in one cross-process transaction. */
@@ -616,16 +625,28 @@ function pluginList(): PluginEntry[] | undefined {
 
 /** The skills plugin vs the running CLI release, by the SAME predicate `verify` enforces after an
  *  install (id, scope, enabled, errors, version), so status never blesses a plugin the installer would
- *  reject. Stale, missing and broken all name the scoped remedy. */
+ *  reject. Stale, missing and broken all name the scoped remedy, or the owning home's choices when the
+ *  shared profile belongs to another Cotal home. */
 function skillsRow(entries: PluginEntry[] | undefined, { version, skillsRemedy }: ConnectorStatusInput): ConnectorStatusRow {
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude skills", state, text });
   if (entries === undefined) return row("off", "unknown");
   const match = entries.find((entry) => entry.id === `cotal-skills@${MARKETPLACE}` && entry.scope === "user");
-  if (!match || match.enabled === false) return row("off", `not installed · ${skillsRemedy}`);
+  // The remedy refuses while the shared profile points at another home, so name that home's choices.
+  const foreign = (): string | undefined => {
+    try {
+      return foreignRegistration();
+    } catch {
+      return undefined;
+    }
+  };
+  if (!match || match.enabled === false) return row("off", `not installed · ${foreign() ?? skillsRemedy}`);
   const errors = (match.errors ?? match.error) as unknown;
-  if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${skillsRemedy}`);
+  if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) return row("error", `load error · ${foreign() ?? skillsRemedy}`);
   if (resolvedPluginCurrent(match, version, "cotal-skills")) return row("ok", "current");
-  return row("warn", `${typeof match.version === "string" ? `v${match.version} ≠ v${version} · ` : ""}stale · ${skillsRemedy}`);
+  const owner = foreign();
+  if (owner) return row("warn", owner);
+  const drift = typeof match.version !== "string" ? "" : match.version === version ? `v${version} payload differs · ` : `v${match.version} ≠ v${version} · `;
+  return row("warn", `${drift}stale · ${skillsRemedy}`);
 }
 
 /** The `cotal` plugin against the installed payload Claude resolves, including older cached installs. */

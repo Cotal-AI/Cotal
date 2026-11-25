@@ -20,7 +20,7 @@
  *
  * Run: pnpm smoke:runtime-run-command   (needs nats-server on PATH; part of smoke:ci)
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +33,7 @@ import {
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
   activateRun, lastActivation, writeRunStatus, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
-import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, exitCode, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, shellPath } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -569,6 +569,11 @@ const takeoverRun = startedId()!;
   c("...and its start fails OPERATION_FAILED with only the first line, so no newline reaches the one-line report",
     isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message.endsWith("erste Zeile") && !refused.message.includes("\n") && !refused.message.includes("zweite"),
     refused?.message);
+  reset();
+  await wf(["show", tid], { plain: true });
+  c("a local read of a failure outside any step points to the driving process, not manager logs",
+    captured().includes("zweite Zeile") && captured().includes("check the driving process's output")
+      && !captured().includes("cotal service logs stack-manager"), captured());
   await checkTerminalResume(tid, "failed");
 }
 
@@ -667,6 +672,10 @@ const takeoverRun = startedId()!;
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
   const revokeArgs = { endpoint: EP, by: "smoke-operator", reason: "broker outage" };
+  const missingId = await wf(["revoke"], revokeArgs).then(() => undefined, (e: unknown) => e);
+  c("revoke without an ID asks to add it to the original command",
+    isCommandFailure(missingId) && exitCode(missingId.outcome, missingId.code) === 1
+      && missingId.remedy?.startsWith("add a run ID after `run revoke` in the original command") === true, missingId);
   reset();
   const refusal = await wf(["revoke", rid], { ...revokeArgs, json: true }).then(() => undefined, (e: unknown) => e);
   c("revoke with --json asks to remove only that flag from the original invocation",
@@ -682,7 +691,7 @@ const takeoverRun = startedId()!;
 
   reset();
   await wf(["revoke", rid], revokeArgs);
-  c("revoke acknowledges with the revoker and the reason",
+  c("adding the run ID to the original revoke records the supplied revoker and reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
     captured().includes(`cotal run now lists ${rid} as revoked`), captured());
@@ -787,7 +796,8 @@ const takeoverRun = startedId()!;
 // grammar refuses them as usage and the writer refuses them again before the create.
 {
   reset();
-  await wf(["start"], { file: PURE });
+  const endpoint = "revoke-smoke";
+  await wf(["start"], { file: PURE, endpoint });
   const eid = startedId() ?? "";
   const refused = await wf(["revoke", eid], { by: "", reason: "" }).then(() => undefined, (e: Error) => e);
   // The run grammar refuses the empty fields before any connection, so the command never reaches
@@ -808,21 +818,28 @@ const takeoverRun = startedId()!;
   // A run ID nothing admitted used to get its marker written and then a refusal citing the spec,
   // exit 1. It is refused as not found before anything is written, so no marker exists afterwards.
   const unadmitted = "run-0123456789abcdef0123456789abcdef";
-  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop" }).then(() => undefined, (e: Error) => e);
+  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop", endpoint }).then(() => undefined, (e: Error) => e);
   const markerAfter = await (async () => {
-    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId: unadmitted } });
+    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint, runId: unadmitted } });
     const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(EP, unadmitted)); } finally { await nc.drain().catch(() => {}); }
+    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(endpoint, unadmitted)); } finally { await nc.drain().catch(() => {}); }
   })();
-  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, and no marker is written",
+  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, exit 2, and no marker is written",
     isCommandFailure(unknownRevoke) && unknownRevoke.code === "TARGET_NOT_FOUND"
-      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${EP}, so there is nothing to revoke; nothing was written`
+      && exitCode(unknownRevoke.outcome, unknownRevoke.code) === 2
+      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`
       && markerAfter === null, { refused: unknownRevoke?.message, markerAfter });
 
+  const remedy = isCommandFailure(unknownRevoke) ? unknownRevoke.remedy : undefined;
+  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  const [, alias, ...args] = remedy === `list the recorded runs with \`${next}\``
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${next}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+    : [];
+  const run = alias && findCommand(registry.all<Command>("command"), alias);
   reset();
-  await withStderr(() => wf(["ps"])).catch(() => undefined);
-  c("...and writes no marker, so ps lists that run by its record and never as revoked",
-    stateOf(psRow(eid)) === "completed", psRow(eid));
+  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+  c("the revoke remedy lists the same broker without a manager and finds the existing completed run",
+    listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(eid)) === "completed", { remedy, out: captured() });
 }
 
 // ── 12) migrate: the check over an edited program, read-only, through the command ────────────
@@ -898,12 +915,23 @@ const takeoverRun = startedId()!;
 
   // A run ID nothing records is refused as `run show` refuses it: by code, with the list as Next.
   const unrecorded = "run-0123456789abcdef0123456789abcdef";
-  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
-  c("a check of a run ID nothing records is refused TARGET_NOT_FOUND, exit 2, with the run list as its Next",
+  const endpoint = "check-only";
+  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT, endpoint }).then(() => undefined, (e: Error) => e);
+  const remedy = isCommandFailure(unknownCheck) ? unknownCheck.remedy : undefined;
+  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  const command = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+  const [, alias, ...args] = command === next
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+    : [];
+  const run = alias && findCommand(registry.all<Command>("command"), alias);
+  reset();
+  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+  c("a missing run check refuses with exit 2 and its remedy lists the same endpoint without a manager",
     isCommandFailure(unknownCheck) && unknownCheck.code === "TARGET_NOT_FOUND" && exitCode(unknownCheck.outcome, unknownCheck.code) === 2
-      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${EP}; a run that was never started cannot be checked`
-      && unknownCheck.remedy === "list the recorded runs with `cotal run`",
-    unknownCheck instanceof Error ? unknownCheck.message : unknownCheck);
+      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`
+      && remedy === `list the recorded runs with \`${next}\``
+      && listed === true && (process.exitCode ?? 0) === 0 && captured().includes("No workflow runs in this authorized record view."),
+    { error: unknownCheck, remedy, out: captured() });
   } finally { process.exit = origExit; }
 }
 
@@ -951,6 +979,46 @@ const takeoverRun = startedId()!;
   const filtered = (await envelopeOf(["ps"], { endpoint }))?.result as { items?: RunRowJson[] } | undefined;
   c("ps filters dotted endpoints by their name rather than their wire token",
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
+
+  const listCommand = `run list --local --space ${SPACE} --server ${shellPath(servers)} --endpoint ${endpoint}`;
+  const replaceId = "Then replace only the run ID in the original command";
+  for (const [kind, positionals, flags, correction] of [
+    ["missing", ["resume"], { file: PURE, timeout: "5m" }, "Then add a run ID after `run resume` in the original command"],
+    ["malformed", ["resume", "bad/id"], { file: PURE, timeout: "5m" }, replaceId],
+    ["malformed", ["answer", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+    ["malformed", ["amend", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+  ] as const) {
+    const refusal = await wf([...positionals], { endpoint, ...flags }).then(() => undefined, (e: Error) => e);
+    const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
+    const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+    const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand}`)
+      ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
+    reset();
+    const listed = run && listArgs.length > 0 && await runWorkflow(parseCommandArgs(run, listArgs)).then(() => true, () => false);
+    c(`a ${kind} local ${positionals[0]} ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager`,
+      isCommandFailure(refusal) && refusal.code === "USAGE_INVALID" && exitCode(refusal.outcome, refusal.code) === 1
+        && remedy?.endsWith(correction) === true
+        && listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(rid)) === "completed", { refusal, remedy, out: captured() });
+  }
+
+  const origin = join(home, "origin");
+  mkdirSync(origin);
+  recordPreparedSpace({ space: "origin", root: origin, ts: new Date().toISOString() });
+  setCurrent("origin");
+  try {
+    reset();
+    await wf(["list"], { endpoint, plain: true });
+    const hint = lines().map((line) => line.trim().split(/ {2,}/)[0]).find((line) => line?.includes(" r show <run-id>"));
+    const expected = `r show <run-id> --local --endpoint ${endpoint} --space ${SPACE} --server ${shellPath(servers)}`;
+    const command = ["cotal", "pnpm cotal"].some((cli) => hint === `${cli} ${expected}`)
+      ? hint!.replace(/^.*? r /, "r ").replace("<run-id>", rid) : undefined;
+    const [, ...showArgs] = command === undefined ? [] : execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1);
+    const replay = run && command !== undefined
+      ? await readEnvelope(() => runWorkflow(parseCommandArgs(run, [...showArgs, "--json"]))).catch((error: Error) => error) : undefined;
+    const view = replay && !(replay instanceof Error) ? (replay.result as { view?: RunStatusView } | undefined)?.view : undefined;
+    c("the local list's printed show command reads the same journal despite a different selected space",
+      view?.runId === rid && view.endpoint === endpoint && view.journal.length === detail?.view?.journal.length, { hint, replay });
+  } finally { clearCurrent(); }
 
   reset();
   await wf(["revoke", rid], { endpoint, by: "smoke-operator", reason: "dotted endpoint control" });
@@ -1097,7 +1165,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 134;
+const DECLARED = 141;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

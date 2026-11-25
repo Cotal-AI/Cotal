@@ -164,14 +164,16 @@ The complete reply, responder-state, grant, reply-target validation, and rebindi
 
 `servePrincipal({ handlers })` serves this process's `agent` endpoint on the principal route: the
 core-defined command set about this process, whose cluster and compiled contracts are
-`AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 4: `prompts`, `prompt` and
+`AGENT_CLUSTER` and `AGENT_CONTRACTS`. The cluster is at revision 5: `prompts`, `prompt` and
 `prompt-answer` admit the `owner` and `grant` words, and `commands`, `command`, `command-cancel`,
-`command-state`, `interrupt` and `set-name` admit `owner` only.
-It takes no endpoint or cluster, and refuses either. It throws on an open mesh, under a static
-credential, without a lifecycle UID, for handlers that are not the cluster's commands with those
-contracts, and when another endpoint in the process already serves `agent` for the lifecycle.
+`command-state`, `interrupt`, `set-name`, `turn` and `usage` admit `owner` only.
+It takes no endpoint or cluster, and refuses either. It serves under a user-auth or static
+credential and on an open mesh. It throws without a lifecycle UID, for handlers that are not the
+cluster's commands with those contracts, and when another endpoint in the process already serves
+`agent` for the lifecycle.
 The returned `ready` resolves only after the broker accepted the subscription. It rejects when the
-credential holds no serve row, which a credential minted before this release does not. The serve
+credential holds no serve row, as one minted before the rows existed does not. On a static space a
+renewal keeps that, so the agent serves once it is respawned. The serve
 subscribes again after every reconnect, and a refusal there resolves `failed` and is reported on
 `warning`. `stop()` unsubscribes and waits for the handlers in flight, and the endpoint's own
 `stop()` does the same for every serve before it closes the connection. Each handler gets a `signal`
@@ -192,7 +194,10 @@ Each serve of `agent` takes a fresh `seq` when it starts and shows `{ open: 0, s
 `callPrincipal({ endpoint, principal, command, authority, args, deadlineMs })` calls one command as
 this endpoint's caller. `principal` is the addressed process: owner, actor, lifecycle UID and the
 `runtime.id` its presence publishes. `authority` is `owner` or `grant`, the word this credential's
-row covers. The `agent` contracts and `describe` are built in; another endpoint needs `contract`.
+row covers. A signed-in person's interactive credential holds the `owner` rows. On a static space,
+`openAgentCaller({ space, server, auth, name })` from `@cotal-ai/workspace/view` returns an unstarted
+endpoint that holds them and nothing else, minted from the space's signing key. An open mesh checks
+no row. The `agent` contracts and `describe` are built in; another endpoint needs `contract`.
 The agent's own refusal comes back as a reply with `ok: false`. A message from another head, a
 stored message on the reply read, and any message on the no-responders sentinel other than the
 broker's no-responders status are not the reply, and the call keeps waiting. It throws `unavailable` when

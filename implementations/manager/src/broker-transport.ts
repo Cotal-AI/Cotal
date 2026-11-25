@@ -9,20 +9,15 @@ import { withScopedEndpoint } from "./endpoint-evict.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
+import type { ManagerParts } from "./manager-parts.js";
 import { appendStaticCredentialRow, recordSlotCredential, staticLifecycleTransport } from "./static-lifecycle.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link BrokerTransport} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface BrokerTransportDeps {
-  auth: () => Manager["auth"];
-  endpointServeExecutorExpiresInSeconds: () => Manager["endpointServeExecutorExpiresInSeconds"];
   leaseStopping: () => Manager["leaseStopping"];
-  managerInstanceId: () => Manager["managerInstanceId"];
-  remoteAuthority: () => Manager["remoteAuthority"];
-  remoteBundleAdoption: () => Manager["remoteBundleAdoption"];
-  remoteExecutorCreds: () => Manager["remoteExecutorCreds"];
-  servers: () => Manager["servers"];
-  space: () => Manager["space"];
   transportDown: () => Manager["transportDown"];
   renewRemoteExecutor: (...args: Parameters<Manager["renewRemoteExecutor"]>) => ReturnType<Manager["renewRemoteExecutor"]>;
   renewRemoteStandingBundle: (...args: Parameters<Manager["renewRemoteStandingBundle"]>) => ReturnType<Manager["renewRemoteStandingBundle"]>;
@@ -35,15 +30,7 @@ export interface BrokerTransportDeps {
  *  field the Manager assigns later is current and a member a test replaces on the instance is the one that runs. */
 export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
   return {
-    auth: () => m["auth"],
-    endpointServeExecutorExpiresInSeconds: () => m["endpointServeExecutorExpiresInSeconds"],
     leaseStopping: () => m["leaseStopping"],
-    managerInstanceId: () => m["managerInstanceId"],
-    remoteAuthority: () => m["remoteAuthority"],
-    remoteBundleAdoption: () => m["remoteBundleAdoption"],
-    remoteExecutorCreds: () => m["remoteExecutorCreds"],
-    servers: () => m["servers"],
-    space: () => m["space"],
     transportDown: () => m["transportDown"],
     renewRemoteExecutor: (...args) => m["renewRemoteExecutor"](...args),
     renewRemoteStandingBundle: (...args) => m["renewRemoteStandingBundle"](...args),
@@ -53,33 +40,28 @@ export function brokerTransportDeps(m: Manager): BrokerTransportDeps {
 
 /** Dialing the broker, tracking and retiring connections, and the scoped one-shot executor connections the manager's writes ride. */
 export class BrokerTransport {
-  constructor(private readonly deps: BrokerTransportDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: BrokerTransportDeps, private readonly parts: Pick<ManagerParts, "credentialRenewal">, private readonly state: ManagerStartState) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
-  private get auth() { return this.deps.auth(); }
-  private get endpointServeExecutorExpiresInSeconds() { return this.deps.endpointServeExecutorExpiresInSeconds(); }
+  private get auth() { return this.state.auth; }
   private get leaseStopping() { return this.deps.leaseStopping(); }
-  private get managerInstanceId() { return this.deps.managerInstanceId(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get remoteBundleAdoption() { return this.deps.remoteBundleAdoption(); }
-  private get remoteExecutorCreds() { return this.deps.remoteExecutorCreds(); }
-  private get servers() { return this.deps.servers(); }
-  private get space() { return this.deps.space(); }
+  private get managerInstanceId() { return this.state.managerInstanceId!; }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
   private get transportDown() { return this.deps.transportDown(); }
   private renewRemoteExecutor(...args: Parameters<Manager["renewRemoteExecutor"]>): ReturnType<Manager["renewRemoteExecutor"]> { return this.deps.renewRemoteExecutor(...args); }
   private renewRemoteStandingBundle(...args: Parameters<Manager["renewRemoteStandingBundle"]>): ReturnType<Manager["renewRemoteStandingBundle"]> { return this.deps.renewRemoteStandingBundle(...args); }
 
   /** Every broker dial this manager makes, through ONE transport decision.
    *
-   *  `this.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
+   *  `this.config.servers` is whatever the mesh record held (`cotal supervise` reads it from there), so it
    *  can be a `ws://`/`wss://` broker published through an HTTPS edge. The raw node transport
    *  refuses such a URL instead of dialing it, so the scheme picks the dialer here rather than at
    *  thirteen call sites. `dialerFor` also owns the websocket transport's options, which is why
    *  callers below still pass their own auth options unchanged. */
   dial(opts: Parameters<ReturnType<typeof dialerFor>>[0]): Promise<NatsConnection> {
-    const servers = this.servers ?? DEFAULT_SERVER;
+    const servers = this.config.servers ?? DEFAULT_SERVER;
     return dialerFor(servers)({ ...opts, servers });
   }
 
@@ -152,8 +134,8 @@ export class BrokerTransport {
     const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
-      const recordsKv = await kvm.open(recordsBucket(this.space));
-      const authKv = await kvm.open(epAuthBucket(this.space));
+      const recordsKv = await kvm.open(recordsBucket(this.config.space));
+      const authKv = await kvm.open(epAuthBucket(this.config.space));
       return await fn(staticLifecycleTransport(recordsKv, authKv));
     } finally {
       await drainAndClose(nc);
@@ -170,7 +152,7 @@ export class BrokerTransport {
     const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
-      return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.space));
+      return await fn(await bindIssuedStores(kvm, await jetstreamManager(nc), this.config.space));
     } finally {
       await drainAndClose(nc);
     }
@@ -185,7 +167,7 @@ export class BrokerTransport {
       mode,
       store: i.store,
       accepted: i.accepted,
-      sources: mode === "issue" ? [{ space: this.space, bucket: epAuthBucket(this.space), key: `cred.${a.lifecycleUid}` }] : [],
+      sources: mode === "issue" ? [{ space: this.config.space, bucket: epAuthBucket(this.config.space), key: `cred.${a.lifecycleUid}` }] : [],
       finalize: async (credentialId) => {
         await this.withLifecycleExecutor({ owner: DEV_OWNER, actor: a.id, lifecycleUid: a.lifecycleUid, alias: a.name }, async (t) => {
           await recordSlotCredential(t, DEV_OWNER, a.name, a.lifecycleUid, credentialId);
@@ -203,7 +185,7 @@ export class BrokerTransport {
    *  This is NEVER the manager's standing seed/supervisor connection. */
   async withEndpointServeExecutor<T>(fn: (kvs: { recordsKv: KV; authKv: KV; nc: NatsConnection }) => Promise<T>): Promise<T> {
     const identity = this.remoteAuthority?.identities.executor ?? newIdentity();
-    if (this.remoteAuthority && (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy")) {
+    if (this.remoteAuthority && (!this.parts.credentialRenewal.remoteExecutorCreds || inspectCredHealth(this.parts.credentialRenewal.remoteExecutorCreds).state !== "healthy")) {
       // Shutdown has drained and discarded the standing serve context. Renew only its scoped
       // maintenance executor through the existing host operation; never resurrect standing duties.
       if (this.leaseStopping) await this.renewRemoteExecutor(true);
@@ -212,18 +194,18 @@ export class BrokerTransport {
         // released at adoption, not after its own completion is required by that drain.
         const renewal = this.renewRemoteStandingBundle(true);
         void renewal.catch((error) => console.error(`! remote manager standing renewal completion: ${rejectionText(error)}`));
-        await this.remoteBundleAdoption;
-        if (!this.remoteExecutorCreds || inspectCredHealth(this.remoteExecutorCreds).state !== "healthy") {
+        await this.parts.credentialRenewal.remoteBundleAdoption;
+        if (!this.parts.credentialRenewal.remoteExecutorCreds || inspectCredHealth(this.parts.credentialRenewal.remoteExecutorCreds).state !== "healthy") {
           await renewal;
           throw new Error("standing renewal did not adopt a healthy scoped executor");
         }
       } else await this.renewRemoteExecutor(true);
     }
-    const creds = this.remoteExecutorCreds ?? (this.auth
+    const creds = this.parts.credentialRenewal.remoteExecutorCreds ?? (this.auth
       ? await mintCreds(this.auth, identity, "endpoint-serve-executor", {
           endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: this.managerInstanceId },
-          ...(this.endpointServeExecutorExpiresInSeconds !== undefined
-            ? { expiresInSeconds: this.endpointServeExecutorExpiresInSeconds }
+          ...(this.config.endpointServeExecutorExpiresInSeconds !== undefined
+            ? { expiresInSeconds: this.config.endpointServeExecutorExpiresInSeconds }
             : {}),
         })
       : undefined);
@@ -231,7 +213,7 @@ export class BrokerTransport {
     const nc = await this.deps.dialViaManager({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
     try {
       const kvm = new Kvm(nc);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
+      return await fn({ recordsKv: await kvm.open(recordsBucket(this.config.space)), authKv: await kvm.open(epAuthBucket(this.config.space)), nc });
     } finally {
       await drainAndClose(nc);
     }
@@ -251,8 +233,8 @@ export class BrokerTransport {
       // lazily without checking the stream exists — create-or-verify the §13.12 authority stores
       // first (the same mode-neutral treatment {@link registerManagerService} gives the contract
       // store), or the first gate write dies "stream not found".
-      await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.space);
-      return await fn({ recordsKv: await kvm.open(recordsBucket(this.space)), authKv: await kvm.open(epAuthBucket(this.space)), nc });
+      await ensureAuthorityStores(await jetstreamManager(nc), kvm, this.config.space);
+      return await fn({ recordsKv: await kvm.open(recordsBucket(this.config.space)), authKv: await kvm.open(epAuthBucket(this.config.space)), nc });
     } finally {
       await drainAndClose(nc);
     }
@@ -266,7 +248,7 @@ export class BrokerTransport {
   async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
     // Onboarding runs several provisioning ops, so it keeps the provisioner profile's five-minute window.
-    return withScopedEndpoint({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth: this.auth }, "provisioner", "provisioner", fn, 5 * 60);
+    return withScopedEndpoint({ space: this.config.space, servers: this.config.servers ?? DEFAULT_SERVER, auth: this.auth }, "provisioner", "provisioner", fn, 5 * 60);
   }
 
   /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md

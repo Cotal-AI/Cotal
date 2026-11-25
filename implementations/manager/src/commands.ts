@@ -34,7 +34,7 @@ import {
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
-  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
+  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -43,7 +43,6 @@ import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { endpointDeregisterAction } from "./operator-deregister.js";
-import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
@@ -676,7 +675,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
   } catch (e) {
     if (service) throw unconfirmedStart(e);
-    console.error(c.red(`✗ ${rejectionText(e)}`));
+    const next = isCommandFailure(e) && e.remedy ? `\n  Next: ${e.remedy}` : "";
+    console.error(c.red(`✗ ${rejectionText(e)}`) + next);
     process.exit(1);
   }
   // A name given here is recorded for this root's manager once it is up, so a restart keeps it.
@@ -1228,7 +1228,7 @@ for (const mode of maintenance) for (const flag of mode.command.flags ?? []) {
 
 /** The manager's lifecycle, which the CLI runs as `service <verb> manager` before this group parses. */
 const lifecycle = [
-  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "name it, so commands can pick it with --on" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground|--dry-run] [--space <s>]" },
+  { name: "start", summary: "start the manager for this folder's or the selected space; pty runtime and its registered broker by default", examples: [{ command: "cotal manager start", note: "start it with the pty runtime" }, { command: "cotal manager start --foreground", note: "keep it in this terminal" }, { command: "cotal manager start --name <name>", note: "select by name with --on only on user-auth spaces" }], usage: "cotal manager start [--runtime <name>] [--roster <file>] [--name <name>] [--foreground] [--dry-run] [--space <s>]" },
   { name: "stop", summary: "stop it; its agents follow the runtime's default unless --with-agents", examples: [{ command: "cotal manager stop", note: "stop the manager" }, { command: "cotal manager stop --with-agents", note: "stop it and every agent it runs" }], usage: "cotal manager stop [--with-agents] [--yes|--dry-run] [--space <s>]" },
   { name: "restart", summary: "stop it, then start it again", examples: [{ command: "cotal manager restart", note: "stop the manager, then start it again" }], usage: "cotal manager restart [--with-agents] [--yes|--dry-run] [--space <s>]" },
   { name: "status", summary: "show whether it runs, and its process and endpoint", examples: [{ command: "cotal manager status", note: "show whether it runs, its process and endpoint" }], usage: "cotal manager status [--space <s>]" },

@@ -5,9 +5,9 @@
  * launched-session transport against the shipped prompt desk. An answer is a `prompt-answer` call on
  * the desk's own handler, a hook's connection closing is its close signal aborting, and the relay's
  * receipt is the control server's `onReply`. Covered: every row of the report table, the identity
- * cases where a name and an input are not an identity, the scopes, the dialogs left to the terminal,
- * an input over the content limit, a full desk, no desk, the Windows gate, the session end, and the
- * existing hook consumer getting every other event whole and once.
+ * cases where a name and an input are not an identity, the scopes, Claude's questions as forms, the
+ * dialog left to the terminal, an input over the content limit, a full desk, no desk, the Windows
+ * gate, the session end, and the existing hook consumer getting every other event whole and once.
  *
  * The last cells run the real hook entry in its own process against the real control server: a held
  * permission answered after more than 2 s, a hook killed while its prompt is open, the hook's Windows
@@ -434,13 +434,88 @@ console.log("\nscopes");
     [state(w, s3.id), state(w, sent.id)]);
 }
 
+// ---- Claude's questions -------------------------------------------------------------------------
+console.log("\nClaude's questions");
+const QUESTIONS = [
+  { question: "Which color?", header: "Color", options: [{ label: "Red", description: "Warm" }, { label: "Blue", description: "Cool" }], multiSelect: false },
+  { question: "Which sizes?", header: "Sizes", options: [{ label: "S", description: "" }, { label: "M", description: "" }, { label: "L", description: "" }], multiSelect: true },
+];
+const ask = (questions: unknown = QUESTIONS, extra: Record<string, unknown> = {}) => permission({ questions }, { tool_name: "AskUserQuestion", ...extra });
+/** Submit prompt `id`'s form with `values`, as the owner's web session. */
+function submit(w: World, id: string, values: Record<string, unknown>): void {
+  const p = summary(w, id)!;
+  void Promise.resolve().then(() => call(w, "prompt-answer", { id, digest: p.digest, option: "submit", values })).catch(() => {});
+}
+const askOut = (answers: Record<string, string>, questions: unknown = QUESTIONS) =>
+  ({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { questions, answers } } } });
+{
+  const w = world();
+  const { h, id } = await hold(w, ask());
+  const p = read(w, id);
+  check("AskUserQuestion opens a question with a form: a choice per question, an answer of one's own beside a single choice, and submit or dismiss",
+    isDeepStrictEqual(p.content, {
+      kind: "question", title: "Claude asks 2 questions",
+      options: [{ id: "submit", label: "Submit", effect: "proceed", form: "required" }, { id: "dismiss", label: "Dismiss", effect: "cancel" }],
+      form: { schema: { type: "object", properties: {
+        q0: { type: "string", title: "Color", description: "Which color?", oneOf: [{ const: "Red", title: "Red", description: "Warm" }, { const: "Blue", title: "Blue", description: "Cool" }] },
+        q0__other: { type: "string", title: "Other", description: "An answer of your own to: Which color?" },
+        q1: { type: "array", title: "Sizes", description: "Which sizes?", items: { anyOf: [{ const: "S", title: "S" }, { const: "M", title: "M" }, { const: "L", title: "L" }] } },
+      } } },
+      source: { harness: "claude-code" },
+    }), p.content);
+  check("... the hook prints nothing while it is open", h.output === undefined);
+  submit(w, id, { q0: "Blue", q1: ["S", "L"] });
+  await flush();
+  check("... a submitted form allows the call with its questions and their answers, a multiple choice's labels joined with \", \"",
+    isDeepStrictEqual(h.output, askOut({ "Which color?": "Blue", "Which sizes?": "S, L" })), h.output);
+}
+{
+  const w = world();
+  const one = [QUESTIONS[0]];
+  const { h, id } = await hold(w, ask(one));
+  check("one question takes its header as the title", read(w, id).content.title === "Color", read(w, id).content.title);
+  submit(w, id, { q0__other: "Teal" });
+  await flush();
+  check("... an answer of one's own is the question's answer", isDeepStrictEqual(h.output, askOut({ "Which color?": "Teal" }, one)), h.output);
+}
+{
+  const w = world();
+  const { h, id } = await hold(w, ask());
+  submit(w, id, { q0: "Red" });
+  await flush();
+  check("a question left unanswered is left out of the answers", isDeepStrictEqual(h.output, askOut({ "Which color?": "Red" })), h.output);
+  receipt(w, h);
+  fire(w, batch([{ tool_name: "AskUserQuestion", tool_input: { questions: QUESTIONS } }]));
+  await flush();
+  check("... and the call in a batch, listed with the input it asked with, is a sighting tied to the subject", closedAs(state(w, id), { kind: "unconfirmed", seen: SUBJECT }), state(w, id));
+}
+{
+  const w = world();
+  const { h, id } = await hold(w, ask());
+  void answer(w, id, "dismiss");
+  await flush();
+  const dismissed = denyOut("The user dismissed the question without answering.");
+  check("a dismissed question denies the call with a message that says so", isDeepStrictEqual(h.output, dismissed), h.output);
+  receipt(w, h);
+  fire(w, batch([{ tool_name: "AskUserQuestion", tool_input: { questions: QUESTIONS }, tool_response: dismissed.hookSpecificOutput.decision.message }]));
+  await flush();
+  check("... and the refused call in a batch is no sighting", state(w, id)?.kind === "sent", state(w, id));
+}
+for (const [label, questions] of [["no questions", []], ["a question with no choices", [{ question: "Why?", header: "Why", options: [] }]], ["questions that are not a list", "red or blue"]] as const) {
+  const w = world();
+  const h = fire(w, ask(questions));
+  await flush();
+  check(`AskUserQuestion with ${label}: {} at once and no prompt, so Claude's dialog asks it`,
+    isDeepStrictEqual(h.output, {}) && list(w).open.length === 0 && w.moduleWarnings.some((m) => m.includes("AskUserQuestion")), { out: h.output, warnings: w.moduleWarnings });
+}
+
 // ---- what stays with the terminal ---------------------------------------------------------------
 console.log("\nwhat stays with Claude's dialog");
-for (const tool of ["AskUserQuestion", "ExitPlanMode"]) {
+{
   const w = world();
-  const h = fire(w, permission({ questions: [] }, { tool_name: tool }));
+  const h = fire(w, permission({ plan: "1. edit" }, { tool_name: "ExitPlanMode" }));
   await flush();
-  check(`${tool}: {} at once and no prompt`, isDeepStrictEqual(h.output, {}) && list(w).open.length === 0, { out: h.output, open: list(w).open.length });
+  check("ExitPlanMode: {} at once and no prompt", isDeepStrictEqual(h.output, {}) && list(w).open.length === 0, { out: h.output, open: list(w).open.length });
 }
 {
   const w = world();

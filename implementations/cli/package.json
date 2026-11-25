@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cli",
   "description": "Cotal mesh CLI: up, join, watch, console, spawn, mint, channels, history, ext.",
-  "version": "0.174.2",
+  "version": "0.179.0",
   "homepage": "https://cotal.ai",
   "license": "Apache-2.0",
   "repository": {
@@ -77,6 +77,7 @@
     "@clack/prompts": "^1.0.0",
     "ink": "^6.0.0",
     "react": "^19.0.0",
+    "semver": "7.8.5",
     "yaml": "^2.9.0",
     "zod": "^4.4.3",
     "ws": "^8.21.0"

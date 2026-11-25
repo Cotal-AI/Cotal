@@ -362,7 +362,7 @@ try {
   webRaw = await seat(W.web);
   builderRaw = await seat(W.builder);
 
-  console.log("\nopenAgentEndpoint refuses where no answer can arrive");
+  console.log("\nopenAgentEndpoint on every mesh mode, refused where the credential holds no serve row");
   {
     const legacyEp = await userEndpoint(W.legacy, { registerPresence: true });
     const r = await settled(openAgentEndpoint(legacyEp, { warn: () => {} }));
@@ -370,16 +370,25 @@ try {
       !r.ok && r.error instanceof EpEnvelopeError && r.error.code === "permission-denied", r);
     await until(() => roster(W.legacy) !== undefined, 8000);
     check("...and its presence carries no prompts field", roster(W.legacy) !== undefined && roster(W.legacy)!.prompts === undefined, roster(W.legacy));
-    const staticUid = mintLifecycleUid(), openUid = mintLifecycleUid();
-    const staticEp = own(new CotalEndpoint({ space, servers: SERVERS, creds: await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "local", actor: "stat" }, lifecycleUid: staticUid }),
-      lifecycleUid: staticUid, card: { owner: "local", actor: "stat", name: "stat", kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "static");
-    await staticEp.start();
+    const staticEndpoint = async (actor: string, principalServe?: false) => {
+      const uid = mintLifecycleUid();
+      const creds = await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "local", actor }, lifecycleUid: uid, ...(principalServe === false ? { principalServe } : {}) });
+      const ep = own(new CotalEndpoint({ space, servers: SERVERS, creds, lifecycleUid: uid, card: { owner: "local", actor, name: actor, kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), actor);
+      await ep.start();
+      return ep;
+    };
+    const openUid = mintLifecycleUid();
     const openEp = own(new CotalEndpoint({ space, servers: OPEN_SERVERS, lifecycleUid: openUid, card: { actor: "open", name: "open", kind: "agent" }, consume: false, registerPresence: false, watchPresence: false, watchChannels: false }), "open");
     await openEp.start();
-    const s = await settled(openAgentEndpoint(staticEp, { warn: () => {} }));
+    const s = await settled(openAgentEndpoint(await staticEndpoint("stat"), { warn: () => {} }));
+    const old = await settled(openAgentEndpoint(await staticEndpoint("oldstat", false), { warn: () => {} }));
     const o = await settled(openAgentEndpoint(openEp, { warn: () => {} }));
-    check("a static credential: rejects", !s.ok && String((s.error as Error).message).includes("static credential"), s);
-    check("an open mesh: rejects", !o.ok && String((o.error as Error).message).includes("open mesh"), o);
+    check("a static credential: serves", s.ok, s.ok ? undefined : String((s.error as Error).message));
+    check("a static credential issued without the serve rows: rejects with the broker's refusal, and the message says to respawn the agent",
+      !old.ok && old.error instanceof EpEnvelopeError && old.error.code === "permission-denied" && /respawn the agent/.test(old.error.message), old.ok ? "served" : (old.error as Error).message);
+    check("an open mesh: serves", o.ok, o.ok ? undefined : String((o.error as Error).message));
+    if (s.ok) await s.value.close();
+    if (o.ok) await o.value.close();
   }
 
   // ── desk 1: presence, the answer checks, check, retries ──
@@ -1027,7 +1036,7 @@ try {
   // ── desks 4 to 6: a pending receipt meets expiry, a disconnect and close() ──
   console.log("\ndesks 4 to 6: a pending receipt meets expiry, a disconnect and close()");
   const reconnectCoder = async () => {
-    await (coderEp as unknown as { nc: NatsConnection }).nc.reconnect();
+    await (coderEp as unknown as { conn: { nc: NatsConnection } }).conn.nc.reconnect();
     return until(async () => (await settled(call(webEp, "prompts", {}, { deadlineMs: 1500 }))).ok, 15_000);
   };
   for (const order of ["expiry, then a disconnect", "a disconnect, then expiry"] as const) {
@@ -1089,7 +1098,7 @@ try {
     await until(() => sent.verdicts.length === 1);
     await until(() => roster(W.coder2)?.prompts !== undefined, 8000);
     stripped.add(W.coder2.uid);
-    await (coder2Ep as unknown as { nc: NatsConnection }).nc.reconnect();
+    await (coder2Ep as unknown as { conn: { nc: NatsConnection } }).conn.nc.reconnect();
     const closedOnIt = await until(() => open.ends.length === 1 && sent.ends.length === 1, 10_000);
     check("the next credential lacks the rows: the serve fails, the desk closes, the open prompt is released and the sent one ends attempted",
       closedOnIt && same(open.ends, [false]) && same(sent.ends, [true]) && warns.slice(before).some((w) => w.startsWith("coder2: the agent endpoint closed")), warns.slice(before));

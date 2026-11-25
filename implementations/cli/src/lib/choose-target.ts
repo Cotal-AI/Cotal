@@ -4,18 +4,28 @@ import { canPrompt } from "../commands/meshes-wizard.js";
 import { shellWord } from "./endpoint-errors.js";
 import { displayCmd } from "./self-exec.js";
 
-/** Give a roster read or a folder inspection again with each exact registered space. */
+/** Give the command again with each exact registered space, without confirming a removal. */
 export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedArgs, rest: readonly string[]): string | undefined {
-  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length || args.values.creds !== undefined) return undefined;
+  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
   const show = command === "space" && args.positionals[0] === "show";
-  if (!show && command !== "who") return undefined;
+  const remove = command === "endpoint" && args.positionals[0] === "remove";
+  const describe = command === "describe" || command === "endpoint" && args.positionals[0] === "describe";
+  const endpointRead = command === "endpoint" && ["list", "show"].includes(args.positionals[0] ?? "list");
+  const brokerRead = error.details.server !== undefined && (command === "ps" ||
+    command === "history" && !["clear", "limit"].includes(args.positionals[0] ?? ""));
+  if (args.values.creds !== undefined && !endpointRead) return undefined;
+  if (!show && !endpointRead && !remove && !describe && !brokerRead && command !== "who") return undefined;
   const server = args.values.server;
   if (server !== undefined && (show || typeof server !== "string" || brokerAddressForDisplay(server) !== server)) return undefined;
   const cli = displayCmd({ fromAnyFolder: true });
   const end = rest.indexOf("--");
-  const flags = (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
-  const words = show ? [cli, "space", "show"] : [cli, "who", ...flags, "--space"];
-  return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space)].join(" "))).join(" or ")}`;
+  const flags = remove
+    ? ["remove", args.positionals[1]!, ...(args.values.json ? ["--json"] : args.values.plain ? ["--plain"] : [])].map(shellWord)
+    : (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
+  const words = show ? [cli, "space", "show"] : [cli, command, ...flags, "--space"];
+  const suffix = show && args.values.json ? ["--json"] : show && args.values.plain ? ["--plain"]
+    : brokerRead && end !== -1 ? rest.slice(end).map(shellWord) : [];
+  return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space), ...suffix].join(" "))).join(" or ")}`;
 }
 
 /**

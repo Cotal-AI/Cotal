@@ -74,6 +74,10 @@ const ansi = /\x1b\[/;
   check("every key is listed, in order", JSON.stringify(res?.settings.map((s) => s.key)) === JSON.stringify(["harness", "persona", "detach-key", "color", "editor", "name"]), res?.settings.map((s) => s.key));
   check("each key with a product default resolves to it, and the editor to nothing", settingOf(r, "harness")?.winner?.source === "default" && settingOf(r, "persona")?.value === "default" && settingOf(r, "detach-key")?.value === "ctrl-]" && settingOf(r, "color")?.value === "auto" && settingOf(r, "editor")?.value === null && settingOf(r, "editor")?.winner === null, res?.settings);
   check("reading writes nothing", !existsSync(file));
+  const get = run(["config", "get", "name", "--user", "--json"]);
+  const name = (get.envelope?.result as { setting?: Setting } | null)?.setting;
+  check("an unset name has a null winner and no shadowed layers", get.status === 0 &&
+    name?.value === null && name.winner === null && name.shadowed.length === 0, shown(get));
   // The file is in the Storage section, which only --verbose prints.
   const plain = run(["config", "--plain", "--verbose"]);
   check("the plain view names the file, the scope and each key's source", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout.includes(file) && /^ {2}your defaults$/m.test(plain.stdout) && /Setting\s+Value\s+Source/.test(plain.stdout) && /harness\s+claude\s+the default/.test(plain.stdout), shown(plain));
@@ -90,12 +94,42 @@ const ansi = /\x1b\[/;
   const get = run(["config", "get", "harness", "--json"]);
   const s = (get.envelope?.result as { setting?: Setting } | null)?.setting;
   check("get names the winner and the default it shadows", get.status === 0 && s?.value === "opencode" && s.winner?.source === "user" && s.shadowed.length === 1 && s.shadowed[0]!.source === "default" && s.shadowed[0]!.value === "claude", s);
+  check("user and default layers omit the name property", !!s?.winner && !("name" in s.winner) &&
+    s.shadowed.length === 1 && !("name" in s.shadowed[0]!), s);
   const again = run(["config", "set", "harness", "opencode", "--json"]);
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
+  const before = fileText();
+  for (const operands of [["unset", "harness"], ["set", "harness", "claude"]]) {
+    const unknown = run(["config", ...operands, "--user", "--json", "--wibble"]);
+    const error = unknown.envelope?.error;
+    check(`config ${operands.join(" ")} tells the caller to drop an unknown option without writing`,
+      unknown.status === 1 && unknown.stderr === "" && unknown.envelope?.outcome === "refused" && error?.code === "USAGE_INVALID"
+      && error.message === "Unknown option '--wibble'" && error.remedy === "drop the unknown option" && fileText() === before, shown(unknown));
+  }
+  for (const operands of [["unset"], ["set", "harness"]]) {
+    const missing = run(["config", ...operands, "--space", "demo", "--json", "--wibble"]);
+    check(`config ${operands.join(" ")} does not count a space option's value as an operand`,
+      missing.status === 1 && missing.envelope?.error?.remedy === 'to pass a word that starts with "-", put -- before it', shown(missing));
+  }
   // A per-space value is saved only for a space this machine knows, so prepare demo first.
   mkdirSync(join(home, "demo"), { recursive: true });
   const prepared = run(["space", "create", "demo", "--root", join(home, "demo"), "--json"]);
   check("setup: demo is prepared", prepared.status === 0 && prepared.envelope?.outcome === "ok", shown(prepared));
+  const grouped = run(["config", "get", "harness", "-js", "demo"]);
+  check("grouped -js selects JSON and reads the named space", grouped.status === 0 && grouped.stderr === "" && grouped.envelope?.outcome === "ok"
+    && (grouped.envelope.target as { space?: string } | null)?.space === "demo", shown(grouped));
+  for (const flags of [["-js"], ["-j", "-s"]]) {
+    const missing = run(["config", "get", "harness", ...flags]);
+    check(`${flags.join(" ")} keeps JSON when the space value is missing`, missing.status === 1 && missing.stderr === ""
+      && missing.envelope?.outcome === "refused" && missing.envelope.error?.code === "USAGE_INVALID"
+      && missing.envelope.error.message === "--space needs a value" && missing.envelope.error.remedy === "write --space <name>", shown(missing));
+  }
+  const attached = run(["config", "get", "harness", "-sj", "--bogus"]);
+  check("a j in an attached space value does not select JSON", attached.status === 1 && attached.stdout === ""
+    && attached.stderr.includes("Unknown option '--bogus'"), shown(attached));
+  const dashValue = run(["config", "get", "harness", "-js", "\u2014help"]);
+  check("a typographic help word after -js is a space value, not an option", dashValue.stderr === "" && dashValue.envelope?.outcome === "refused"
+    && dashValue.envelope.error?.message.includes("\u2014help") === true && !dashValue.envelope.error.message.includes("typographic dash"), shown(dashValue));
   const plainSet = run(["config", "set", "persona", "reviewer", "--space", "demo", "--plain"]);
   check("--space saves a personal value for one space", plainSet.status === 0 && /persona = reviewer in space demo/.test(plainSet.stdout) && saved().spaces.demo?.persona === "reviewer" && saved().revision === 2, shown(plainSet));
   run(["config", "set", "persona", "mine"]);
@@ -157,6 +191,8 @@ const ansi = /\x1b\[/;
     ["color saved for a space this machine does not know still names the key", ["config", "set", "color", "never", "--space", "nope"], /color has no per-space value/],
     ["--user with --space", ["config", "get", "harness", "--user", "--space", "demo"], /--user and --space choose different scopes/],
     ["a space name with a space in it", ["config", "--space", "a b"], /"a b" is not a space name/],
+    ["a space name with a leading hyphen", ["config", "get", "harness", "--space=-1"], /starts with "-"/],
+    ["a space name that is too long", ["config", "get", "harness", "--space", "x".repeat(65)], /at most 64/],
     ["get without a key", ["config", "get"], /usage: cotal config get <key>/],
     ["set without a value", ["config", "set", "harness"], /usage: cotal config set <key> <value>/],
     ["an unknown subcommand", ["config", "show"], /cotal config has no subcommand "show"/],
@@ -169,6 +205,9 @@ const ansi = /\x1b\[/;
   }
   const both = run(["config", "--json", "--plain"]);
   check("--json with --plain is refused", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));
+  const badName = run(["config", "get", "harness", "--space=-1", "--json"]);
+  check("an invalid space selector asks for a valid name, not for a new space",
+    badName.envelope?.error?.remedy === "choose a name that starts with a letter, digit or underscore", shown(badName));
   // A value saved for a space that is neither registered nor prepared would never apply.
   const unknown = run(["config", "set", "persona", "rev", "--space", "nope", "--json"]);
   check("set for a space that is neither registered nor prepared is refused, naming the known spaces, and writes nothing",
@@ -179,6 +218,15 @@ const ansi = /\x1b\[/;
     check(`\`${args.join(" ")}\` is refused, naming the known spaces, and writes nothing`,
       r.status === 2 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "TARGET_NOT_FOUND" && /no space named "nope" is registered, prepared or holding a saved value here; known spaces: demo$/.test(r.envelope.error.message) && fileText() === before, shown(r));
   }
+  const occupied = join(home, "demo");
+  const missing = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  const create = /`cotal (space create other_lab --root) <dir>`/.exec(missing.envelope?.error?.remedy ?? "")?.[1];
+  const prepared = create === undefined ? undefined : run([...create.split(" "), join(home, "other-lab"), "--json"], {}, occupied);
+  const found = run(["config", "get", "persona", "--space", "other_lab", "--json"], {}, occupied);
+  check("config keeps the unknown-space refusal and gives a preparation command usable from an occupied root",
+    missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND" && prepared?.status === 0 &&
+      found.status === 0 && (found.envelope?.result?.scope as { space?: string } | undefined)?.space === "other_lab" && fileText() === before, shown(missing));
+  run(["space", "forget", "other_lab", "--json"]);
   writeFileSync(file, JSON.stringify({ ...saved(), spaces: { ...saved().spaces, gone: { persona: "old" } } }));
   const goneGet = run(["config", "get", "persona", "--space", "gone", "--json"]);
   check("a value left for a removed space can still be read", goneGet.status === 0 && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.winner?.source === "space" && (goneGet.envelope?.result as { setting?: Setting } | null)?.setting?.value === "old", shown(goneGet));
@@ -364,6 +412,10 @@ const ansi = /\x1b\[/;
   writeFileSync(join(catalog, "real.md"), "---\nname: real\n---\nhi\n");
   const real = run(["config", "set", "persona", "real", "--space", "cat", "--json"]);
   check("a name the catalog holds raises no warning", real.status === 0 && warned(real) === undefined, real.envelope);
+  writeFileSync(join(catalog, "review.md.md"), "---\nname: reviewer\n---\nReview changes.\n");
+  const dotted = run(["config", "set", "persona", "review.md", "--space", "cat", "--json"]);
+  check("a dotted catalog name can be saved without a missing file warning",
+    dotted.status === 0 && saved().spaces.cat?.persona === "review.md" && warned(dotted) === undefined, dotted.envelope);
   const path = run(["config", "set", "persona", "./nosuch.md", "--space", "cat", "--json"]);
   check("a persona file path that is missing names the file", path.status === 0 && warned(path)?.message.startsWith(`no persona file ${join(realpathSync(catProject), "nosuch.md")};`) === true, path.envelope);
   const broken = run(["config", "set", "persona", "bad name", "--space", "cat", "--json"]);
@@ -490,12 +542,12 @@ if (process.platform !== "win32") {
   chmodSync(dir, 0o757);
   try {
     const write = run(["config", "set", "editor", "ed", "--json"]);
-    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod",
-      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}`, shown(write));
+    check("a write into a world-writable preferences folder is refused with PERMISSION_DENIED, exit 2, naming the folder and its chmod, and leaves stderr empty",
+      write.status === 2 && write.envelope?.error?.code === "PERMISSION_DENIED" && (write.envelope.error.message ?? "").includes(`the preferences folder is not protected against other local writers: ${dir} is writable by every local account`) && write.envelope.error.remedy === `chmod o-w ${dir}` && write.stderr === "", shown(write));
     check("and the file is left as it was", fileText() === before);
     const read = run(["config", "--json"]);
-    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod",
-      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr.includes("! the preferences folder is not protected"), shown(read));
+    check("a read applies the saved values with a PREFERENCES_FOLDER_UNPROTECTED warning naming the folder and its chmod, and keeps it off stderr",
+      read.status === 0 && read.envelope?.outcome === "ok" && settingOf(read, "editor")?.value === "vi" && read.envelope.warnings.filter(unprotected).length === 1 && read.stderr === "", shown(read));
     const status = run(["status", "--json"]);
     const hints = ((status.envelope?.result as { hints?: string[] } | null)?.hints ?? []);
     check("status warns too, and its Next protects the folder", status.status === 0 && (status.envelope?.warnings ?? []).some(unprotected) && hints.includes(`protect the preferences folder: chmod o-w ${dir}`), shown(status));
@@ -603,6 +655,34 @@ if (process.platform !== "win32") {
   check("removing the file restores the defaults", run(["config", "--json"]).status === 0);
 }
 
+{
+  const malformed = "{\n";
+  writeFileSync(file, malformed);
+  const finite = run(["history", "general", "--json"]);
+  const error = finite.envelope?.error;
+  check("finite JSON history reports malformed preferences in one refusal envelope",
+    finite.status === 1 && finite.stderr === "" && finite.envelope?.command === "history" && finite.envelope.outcome === "refused"
+      && error?.code === "SCHEMA_INVALID" && error.message.includes(`the preferences file ${file} is invalid: not JSON`)
+      && error.remedy === `fix or remove ${file}; nothing resets it`, shown(finite));
+  for (const [stream, args, target] of [
+    ["watch", ["watch"], { requestedSpace: null }],
+    ["history", ["history", "general", "--follow"], { space: null, channel: "general", dms: false }],
+    ["membership", ["channel", "members", "general", "--follow"], { space: null, channel: "general" }],
+  ] as const) {
+    const r = run([...args, "--json"]);
+    const records = r.stdout.trimEnd().split("\n").map((line) => JSON.parse(line || "{}"));
+    check(`${stream} frames malformed preferences as a setup failure without a snapshot`,
+      r.status === 1 && r.stderr === "" && records.map((record) => record.type).join() === "error,end"
+        && records.every((record) => record.schemaVersion === 1 && record.stream === stream
+          && Object.entries(target).every(([key, value]) => record.target?.[key] === value))
+        && error !== undefined && records[0]?.data?.code === error.code && records[0]?.data?.message === error.message
+        && records[0]?.data?.remedy === error.remedy && records[1]?.data?.reason === "setup-failed"
+        && (stream !== "membership" || records[1].data.lastAsOf === null), shown(r));
+  }
+  check("the JSON observers leave malformed preferences untouched", fileText() === malformed);
+  rmSync(file);
+}
+
 // ── a COTAL_HOME that is not a directory stops every command but help and completion ─────────────
 {
   const notHome = join(home, "not-a-home");
@@ -701,6 +781,22 @@ if (process.platform !== "win32") {
     records.status === 2 && records.envelope?.error?.code === "PERMISSION_DENIED" && records.envelope.error.message.includes(`${open} is not private to you (mode 0755)`) &&
       records.envelope.error.remedy === `chmod go-rwx ${open}`, shown(records));
   chmodSync(open, 0o700);
+}
+
+{
+  const dir = join(home, "proto-project");
+  mkdirSync(dir, { mode: 0o700 });
+  const prepared = run(["space", "create", "__proto__", "--root", dir, "--json"]);
+  const set = run(["config", "set", "persona", "backend", "--space", "__proto__", "--json"]);
+  const get = run(["config", "get", "persona", "--space", "__proto__", "--json"]);
+  const setting = (get.envelope?.result as { setting?: Setting } | null)?.setting;
+  check("an accepted space named __proto__ saves its value for the next CLI process",
+    prepared.status === 0 && set.status === 0 && get.status === 0 && setting?.value === "backend"
+      && setting.winner?.source === "space" && setting.winner.name === "__proto__"
+      && Object.hasOwn(saved().spaces, "__proto__"), { prepared: shown(prepared), set: shown(set), get: shown(get) });
+  const unset = run(["config", "unset", "persona", "--space", "__proto__", "--json"]);
+  check("unsetting the last preference removes the literal space key",
+    unset.status === 0 && unset.envelope?.outcome === "ok" && !Object.hasOwn(saved().spaces, "__proto__"), shown(unset));
 }
 
 finish();

@@ -436,7 +436,7 @@ try {
     while (!frames.flatMap((frame) => frame.events).some((event) => event.type === "RUN_FINISHED") && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
     const types = frames.flatMap((frame) => frame.events.map((event) => event.type));
-    assert.deepEqual(types, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"],
+    assert.deepEqual(types, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"],
       "managed Pi first turn publishes native tool and text frames without PI_SESSION_ID");
     assert.ok(frames.every((frame) => frame.threadId === manager.getSessionId()));
     provider.setResponses([
@@ -450,6 +450,31 @@ try {
     const errorEvents = frames.flatMap((frame) => frame.events).slice(types.length).map((event) => event.type);
     assert.deepEqual(errorEvents, ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "RUN_ERROR"],
       "failed native assistant closes its abandoned tool call before RUN_ERROR");
+    // The shell call waits for a file the smoke writes only once it has seen the call start, or
+    // after 5 s, so a call that publishes only when it finishes fails here instead of hanging.
+    const release = join(root, "release-long-call");
+    const seenBefore = frames.flatMap((frame) => frame.events).length;
+    const longEvents = () => frames.flatMap((frame) => frame.events).slice(seenBefore);
+    provider.setResponses([
+      fauxAssistantMessage([fauxToolCall("bash", { command: `while [ ! -e '${release}' ]; do sleep 0.05; done; printf released` },
+        { id: "pi-long-call" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("The long call finished."),
+    ]);
+    const longTurn = native.prompt("Run one long shell tool and answer.");
+    const startDeadline = Date.now() + 5_000;
+    while (!longEvents().some((event) => event.type === "TOOL_CALL_START") && Date.now() < startDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    const whileRunning = longEvents().map((event) => event.type);
+    writeFileSync(release, "");
+    await longTurn;
+    const longDeadline = Date.now() + 5_000;
+    while (!longEvents().some((event) => event.type === "RUN_FINISHED") && Date.now() < longDeadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(whileRunning, ["RUN_STARTED", "TOOL_CALL_START"],
+      "a tool call publishes its start while the tool still runs, not when it finishes");
+    assert.deepEqual(longEvents().map((event) => event.type),
+      ["RUN_STARTED", "TOOL_CALL_START", "TOOL_CALL_END", "CUSTOM", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "RUN_FINISHED"],
+      "the long call's run publishes each frame once, its end after the tool finished");
     const priorSession = manager.getSessionId();
     const lockPath = eventWalLocation({ workspaceRoot: root, space, principal: principalKey(DEV_OWNER, actor).key,
       threadId: priorSession }).lockPath;
@@ -472,11 +497,11 @@ try {
     afterReloadProvider.setResponses([fauxAssistantMessage("Only this new completed message should publish.")]);
     await native.prompt("Second native turn after reload.");
     const nextDeadline = Date.now() + 5_000;
-    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 2 && Date.now() < nextDeadline)
+    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 3 && Date.now() < nextDeadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
     const afterReload = frames.flatMap((frame) => frame.events.map((event) => event.type));
-    assert.equal(afterReload.filter((type) => type === "RUN_STARTED").length, 3, "reload publishes one new run without replaying the old one");
-    assert.equal(afterReload.filter((type) => type === "RUN_FINISHED").length, 2, "both native turns close once");
+    assert.equal(afterReload.filter((type) => type === "RUN_STARTED").length, 4, "reload publishes one new run without replaying the old one");
+    assert.equal(afterReload.filter((type) => type === "RUN_FINISHED").length, 3, "each finished native turn closes once");
     assert.ok(frames.every((frame) => frame.threadId === priorSession), "reload preserves AG-UI thread identity");
     afterReloadProvider.unregister();
     await (native as any)._extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -530,9 +555,9 @@ try {
     afterRestartProvider.setResponses([fauxAssistantMessage("Only the third completed answer appears after restart.")]);
     await native.prompt("Third native turn in reopened process.");
     const restartDeadline = Date.now() + 5_000;
-    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 4 && Date.now() < restartDeadline)
+    while (frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_FINISHED").length < 5 && Date.now() < restartDeadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_STARTED").length, 5,
+    assert.equal(frames.flatMap((frame) => frame.events).filter((event) => event.type === "RUN_STARTED").length, 6,
       "reopened native session publishes only its new turn, never old acknowledged history");
     afterRestartProvider.unregister();
     // The public SDK replacement path emits session_shutdown for the OLD session, then starts a

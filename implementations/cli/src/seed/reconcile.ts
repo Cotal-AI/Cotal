@@ -11,10 +11,10 @@ import {
   bindExtensionPeers,
   connectorConfigDir,
   connectorMetadataStale,
-  extensionEntry,
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  resolveExtensionEntry,
   inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
@@ -150,9 +150,9 @@ export function readSeedRepairRefusal(generation: string): Error | undefined {
 }
 
 /** `cotal ext seed [--repair|--reset|--force]`: the maintenance entry. Prints a summary. */
-export async function runSeed(flags: SeedFlags): Promise<void> {
+export async function runSeed(flags: SeedFlags, selfUpdate = false): Promise<void> {
   const mode: Mode = flags.reset ? "reset" : flags.repair ? "repair" : flags.force ? "force" : flags.verify ? "verify" : "auto";
-  const result = await reconcile(mode);
+  const result = await reconcile(mode, false, false, selfUpdate);
   if (result.noop) {
     console.log(c.green("✓ built-in connectors up to date"));
     return;
@@ -167,7 +167,7 @@ export async function runSeed(flags: SeedFlags): Promise<void> {
 
 const NOOP: ReconcileResult = { noop: true, seeded: [], refreshed: [], verified: [], removedKept: [] };
 
-async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false): Promise<ReconcileResult> {
+async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false, selfUpdate = false): Promise<ReconcileResult> {
   if (waitForUpdateClosure()) {
     if (process.env.COTAL_UPDATE_REEXEC === "1") throw new Error("another Cotal update finished while this command waited; run the command again");
     console.error("Cotal update finished; restarting command with the installed CLI");
@@ -183,10 +183,10 @@ async function reconcile(mode: Mode, automatic = false, resumeFirstSeed = false)
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode, automatic, resumeFirstSeed);
+  return reconcileUnderClosure(mode, automatic, resumeFirstSeed, selfUpdate);
 }
 
-async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean): Promise<ReconcileResult> {
+async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirstSeed: boolean, selfUpdate: boolean): Promise<ReconcileResult> {
   const generation = seedGeneration();
   const downgrade = seedDowngradeRefusal(generation);
   if (downgrade) throw downgrade;
@@ -292,7 +292,7 @@ async function reconcileUnderClosure(mode: Mode, automatic: boolean, resumeFirst
         releaseMutation();
         releaseMutation = () => {};
         const { refreshConnectorInstalls } = await import("../commands/setup.js");
-        for (const line of await refreshConnectorInstalls()) console.error(c.dim(`→ ${line}`));
+        for (const line of await refreshConnectorInstalls(undefined, selfUpdate)) console.error(c.dim(`→ ${line}`));
         releaseMutation = claimExtensionMutation({ waitMs: 30000 });
         if (JSON.stringify(loadExtensionsManifest()) !== before)
           throw new Error("installed extensions changed during connector refresh; retry the upgrade before committing its generation");
@@ -866,7 +866,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   writePendingChildMarker(nonce);
   const r = spawnSync(bin, [...argv, "ext", "add", storePath], {
     encoding: "utf8",
-    env: { ...process.env, COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
+    env: { ...process.env, COTAL_TELEMETRY_DISABLED: "1", COTAL_EXT_SEEDING: nonce, COTAL_EXT_SEEDING_PARENT: String(process.pid) },
   });
   clearChildMarker(); // parent survived the child: the marker's job is done (child also clears its own)
   // The child's `✓ added …` line is seeding progress, not the invoking command's output: the boot gate
@@ -942,7 +942,7 @@ function verifyOperatorInstalled(pkg: string, generation: string): void {
 /** The package's resolved entry file exists on disk. Used to
  *  detect a torn install where package.json survived a partial npm copy but the built dist did not. */
 function entryPresent(pkg: string, installed: InstalledExtensionPackage): boolean {
-  return existsSync(join(extensionPackageDir(pkg), extensionEntry(installed)));
+  return existsSync(resolveExtensionEntry(extensionPackageDir(pkg), installed));
 }
 
 /** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND

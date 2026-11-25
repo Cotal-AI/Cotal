@@ -1,8 +1,8 @@
 import { basename, isAbsolute, join } from "node:path";
-import { readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
-import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } from "./mesh-registry.js";
+import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError, registryRecordDirectory } from "./mesh-registry.js";
 import { recordOperationWarning, type OutputWarning } from "./output.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
@@ -22,6 +22,31 @@ export interface PreparedSpace {
   readonly root: string;
   /** ISO timestamp of when it was prepared. */
   readonly ts: string;
+}
+
+export type ProjectRootProblem = "missing" | "not-directory" | "inaccessible";
+
+/** Whether this account can reach and enter the recorded project directory. */
+export function projectRootProblem(path: string): ProjectRootProblem | undefined {
+  try {
+    if (!statSync(path).isDirectory()) return "not-directory";
+    accessSync(path, constants.X_OK);
+    return undefined;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? "missing" : code === "ENOTDIR" ? "not-directory" : "inaccessible";
+  }
+}
+
+/** An unavailable path that cannot contain the original project's journal. */
+export function projectRootDisplaced(problem: ProjectRootProblem | undefined): boolean {
+  return problem === "missing" || problem === "not-directory";
+}
+
+export function projectRootProblemText(problem: ProjectRootProblem): string {
+  if (problem === "missing") return "no longer exists";
+  if (problem === "not-directory") return "is not a directory";
+  return "could not be accessed";
 }
 
 export function preparedSpacesDir(): string {
@@ -52,7 +77,7 @@ export function readPreparedSpaces(): { spaces: PreparedSpace[]; unusable: MeshR
     try { stat = code === "ENOTDIR" ? statSync(dir) : undefined; } catch { stat = undefined; }
     if (stat) {
       const summary = stat.isFile() ? `${dir} is a file, not a folder` : `${dir} is not a folder`;
-      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space` });
+      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv -- ${shellPath(dir)} ${shellPath(`${dir}.old`)}\`; Cotal makes the folder when it next prepares a space` });
     }
     throw new MeshRegistryError(dir, `the prepared spaces folder ${dir} could not be read: ${(e as Error).message}`, { cause: e });
   }
@@ -120,6 +145,7 @@ function readPreparedFile(file: string): PreparedSpace | undefined {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return undefined;
+    if (code === "EISDIR") throw registryRecordDirectory(file, e);
     if (code === "EACCES" || code === "EPERM") throw deniedRecord(file, e);
     throw unusableRecord(file, `does not parse as a prepared space record (${(e as Error).message})`, e);
   }

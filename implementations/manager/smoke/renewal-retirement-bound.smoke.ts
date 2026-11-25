@@ -75,10 +75,9 @@ type InventorySeat = {
 };
 type Internals = {
   agents: Map<string, InventorySeat>;
-  ep: { nc: NatsConnection };
-  serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
-  goalWriter?: { nc: NatsConnection };
-  sessionLedgerConn?: { nc: NatsConnection };
+  ep: { conn: { nc: NatsConnection } };
+  servePlane: { sessionLedgerConn?: { nc: NatsConnection }; serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } }; };
+  goalWriterComponent: { goalWriter?: { nc: NatsConnection }; };
 };
 type Observation = {
   id: string; command: string; start: number; end?: number; ok?: boolean;
@@ -239,10 +238,10 @@ try {
   const m = manager as unknown as Internals;
   const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
-    for (const [duty, nc] of [["supervisor", m.ep.nc], ["serve", m.serviceServe?.nc],
-      ["goalWriter", m.goalWriter?.nc], ["sessionLedger", m.sessionLedgerConn?.nc]] as const)
+    for (const [duty, nc] of [["supervisor", m.ep.conn.nc], ["serve", m.servePlane.serviceServe?.nc],
+      ["goalWriter", m.goalWriterComponent.goalWriter?.nc], ["sessionLedger", m.servePlane.sessionLedgerConn?.nc]] as const)
       if (nc) observeConnection(nc, duty);
-    const nc = m.serviceServe?.nc;
+    const nc = m.servePlane.serviceServe?.nc;
     if (!nc || dispatchObserved.has(nc)) return;
     dispatchObserved.add(nc);
     // Fixture-only observation of the installed client's actual dispatch boundary.
@@ -267,8 +266,8 @@ try {
   instrument();
   // start() installs subscriptions synchronously, but their SUB frames may still be buffered.
   // Establish broker-side interest before the first measured caller on another connection.
-  assert.ok(m.serviceServe, "SETUP: Manager must install the real service");
-  await m.serviceServe.nc.flush();
+  assert.ok(m.servePlane.serviceServe, "SETUP: Manager must install the real service");
+  await m.servePlane.serviceServe.nc.flush();
   const callerIdentity = newIdentity();
   const caller: EpCaller = { owner, actor: callerIdentity.id, uid: mintLifecycleUid() };
   const callerNc = await connect({ servers, ...standaloneConnectOpts({ tls: false,
@@ -304,18 +303,18 @@ try {
   assert.equal((await call("ps")).ok, true, "SETUP: ps must answer before sampling");
   setupComplete = true;
   const renew = () => (manager as unknown as { renewRemoteStandingBundle(force: boolean): Promise<void> }).renewRemoteStandingBundle(true);
-  const candidateOldNc = m.serviceServe!.nc;
+  const candidateOldNc = m.servePlane.serviceServe!.nc;
   stallCandidate = true;
   const failedCandidateStart = performance.now();
   await assert.rejects(renew(), /standing serve flush exceeded its 10000ms aggregate budget/);
   const failedCandidateMs = performance.now() - failedCandidateStart;
   assert.ok(candidateFlushAt > 0, "native replacement handshake completed and subscription flush reached the relay");
   assert.ok(failedCandidateMs >= 9_500 && failedCandidateMs < 12_000, `failed native candidate took ${failedCandidateMs}ms`);
-  assert.equal(m.serviceServe!.nc, candidateOldNc, "failed replacement never replaces the old serving connection");
+  assert.equal(m.servePlane.serviceServe!.nc, candidateOldNc, "failed replacement never replaces the old serving connection");
   assert.equal(candidateOldNc.isClosed(), false, "failed replacement cleanup leaves the old transport alive");
   await wait(100);
   assert.ok(candidateClosedAt > candidateFlushAt, "failed candidate socket closes without receiving a drain PONG");
-  const adoption = manager as unknown as { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } };
+  const adoption = (manager as unknown as { credentialRenewal: { remoteBundleAdoption?: Promise<void>; remoteBundleRenewal?: Promise<void>; remoteRenewalDebt?: { reason: string } } }).credentialRenewal;
   assert.equal(adoption.remoteBundleAdoption, undefined, "failed native cleanup releases executor adoption waiters");
   assert.equal(adoption.remoteBundleRenewal, undefined, "failed native cleanup releases renewal ownership");
   assert.match(adoption.remoteRenewalDebt!.reason, /standing serve flush exceeded/);
@@ -330,13 +329,13 @@ try {
   slowRead = { entered: enter, resume: new Promise<void>((resolve) => { resume = resolve; }) };
   const slowCall = call("ps");
   await Promise.race([entered, wait(3000).then(() => { throw new Error("public ps did not reach authority await"); })]);
-  const normalOldNc = m.serviceServe!.nc;
+  const normalOldNc = m.servePlane.serviceServe!.nc;
   const normalDiagnostics: string[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => { normalDiagnostics.push(args.map(String).join(" ")); originalError(...args); };
   const normalRenewal = renew();
   await wait(300);
-  assert.notEqual(m.serviceServe!.nc, normalOldNc, "replacement adopted while original public ps is pending");
+  assert.notEqual(m.servePlane.serviceServe!.nc, normalOldNc, "replacement adopted while original public ps is pending");
   assert.equal(normalOldNc.isClosed(), false, "old transport retains pending native public ps");
   resume();
   assert.equal((await slowCall).ok, true, "slow public ps retains original reply through renewal");
@@ -344,7 +343,7 @@ try {
   await normalRenewal;
   console.error = originalError;
   assert.equal(normalDiagnostics.some((line) => line.includes("retired serve drainage")), false, "successful drain reports no unfinished work");
-  const old = m.serviceServe! as NonNullable<Internals["serviceServe"]> & { handle: { stop(): Promise<void> } };
+  const old = m.servePlane.serviceServe! as NonNullable<Internals["servePlane"]["serviceServe"]> & { handle: { stop(): Promise<void> } };
   const oldNc = old.nc;
   const originalStop = old.handle.stop.bind(old.handle);
   let reached!: () => void;
@@ -360,7 +359,7 @@ try {
   console.error = (...args: unknown[]) => { diagnostics.push(args.map(String).join(" ")); error(...args); };
   const renewal = (manager as unknown as { renewRemoteStandingBundle(force: boolean): Promise<void> }).renewRemoteStandingBundle(true);
   await blocked;
-  const replacement = m.serviceServe!.nc;
+  const replacement = m.servePlane.serviceServe!.nc;
   assert.notEqual(replacement, oldNc, "replacement adopted before old drain");
   let finished = false;
   void renewal.then(() => { finished = true; });

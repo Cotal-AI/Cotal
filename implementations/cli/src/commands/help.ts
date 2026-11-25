@@ -1,5 +1,5 @@
 import { findCommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { cachedUpdateSummary, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CommandFailure, globalConfigDirProblem, jsonFlag, paintFor, writeResult } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandList, printHelpPath } from "../help.js";
 import { unknownCommandMessage } from "../lib/nearest-word.js";
@@ -20,10 +20,18 @@ export async function help(args: ParsedArgs): Promise<void> {
   const commands = commandSurface();
   if (word === undefined) return paintFor(process.stdout, () => printCommandList(commands));
   const cmd = findCommand(commands, word);
-  if (!cmd || cmd.name.startsWith("__")) throw new Error(unknownCommandMessage(commands, word));
-  if (cmd.name === "service" && path.length === 2 && path[0] === "start" && findServicePreset(path[1]!)) {
-    paintFor(process.stdout, () => printHelpPath(servicePresetCommand(cmd, path), ["start"]));
-    return;
+  if (!cmd || cmd.name.startsWith("__")) throw new CommandFailure("refused", "USAGE_INVALID", unknownCommandMessage(commands, word), { selfContained: true });
+  if (cmd.name === "service" && path[0] === "add") {
+    let scoped = cmd;
+    try { scoped = servicePresetCommand(cmd, path); }
+    catch { /* A preset that cannot supply options still shows generic help, as suffix help does. */ }
+    return paintFor(process.stdout, () => printHelpPath(scoped, path));
+  }
+  if (cmd.name === "service" && path[0] === "start" && path[1] !== undefined && findServicePreset(path[1])) {
+    let scoped = cmd;
+    try { scoped = servicePresetCommand(cmd, path.slice(0, 2)); }
+    catch (error) { if (path.length === 2) throw error; }
+    return paintFor(process.stdout, () => printHelpPath(scoped, path));
   }
   paintFor(process.stdout, () => printHelpPath(managerServiceCommand(cmd, path)?.cmd ?? cmd, path));
 }
@@ -36,6 +44,11 @@ export const versionFlags = [jsonFlag] as const;
 export async function version(args: ParsedArgs): Promise<void> {
   if ((args.values as FlagValues<typeof versionFlags>).json) {
     const { versions, unreadable } = readExtensionVersions();
+    const config = unreadable === undefined ? undefined : globalConfigDirProblem();
+    const current = cliVersion();
+    const pending = readUpdatePending(current);
+    const reconciliation = config && pending.kind === "unreadable" && pending.source === "manifest"
+      ? { ...pending, error: config.message, instruction: config.remedy } : pending;
     // An unreadable manifest leaves the extension list unread, so the read is partial rather than an
     // empty complete list.
     writeResult(
@@ -43,13 +56,13 @@ export async function version(args: ParsedArgs): Promise<void> {
       {
         command: "version",
         target: null,
-        result: { version: cliVersion(), update: cachedUpdateSummary(cliVersion()), reconciliation: readUpdatePending(cliVersion()), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+        result: { version: current, update: cachedUpdateSummary(current), reconciliation, extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
         ...(unreadable === undefined
           ? {}
           : {
               completeness: "partial",
-              warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${unreadable}` }],
-              partial: { message: "the installed extensions could not be listed", remedy: manifestRepair },
+              warnings: [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${config?.message ?? unreadable}` }],
+              partial: { message: "the installed extensions could not be listed", remedy: config?.remedy ?? manifestRepair },
             }),
       },
       () => ({ sections: [] }),

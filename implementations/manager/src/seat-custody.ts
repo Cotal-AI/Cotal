@@ -1,16 +1,19 @@
 import { resolve } from "node:path";
 import {
   copyPersonaEndpoints, DEV_OWNER, identityFromCreds, inspectCredHealth, principalKey, rejectionText,
-  type CotalEndpoint, type LaunchSpec, type LifecycleStateTransport, type SecretStore, type StaticManagedSlotRow,
+  type CotalEndpoint, type LaunchSpec, type LifecycleStateTransport, type StaticManagedSlotRow,
 } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, retainConnectorSeat } from "@cotal-ai/workspace";
 import { isCustodialRuntime, requireRuntimeReap, RuntimeReapUnproven, watchProvedExit, type AgentHandle, type Runtime } from "./runtime/index.js";
 import type { RuntimeReference } from "@cotal-ai/core";
 import type { ManagedAgent, ManagerResumeAgent, SupervisedRestart } from "./manager.js";
 import { readSeatRecord, removeReleasedSeatReference, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
 import { RESTART_WORK_EXIT_MS, withTimeout } from "./manager-timeout.js";
 import type { Manager } from "./manager.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** Keep launch provenance independent of status and runtime wire contracts. */
 export function watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
@@ -24,12 +27,7 @@ export function watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typ
 /** Manager-owned authority and lifecycle operations used while recording and recovering seats. */
 export interface SeatCustodyDeps {
   staticAuth: () => boolean;
-  workspaceRoot: () => string;
-  space: () => string;
-  instanceId: () => string;
   endpoint: () => CotalEndpoint;
-  secrets: () => SecretStore;
-  eventPayloadsWithheld: () => boolean;
   runtimeFor: (kind: string) => Runtime;
   requiredRuntime: () => Runtime;
   withLifecycleExecutor: <T>(pin: { owner: string; actor: string; lifecycleUid: string; alias: string }, fn: (t: LifecycleStateTransport) => Promise<T>) => Promise<T>;
@@ -49,12 +47,7 @@ export interface SeatCustodyDeps {
 export function seatCustodyDeps(m: Manager): SeatCustodyDeps {
   return {
     staticAuth: () => !!m["auth"] && !m["userMode"],
-    workspaceRoot: () => m["workspaceRoot"],
-    space: () => m["space"],
-    instanceId: () => m["managerInstanceId"],
     endpoint: () => m["ep"],
-    secrets: () => m["secrets"],
-    eventPayloadsWithheld: () => m["eventPayloadsWithheld"],
     runtimeFor: (kind) => m["runtimeFor"](kind),
     requiredRuntime: () => m["requiredRuntime"],
     withLifecycleExecutor: (pin, fn) => m["withLifecycleExecutor"](pin, fn),
@@ -72,7 +65,8 @@ export function seatCustodyDeps(m: Manager): SeatCustodyDeps {
 
 /** Seat custody references, successor records, and identity-checked recovery for one manager. */
 export class SeatCustody {
-  constructor(private readonly deps: SeatCustodyDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: SeatCustodyDeps, private readonly state: ManagerStartState) {}
+  private get managerInstanceId(): string { return this.state.managerInstanceId!; }
 
   /** Re-record the custody reference of a managed agent's CURRENT handle on its active slot: a
    *  same-lifecycle restart or a resume binds a new custody under the old uid, and the successor's
@@ -114,7 +108,7 @@ export class SeatCustody {
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const holder = retainConnectorSeat(this.deps.instanceId(), name);
+    const holder = retainConnectorSeat(this.managerInstanceId, name);
     const handle = runtime.spawn(name, spec, cwd, reserved);
     this.deps.watchConnectorHolder(handle, holder);
     if (reserved === undefined) return handle;
@@ -168,7 +162,7 @@ export class SeatCustody {
       const unresumable = this.deps.inventoryReferenceError(agent);
       if (unresumable) throw new Error(`a successor manager could not restart it: ${unresumable}`);
     }
-    writeSeatRecord(this.deps.workspaceRoot(), { version: "cotal-seat-record/v1", instanceId: this.deps.instanceId(), ...(policy ? { supervise: policy } : {}), crashes: a.restart?.crashes ?? [], agent });
+    writeSeatRecord(this.config.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.managerInstanceId, ...(policy ? { supervise: policy } : {}), crashes: a.restart?.crashes ?? [], agent });
   }
 
   /** Bring a running seat's record up to date after its credential or restart count changed. A
@@ -185,8 +179,8 @@ export class SeatCustody {
 
   dropSeatRecord(a: { name: string; lifecycleUid: string }): void {
     try {
-      removeSeatRecord(this.deps.workspaceRoot(), this.deps.space(), a.name, a.lifecycleUid);
-      removeReleasedSeatReference(this.deps.workspaceRoot(), this.deps.space(), a.name, a.lifecycleUid);
+      removeSeatRecord(this.config.workspaceRoot, this.config.space, a.name, a.lifecycleUid);
+      removeReleasedSeatReference(this.config.workspaceRoot, this.config.space, a.name, a.lifecycleUid);
     } catch (error) {
       console.error(`! ${a.name}: its seat record could not be removed: ${rejectionText(error)}`);
     }
@@ -197,7 +191,7 @@ export class SeatCustody {
   seatRecordFor(row: StaticManagedSlotRow): SeatRecord | undefined {
     let record: SeatRecord | undefined;
     try {
-      record = readSeatRecord(this.deps.workspaceRoot(), this.deps.space(), row.alias);
+      record = readSeatRecord(this.config.workspaceRoot, this.config.space, row.alias);
     } catch (error) {
       console.error(`! ${row.alias}: ${rejectionText(error)}; the lifecycle is retired, not restarted`);
       return undefined;
@@ -205,7 +199,7 @@ export class SeatCustody {
     if (record === undefined) return undefined;
     const identity = record.agent.identity;
     if (identity.mode !== "static" || identity.id !== row.actor || identity.lifecycleUid !== row.lifecycleUid) return undefined;
-    if (record.instanceId !== this.deps.instanceId() || record.agent.space !== this.deps.space()) return undefined;
+    if (record.instanceId !== this.managerInstanceId || record.agent.space !== this.config.space) return undefined;
     let runtimeMatches = record.agent.launch.runtime === row.runtime?.kind;
     if (row.runtime === undefined) {
       // Non-custodial backends such as pty record no slot reference. A custodial backend still
@@ -232,9 +226,9 @@ export class SeatCustody {
     if (typeof runtime.adopt !== "function") return `runtime "${runtime.kind}" cannot adopt a seat`;
     // The credential is the manager's own lifecycle-keyed file, and its seed renews it.
     const credsPath = resolve(entry.identity.credential.path);
-    if (credsPath !== resolve(agentLifecycleSecretFilePaths(this.deps.workspaceRoot(), this.deps.space(), entry.name, entry.identity.lifecycleUid).creds))
+    if (credsPath !== resolve(agentLifecycleSecretFilePaths(this.config.workspaceRoot, this.config.space, entry.name, entry.identity.lifecycleUid).creds))
       return `its credential reference ${credsPath} is not this lifecycle's manager-owned path`;
-    const stored = await this.deps.secrets().get(agentSecretKeyForFile(credsPath, this.deps.space()));
+    const stored = await this.config.secrets.get(agentSecretKeyForFile(credsPath, this.config.space));
     if (stored === undefined) return "its credential is not in the secret store";
     let seed: string;
     try {
@@ -277,7 +271,8 @@ export class SeatCustody {
         capabilities: entry.launch.capabilities,
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
-        eventPayloads: this.deps.eventPayloadsWithheld() ? false : entry.launch.eventPayloads,
+        eventPayloads: this.config.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
+        ...optInLaunchFields(entry.launch),
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
         ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),

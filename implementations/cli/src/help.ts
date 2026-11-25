@@ -4,11 +4,13 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, wrapWords, type Section, type Style } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
-import { displayCmd } from "./lib/self-exec.js";
+import { displayCmd, displayRemedy } from "./lib/self-exec.js";
+import { serviceStartAllowsNoOpen } from "./lib/service-start-options.js";
+import { recordTelemetryFailure } from "./telemetry.js";
 import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
@@ -202,7 +204,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     // commands here refuse, with the selection too, and name that folder.
     const records = recordsElsewhereError(root)?.details;
     const holds = records && recordsElsewhereText(records);
-    if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
+    if (holds) elsewhere = `${holds}; ${displayRemedy(records!.stackRemedy!, cmd)}`;
     const explicit = selected && readCurrentSelection()?.source === "explicit";
     space = (explicit ? selected : folder) ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
     if (!explicit && selected && folder !== undefined && folder !== selected) outside = selected;
@@ -283,7 +285,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
  *  which a usage refusal points at stderr, wrapped to `width`; the usage breaks only where
  *  {@link usageLines} allows, and an example's command is never wrapped, so each stays one line to
  *  copy, with its note beside it or under it. */
-export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
+export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log, width = terminalWidth(process.stdout), style: Style = "rich"): void {
   const path = sub ? `${cmd.name} ${sub.name}` : cmd.name;
   const selected = sub ?? cmd;
   const usage = sub ? sub.usage ?? `cotal ${path}` : commandUsage(cmd);
@@ -306,30 +308,41 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
   })) }] });
   const outputs = selected.outputs ?? [];
   if (outputs.length) sections.push({ blocks: [{ kind: "lines", lines: [{ text: `Structured output: ${outputs.join(", ")}`, tone: "hint" }] }] });
-  out(renderReport({ sections }, "rich", width));
+  out(renderReport({ sections }, style, width));
 }
 
-/** Resolve declared subcommands and aliases, stopping at operands. */
-export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
-  if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width);
+/** Resolve declared subcommands and aliases, then use operands to scope their help where applicable. */
+export function printHelpPath(cmd: Command, words: readonly string[], out: (line: string) => void = console.log, width = terminalWidth(process.stdout), style: Style = "rich"): void {
+  if (cmd.positionals !== undefined && !cmd.subcommands?.length) return printCommandHelp(cmd, undefined, out, width, style);
   let surface: Pick<Command, "subcommands"> = cmd;
   let selected: Subcommand | undefined;
   const path: string[] = [];
   for (const word of words) {
     const sub = findSubcommand(surface, word);
     if (!sub && surface === cmd && cmd.name === "history") break;
-    if (!sub || sub.hidden) {
+    if (!sub || (sub.hidden && sub.name.startsWith("__"))) {
       // The parser's usage error for the same word: the reason, then the help of the path that exists,
       // both on stderr, so painted for it whatever stream the caller paints for.
+      recordTelemetryFailure("refused", "USAGE_INVALID");
       const at = [cmd.name, ...path].join(" ");
       paintFor(process.stderr, () => {
         for (const line of hang("✗ ", unknownSubcommandMessage(at, surface, word), terminalWidth(process.stderr))) console.error(c.red(line));
-        printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr));
+        printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, (line) => console.error(line), terminalWidth(process.stderr), style);
       });
       process.exit(1);
     }
+    if (sub.hidden) break;
     path.push(sub.name); selected = sub; surface = sub;
     if (!sub.subcommands?.length) break;
   }
-  printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width);
+  if (cmd.name === "service" && selected?.name === "start" && words[1] !== undefined) {
+    const manager = words[1] === "manager", broker = words[1] === "broker";
+    selected = {
+      ...selected,
+      usage: broker ? "cotal service start broker [<preset options>] [--instance <id>] [--dry-run]" : manager ? selected.usage?.replace("|--new-instance]", "]") : selected.usage,
+      ...(broker ? { examples: [{ command: "cotal service start broker --config <file> --binary <file> --server <url>", note: "start the broker in the background" }] } : {}),
+      flagNames: selected.flagNames?.filter((flag) => (flag !== "no-open" || serviceStartAllowsNoOpen(words[1])) && (flag !== "new-instance" || !(manager || broker)) && (flag !== "foreground" || !broker)),
+    };
+  }
+  printCommandHelp(cmd, selected ? { ...selected, name: path.join(" ") } : undefined, out, width, style);
 }

@@ -139,6 +139,26 @@ still type an absolute path that was not listed. The command creates nothing. Mi
 non-directory and inaccessible paths refuse with `failed-precondition`. Delegated execution refuses
 before any host filesystem lookup, using the same execution-mode refusal as `resolve-cwd`.
 
+## Harness commands before launch [#harness-commands]
+
+The manager's `harness-commands` command is granted where `list-dir` is. It lists the commands and
+skills a harness would offer an agent started in a directory on the Manager's host, before any agent
+exists:
+
+```sh
+cotal invoke manager harness-commands --on <instance> --args '{"agent":"claude","cwd":"/abs/project"}'
+```
+
+It answers `{ agent, cwd, supported: true, commands }`, each entry `{ name, target, description?,
+inputHint? }` under the name the agent's `command` takes, or `{ agent, cwd, supported: false, reason }`
+for a harness whose agents run no commands. The Manager asks the harness itself in that directory
+and starts no agent. A harness loads the directory's configuration as it would for a spawn there.
+A harness that did not answer is `unavailable`. Pass the chosen entry to `spawn` as
+`firstCommand: { target, name, args? }`. The acceptance names `firstCommand.id`, and `command-state`
+on the new agent reads how far it got. What each harness lists is in the
+[connector reference](connector-runtime-reference.mdx#commands-before-launch), and the contract is in
+[SPEC §13.22](../SPEC.md#1322-the-agent-endpoint).
+
 ## Spawn input resolution [#agent-selection-and-spawn-inputs]
 
 The manager's `resolve-agent` command is minted beside `spawn` in the spawn capability and the
@@ -188,10 +208,14 @@ the whole id, because both surfaces take nothing else.
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
-route. This view grants no registry scan or class queue. It adds four reads for an actor that
-holds `spawn`. The view may call `status`, `models` and `resolve-cwd` on that instance, the reads a
-launch needs, subject to the execution-mode limit above. It may also call `ps` there to list the
-caller's own agents. A `run`-only or no-scope view may not, and `slots` stays with `admin`. A user
+route. This view grants no registry scan or class queue. It adds six reads for an actor that
+holds `spawn`. The view may call `status`, `models`, `resolve-cwd`, `list-dir` and `harness-commands` on that instance,
+the reads a launch needs, subject to the execution-mode limit above. It may also call `ps` there to
+list the caller's own agents. An `admin` actor's view carries the operator reads there, `slots`
+included. A `run`-only or no-scope agent view gets none of them. A
+person's own view, minted from their sign-in, calls `inspect` and `ps` there whatever its scope,
+with owner-mode `despawn`, `attach`, `input` and `interrupt`
+([your own agents](identity-user-auth.mdx#delegation)). A user
 mesh's co-located manager answers every owner's view, so its `status` counts and its `ps` lists only
 the caller's own seats, unless the caller holds `admin`. An absent,
 ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the
@@ -448,8 +472,10 @@ not distinguish the two states either. Each of these refusals carries
 `kind = ai.cotal.ep.foreign-slot-held` in `error.details[]` with the holder's instance id and the
 `condition` that refused: `in-flight` for a holder gate still at the stamp, or `no-seam`,
 `unreadable`, `garbled` or `behind` when the registration could not read that gate or read it below
-the stamp. A remote manager asks its host to reconcile the holder only on `in-flight`, the one
-condition a gate repair can clear.
+the stamp. A remote Manager briefly retries registration on `in-flight` using exponential backoff
+with jitter. Each attempt reads the governance head again. If the holder is still in flight when
+the retry budget runs out, the Manager can ask its host for a guarded gate reconciliation. A
+definite governance-slot CAS loss still reports a conflict.
 
 For the instance that cannot cooperate, an operator names it:
 `cotal endpoint deregister <endpoint> <full-instance-id>`

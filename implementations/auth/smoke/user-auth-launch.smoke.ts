@@ -56,7 +56,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSmokeSandboxDown, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
@@ -142,9 +142,12 @@ function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: R
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 // While set, the token route answers 503, as an IdP that is down does (E4).
 let idpTokenUnavailable = false;
-const idpSrv = createServer((req, res) => idpTokenUnavailable && req.method === "GET" && req.url?.split("?")[0] === "/api/auth/token"
-  ? void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}')
-  : handler!(req, res));
+const idpSrv = createServer((req, res) => {
+  if (req.url === "/bad-key/jwks") return void res.writeHead(200, { "content-type": "application/json" }).end('{"keys":[null]}');
+  if (idpTokenUnavailable && req.method === "GET" && req.url?.split("?")[0] === "/api/auth/token")
+    return void res.writeHead(503, { "content-type": "application/json" }).end('{"error":"unavailable"}');
+  handler!(req, res);
+});
 await new Promise<void>((r) => idpSrv.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
 const base = `${origin}/api/auth`;
@@ -187,8 +190,12 @@ let caRig: { hostRoot: string; hostHome: string; hostEnv: Record<string, string>
 try {
   // ---------- A. up --user-auth ----------
   console.log("A) cotal up --user-auth --idp <real IdP> --auth-timeout 3 --detach");
+  const malformed = await cotal(["up", "--user-auth", "--idp", `${origin}/bad-key`, "--detach", "--no-manager", "--space", SPACE, "--server", SERVER]);
+  check("first enable with malformed JWKS starts no broker and leaves no IdP pin or project state", malformed.status === 2
+    && field(malformed.out, "Code", "DEPENDENCY_UNAVAILABLE") && malformed.out.includes("did not serve usable JWKS")
+    && !malformed.out.includes("Starting nats-server") && readdirSync(join(root, ".cotal")).length === 0, malformed.out);
   const up = await cotal(["up", "--user-auth", "--idp", base, "--auth-timeout", "3", "--detach", "--server", SERVER, "--space", SPACE]);
-  check("up exits 0", up.status === 0, up.out);
+  check("up exits 0 on the same project with the corrected IdP", up.status === 0, up.out);
   check("up announces the user-auth service + login line", up.out.includes("user-auth service up") && up.out.includes(`cotal login --idp ${base}`), up.out);
   check(
     "up summary reports the complete user-auth component set",
@@ -806,6 +813,15 @@ try {
     const refusedText = plain(refusedStart.out);
     check("manager start with no sign-in exits 2 under a Mesh: heading with AUTH_REQUIRED, and Next signs in, then starts it",
       refusedStart.status === 2 && refusedText.includes(`Mesh: ${SPACE}\n`) && field(refusedStart.out, "Code", "AUTH_REQUIRED") && refusedText.includes(`cotal login --idp ${base}, then \`cotal manager start\``), refusedStart.out);
+    for (const words of [["manager", "start"], ["service", "restart", "manager"]]) {
+      const scoped = await cotal([...words, "--space", SPACE, "--dry-run", "--json"], { cwd: root2, env });
+      const retry = /then `cotal ([^`]+)`/.exec(scoped.out)?.[1];
+      const copied = retry === [...words, "--space", SPACE, "--dry-run", "--json"].join(" ")
+        ? await cotal(retry.split(" "), { cwd: root2, env }) : undefined;
+      check(`${words.join(" ")} after sign-in keeps the requested space and JSON preview`, scoped.status === 2 && copied?.status === 2 && copied.out.includes("AUTH_REQUIRED") && copied.out.includes(`\"space\":\"${SPACE}\"`), scoped.out);
+    }
+    const withName = await cotal(["manager", "start", "--space", SPACE, "--name", "fixture", "--json"], { cwd: root2, env });
+    check("the sign-in remedy does not print a manager start stripped of its launch options", withName.status === 2 && withName.out.includes("retry the original command with all its options unchanged"), withName.out);
     const shown = await cotal(["service", "show", "manager"], { cwd: root2, env });
     check("…before anything was saved or launched",
       !refusedText.includes("saved manager") && !refusedText.includes("forgot manager") && shown.status === 2 && field(shown.out, "Code", "TARGET_NOT_FOUND") && !existsSync(managerPid), { start: refusedStart.out, show: shown.out });
@@ -867,7 +883,7 @@ try {
     const revokedRestartText = plain(revokedRestart.out);
     check("with the sign-in revoked, manager restart over the running manager exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
       revokedRestart.status === 2 && field(revokedRestart.out, "Code", "AUTH_REQUIRED") && revokedRestartText.includes(revokedRunning) && !revokedRestartText.includes("the manager was not attempted") &&
-        revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedRestart.out);
+        revokedRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart --yes\``), revokedRestart.out);
     check("…before anything was stopped: the same manager still runs",
       readFileSync(managerPid, "utf8").trim() === String(pid2) && (() => { try { process.kill(pid2, 0); return true; } catch { return false; } })(), revokedRestart.out);
     deleteIdpSession(home2, base);
@@ -1057,7 +1073,7 @@ try {
     const revokedJoinRestartText = plain(revokedJoinRestart.out);
     check("with that sign-in revoked, the participant's manager restart exits 2 with AUTH_REQUIRED, says the running manager was left running, and Next signs in at that IdP, then restarts it",
       revokedJoinRestart.status === 2 && field(revokedJoinRestart.out, "Code", "AUTH_REQUIRED") && revokedJoinRestartText.includes("the IdP rejected this machine's sign-in, which has expired or was revoked; the running manager was left running") &&
-        revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart\``), revokedJoinRestart.out);
+        revokedJoinRestartText.includes(`cotal login --idp ${base}, then \`cotal manager restart --yes\``), revokedJoinRestart.out);
     check("…and leaves the running manager as it was", joinManagerRuns() && readFileSync(joinManagerPid, "utf8").trim() === joinRunningPid, revokedJoinRestart.out);
     await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
     const joinStopped = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });

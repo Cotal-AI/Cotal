@@ -48,6 +48,7 @@ The closing fence may have trailing spaces or tabs.
 Modeled string fields require YAML strings, and string-array fields require arrays of strings.
 Numbers, booleans, nulls and scalar list shorthand are refused with the file, field and expected
 type. Quote a value such as `"42"` or `"false"` when it is meant as a string.
+An invalid channel name is refused with the file, frontmatter key and channel naming rule.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -161,7 +162,8 @@ Spawning a missing name fails.
 
 The operator's `cotal persona` command lists, shows, creates, edits, and removes files in the selected space's catalog without a broker.
 Complete file input preserves all fields and source bytes after validation.
-Local create and edit operations require the frontmatter `name` to match the catalog name.
+Local creation requires the frontmatter `name` to match the catalog name.
+Editing can save a different display name. If that name is not valid for launch, the edit receipt suggests a command with `--name`.
 Editor drafts validate before promotion and refuse concurrent local CLI changes.
 See the [persona reference](cli-agents.mdx#persona).
 

@@ -50,7 +50,7 @@ process.env.COTAL_HOME = home;
 // exactly as the real binary does, or the check silently has nothing to look at.
 await import("../src/index.js");
 const { chatStream, createSpaceAuth, dialerFor, isReachable, registry, spacePrefix } = await import("@cotal-ai/core");
-const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
+const { acquireMaintenanceLock, authDir, beginMaintenanceCut, clearCurrent, findMesh, findPreparedSpace, getCurrent, isCommandFailure, loadMeshes, loadSpaceAuth, meshesDir, pruneMesh, pruneStaleMeshes, recordMesh, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removePreparedSpace, resolveNativeServiceTarget, saveSpaceAuth, setCurrent, writeMaintenanceResumeDocument } = await import("@cotal-ai/workspace");
 const { meshes, meshesComplete } = await import("../src/commands/meshes.js");
 
 let pass = 0;
@@ -311,6 +311,19 @@ try {
   // ── add: guards ───────────────────────────────────────────────────────────────────────────────
   const dup = await run(["add", "beta"], { server: LIVE, root });
   check("add refuses a space that is already registered", dup.code === 1 && dup.out.includes("already registered"), dup.out);
+  const savedUnchecked = await run(["add", "beta"], { server: LIVE, root, force: true });
+  const beforeVerification = findMesh("beta");
+  check("rig: save the live mesh unchecked", savedUnchecked.code === 0 && beforeVerification?.unchecked === true, savedUnchecked.out);
+  const differentTls = await run(["add", "beta"], { server: LIVE, root, tls: true });
+  check("add does not verify an unchecked record with different TLS intent",
+    differentTls.code === 1 && differentTls.out.includes("already registered") && findMesh("beta")?.unchecked === true, differentTls.out);
+  const verifiedInPlace = await run(["add", "beta"], { server: `${LIVE}/`, root });
+  check("add verifies an unchanged unchecked record in place and keeps its selection and recorded address",
+    verifiedInPlace.code === 0 && verifiedInPlace.out.includes('verified "beta"') && findMesh("beta")?.unchecked === undefined &&
+      findMesh("beta")?.server === LIVE && findMesh("beta")?.ts === beforeVerification?.ts && getCurrent() === "beta", verifiedInPlace.out);
+  const offlineCheck = await run(["add", "ghost"], { server: DEAD, root });
+  check("failed verification keeps the record unchecked and preserves the selection",
+    offlineCheck.code === 1 && offlineCheck.out.includes("the unchecked registration was kept") && findMesh("ghost")?.unchecked === true && getCurrent() === "beta", offlineCheck.out);
   const replaced = await run(["add", "beta"], { server: DEAD, root, force: true });
   check("add --force replaces an existing record", replaced.code === 0 && findMesh("beta")?.server === DEAD, findMesh("beta"));
   // A registration this machine started is how `cotal down` finds that stack. Replacing it, as
@@ -342,6 +355,10 @@ try {
   recordPreparedSpace({ space: "prepared-here", root, ts: new Date(0).toISOString() });
   const overPrepared = await run(["add", "prepared-here"], { server: DEAD, root, force: true });
   check("add --force refuses a space prepared on this machine", overPrepared.code === 2 && overPrepared.out.includes("a space prepared on this machine") && findMesh("prepared-here") === undefined, overPrepared.out);
+  const rmPrepared = await run(["rm", "prepared-here"]);
+  check("rm gives the local-only forget command for a prepared name and keeps the record",
+    rmPrepared.code === 1 && rmPrepared.out.includes("`cotal space forget prepared-here`") && !rmPrepared.out.includes("`cotal meshes`") &&
+      findPreparedSpace("prepared-here")?.root === root, rmPrepared.out);
   removePreparedSpace("prepared-here");
   const noServer = await run(["add", "nowhere"], { root });
   check("add without --server fails loud", noServer.code === 1 && noServer.out.includes("--server"), noServer.out);
@@ -405,7 +422,7 @@ try {
   check("…and does not echo the password back", !creddy.out.includes("swordfish"), creddy.out);
   // One sentence and next step for every broker-URL credential refusal, a value with no scheme included.
   check("…in the words and next step every broker-URL credential refusal uses",
-    creddy.out.includes("--server must not embed credentials") && creddy.out.includes("name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust"), creddy.out);
+    creddy.out.includes("--server must not embed credentials") && creddy.out.includes("name the broker URL without user:password@ and retry") && !creddy.out.includes("--creds"), creddy.out);
   const schemeless = await run(["add", "leaky"], { server: "alice:swordfish@127.0.0.1:1", root });
   check("a --server with no scheme and a user name is refused the same way, with no part of it echoed",
     schemeless.code === 1 && schemeless.out.includes("--server must not embed credentials") && !schemeless.out.includes("alice") && !schemeless.out.includes("swordfish") && findMesh("leaky") === undefined, schemeless.out);
@@ -952,13 +969,14 @@ try {
   const account = (idpUrl: string, ownerKey: string) => ({ idpUrl, issuer: new URL(idpUrl).origin, sub: ownerKey, ownerKey, catalogUrl: `${new URL(idpUrl).origin}/spaces` });
   const liveResult = { account: account(liveIdp, "live-owner"), state: "not-modified" as const, fetchedAt: new Date().toISOString(), snapshot: { v: 1, account: { idpUrl: liveIdp, issuer: "https://live.example", sub: "live-owner" }, spaces: [] } };
   const deadResult = { account: account(deadIdp, "dead-owner"), state: "failed" as const, error: `idp request to ${deadIdp}/spaces failed: fetch failed` };
+  let unscopedResults = [liveResult, deadResult];
   registry.register({
     kind: "auth-provider",
     name: "catalog-smoke",
     async prepareSpaceCatalogs(opts: { idpUrl?: string }) {
       catalogCalls.push(opts.idpUrl);
       if (opts.idpUrl === "https://none.example/api/auth") return [];
-      return opts.idpUrl === liveIdp ? [liveResult] : opts.idpUrl === deadIdp ? [deadResult] : [liveResult, deadResult];
+      return opts.idpUrl === liveIdp ? [liveResult] : opts.idpUrl === deadIdp ? [deadResult] : unscopedResults;
     },
     // Status reads the selected discovered space's login state: no session here.
     async userStatus() {
@@ -1064,6 +1082,10 @@ try {
     one.env?.outcome === "ok" && (one.exitCode ?? 0) === 0 && one.env.target?.idp === liveIdp && one.env.result.accounts.length === 1, one);
   const allFailed = await synced({ idp: deadIdp });
   check("sync with no account refreshed is refused DEPENDENCY_UNAVAILABLE", allFailed.thrown?.code === "DEPENDENCY_UNAVAILABLE" && allFailed.env === undefined, allFailed);
+  check("the scoped sync retry names only the selected provider", isCommandFailure(allFailed.thrown) && allFailed.thrown.remedy?.includes(`\`cotal sync --idp ${deadIdp}\``) === true, allFailed);
+  unscopedResults = [deadResult];
+  const unscoped = await synced({});
+  check("an unscoped sync still suggests retrying all accounts", isCommandFailure(unscoped.thrown) && unscoped.thrown.remedy?.includes("`cotal sync`") === true, unscoped);
   const none = await synced({ idp: "https://none.example/api/auth" });
   check("sync with no signed-in account reports none: ok, an empty list", none.env?.outcome === "ok" && none.env.result.accounts.length === 0, none);
   const human = await capture(() => sync({ positionals: [], values: { idp: liveIdp }, raw: [] }));

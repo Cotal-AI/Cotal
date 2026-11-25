@@ -1,0 +1,2 @@
+# The Manager status rows carry whether each connector takes askPermissions and reasoningEvents.
+smoke:status-connector-launch-fields

@@ -1,5 +1,213 @@
 # @cotal-ai/auth
 
+## 0.179.0
+
+### Patch Changes
+
+- Updated dependencies [3b5bde1]
+- Updated dependencies [0413abe]
+- Updated dependencies [c7f487b]
+  - @cotal-ai/core@0.179.0
+  - @cotal-ai/workspace@0.179.0
+  - @cotal-ai/lang@0.179.0
+
+## 0.178.0
+
+### Patch Changes
+
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [ee23092]
+- Updated dependencies [9370503]
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/lang@0.178.0
+
+## 0.177.0
+
+### Patch Changes
+
+- Updated dependencies [d03e96f]
+- Updated dependencies [d649b5f]
+- Updated dependencies [0bb3186]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8aa785c]
+- Updated dependencies [a450399]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/lang@0.177.0
+
+## 0.176.6
+
+### Patch Changes
+
+- Updated dependencies [664698a]
+- Updated dependencies [d91500c]
+  - @cotal-ai/workspace@0.176.6
+  - @cotal-ai/core@0.176.6
+  - @cotal-ai/lang@0.176.6
+
+## 0.176.5
+
+### Patch Changes
+
+- Updated dependencies [8c884a8]
+- Updated dependencies [e9f798e]
+  - @cotal-ai/workspace@0.176.5
+  - @cotal-ai/core@0.176.5
+  - @cotal-ai/lang@0.176.5
+
+## 0.176.4
+
+### Patch Changes
+
+- 7fd5c5c: Adopt released seats on local user-auth spaces when their granted permissions match, even if the saved persona lists capabilities the space did not grant.
+- Updated dependencies [d482720]
+- Updated dependencies [e0a0bb7]
+- Updated dependencies [99e0752]
+- Updated dependencies [8176b19]
+- Updated dependencies [73f4306]
+- Updated dependencies [dd96500]
+- Updated dependencies [d31ba81]
+- Updated dependencies [87465c9]
+- Updated dependencies [c82c548]
+- Updated dependencies [e73a285]
+- Updated dependencies [0758948]
+  - @cotal-ai/workspace@0.176.4
+  - @cotal-ai/core@0.176.4
+  - @cotal-ai/lang@0.176.4
+
+## 0.176.3
+
+### Patch Changes
+
+- Updated dependencies [a38ed1d]
+  - @cotal-ai/lang@0.176.3
+  - @cotal-ai/core@0.176.3
+  - @cotal-ai/workspace@0.176.3
+
+## 0.176.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.176.2
+  - @cotal-ai/lang@0.176.2
+  - @cotal-ai/workspace@0.176.2
+
+## 0.176.1
+
+### Patch Changes
+
+- Updated dependencies [fc7712c]
+  - @cotal-ai/workspace@0.176.1
+  - @cotal-ai/core@0.176.1
+  - @cotal-ai/lang@0.176.1
+
+## 0.176.0
+
+### Patch Changes
+
+- efe525c: Report permission denials when `cotal attach` cannot access the selected manager, and bound the live attach smoke test without changing who may attach.
+- Updated dependencies [e9bcb31]
+- Updated dependencies [56b6dc1]
+- Updated dependencies [5c49fdd]
+- Updated dependencies [089f68d]
+- Updated dependencies [7266240]
+- Updated dependencies [28b97c7]
+  - @cotal-ai/core@0.176.0
+  - @cotal-ai/workspace@0.176.0
+  - @cotal-ai/lang@0.176.0
+
+## 0.175.3
+
+### Patch Changes
+
+- Updated dependencies [3e4e94e]
+- Updated dependencies [03b122e]
+- Updated dependencies [35e08ac]
+- Updated dependencies [1d07abd]
+- Updated dependencies [5406c82]
+  - @cotal-ai/workspace@0.175.3
+  - @cotal-ai/core@0.175.3
+  - @cotal-ai/lang@0.175.3
+
+## 0.175.2
+
+### Patch Changes
+
+- a4ed1cf: Retry Manager credential renewal promptly after a temporary authority failure, and tell callers when to retry a hosted workflow status read.
+- Updated dependencies [7ca1d02]
+- Updated dependencies [8cf0871]
+- Updated dependencies [138db65]
+- Updated dependencies [5bf58dd]
+- Updated dependencies [d4ecdff]
+- Updated dependencies [c940ed9]
+- Updated dependencies [a2486a2]
+- Updated dependencies [beddddf]
+  - @cotal-ai/core@0.175.2
+  - @cotal-ai/lang@0.175.2
+  - @cotal-ai/workspace@0.175.2
+
+## 0.175.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.175.1
+  - @cotal-ai/lang@0.175.1
+  - @cotal-ai/workspace@0.175.1
+
+## 0.175.0
+
+### Minor Changes
+
+- e91ed5b: T3 Code, Zed and other Agent Client Protocol clients can now spawn and drive Cotal agents through the new `@cotal-ai/acp` extension and its `cotal acp` command.
+  
+  `cotal acp` serves ACP v1 on standard input and output. A client thread is one managed agent: its first prompt spawns the agent through the space's manager in the thread's folder, with the model, reasoning variant, persona, channel and machine the thread chose, and the agent keeps running when the client closes. The thread follows the agent's event channel, so an application without an event plane is not offered. Session list shows the managed agents in a folder, loading one replays what its event channel still holds, deleting one hides that run, and `/despawn`, `/roster` and `/channels` answer in the thread. A later prompt is typed into the agent's terminal through the manager's `input` command, so it arrives as the user's own words, and its turn ends once the agent has started working and stopped again. An agent whose runtime owns no terminal input, such as tmux, refuses it, and the prompt fails with the manager's reason. A client that runs terminals is offered a sign-in that runs `cotal login` or, with no space recorded, `cotal setup`. Stopping a turn interrupts the agent through the manager's new `interrupt` command, and the turn ends as cancelled, also when the agent cannot be stopped. Forwarding an agent's questions is not available yet. `@cotal-ai/cli` names the package when `cotal acp` runs before the extension is added, and `@cotal-ai/workspace` records `acp` as a Cotal home entry and offers the `input` and `interrupt` control calls.
+  
+  The manager serves a new targeted `interrupt` command, contract revision 53. It writes the key a seat's connector declares in the new `Connector.interruptKey` into the seat's terminal, and it is granted as `input` is. The Claude Code and Pi connectors declare Escape.
+  
+  On a space where people sign in, a person now controls every agent under their own owner without the `admin` scope. Their manager view carries `inspect` and `ps` and owner-mode `input`, `interrupt`, `despawn` and `attach`, whatever their scope, and their sign-in reads those agents' event channels live and through its own history reader. These rights come from the ledger row being a person's, never from a scope token, so no agent credential holds them. They ride the person's sign-in, so a program running as that person where they are signed in can use them. `cotal acp` reads through that sign-in, takes your managers from the auth service's `/manager-instances` list, reads your agents from every live one, sends each agent's commands to the manager that holds it, and names each agent `acp_<id>`, a valid actor name there. A thread loaded without a grant that may spawn offers only the agent's own model and cannot start another, and `cotal acp` stops, sending nothing, when the machine's sign-in is granted again or changes account. `@cotal-ai/core` adds a `publisher` filter to `channelHistoryPage` and an optional `AuthProvider.listManagerInstances`, which `@cotal-ai/auth` implements. `@cotal-ai/workspace` adds `ownManagerInstances`, `userSignInAuth`, `signInChange`, an observer `lifecycleUid` option, and a `gone` list on the `ps` reply for registrations whose host is gone. A control call whose own chosen run was replaced is now reported as refused before submission, with `preSubmitRefusal` and `selectedSeatChanged`, so a picker `cotal attach` exits as a refusal (`TARGET_NOT_FOUND`) and `cotal team agent remove` reports refused where they reported a failure or an unknown outcome; nothing was ever sent in that case.
+
+### Patch Changes
+
+- Updated dependencies [e91ed5b]
+- Updated dependencies [4907c2d]
+  - @cotal-ai/workspace@0.175.0
+  - @cotal-ai/core@0.175.0
+  - @cotal-ai/lang@0.175.0
+
+## 0.174.4
+
+### Patch Changes
+
+- 0ddea2f: Validate public exchange ports and first-time identity provider signing keys before startup, and show how to launch a user-auth space with a public exchange.
+- Updated dependencies [a2c9581]
+- Updated dependencies [8aceac1]
+- Updated dependencies [bd76aab]
+- Updated dependencies [a9413a5]
+- Updated dependencies [d4633a8]
+  - @cotal-ai/workspace@0.174.4
+  - @cotal-ai/core@0.174.4
+  - @cotal-ai/lang@0.174.4
+
+## 0.174.3
+
+### Patch Changes
+
+- Updated dependencies [ab010b5]
+- Updated dependencies [f2158ba]
+- Updated dependencies [52c5b11]
+- Updated dependencies [61b02ca]
+- Updated dependencies [43963e8]
+- Updated dependencies [8a7bd4b]
+- Updated dependencies [ff4cd00]
+- Updated dependencies [4697bab]
+- Updated dependencies [b8c54dd]
+  - @cotal-ai/workspace@0.174.3
+  - @cotal-ai/core@0.174.3
+  - @cotal-ai/lang@0.174.3
+
 ## 0.174.2
 
 ### Patch Changes

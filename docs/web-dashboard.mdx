@@ -49,6 +49,7 @@ The `host` and `port` definition options default to `127.0.0.1` and 7799. Port 0
 A wildcard host is refused when the service starts, and the refusal names the `cotal service remove` and `cotal service add` that change the saved definition.
 Background `cotal service start web` opens an authenticated browser session for a loopback listener.
 Repeating a loopback start reuses the matching process and refreshes the single-use link in the private session record, even without a display or with `--no-open`. Existing browser sessions stay valid.
+If you save the dashboard under another name with `cotal service add <name> --preset web`, use that name for both starts. `--no-open` also works with the saved name.
 It starts no dependency automatically. Use `--no-open` for manual access or a remote listener.
 Without a browser opener, or without a Linux graphical session, startup still succeeds and warns how to find the private session record.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
@@ -83,9 +84,10 @@ Anyone holding the private browser session can exercise the configured posting a
 
 ### Open the private session
 
-For `cotal service start web --no-open` or a foreground service, read the owner-private session file named in the service log, then open its single-use link in the browser profile you intend to use.
-The dashboard creates the file for the full service instance and launch request. Read it again after a repeated loopback start to get the fresh link.
-Logs contain only its reference path.
+For a background service started with `cotal service start web --no-open`, find the owner-private session file path in the service log.
+A foreground start prints the path in its terminal. A repeat start for that loopback instance prints the path again after refreshing the link.
+Read the file and open its single-use link in the browser profile you intend to use.
+The dashboard creates the file for the full service instance and launch request. Output contains only the file path, not the link.
 
 <Callout type="warn" title="Keep the session file private">
 
@@ -171,7 +173,8 @@ Work shows what the agent publishes on its [event plane](claude-connector-refere
 its turns with how long each took, its tool calls grouped when no text sits between them, its text,
 and its own posts and direct messages, placed by time with a link back to where they were sent. When
 the agent's connector sends the result marker, each call says whether it is running, done or failed
-and how long it took, and a group says how many failed. Code in its text is highlighted once it is on
+and how long it took, and a group says how many failed. A marker that does not say whether the call
+failed shows it as done. Code in its text is highlighted once it is on
 screen. Work does not show tool inputs, tool output, error text or reasoning. A connector that sends
 no result marker says which tools it called and nothing more, and Work says so above the list. A
 failed turn says the turn failed and that the event plane does not say why; it quotes a reason only
@@ -256,6 +259,7 @@ Ordinary Unicode text remains readable as entered.
 Channel names accept dotted segments of letters, digits, `_`, and `-`, with `*` or `>` where a subtree is allowed.
 Invalid names are refused rather than rewritten into a different channel.
 
+Dashboard API reads and the live feed use `GET`. After authentication, a bodyless request using another method returns `405` with `Allow: GET`.
 Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
 The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
 Its complete body must arrive within ten seconds. Otherwise it returns `408`, closes the connection and leaves the channel unchanged.
@@ -275,7 +279,8 @@ the agent page show. The dashboard shows only data the observer can read.
 ## Check visibility limits
 
 The service uses the space's `web.creds` or the protected credential file you supplied, and its grants.
-It does not mint a replacement admin credential. A chat-only file hides DM views.
+It does not mint a replacement admin credential. The default `web.creds` includes live channel traffic, not live direct messages or role messages.
+A chat-only file hides DM views.
 A restricted read is not an empty mesh and does not prove that a hidden DM is absent.
 
 See [Identity](identity-and-auth.mdx) for credential scopes and [MeshView](mesh-view.mdx) for the terminal observer API.

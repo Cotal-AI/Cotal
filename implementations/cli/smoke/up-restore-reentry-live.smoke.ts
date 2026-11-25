@@ -97,7 +97,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const baseEnv = (() => {
   const copy = { ...process.env };
   for (const key of Object.keys(copy)) if (key.startsWith("COTAL_")) delete copy[key];
-  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
+  return { ...copy, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };
 })();
 
 /** Blocking `cotal <args>`, the way an operator runs it. */
@@ -203,6 +203,19 @@ try {
   }
   ok("the refused previews left the preserved cut ready", journal().state === "ready");
   const store = join(root, ".cotal", "nats"), savedStore = join(root, "saved-store");
+  const readyJournal = readFileSync(journalPath);
+  const readyStore = lstatSync(store, { bigint: true });
+  for (const [target, mode, cleanTarget] of [["store", "--yes", "store"], ["space", "--dry-run", "all"]] as const) {
+    const reset = runSync(["reset", target, space, mode, "--plain"]);
+    const text = tail(reset);
+    ok(`reset ${target} ${mode} names the resume, stop and matching cleanup preview from the project root`,
+      reset.status === 2 && text.includes("LIFECYCLE_BLOCKED") && text.includes(`from ${root}`)
+        && text.includes("resume the preserved store with `cotal up`") && text.includes("stop it without preserving with `cotal down --yes`")
+        && text.includes(`cotal clean ${cleanTarget} --dry-run`) && !/restore recovery|fallback cleanup|--force/.test(text), text);
+  }
+  const afterReset = lstatSync(store, { bigint: true });
+  ok("both refused resets leave the ready journal and store identity unchanged",
+    readyJournal.equals(readFileSync(journalPath)) && readyStore.dev === afterReset.dev && readyStore.ino === afterReset.ino);
   renameSync(store, savedStore);
   try {
     const missing = runSync(["status", "--space", space, "--plain"]);
@@ -225,6 +238,10 @@ try {
   ok("the registry backup exited 0", made.status === 0, tail(made).slice(-1200));
 
   const before = readFileSync(journalPath);
+  const brokerOnly = runSync(["up", "--foreground", "--no-manager", "--open", "--space", space, "--server", server]);
+  ok("broker-only startup reports a lifecycle refusal and leaves the preserved cut untouched",
+    brokerOnly.status === 2 && tail(brokerOnly).includes("LIFECYCLE_BLOCKED") && tail(brokerOnly).includes("a maintenance attempt to recover") &&
+    readFileSync(journalPath).equals(before), tail(brokerOnly));
   const identity = lstatSync(store, { bigint: true });
   const attempts = join(root, ".cotal", "maintenance", "attempts");
   const staging = () => JSON.stringify(existsSync(attempts) ? readdirSync(attempts).sort() : null);

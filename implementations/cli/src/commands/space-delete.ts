@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import * as prompts from "../lib/prompts.js";
 import { Kvm } from "@nats-io/kv";
 import { JetStreamApiCodes, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
@@ -12,7 +11,7 @@ import {
 } from "@cotal-ai/core";
 import {
   ConfirmationRequired,
-  brokerAddressForDisplay, brokerAddressKey, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, isMeshRegistryError, loadMeshes, oneLine, presentationOf, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
+  brokerAddressForDisplay, brokerAddressKey, canonicalRoot, codeSpan, CommandFailure, cotalDirLink, findCotalRoot, findMesh, findPreparedSpace, getSpaceAuth, isMeshRegistryError, loadMeshes, oneLine, presentationOf, projectRootProblem, projectRootProblemText, renderReport, resolveNativeServiceTarget, shellPath, stackElsewhereRemedy, workspaceSecretStore, writeResult, type MeshEntry, type Report, type Block,
 } from "@cotal-ai/workspace";
 import { runningStackMembers } from "../lib/stack-members.js";
 import { journalRecordedElsewhere, readStackJournal } from "../lib/stack-journal.js";
@@ -106,7 +105,7 @@ function liveStackRefusal(entry: MeshEntry, space: string, preview = false): Com
     : `stop it with \`cotal down\` from ${entry.root}, then remove its stored streams with \`cotal clean store --force\` there` });
 }
 
-function resolveSpaceDeletionEntry(name: string): MeshEntry {
+function resolveSpaceDeletionEntry(name: string, dryRun = false): MeshEntry {
   let entry: ReturnType<typeof findMesh>;
   try { entry = findMesh(name); }
   catch (error) {
@@ -118,12 +117,26 @@ function resolveSpaceDeletionEntry(name: string): MeshEntry {
     // A prepared space has a name and a root but no running broker whose streams could be deleted.
     let prepared: ReturnType<typeof findPreparedSpace>;
     try { prepared = findPreparedSpace(name); }
-    catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the local prepared-space records could not be read; no live space deletion target was inferred", { target: { space: name } }); }
+    catch (error) {
+      if (!isMeshRegistryError(error)) throw error;
+      const { code, message, remedy } = registryFailure(error);
+      throw new CommandFailure("refused", code, `${message}; no broker was contacted`, { target: { space: name, file: error.file }, remedy });
+    }
     if (prepared) {
       const target = { space: name, root: prepared.root };
-      const reset = codeSpan(name.startsWith("-") ? `cotal reset store --yes -- ${shellPath(name)}` : `cotal reset store ${shellPath(name)} --yes`);
+      const resetFlag = dryRun ? "--dry-run" : "--yes";
+      const reset = codeSpan(name.startsWith("-") ? `cotal reset store ${resetFlag} -- ${shellPath(name)}` : `cotal reset store ${shellPath(name)} ${resetFlag}`);
+      const preview = `preview the impact of resetting its store with ${reset}. A stream inventory requires a running broker.`;
       const forget = codeSpan(spaceForgetCommand(name));
-      if (!existsSync(prepared.root)) {
+      const problem = projectRootProblem(prepared.root);
+      if (problem === "not-directory" || problem === "inaccessible") {
+        const restore = problem === "inaccessible" ? `restore access to the project folder at ${oneLine(prepared.root)}` : `restore the original project folder to ${oneLine(prepared.root)}`;
+        const localOnly = problem === "not-directory" ? `. To remove only the local preparation, run ${forget}` : "";
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded project path for "${oneLine(name)}" at ${oneLine(prepared.root)} ${projectRootProblemText(problem)}, so its stored streams could not be checked; no broker was contacted`, {
+          target, remedy: `${restore}, then run ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} again${localOnly}`,
+        });
+      }
+      if (problem === "missing") {
         const project = canonicalRoot(findCotalRoot());
         let moved: ReturnType<typeof journalRecordedElsewhere>;
         if (cotalDirLink(project) === undefined) {
@@ -133,19 +146,20 @@ function resolveSpaceDeletionEntry(name: string): MeshEntry {
           const recovery = stackElsewhereRemedy(project, moved.recordedRoot, name, moved.journal.members, moved.journal.operation);
           const afterAdoption = recovery.includes("--adopt --root") ? " If you adopt it instead, run `cotal up` and then `cotal down --yes` in the adopted root before resetting its store." : "";
           throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this folder holds the stack journal of "${oneLine(name)}" moved from ${oneLine(prepared.root)}; there is no live broker to delete from and no broker was contacted`, {
-            target, remedy: displayRemedy(`${recovery}. Once the original root is restored, remove its stored streams with ${reset}.${afterAdoption}`),
+            target, remedy: dryRun
+              ? `move this folder back to ${oneLine(prepared.root)}, then ${preview}`
+              : displayRemedy(`${recovery}. Once the original root is restored, remove its stored streams with ${reset}.${afterAdoption}`),
           });
         }
         throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the recorded project folder for "${oneLine(name)}" at ${oneLine(prepared.root)} is missing or inaccessible, so its stored streams could not be checked; no broker was contacted`, {
           target, remedy: `locate the project folder and restore it to ${oneLine(prepared.root)}, then run ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} again`,
         });
       }
-      // Starting a stopped stack to delete its streams meets the running-stack refusal, so name the
-      // command that removes them while it is stopped. One that never ran has no streams to remove.
+      // A stopped stack's store can be previewed or reset without starting its broker.
       let stopped: boolean;
       try { stopped = readStackJournal(prepared.root)?.journal.space === name; } catch { stopped = true; }
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `"${oneLine(name)}" is prepared and not running, so it has no live broker to delete from; no broker was contacted`, { target, remedy: stopped
-        ? `remove its stored streams with ${reset}, or remove only the local record with ${forget}`
+        ? dryRun ? preview : `remove its stored streams with ${reset}, or remove only the local record with ${forget}`
         : `no stack has run for it in ${oneLine(prepared.root)}, so it has no stored streams; remove its local record with ${forget}` });
     }
     throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no registered space has this exact name; no broker was contacted", { target: { space: name }, remedy: "see the registered spaces with `cotal space`" });
@@ -180,7 +194,11 @@ async function readSpaceDeletion(name: string, entry = resolveSpaceDeletionEntry
   let nc: NatsConnection;
   try {
     nc = await dialerFor(entry.server)({ servers: entry.server, ...standaloneConnectOpts({ ...(credential ? { creds: credential.creds } : {}), tls: entry.tlsRequired === true }), ...(credential ? { inboxPrefix: `_INBOX_${credential.id}` } : {}), timeout: 2_000, reconnect: false, maxReconnectAttempts: 0 });
-  } catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the registered broker connection could not be established; no alternate address or identity was tried", { target }); }
+  } catch {
+    const broker = brokerAddressForDisplay(entry.server) ?? "an invalid broker address";
+    const show = codeSpan(`cotal space show ${name.startsWith("-") ? "-- " : ""}${shellWord(name)}`);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `could not connect to the registered broker at ${broker}; no alternate address or identity was tried`, { target, remedy: `inspect the registration with ${show}` });
+  }
 
   let snapshot: { streams: DeletionStream[]; presences: PresenceImpact[]; runs: DeletionRuns; serverId: string; identity: "matched" | "explicit-open"; observedAt: string } | undefined;
   let failure: CommandFailure | undefined;
@@ -376,7 +394,7 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to a guarded live deletion, not to a dry-run");
   if (args.values["dry-run"] === true) {
     // The preview reads its whole scope, so it is complete; its limits are a note, not a partial read.
-    const { result, entry } = await readSpaceDeletion(name);
+    const { result, entry } = await readSpaceDeletion(name, resolveSpaceDeletionEntry(name, true));
     const blocked = liveStackRefusal(entry, name, true);
     // The verdict leads the report, so a text run does not repeat it as a warning after it.
     writeResult(presentation, { command: "space delete", target: { space: name }, result: { ...result, applyBlockedBy: blocked?.detail() ?? null },
@@ -393,8 +411,10 @@ export async function spaceDelete(args: ParsedArgs): Promise<void> {
   const registered = resolveSpaceDeletionEntry(name);
   const blocked = liveStackRefusal(registered, name);
   if (blocked) throw blocked;
-  if (!yes && (!canPrompt() || presentation === "json"))
-    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect ${codeSpan(spaceDeleteCommand(name, " --dry-run"))} first, then run ${codeSpan(spaceDeleteCommand(name, " --yes"))}` });
+  if (!yes && (!canPrompt() || presentation === "json")) {
+    const output = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new ConfirmationRequired("live space deletion requires a terminal to type the exact space name, or --yes with an exact positional name in a script", { target: { space: name }, remedy: `inspect ${codeSpan(spaceDeleteCommand(name, ` --dry-run${output}`))} first, then run ${codeSpan(spaceDeleteCommand(name, ` --yes${output}`))}` });
+  }
   // From here an interrupt says what the deletion left, as `progress` records it.
   const progress: DeletionProgress = { acknowledged: [], alreadyAbsent: [], submitted: null, postReadStarted: false };
   const stopReporting = reportOnInterrupt(presentation, "space delete", () => interruptedDeletion(name, progress));

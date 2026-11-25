@@ -421,7 +421,8 @@ try {
         state: { status: "completed", input: { cmd: OC_ARGS }, output: OC_RESULT, time: { start: 1, end: 2 } },
       },
     };
-    const { pumped, wire, types } = await drive("opencode", mapper.map as RecordMapper<unknown>, [rec]);
+    // The source hands a tool part over twice: its call record, then the part's own record, its result.
+    const { pumped, wire, types } = await drive("opencode", mapper.map as RecordMapper<unknown>, [{ ...rec, call: true }, rec]);
     c("carrier:opencode-args mark is absent from the recorded publish", !wire.includes(OC_ARGS), {
       types,
       err: pumped.err?.message,

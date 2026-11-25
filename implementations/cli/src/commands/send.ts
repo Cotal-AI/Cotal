@@ -94,9 +94,10 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
-    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: sendAgain(destination, values, '"<message>"', `<${what}>`) });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `set ${option} in the original command and keep the same message body and options` });
   }
-  const again = (body: string) => sendAgain(destination, values, body);
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
+  const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
@@ -134,18 +135,18 @@ function targetOptions(values: ConnectFlags): string[] {
 }
 
 /** A remedy that replaces the body without changing where or as whom the message is sent. */
-function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string, recipientPlaceholder?: string): string {
+function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string): string {
   // Body grammar is also checked before the dispatcher validates --server. Never echo an unchecked URL.
   if (values.server !== undefined) {
     const checked = checkServer(values.server, "--server");
     if (!checked.ok) return checked.remedy ?? checked.message.replace(/^✗ /, "");
   }
   const [long, short] = destination.mode === "msg" ? ["channel", "-c"] : destination.mode === "ask" ? ["role", "-r"] : ["to", "-t"];
-  const recipient = recipientPlaceholder !== undefined ? `${short} ${recipientPlaceholder}`
-    : destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
+  const recipient = destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
   const options = targetOptions(values);
   options.push(...(values.mention ?? []).map((name) => option("mention", name)));
   if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));
+  if (values.verbose) options.push("--verbose");
   return `run ${codeSpan(["cotal send", recipient, ...options, body].join(" "))}`;
 }
 
@@ -154,9 +155,10 @@ function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Valu
 interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
 
 function fileRefusal(input: SendInput, values: Values): FileRefusal {
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
   return {
     target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
-    instead: `or ${sendAgain(input, values, '"<message>"')}`,
+    instead: `or ${sendAgain(input, values, `${output}"<message>"`)}`,
   };
 }
 
@@ -251,7 +253,10 @@ function decoded(bytes: Buffer, file: string | undefined, { target, instead }: F
     if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, target(file), `save it as UTF-8 text, ${instead}`);
     throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
   }
-  if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  if (!text.trim()) {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is empty or contains only whitespace`, target(file), `write a nonempty message in the file, ${instead}`);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  }
   return text;
 }
 

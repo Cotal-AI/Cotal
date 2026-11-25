@@ -1,4 +1,4 @@
-import { CotalEndpoint, formatChatAge, isEventChannel, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
+import { CotalEndpoint, formatChatAge, parseSubject, partsToText, spacePrefix, chatSubject, type CompletionResult, type CotalMessage, type FlagSpec, type FlagValues, type ParsedArgs, type Subcommand, DEV_OWNER, chatHistDurable, chatStream, credsClaims, idFromCreds, subjectMatches } from "@cotal-ai/core";
 import { PermissionViolationError } from "@nats-io/transport-node";
 import {
   brokerAddressForDisplay,
@@ -29,8 +29,10 @@ import {
   concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
+import { spaceChoiceRemedy } from "../lib/choose-target.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
+import { historySetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
@@ -39,6 +41,7 @@ import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
 import { registryFailure } from "../lib/registry-errors.js";
+import { displayRemedy, hasMovedStackRemedy } from "../lib/self-exec.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 
 const dmsFlag = { name: "dms", type: "boolean", description: "read all accessible channels and DMs (needs a DM read grant). With clear, also clear DMs" } as const;
@@ -105,8 +108,8 @@ export interface HistoryItem {
 
 /** What `cotal history` read: the newest `limit` retained messages of its selection, oldest first,
  *  then filtered by `--since`, `--from` and `--grep`. It never claims complete history: `olderRetained`
- *  says whether retained messages older than the window exist, `reachesSince` whether the window goes
- *  back to `--since`, and `retention` names the limits that remove messages and each sender whose
+ *  says whether retained messages older than the window exist, `reachesSince` whether the window covers
+ *  the `--since` range, and `retention` names the limits that remove messages and each sender whose
  *  older messages a channel has lost to them. */
 export interface HistoryResult {
   readonly kind: "history";
@@ -286,16 +289,6 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (since?.kind === "seq" && values.dms) throw usage("DM history has no chat-stream sequence; use --since with a time");
 }
 
-/** A JSON history follow that refused before writing its snapshot. */
-export function historySetupFailureRecords(args: ParsedArgs, failure: CommandFailure) {
-  const first = args.positionals[0];
-  const target = failure.target ?? { space: args.values.space ?? null, channel: first === undefined ? null : channelOf(first), dms: Boolean(args.values.dms) };
-  return [
-    streamRecord("history", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }),
-    streamRecord("history", "end", target, { reason: "setup-failed" }),
-  ];
-}
-
 /** `cotal history [channel]`: the newest retained messages in the selected space within the caller's
  *  read grant, or `history clear` or `history limit`. */
 export async function history(args: ParsedArgs): Promise<void> {
@@ -319,7 +312,10 @@ export async function history(args: ParsedArgs): Promise<void> {
   } catch (error) {
     if (!v.follow || presentation !== "json" || snapshotWritten) throw error;
     // A refusal before the snapshot still belongs to the follow protocol, not a finite read.
-    const failure = isCommandFailure(error) ? error : isConnectRefusal(error) ? error.failure() : isMeshRegistryError(error) ? registryFailure(error)
+    const spaceRemedy = isConnectRefusal(error) ? spaceChoiceRemedy(error.cause, "history", args, args.raw) : undefined;
+    const failure = isCommandFailure(error) ? error
+      : isConnectRefusal(error) ? error.failure(spaceRemedy !== undefined ? () => spaceRemedy : hasMovedStackRemedy(error.cause) ? displayRemedy : undefined)
+      : isMeshRegistryError(error) ? registryFailure(error)
       : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error));
     recordTelemetryFailure(failure.outcome, failure.code, error);
     for (const record of historySetupFailureRecords(args, failure)) writeStreamRecord(record);
@@ -421,7 +417,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   // failure there is a part not read; reading every channel needs it to know what to read.
   let listed: { channel: string; messages: number }[] | undefined;
   try {
-    listed = (await ep.listChannels()).filter((row) => !isEventChannel(row.channel));
+    listed = await ep.listChannels();
   } catch (e) {
     if (req.channel === undefined) {
       if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not list the channels of ${conn.space}: ${(e as Error).message}`, { target: req.target });
@@ -567,12 +563,9 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   const oldest = read[0];
   const since = req.since;
   const atOrPastEnd = since?.kind === "seq" && lastSeq !== undefined && since.seq >= lastSeq;
+  // Only sequence order bounds unread rows. Sender timestamps can disagree with broker order.
   const reached = since?.kind === "seq"
-    ? (previousSeq !== undefined && previousSeq <= since.seq) || (oldest?.seq != null && oldest.seq <= since.seq + 1)
-    // A mixed window is not ordered by sender time, so any retained row can reach a time cutoff.
-    : since?.kind === "time" && (req.dms
-      ? read.some((item) => Date.parse(item.ts) <= since.ms)
-      : oldest !== undefined && Date.parse(oldest.ts) <= since.ms);
+    && ((previousSeq !== undefined && previousSeq <= since.seq) || (oldest?.seq != null && oldest.seq <= since.seq + 1));
   const reachesSince = since === undefined ? null : atOrPastEnd || olderRetained === false || reached ? true : olderRetained === null ? null : false;
   return {
     warnings,
@@ -744,7 +737,9 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
   const filters = [r.window.from !== null ? `--from ${r.window.from}` : null, r.window.grep !== null ? `--grep ${r.window.grep}` : null].filter((flag) => flag !== null);
   if (filters.length && r.window.olderRetained !== false) notes.push({ text: `${filters.join(" and ")} searched only the ${r.window.read} read; older retained messages were not searched`, tone: "hint" });
   if (r.window.olderRetained === null) notes.push({ text: "whether older retained messages exist is unknown", tone: "waiting" });
-  if (r.window.reachesSince === false) notes.push({ text: `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
+  if (r.window.reachesSince === false) notes.push({ text: since?.kind === "time"
+    ? `the window may omit retained messages after --since ${r.window.since}; sender timestamps can differ from storage order`
+    : `the window does not reach back to --since ${r.window.since}; messages between them are not shown`, tone: "waiting" });
   if (r.retention) {
     const limits = [r.retention.perSender !== null ? `${r.retention.perSender} per sender on each channel` : null, r.retention.maxAgeMs !== null ? `posts older than ${formatChatAge(r.retention.maxAgeMs)} expire` : null].filter(Boolean);
     notes.push({ text: `retention: ${limits.length ? limits.join(", ") : "no limit set"}; history is what remains, not every message sent`, tone: "hint" });

@@ -19,6 +19,7 @@ import {
 } from "@cotal-ai/core";
 import {
   parseCommaList,
+  brokerAddressForDisplay,
   CommandFailure,
   isCommandFailure,
   presentationOf,
@@ -119,9 +120,11 @@ export interface ManagedLaunchObserver {
   ready(result: ManagedLaunchResult, warnings: readonly OutputWarning[]): void;
 }
 
-export function managedLaunchView(r: ManagedLaunchResult): Report {
+export function managedLaunchView(r: ManagedLaunchResult, server?: string): Report {
   const concrete = [r.name, r.space, r.managerInstanceId].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
-  const target = concrete ? `${r.name} --space ${r.space} --on ${r.managerInstanceId}` : "<name> --space <space> --on <manager-instance>";
+  const explicitServer = server === undefined ? undefined : brokerAddressForDisplay(server);
+  const broker = explicitServer === undefined ? "" : ` --server ${shellWord(explicitServer)}`;
+  const target = concrete ? `${r.name} --space ${r.space}${broker} --on ${r.managerInstanceId}` : `<name> --space <space>${broker} --on <manager-instance>`;
   const noStream = r.streamsTerminal === false;
   return { sections: [
     { title: "Agent joined", blocks: [
@@ -235,7 +238,7 @@ export async function launchManagedPersona(
   // The report that answers names the mesh in its heading, so this block names it once, in a field.
   const toStdout = !observer && presentationOf(values) !== "json";
   (toStdout ? console.log : console.error)(renderReport({ sections: [{ title: "Managed launch", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Manager selector", on ?? t.auth.managerInstanceId ?? "native class selection"], ["Persona", ref], ["File source", managerConfigRef ? `${managerConfigRef} · manager execution host` : "selected manager's persona catalog"], ["File transfer", "none"]] }, { kind: "lines", lines: [{ text: "The accepting manager validates its own visible file before allocation. No local file is uploaded, and a pin never selects a replacement manager.", tone: "hint" }] }] }] }, presentationOf(values) === "plain" ? "plain" : "rich", toStdout ? process.stdout : process.stderr));
-  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits (at most about 30s) …", terminalWidth(process.stderr))) console.error(c.dim(line));
+  for (const line of wrapWords("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits …", terminalWidth(process.stderr))) console.error(c.dim(line));
   const start = () => requestManagedLaunch({
     persona: ref,
     identity: values.name,
@@ -354,7 +357,7 @@ export async function launchManagedPersona(
   if (observer) {
     try { observer.ready(result, warnings); }
     catch { throw new CommandFailure("partial", "OPERATION_PARTIAL", "the agent joined, but the composite command could not record its native readiness; no replacement was launched", { target, changed: [result], remedy: "inspect the original agent and manager before another launch" }); }
-  } else writeResult(presentation, { command: "spawn", target, result, warnings }, managedLaunchView);
+  } else writeResult(presentation, { command: "spawn", target, result, warnings }, (r) => managedLaunchView(r, values.server));
   if (values.detach) return;
   // A runtime that streams no terminal has none to attach, so this launch does not ask for one: the
   // seat is up, the receipt above says where it runs and what reaches it, and the command is done.
@@ -415,7 +418,8 @@ export function meshRelease(mesh: MeshTarget | undefined): ((lifecycleUid: strin
 async function reportStarting(start: { name: string; managerInstanceId: string; waitingFor?: string; expected?: { id: string; lifecycleUid: string } }, values: FlagValues<typeof spawnFlags>, space: string, server: string, target: Record<string, unknown>): Promise<void> {
   const selection = await managerSelection(values, start.managerInstanceId).catch(() => undefined);
   const selector = selection?.selector ?? start.managerInstanceId, host = selection?.manager.host ?? null;
-  const attach = `${displayCmd()} attach ${shellWord(start.name)} --on ${shellWord(selector)}`;
+  const explicitServer = values.server === undefined ? undefined : brokerAddressForDisplay(values.server);
+  const attach = `${onRerun(`${displayCmd()} attach`, { space, server: explicitServer }, [start.name])} --on ${shellWord(selector)}`;
   const presentation = presentationOf(values);
   const now = presentation !== "json" && canPrompt() && (start.waitingFor !== undefined || !values.detach);
   const place = `on ${selector}${host && host !== selector ? ` (${host})` : ""}`;
@@ -435,9 +439,10 @@ async function reportStarting(start: { name: string; managerInstanceId: string; 
 /** The agent a spawn asked for already runs, so nothing new is launched: say where it runs, then
  *  attach to it in this terminal unless the spawn was detached or cannot attach, or print the
  *  command that does. */
-export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean }, space: string, server: string | undefined): Promise<void> {
+export async function reportAlreadyRunning(running: AgentAlreadyRunning, values: { detach?: boolean; creds?: string; json?: boolean; plain?: boolean; server?: string }, space: string, server: string | undefined): Promise<void> {
   const where = running.manager;
-  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space }, [running.agent])} --on ${shellWord(where.selector)}` : null;
+  const explicitServer = values.server === undefined ? undefined : brokerAddressForDisplay(values.server);
+  const attach = where ? `${onRerun(`${displayCmd()} attach`, { space, server: explicitServer }, [running.agent])} --on ${shellWord(where.selector)}` : null;
   const presentation = presentationOf(values);
   const now = where !== null && !values.detach && presentation !== "json" && canPrompt();
   const place = where ? `on ${where.selector}${where.host && where.host !== where.selector ? ` (${where.host})` : ""}` : "on the mesh, not on a manager of yours";

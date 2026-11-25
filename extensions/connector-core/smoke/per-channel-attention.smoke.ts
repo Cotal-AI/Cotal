@@ -95,8 +95,8 @@ const rawChat = async (id: string, subjectChannel: string, payloadChannel: strin
     parts: [{ kind: "text", text: id }],
   };
   const js = (pub as unknown as {
-    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
-  }).js;
+    conn: { js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> } };
+  }).conn.js;
   await js.publish(chatSubject(space, principal.owner, principal.actor, subjectChannel), JSON.stringify(msg), { msgID: id });
 };
 

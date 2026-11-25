@@ -214,13 +214,13 @@ try {
 
   manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root });
   const internals = manager as unknown as {
+    config: { staticReconcileRetryDelaysMs: readonly number[] };
     staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
-    staticReconcileRetryDelaysMs: readonly number[];
     staticLifecycle: { retryStaticReconcile(key: string): Promise<void>; staticReconcileItems: Map<string, { timer?: ReturnType<typeof setTimeout>; nextRetryAt?: string; attempts: number; disposition: string }> };
     managerStatusData(): ManagerStatus;
     reconcileStaticLifecycles(): Promise<void>;
   };
-  internals.staticReconcileRetryDelaysMs = [1_000, 80, 80];
+  internals.config.staticReconcileRetryDelaysMs = [1_000, 80, 80];
   internals.staticLifecycleEvict = async (principal): Promise<EvictionResult> => {
     const alias = [...identities].find(([, row]) => row.principal === principal)?.[0] ?? principal;
     const count = (attempts.get(alias) ?? 0) + 1;
@@ -280,7 +280,7 @@ try {
   await writeOrphan("orphan-persistent");
   // The transient acceptance above already used the real timer. Keep this independent bounded and
   // duplicate-trigger control manual so a loaded host cannot fire a compressed timer mid-assertion.
-  internals.staticReconcileRetryDelaysMs = [60_000, 60_000, 60_000];
+  internals.config.staticReconcileRetryDelaysMs = [60_000, 60_000, 60_000];
   await internals.reconcileStaticLifecycles();
   const persistentIdentity = identities.get("orphan-persistent")!;
   const persistentKey = JSON.stringify([DEV_OWNER, "orphan-persistent", persistentIdentity.uid]);
@@ -333,9 +333,9 @@ try {
   shutdownManager = new Manager({ space, servers, runtime: "pty", workspaceRoot: shutdownRoot });
   const shutdownInternals = shutdownManager as unknown as {
     staticLifecycleEvict?: (principal: string) => Promise<EvictionResult>;
-    serviceServe?: unknown;
     registerManagerService(): Promise<void>;
     reconcileStaticLifecycles(): Promise<void>;
+    servePlane: { serviceServe?: unknown; };
   };
   let shutdownRegistrationEntered = false;
   let releaseShutdownRegistration!: () => void;
@@ -367,7 +367,7 @@ try {
   releaseShutdownRegistration();
   await Promise.allSettled([shutdownStarting, shutdownStopping]);
   check("the shutdown fence prevents the serial sweep from starting a later terminal", attempts.get("shutdown-first") === 1 && attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
-  check("startup cannot publish the manager service after stop completes", shutdownInternals.serviceServe === undefined, { registered: shutdownInternals.serviceServe !== undefined });
+  check("startup cannot publish the manager service after stop completes", shutdownInternals.servePlane.serviceServe === undefined, { registered: shutdownInternals.servePlane.serviceServe !== undefined });
   await shutdownInternals.reconcileStaticLifecycles();
   check("shutdown refuses a new static reconciliation sweep", attempts.get("shutdown-last") === undefined, Object.fromEntries(attempts));
   shutdownManager = undefined;

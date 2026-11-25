@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { isReachable, realDirNoSymlink, type CompletionResult, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, authDir, brokerAddressForDisplay, canonicalRoot, CommandFailure, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, STORE_CONTENTS, writeResult, type Report } from "@cotal-ai/workspace";
+import { assertSingleSpaceBroker, authDir, brokerAddressForDisplay, canonicalRoot, codeSpan, CommandFailure, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, shellPath, STORE_CONTENTS, writeResult, type Report } from "@cotal-ai/workspace";
 import { liveMeshProcesses, safeStoreCleanupPath } from "./clean.js";
 import { assertResetEligible, resetStoreApply, resetStorePath, runsAtLastDown, selectResetTarget, storeContentsSection } from "./reset-store-apply.js";
 import { instanceProjection, serviceInstances } from "../lib/service-instances.js";
@@ -10,6 +10,8 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { verdictSection } from "../lib/verdict.js";
+import { STACK_DEFINITION } from "../lib/stack-journal.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 export const resetFlags = [jsonFlag, plainFlag,
   { name: "dry-run", type: "boolean", description: "inspect local store, maintenance and process records without deleting anything" },
@@ -44,7 +46,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
     return resetSpaceApply(space, args);
   }
   if (args.values["dry-run"] !== true) return resetStoreApply(space, args);
-  const mesh = selectResetTarget(space, "reset store", true);
+  const mesh = selectResetTarget(space, "reset store", true, args.values.json === true ? "cotal" : displayCmd());
   const root = mesh.root;
   if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a reset preview", { target: { space } });
   try {
@@ -57,7 +59,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   let store: ReturnType<typeof safeStoreCleanupPath>;
   let maintenance: ReturnType<typeof readMaintenanceJournal>;
   let possibleProcesses: string[];
-  let serviceOwners: Array<{ instanceId: string; process: string; supervisor: string }>;
+  let instances: ReturnType<typeof instanceProjection>[];
   let serviceCensus: ReturnType<typeof readLocalServiceCensus>;
   let additiveRecords: ReturnType<typeof listLedgerFiles>, additiveAttempts: ReturnType<typeof listAdditiveTeamAttempts>;
   let bootAttempts: ReturnType<typeof listFreshTeamAttempts>, bootSummaries: ReturnType<typeof listFreshTeamSummaries>;
@@ -66,7 +68,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
     store = resetStorePath(root, mesh.storeDir, { space, root }, `cotal reset store ${space} --dry-run`);
     maintenance = readMaintenanceJournal(root);
     possibleProcesses = liveMeshProcesses(root, space, true);
-    serviceOwners = serviceInstances(space).map(instanceProjection).map((row) => ({ instanceId: row.instanceId, process: row.observedProcess, supervisor: row.supervisorRecord.mechanism }));
+    instances = serviceInstances(space).map(instanceProjection);
     serviceCensus = readLocalServiceCensus(space);
     additiveRecords = listLedgerFiles(root, { requireReadable: true });
     additiveAttempts = listAdditiveTeamAttempts(root);
@@ -92,6 +94,9 @@ export async function reset(args: ParsedArgs): Promise<void> {
   }
   const runsAtDown = runsAtLastDown(root);
   const applyVerdict = refusal ? { offered: false, code: refusal.code, reason: refusal.message, remedy: refusal.remedy ?? null } : { offered: true };
+  const brokerLive = brokerProbe === "credless-broker-response" || instances.some((row) => row.definition === STACK_DEFINITION.broker && row.observedProcess === "running");
+  const runInventoryRemedy = brokerLive ? `If a manager is available, list live runs with ${codeSpan(`cotal run --space ${shellPath(space)}`)}.` : refusal ? "" : undefined;
+  const serviceOwners = instances.map((row) => ({ instanceId: row.instanceId, process: row.observedProcess, supervisor: row.supervisorRecord.mechanism }));
   const result = { kind: "reset-local-impact-preview", operation: kind, space, root,
     recordedStorePath: mesh.storeDir ?? resolve(root, ".cotal", "nats"), storePathSource: mesh.source === "stopped-stack" ? "stack-journal" : mesh.storeDir ? "registration" : "legacy-default",
     inspectedStorePath: store.path, storeState: store.identity ? "real-directory-with-pinned-identity" : "absent-at-inspection",
@@ -112,7 +117,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
   writeResult(presentationOf(args.values), { command: "reset", target: { space, root }, result, completeness: "partial" }, (data): Report => ({ sections: [
     verdictSection(`reset store ${space}`, refusal, { command: `cotal reset store ${space} --yes`, description: "Remove only this stopped store", recheck: "The apply runs every check again under the root's maintenance lock." }),
     { title: "Reset local impact", blocks: [{ kind: "fields", rows: [["Scope", data.operation], ["Space", data.space], ["Recorded root", data.root], ["Store candidate", data.recordedStorePath], ["Inspected path", data.inspectedStorePath], ["Store state", data.storeState], ["Identity", data.identityImpact], ["Maintenance", data.maintenance], ["Broker probe", data.brokerProbe], ["Recorded processes that may run", data.possibleProcesses.length ? data.possibleProcesses.join(", ") : "none found in legacy pidfiles"], ["Service instance records", String(data.serviceOwners.length)], ["Supervisor receipts", String(data.serviceCensus.supervisors.length)], ["Retained native attempts", String(data.serviceCensus.nativeAttempts.length)], ["Additive ledgers", String(data.additiveLedgers.length)], ["Unreadable additive ledgers", String(data.unreadableAdditiveLedgers.length)], ["Retained additive deployments", String(data.retainedAdditiveAttempts.length)], ["Unreadable additive attempts", String(data.unreadableAdditiveAttempts.length)], ["Unsettled fresh attempts", String(data.unsettledBootAttempts.length)], ["Unreadable fresh records", String(data.unreadableBootRecords.length)], ["Other exact-address registrations", String(data.otherBrokerRegistrations.length)], ["Identity inventory", data.identityInventory], ["Exact identity paths", data.exactIdentityPaths]] }, { kind: "lines", lines: [{ text: "The local reads are not a maintenance lock, exclusive custody or broker stop proof. A negative credless probe may miss TLS-first listeners. Provider-owned secrets, full deletion paths and broker exclusivity remain unproved. No process was stopped and no file or registration was removed.", tone: "waiting" }] }] },
-    ...storeContentsSection(data.storeContents.removed, runsAtDown, data.root),
+    ...storeContentsSection(data.storeContents.removed, runsAtDown, data.root, runInventoryRemedy),
     { title: "Additive ownership at root", blocks: [
       data.additiveLedgers.length ? { kind: "table", columns: [{ key: "deploymentId", label: "Deployment ID" }, { key: "space", label: "Space" }, { key: "agents", label: "Agents" }, { key: "channels", label: "Channels" }], rows: data.additiveLedgers.slice(0, 100).map((row) => ({ ...row, agents: String(row.agents), channels: String(row.channels) })) } : { kind: "lines", lines: ["No readable additive ledger was found under this root."] },
       ...(data.unreadableAdditiveLedgers.length ? [{ kind: "lines" as const, lines: ["Unreadable ledger paths:", ...data.unreadableAdditiveLedgers.slice(0, 100)] }] : []),

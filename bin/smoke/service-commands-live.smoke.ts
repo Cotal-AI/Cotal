@@ -42,7 +42,7 @@ const SPACE = "servicecommandslive";
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
-Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", COLUMNS: "200" });
+Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", COLUMNS: "200" });
 function cotal(args: string[], timeout = 180_000, at = { root, env, anchor }) {
   const options = { cwd: at.root, env: at.env, encoding: "utf8" as const, timeout };
   assertSmokeSandboxDown(at.anchor, args, options);
@@ -65,6 +65,95 @@ const presetRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}service-comm
 const PRESET_SPACE = "servicecommandspreset";
 const upCotal = (args: string[]) => cotal(args, 180_000, upAt);
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
+function checkRecordedManagerTail(path: string): void {
+  const saved = `${path}.saved`;
+  renameSync(path, saved);
+  try {
+    const commands = [["manager", "logs"], ["service", "logs", "stack-manager"]];
+    const tail = (args: string[]) => upCotal([...args, "--space", UP_SPACE, "--tail", "2", "--json"]);
+    for (const args of commands) {
+      const run = tail(args), report = JSON.parse(run.stdout);
+      check(`cotal ${args.join(" ")} refuses a missing log while the manager runs`,
+        run.status === 2 && run.stderr === "" && report.outcome === "refused" && report.error?.code === "TARGET_NOT_FOUND"
+          && report.completeness === "not-checked" && report.result === null && report.target?.path === path
+          && report.error.message.includes(path) && !existsSync(path), out(run));
+    }
+    writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+    for (const args of commands) {
+      const run = tail(args), report = JSON.parse(run.stdout);
+      check(`cotal ${args.join(" ")} reads an existing empty log successfully`,
+        run.status === 0 && run.stderr === "" && report.outcome === "ok" && report.completeness === "complete"
+          && report.result?.path === path && Array.isArray(report.result.lines) && report.result.lines.length === 0, out(run));
+    }
+  } finally { renameSync(saved, path); }
+}
+
+function checkBlankServiceCwd(): void {
+  const add = ["service", "add", "cwd-check", "--space", PRESET_SPACE, "--exec", "/bin/sleep 600"];
+  const show = ["service", "show", "cwd-check", "--space", PRESET_SPACE, "--json"];
+  const blank = cotal([...add, "--cwd", " ", "--json"]);
+  const refusal = JSON.parse(blank.stdout);
+  const plain = cotal([...add, "--cwd", " ", "--plain"]);
+  const missing = cotal(show);
+  check("blank --cwd refuses without saving and explains both retries in JSON and plain output",
+    blank.status === 1 && refusal.error?.code === "USAGE_INVALID" && missing.status === 2
+    && JSON.parse(missing.stdout).error?.code === "TARGET_NOT_FOUND" && plain.status === 1
+    && [refusal.error.message, out(plain)].every((text) => text.includes("Omit --cwd to use the directory where you run the command") && text.includes("pass --cwd <dir> to use another directory")),
+    { blank: out(blank), plain: out(plain), missing: out(missing) });
+  const retry = cotal([...add, "--json"]);
+  const saved = cotal(show);
+  check("omitting --cwd saves the invoking directory without starting the service",
+    retry.status === 0 && JSON.parse(retry.stdout).result?.started === false
+    && saved.status === 0 && JSON.parse(saved.stdout).result?.launch?.cwd === realpathSync(root), { retry: out(retry), saved: out(saved) });
+}
+
+function checkBrokerForegroundPreview(): void {
+  const start = ["service", "start", "b0", "--space", PRESET_SPACE, "--dry-run"];
+  const foreground = cotal([...start, "--foreground", "--json"]);
+  const refusal = JSON.parse(foreground.stdout);
+  const plain = cotal([...start, "--foreground", "--plain"]);
+  const retry = "Retry without --foreground, keeping --dry-run and the rest of the command unchanged.";
+  check("the broker foreground preview names the flag to drop and preserves --dry-run in its guidance",
+    foreground.status === 2 && refusal.error?.code === "UNSUPPORTED" && refusal.error.message.includes(retry)
+    && !refusal.error.message.includes("--new-instance") && plain.status === 2 && out(plain).includes(retry),
+    { foreground: out(foreground), plain: out(plain) });
+  const preview = cotal([...start, "--json"]);
+  const result = JSON.parse(preview.stdout).result;
+  const status = cotal(["service", "status", "b0", "--space", PRESET_SPACE, "--plain"]);
+  check("dropping --foreground previews the broker without loading it or starting an instance",
+    preview.status === 0 && result?.kind === "service-operation-preview" && result.dryRun === true
+    && result.allocated === false && result.providerCodeLoaded === false
+    && status.status === 0 && /Recorded state:\s+not started/.test(out(status)), { preview: out(preview), status: out(status) });
+}
+
+function checkControllerBrokerRestart(controller: (args: string[]) => ReturnType<typeof cotal>, root: string, space: string): void {
+  const restart = ["service", "restart", "stack-broker", "--space", space];
+  const status = () => JSON.parse(controller(["service", "status", "stack-broker", "--space", space, "--json"]).stdout).result;
+  const before = status();
+  const preview = controller([...restart, "--dry-run", "--json"]);
+  const receipt = JSON.parse(preview.stdout);
+  const down = `down --dry-run --json --space ${space}`;
+  check("a running controller broker restart preview suggests only the read-only stop preview",
+    preview.status === 2 && preview.stderr === "" && receipt.outcome === "refused" && receipt.error?.code === "LIFECYCLE_BLOCKED"
+    && receipt.error.remedy === `change to the project folder with \`cd '${root}'\`, then run \`cotal ${down}\`. This previews only the stop part of a restart.`, out(preview));
+  const plain = controller([...restart, "--dry-run", "--plain"]);
+  check("the controller broker restart preview preserves plain output",
+    plain.status === 2 && ["cotal", "pnpm cotal"].some((cli) => out(plain).includes(`\`${cli} down --dry-run --plain --space ${space}\``)), out(plain));
+  const inspected = controller(down.split(" "));
+  const inspection = JSON.parse(inspected.stdout);
+  check("the suggested whole-stack preview only inspects the same running broker",
+    inspected.status === 0 && inspection.target?.space === space && inspection.result?.kind === "controller-stack-stop-preview"
+    && inspection.result.signalled === false && inspection.result.members.some((member: { instanceId: string; process: string }) =>
+      member.instanceId === before?.instanceId && member.process === "running"), out(inspected));
+  const apply = controller([...restart, "--yes", "--json"]);
+  const refusal = JSON.parse(apply.stdout);
+  const after = status();
+  check("an applied controller broker restart still names the stop and start and leaves the broker running",
+    apply.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED" && refusal.error.remedy?.includes("`cotal down`")
+    && refusal.error.remedy.includes(`\`cotal up --root '${root}' --space ${space}\``)
+    && after?.observedProcess === "running" && after.instanceId === before?.instanceId && after.pid === before?.pid, out(apply));
+}
+
 /** A plain `logs --follow` in `at`, read until it exits. */
 function followText(args: string[], at = { root, env }) {
   const child = spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args, "--follow"], { cwd: at.root, env: at.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -114,6 +203,11 @@ try {
     const up = cotal(["up", "--detach", "--open", "--no-manager", "--space", SPACE, "--server", SERVER]);
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
+    const brokerOnlyStatus = cotal(["manager", "status", "--space", SPACE, "--json"]);
+    const brokerOnlyError = JSON.parse(brokerOnlyStatus.stdout).error;
+    check("manager status suggests a manager-only start when the broker is running",
+      brokerOnlyStatus.status === 2 && brokerOnlyError?.code === "TARGET_NOT_FOUND"
+      && brokerOnlyError.remedy === `start it with \`cotal manager start --space ${SPACE}\``, out(brokerOnlyStatus));
 
     // ---- Every built-in preset is listed before it is added ------------------------------------
     const before = inventory();
@@ -162,9 +256,15 @@ try {
     check("cotal manager status reads it", status.status === 0 && /Recorded state:\s+running/.test(out(status)), out(status));
     const logs = cotal(["manager", "logs", "--tail", "20"]);
     check("cotal manager logs reads its log", logs.status === 0 && out(logs).length > 0, out(logs));
-    const other = cotal(["manager", "start", "--runtime", "nosuchruntime"]);
-    check("a start naming another runtime while it runs refuses and names the stop",
-      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --runtime") && out(other).includes(`cotal manager stop --space ${SPACE}`), out(other));
+    for (const [flag, value, code] of [["--runtime", "nosuchruntime", "DEPENDENCY_UNAVAILABLE"], ["--server", wrongServer, "CONFLICT"]] as const) {
+      const invalid = cotal(["manager", "start", "--space", SPACE, "--dry-run", "--json", flag, value], 180_000, { root: home, env, anchor });
+      check(`a running manager preview diagnoses invalid ${flag} without advising a stop`,
+        invalid.status === 2 && JSON.parse(invalid.stdout).error?.code === code && !out(invalid).includes("manager stop"), out(invalid));
+    }
+    const other = cotal(["manager", "start", "--max-sessions", "5", "--dry-run"]);
+    check("a valid replacement for a running manager refuses and names the stop",
+      other.status === 2 && out(other).includes("LIFECYCLE_BLOCKED") && out(other).includes("manager is running with another --max-sessions") && out(other).includes(`cotal manager stop --space ${SPACE}`)
+      && inventory().running.filter((name) => name === "manager").length === 1, out(other));
 
     // ---- A program of your own: add with --exec, start, status, logs, stop -----------------------
     const script = join(root, "hello.sh");
@@ -172,6 +272,8 @@ try {
     chmodSync(script, 0o700);
     const add = cotal(["service", "add", "hello", "--exec", `${script} 'big world'`]);
     check("service add hello --exec saves your program in one command", add.status === 0 && inventory().definitions.includes("hello"), out(add));
+    const manual = cotal(["service", "start", "hello", "--no-open", "--dry-run", "--json"]);
+    check("a saved non-dashboard service still refuses --no-open", manual.status === 1 && JSON.parse(manual.stdout).error?.code === "USAGE_INVALID", out(manual));
     const notStartedJson = cotal(["service", "status", "hello", "--json"]);
     const notStartedReceipt = JSON.parse(notStartedJson.stdout) as { outcome: string; completeness: string; result: { definition: string; instanceId: string | null; recordedState: string } | null };
     check("service status reports a saved service with no instance as not started in JSON",
@@ -239,9 +341,19 @@ try {
       removedHello.status === 0 && !existsSync(helloPath) && !existsSync(`${helloPath}.1`) &&
         out(removedHello).includes("Deleted logs:") && out(removedHello).includes(helloPath), out(removedHello));
 
-    const stop = cotal(["manager", "stop", "--yes"]);
+    const refused = cotal(["manager", "stop", "--space", SPACE, "--with-agents", "--json"]);
+    const refusal = JSON.parse(refused.stdout);
+    const retryStop = /`([^`]+)`/.exec(refusal.error?.remedy ?? "")?.[1];
+    const expectedStop = `cotal svc stop manager --space ${SPACE} --with-agents --yes --json`;
+    check("manager stop confirmation keeps the selected space, agent policy, and JSON output",
+      refused.status === 1 && refusal.outcome === "refused" && refusal.error?.code === "USAGE_INVALID" && retryStop === expectedStop && inventory().running.includes("manager"), out(refused));
+    if (retryStop !== expectedStop) throw new Error(`unexpected manager stop confirmation: ${retryStop}`);
+    const stop = cotal(retryStop.split(" ").slice(1));
     managerUp = stop.status !== 0;
-    check("cotal manager stop stops it", stop.status === 0 && !inventory().running.includes("manager"), out(stop));
+    const stopReceipt = JSON.parse(stop.stdout);
+    check("the confirmation command stops the same manager and returns a JSON receipt", stop.status === 0 &&
+      stopReceipt.outcome === "ok" && stopReceipt.result?.kind === "service-stop" && stopReceipt.result.instanceId === refusal.target?.instanceId &&
+      stopReceipt.result.recordedState === "stopped" && !inventory().running.includes("manager"), out(stop));
     const after = row(inventory().services, "manager");
     check("  and the listing shows it stopped, with cotal manager start next", after?.state === "stopped" && after.next === "cotal manager start", after);
     const savedPreview = cotal(preview);
@@ -257,8 +369,11 @@ try {
     const invalidHost = cotal(["manager", "start", "--space", SPACE, "--console-host", "127.0.0.1 junk", "--plain"]);
     check("an invalid console host is refused without saving a replacement",
       invalidHost.status === 1 && out(invalidHost).includes("USAGE_INVALID") && out(invalidHost).includes("--console-host contains whitespace or controls") && !out(invalidHost).includes("saved manager again"), out(invalidHost));
+    const invalidName = cotal(["manager", "start", "--foreground", "--space", SPACE, "--name", "abcdefghijklmnopqrstuvwxyz", "--plain"]);
+    check("an instance-shaped manager name is refused without saving a replacement",
+      invalidName.status === 1 && out(invalidName).includes("USAGE_INVALID") && out(invalidName).includes("has the shape of an instance id") && !out(invalidName).includes("saved manager again"), out(invalidName));
     const kept = showManager(), stoppedAfter = stoppedManager();
-    check("the refused override leaves the definition and stopped instance unchanged",
+    check("the refused overrides leave the definition and stopped instance unchanged",
       saved.status === 0 && kept.status === 0 && saved.stdout === kept.stdout
       && stoppedBefore.status === 0 && stoppedAfter.status === 0 && stoppedBefore.recordedState === "stopped"
       && typeof stoppedBefore.instanceId === "string" && typeof stoppedBefore.revision === "string" && JSON.stringify(stoppedBefore) === JSON.stringify(stoppedAfter),
@@ -274,11 +389,14 @@ try {
     const brokerOnlyDown = cotal(["down", "--yes"]);
     const stackRestart = cotal(["up", "--detach", "--open", "--space", SPACE, "--server", SERVER]);
     const liveStatus = cotal(["manager", "status", "--json"]);
-    const live = JSON.parse(liveStatus.stdout).result?.recordedProcess;
+    const liveResult = JSON.parse(liveStatus.stdout).result;
+    const live = liveResult?.recordedProcess;
     check("manager status reports the running stack manager over a stopped saved manager",
       previous.recordedState === "stopped" && typeof previous.pid === "number" && brokerOnlyDown.status === 0 && stackRestart.status === 0
       && liveStatus.status === 0 && live?.savedService === false && typeof live.pid === "number" && live.pid !== previous.pid,
       { previous, down: out(brokerOnlyDown), up: out(stackRestart), status: out(liveStatus) });
+    check("manager status JSON reports the observed running state of the PID-only stack manager",
+      liveStatus.status === 0 && liveResult?.kind === "service-status" && liveResult.observedProcess === "running", out(liveStatus));
     if (typeof previous.instanceId === "string") {
       const pinned = cotal(["manager", "status", "--instance", previous.instanceId, "--json"]);
       const owned = JSON.parse(pinned.stdout).result;
@@ -305,7 +423,7 @@ try {
         run.status === 2 && report.outcome === "refused" && report.error?.code === "TARGET_NOT_FOUND"
         && report.error.message === missingInstanceMessage && report.target?.instanceId === missingId, out(run));
     }
-    const isManagerLog = (path = "") => dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
+    const isManagerLog = (path?: string): path is string => path !== undefined && dirname(path) === join(realpathSync(upProject), ".cotal") && /^manager\.[0-9a-f]+\.log$/.test(basename(path));
     let upLogs = upCotal(["manager", "logs"]);
     for (let i = 0; i < 30 && !out(upLogs).includes("manager up"); i++) { await sleep(500); upLogs = upCotal(["manager", "logs"]); }
     check("cotal manager logs reads the log of the manager up started, exit 0",
@@ -319,6 +437,7 @@ try {
       json.outcome === "ok" && json.result?.kind === "service-logs" && json.result.lines?.length === 5 && isManagerLog(json.result.path) && json.result.recordedProcess?.savedService === false, json);
     const stackManager = envelope(upCotal(["service", "logs", "stack-manager", "--json", "--tail", "5"]));
     check("  and cotal service logs stack-manager reads the same file", stackManager.outcome === "ok" && stackManager.result?.path === json.result?.path && stackManager.result?.lines?.length === 5, stackManager);
+    if (isManagerLog(json.result?.path)) checkRecordedManagerTail(json.result.path);
     const refusedStop = envelope(upCotal(["manager", "stop", "--yes", "--json"])) as LogsEnvelope & { error?: { code?: string; remedy?: string } };
     check("cotal manager stop still refuses it UNSUPPORTED with the stack advice",
       refusedStop.outcome === "refused" && refusedStop.error?.code === "UNSUPPORTED" && refusedStop.error.remedy === "it stops with its stack through `cotal down`, or where `cotal supervise` runs it; stopping that manager stops every hosted workflow run it drives, and `cotal down` also stops the broker and agents", refusedStop);
@@ -327,9 +446,9 @@ try {
       refusedInstall.outcome === "refused" && refusedInstall.error?.code === "UNSUPPORTED" && refusedInstall.error.remedy === refusedStop.error?.remedy, refusedInstall);
     for (const name of ["nats", "broker", "stack-broker"]) {
       const brokerSet = envelope(upCotal(["down", name, "delivery", "--dry-run", "--json"])) as LogsEnvelope & { error?: { code?: string; message?: string; remedy?: string } };
-      check(`cotal down ${name} delivery refuses the whole set and names the bare down that stops the broker`,
+      check(`cotal down ${name} delivery refuses the whole set and names a preview in its project`,
         brokerSet.outcome === "refused" && brokerSet.error?.code === "TARGET_NOT_FOUND" && brokerSet.error.message === `${name} matches no service a set of names can stop in space ${UP_SPACE}; no service was stopped`
-          && brokerSet.error.remedy === "a set of names never stops the broker; a bare `cotal down` stops it with the whole stack", brokerSet);
+          && brokerSet.error.remedy === `a set of names never stops the broker; to preview stopping the whole stack, run \`cotal down --dry-run --space=${UP_SPACE} --json\` in ${realpathSync(upProject)}`, brokerSet);
     }
 
     // A follow is a read-only view: it writes one JSON record per line and ends when down stops the manager.
@@ -354,6 +473,15 @@ try {
       textCode === 0 && lastLine(textFollow.text) === "manager is no longer running, so the follow ended." && !/^end: /m.test(textFollow.text), { textCode, text: textFollow.text });
 
     // ---- After down: the log it left, and install names the unit line ---------------------------
+    const stoppedStatus = upCotal(["manager", "status", "--space", UP_SPACE, "--json"]);
+    const report = JSON.parse(stoppedStatus.stdout);
+    const stackStart = `cotal up --root ${realpathSync(upProject)} --space ${UP_SPACE}`;
+    check("manager status after down reports the PID-only manager gone without changing the JSON shape",
+      stoppedStatus.status === 0 && report.outcome === "ok" && report.result?.kind === "service-status" && report.result.observedProcess === "gone"
+      && report.result.recordedProcess?.savedService === false && !Object.hasOwn(report.result, "next"), out(stoppedStatus));
+    const stoppedPlain = upCotal(["manager", "status", "--space", UP_SPACE, "--plain"]);
+    check("plain manager status says stopped and offers the stack start", stoppedPlain.status === 0
+      && out(stoppedPlain).includes("The manager is stopped") && out(stoppedPlain).includes(stackStart), out(stoppedPlain));
     const stoppedLogs = upCotal(["manager", "logs", "--tail", "3"]);
     check("cotal manager logs after down reads the log it left, marked stopped, with cotal up next",
       stoppedLogs.status === 0 && out(stoppedLogs).includes("Manager log tail, from a stopped manager") && /State:\s+stopped/.test(out(stoppedLogs)) && /Next\s+cotal up\s/.test(out(stoppedLogs)), out(stoppedLogs));
@@ -367,7 +495,7 @@ try {
       Boolean(stoppedInstall.error?.message?.includes("manager runs through the manager-service adapter, whose stop is a native request")) && !stoppedInstall.error?.message?.includes("service service"), stoppedInstall.error?.message);
 
     // ---- With the log it left removed, the read says the log is gone ----------------------------
-    const goneLog = stoppedJson.result?.path ?? "";
+    const goneLog = stoppedJson.result?.path;
     if (isManagerLog(goneLog)) rmSync(goneLog);
     const gone = upCotal(["manager", "logs"]);
     const goneJson = envelope(upCotal(["manager", "logs", "--json"])) as LogsEnvelope & { target?: { path?: string }; error?: { code?: string; message?: string; remedy?: string } };
@@ -382,9 +510,24 @@ try {
     // ---- A preset broker stops even when its log file was moved away -----------------------------
     const presetSpace = cotal(["space", "create", PRESET_SPACE, "--root", presetRoot]);
     check("space create prepares a space for a preset broker", presetSpace.status === 0, out(presetSpace));
+    checkBlankServiceCwd();
+    const neverStarted = cotal(["manager", "status", "--space", PRESET_SPACE, "--json"]);
+    const neverStartedError = JSON.parse(neverStarted.stdout).error;
+    check("manager status still distinguishes a space with no manager history", neverStarted.status === 2
+      && neverStartedError?.code === "TARGET_NOT_FOUND" && neverStartedError.message.includes("no manager has been started")
+      && neverStartedError.remedy === `start it with \`cotal up\` in ${realpathSync(presetRoot)}`, out(neverStarted));
+    const neverStartedPlain = cotal(["manager", "status", "--space", PRESET_SPACE, "--plain"]);
+    check("plain manager status also names the stack start in the prepared project",
+      neverStartedPlain.status === 2 && ["cotal", "pnpm cotal"].some((cli) =>
+        out(neverStartedPlain).includes(`start it with \`${cli} up\` in ${realpathSync(presetRoot)}`)), out(neverStartedPlain));
     const custom = cotal(["service", "add", "stack-broker", "--exec", "/bin/sleep 600", "--space", PRESET_SPACE]);
     check("a never-started space accepts a process service named stack-broker", custom.status === 0, out(custom));
     const foregroundStart = ["service", "start", "stack-broker", "--space", PRESET_SPACE, "--foreground", "--json"];
+    for (const args of [["service", "start", "--help"], ["help", "service", "start"]]) {
+      const help = cotal(args);
+      check(`${args.join(" ")} lists the foreground and dry-run switches separately`, help.status === 0
+        && /\[--foreground\]\s+\[--dry-run\]/.test(help.stdout), out(help));
+    }
     const previewStart = cotal([...foregroundStart, "--dry-run"]);
     const previewReceipt = JSON.parse(previewStart.stdout);
     check("a foreground dry-run returns one JSON preview without allocating or signalling a process",
@@ -421,8 +564,13 @@ try {
     const controllerServer = `nats://127.0.0.1:${await freePort()}`;
     const controllerUp = controller(["up", "--open", "--space", controllerSpace, "--server", controllerServer, "--seat-cap", "2", "--max-sessions", "3"]);
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
+    checkControllerBrokerRestart(controller, controllerRoot, controllerSpace);
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
+    const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);
+    check("the prepared stack's broker shutdown log is available through service logs",
+      brokerLog.status === 0 && brokerLog.stdout.includes("Initiating JetStream Shutdown") &&
+      brokerLog.stdout.includes("Server Exiting") && !existsSync(join(controllerRoot, ".cotal", "nats.log")), out(brokerLog));
     const controllerList = controller(["service", "--space", controllerSpace, "--json"]);
     const controllerRows = (JSON.parse(controllerList.stdout) as { result: { services: Row[] } }).result.services;
     check("a stopped controller member's Next remains cotal up", row(controllerRows, "stack-broker")?.next === "cotal up", controllerRows);
@@ -456,13 +604,25 @@ try {
       && beforeIdentity.observedProcess === "gone" && typeof beforeIdentity.revision === "string"
       && JSON.stringify(beforeIdentity) === JSON.stringify(afterIdentity), { beforeIdentity, afterIdentity });
     const brokerOnly = controller(["up", "--root", controllerRoot, "--space", controllerSpace, "--no-manager"]);
-    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort]);
+    const addStandalone = controller(["service", "add", "manager", "--preset", "manager", "--space", controllerSpace, "--console-port", consolePort, "--name", "standalone"]);
     const startStandalone = controller(["service", "start", "manager", "--space", controllerSpace, "--json"]);
     const standalone = JSON.parse(startStandalone.stdout).result;
     check("the broker-only route starts a separately configured manager",
       brokerOnly.status === 0 && addStandalone.status === 0 && startStandalone.status === 0
       && standalone?.definition === "manager" && standalone.observedProcess === "running",
       { brokerOnly: out(brokerOnly), add: out(addStandalone), start: out(startStandalone) });
+    const startHelp = controller(["manager", "start", "--help"]);
+    const helpText = out(startHelp).replace(/\s+/g, " ");
+    check("manager start help limits name selection to user-auth spaces and points open and static spaces to cotal ps",
+      startHelp.status === 0 && helpText.includes("--name <name> select by name with --on only on user-auth spaces") &&
+      helpText.includes("--name <string> manager name for presence and, on user-auth spaces only, --on. On open and static spaces, use the instance ID from `cotal ps`"), out(startHelp));
+    const listed = controller(["ps", "--space", controllerSpace, "--plain"]);
+    const managerId = listed.stdout.match(/^\s*instance:\s+([a-z0-9]{26,32})\b/m)?.[1];
+    const byName = controller(["ps", "--space", controllerSpace, "--on", "standalone", "--plain"]);
+    const byId = managerId ? controller(["ps", "--space", controllerSpace, "--on", managerId, "--plain"]) : undefined;
+    check("on the open space, the printed instance ID works and the manager name does not",
+      listed.status === 0 && byName.status === 1 && out(byName).includes("USAGE_INVALID") && byId?.status === 0,
+      { listed: out(listed), byName: out(byName), byId: byId && out(byId) });
     const stopStandalone = controller(["manager", "stop", "--space", controllerSpace, "--yes", "--json"]);
     check("the standalone manager stops before the stack starts its own",
       stopStandalone.status === 0 && JSON.parse(stopStandalone.stdout).outcome === "ok", out(stopStandalone));
@@ -496,6 +656,7 @@ try {
     writeFileSync(config, `listen: ${new URL(presetServer).host}\nlog_file: ${JSON.stringify(log)}\n`, { mode: 0o600 });
     const presetAdd = cotal(["service", "add", "b0", "--preset", "broker", "--space", PRESET_SPACE, "--config", config, "--binary", realpathSync((await findNatsServer()).path), "--server", presetServer, "--log-file", log]);
     check("service add b0 --preset broker saves it with a --log-file", presetAdd.status === 0, out(presetAdd));
+    checkBrokerForegroundPreview();
     const presetStart = cotal(["service", "start", "b0", "--space", PRESET_SPACE]);
     presetBrokerUp = presetStart.status === 0;
     check("  and service start b0 starts it", presetBrokerUp, out(presetStart));
@@ -538,6 +699,7 @@ try {
     const down = cotal(["down", "--yes"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
+  check("service commands leave both test homes without telemetry state", [home, upHome].every((dir) => !existsSync(join(dir, ".cotal", "telemetry.json"))));
   for (const dir of [home, root, upHome, upRoot, presetRoot]) rmSync(dir, { recursive: true, force: true });
   finish();
   process.exit(process.exitCode ?? 0);

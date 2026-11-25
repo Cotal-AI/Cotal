@@ -31,7 +31,7 @@
     },
     {
       "name": "the components pass resolves a user-mode target to no credential, probing the authenticated broker bare",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-health.ts",
       "find": "  if (target.mode !== \"user\") return { kind: \"static\", auth: target.auth };",
       "replace": "  if (target.mode !== \"user\" || target.mode === \"user\") return { kind: \"static\", auth: target.auth };",
       "expectRed": "discovered space: components probes as the signed-in login, never a raw Authorization Violation",

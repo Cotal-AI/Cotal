@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { parseCommandArgs, registry, token, writePrivateRecord, type ClientSetupProvider, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
@@ -20,6 +20,7 @@ import {
   homeCotalDir,
   inputDisabledByFlag,
   jsonFlag,
+  knownHarnesses,
   loadMeshes,
   manifestExtensionNames,
   meshFile,
@@ -36,6 +37,7 @@ import {
   recordMesh,
   resolveOnPath,
   seedConnectorServers,
+  spaceNameTooLong,
   writePreference,
   writeResult,
   type Cell,
@@ -46,7 +48,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -70,6 +72,7 @@ import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
+import { mkdirPrivate } from "../lib/private-directory.js";
 
 const ONBOARD_VERSION = "2";
 
@@ -236,6 +239,10 @@ export function validateSetupArguments(args: ParsedArgs): void {
   }
   if (values.start && !values.detach && !interactive) throw usage("setup --start requires --detach when it cannot open an interactive terminal");
   if (!interactive) scriptedInputs(values, runtimeChoices());
+  if (values.harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, values.harness)) {
+    const known = knownHarnesses(extensionNames("connector"));
+    if (!known.includes(values.harness)) throw usage(`no harness ${JSON.stringify(values.harness)}; known harnesses: ${known.join(", ")}`, HARNESS_REMEDY);
+  }
 }
 
 /**
@@ -585,9 +592,12 @@ interface SetupPlan {
 async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
-  // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
-  const spelled = token(inputs.space);
-  if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
+  if (problem) {
+    const spelled = token(inputs.space).replace(/^-+/, "");
+    throw usage(problem, /[A-Za-z0-9]/.test(spelled) && !spaceNameTooLong(spelled)
+      ? `pass --space ${spelled}, or another name of letters, digits, - and _`
+      : "choose a name that starts with a letter, digit or underscore and has only letters, digits, - and _");
+  }
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
@@ -614,6 +624,18 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
 
+function checkDemoPersonaPaths(inputs: SetupInputs): void {
+  const agents = personaDir(inputs.project);
+  for (const name of Object.keys(DEMO_AGENTS)) {
+    const path = join(agents, `${name}.md`);
+    if (isDir(path)) {
+      throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
+        target: { space: inputs.space, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
+      });
+    }
+  }
+}
+
 /**
  * Writes what the plan checked: the space, the personas, the `harness` preference, the
  * application's own setup actions, Cotal's skills and the chosen runtimes. A harness or runtime
@@ -623,6 +645,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation; start: boolean; detach: boolean; configureOnly: boolean; managerInstanceId?: string }): Promise<void> {
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
+  if (opts.demo) checkDemoPersonaPaths(inputs);
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });
@@ -655,11 +678,10 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   } else if (plan.space.kind === "registered") {
     spaceState = "registered";
   } else {
-    if (inputs.createProject) {
-      mkdirSync(inputs.project, { recursive: true });
+    if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
-    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
+    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project, "--project").file);
     spaceState = plan.space.state;
   }
 
@@ -676,7 +698,16 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   if (prefs.defaults.harness === undefined && writePreference({}, "harness", inputs.harness, prefs.revision).changed) wrote("your harness preference", preferencesPath());
 
   const narrate = opts.presentation === "rich";
-  const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
+  const path = join(inputs.project, ".cotal", "setup.log");
+  let log: SetupLog;
+  try { log = openSetupLog(path); }
+  catch (error) {
+    const partial = written.length > 0;
+    const saved = partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not open the setup log: ${error instanceof Error ? error.message : String(error)}`, {
+      target: { ...target, path }, changed: written, cause: error, remedy: `check and repair the log path ${path}, then run the same setup again`,
+    });
+  }
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
     const provider = await connectorSetupProvider(candidate.connector);
@@ -698,6 +729,8 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (narrate) p.log.success(`Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`);
     for (const b of skills.backedUp) warnings.push({ code: "SKILL_BACKED_UP", target, message: `your edited ${b.name} skill was backed up to ${b.path} before it was refreshed` });
   }
+  const clients = await setUpClients(inputs.space, narrate, opts.interactive, log, wrote);
+  actions.ran.push(...clients.ran);
   const runtimes = await setUpRuntimes(plan.runtimes, inputs.runtimes, narrate, wrote);
   if (!isOnboarded()) {
     markOnboarded(ONBOARD_VERSION);
@@ -729,6 +762,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       : failed
         ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
         : []),
+    ...clients.problems,
     ...runtimes.problems,
   ];
   const partial = problems.length === 0
@@ -1150,7 +1184,7 @@ async function availableSetupProvider(connector: Connector): Promise<ConnectorSe
  * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
  * `I` from the action alone: inferring it from the input too widens it to accept a dropped
  * (`undefined`) input. */
-function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: ConnectorSetupProvider): Step {
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: Pick<ConnectorSetupProvider, "name" | "requires" | "available">): Step {
   return {
     name: setup.name,
     title: setup.title,
@@ -1218,20 +1252,92 @@ async function reconcileOtherConnectorSkills(
   }
 }
 
-/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
- *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
-export async function refreshConnectorInstalls(): Promise<string[]> {
+/** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
+export async function refreshConnectorInstalls(report?: (line: string) => void, selfUpdate = false): Promise<string[]> {
   const lines: string[] = [];
+  const failures: string[] = [];
   for (const connector of await setupConnectorSurface()) {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) {
-      const started = Date.now();
-      console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
-      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    if (!refresh) continue;
+    const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
+    const started = Date.now();
+    console.error(`Refreshing ${refresh.title}`);
+    let detail: string;
+    try {
+      detail = await refresh.run(input);
+    } catch (error) {
+      if (selfUpdate && error instanceof Error && error.name === "ForeignConnectorRegistrationError") {
+        // The explicit refresh reports the skip once, even when seed migration also runs this pass.
+        if (report) console.error(`Skipped ${connector.name} integration refresh: ${error.message}`);
+        continue;
+      }
+      if (!report) throw error;
+      failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
+    console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    const line = `${refresh.title}: ${detail}`;
+    if (report) report(line);
+    else lines.push(line);
+  }
+  if (failures.length > 0) throw new Error(failures.join("\n"));
+  return lines;
+}
+
+/**
+ * Connects every ACP client on this machine to the space. An official client whose package is not
+ * installed gets it added at this cotal's version when the application is found, the way an official
+ * runtime is. Then each available client provider runs its own setup for the space. Each runs on its
+ * own, so one that fails or does not load leaves the others set up and the result partial.
+ */
+async function setUpClients(space: string, narrate: boolean, interactive: boolean, log: SetupLog, wrote: (what: string, path: string) => void): Promise<{ ran: ActionRun[]; problems: Problem[] }> {
+  const ran: ActionRun[] = [];
+  const problems: Problem[] = [];
+  const installed = new Set(extensionNames("client-setup"));
+  const found = new Map<string, string[]>();
+  for (const [name, app] of Object.entries(OFFICIAL_CLIENT_APPS)) {
+    if (installed.has(name) || (!app.tools.some((tool) => resolveOnPath(tool)) && !app.dirs().some(isDir))) continue;
+    found.set(app.package, [...(found.get(app.package) ?? []), app.title]);
+  }
+  for (const [pkg, titles] of found) {
+    try {
+      // With --json or --plain, stdout carries the result alone.
+      await addExtension(`${pkg}@${cliVersion()}`, pkg, false, narrate ? console.log : (line) => console.error(line));
+    } catch (e) {
+      if (e instanceof ExtensionAddInterrupted) throw e;
+      problems.push({ message: `${titles.join(" and ")} ${titles.length === 1 ? "is" : "are"} on this computer, but ${pkg} did not install (${(e as Error).message.split("\n")[0]})`, remedy: `run \`cotal ext add ${pkg}\`, then run the same setup again` });
+      continue;
+    }
+    wrote(`${titles.join(" and ")} integration`, extensionPackageDir(pkg));
+  }
+  for (const name of extensionNames("client-setup")) {
+    let provider: ClientSetupProvider;
+    try {
+      provider = await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name });
+    } catch (e) {
+      problems.push({ message: `the ${name} client setup did not load (${(e as Error).message.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
+      continue;
+    }
+    if (!provider.connector || !setupProviderAvailable(provider)) continue;
+    const runner = actionRunner(narrate, interactive, log);
+    await runner.run(provider.name, actionStep(provider.connector, { cotal: selfArgv(), wrote, space }, provider));
+    ran.push(...runner.ran);
+    if (runner.failed) problems.push({ message: `${runner.failed.title} did not finish (${runner.failed.message})`, remedy: "fix it, then run the same setup again" });
+  }
+  return { ran, problems };
+}
+
+/** Run every installed client provider's refresh, so the entries an earlier setup wrote in each
+ *  application run this cotal. `cotal update` calls it once the operator extensions are current, since
+ *  a client provider ships in one. Returns one line per provider that declares a refresh; a refresh
+ *  that fails throws. */
+export async function refreshClientInstalls(): Promise<string[]> {
+  const lines: string[] = [];
+  for (const name of extensionNames("client-setup")) {
+    const refresh = (await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name })).refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
   }
   return lines;
 }

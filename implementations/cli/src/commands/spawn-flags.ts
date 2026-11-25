@@ -1,6 +1,8 @@
-import { MANAGED_HANDOFF_FILE_ENV, type FlagSpec } from "@cotal-ai/core";
-import { jsonFlag, plainFlag, credsFlag, launchFlags, serverFlag, spaceFlag } from "@cotal-ai/workspace";
-import { onRerun } from "../lib/control.js";
+import { basename } from "node:path";
+import { MANAGED_HANDOFF_FILE_ENV, oneLine, spawnNameError, type FlagSpec, type FlagValues } from "@cotal-ai/core";
+import { codeSpan, CommandFailure, explicitNoInputFlag, jsonFlag, plainFlag, credsFlag, launchFlags, serverFlag, spaceFlag } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 /** `cotal spawn`'s grammar: the application in this terminal by default, a manager's launch only
  *  with `--detach` or `--on`, and one positional persona or explicit persona file. Declared `as const` so the values cast
@@ -30,7 +32,54 @@ export const spawnFlags = [
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];
 
-/** The spawn an `--on` refusal tells the caller to rerun: the persona and `-d` as given, with the
- *  `--space` or `--server` given (#7644). */
-export const spawnRerun = (values: { detach?: unknown; space?: unknown; server?: unknown }, positionals: readonly string[]): string =>
-  onRerun("cotal spawn", values, [...positionals, ...(values.detach === true ? ["-d"] : [])]);
+/** Keep shell words on one line even when a kickoff prompt contains terminal control characters. */
+export function retryWord(value: string): string {
+  if (oneLine(value) === value) return shellWord(value);
+  return `$'${[...value].map((ch) => oneLine(ch) !== ch ? `\\U${ch.codePointAt(0)!.toString(16).padStart(8, "0")}` : ch.replace(/[\\']/g, "\\$&")).join("")}'`;
+}
+
+/** Keep the selected persona and every explicit option except the manager pin being replaced. */
+export function spawnRerun(values: FlagValues<typeof spawnFlags>, positionals: readonly string[]): { command: string } {
+  return { command: spawnCommand(values, positionals, "cotal spawn", "--on <instance>") };
+}
+
+function spawnCommand(values: FlagValues<typeof spawnFlags>, positionals: readonly string[], launcher: string, managerPin?: string): string {
+  const words = [launcher];
+  if (explicitNoInputFlag()) words.push("--no-input");
+  const dashOperand = positionals.some((word) => word.startsWith("-"));
+  if (!dashOperand) words.push(...positionals.map(retryWord));
+  if (values.detach) words.push("-d");
+  for (const flag of spawnFlags) {
+    const name = flag.name;
+    if (name === "on" || name === "detach") continue;
+    // Managed launch normalizes the public flags to internal names as well.
+    if ((name === "config" && values.file !== undefined) || (name === "agent" && values.harness !== undefined)) continue;
+    const value = values[name];
+    if (value === true) words.push(`--${name}`);
+    for (const entry of typeof value === "string" ? [value] : Array.isArray(value) ? value : []) {
+      const word = retryWord(entry);
+      if (entry.startsWith("-")) words.push(`--${name}=${word}`);
+      else words.push(`--${name}`, word);
+    }
+  }
+  if (managerPin) words.push(managerPin);
+  if (dashOperand) words.push("--", ...positionals.map(retryWord));
+  return words.join(" ");
+}
+
+export function refuseDirectSpawnName(name: string, userMode: boolean, path: string, values: FlagValues<typeof spawnFlags>, positionals: readonly string[], target?: object): void {
+  const problem = spawnNameError(name, { userMode });
+  if (!problem) return;
+  if (values.name !== undefined)
+    throw new CommandFailure("refused", "USAGE_INVALID", problem, { target, ...(target === undefined ? { selfContained: true } : {}) });
+  const stem = basename(path, ".md");
+  const override = spawnNameError(stem, { userMode }) ? "persona_agent" : stem;
+  const remedy = values["enrollment-file"] !== undefined ? "add --name with the actor named by the enrollment, before any -- separator, and retry"
+    : `retry with ${codeSpan(spawnCommand({ ...values, name: override }, positionals, `${values.json ? "cotal" : displayCmd()} spawn`))}`;
+  throw new CommandFailure("refused", "USAGE_INVALID", `the persona's frontmatter name cannot be used for launch: ${problem}`, { target, remedy, selfContained: true });
+}
+
+export function unsupportedVariantRemedy(flag: string | undefined, field: string | undefined, path: string): string {
+  const removeField = `remove the \`variant:\` field from ${JSON.stringify(path)}`;
+  return flag === undefined ? removeField : field ? `omit \`--variant\` and ${removeField}` : "omit `--variant`";
+}

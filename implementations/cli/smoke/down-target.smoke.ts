@@ -311,6 +311,16 @@ try {
 
   process.chdir(neutral);
 
+  const ledgerSelectors: Record<string, string>[] = [{ file: "plan with spaces.yaml" }, { run: "run01" }, { file: "plan with spaces.yaml", run: "run01" }];
+  for (const selectors of ledgerSelectors) for (const format of ["json", "plain"]) {
+    const refusal = await rejection(run([], { ...selectors, "dry-run": true, [format]: true }));
+    check(`a ${format} ledger preview by ${Object.keys(selectors).join(" and ")} keeps the original preview`,
+      refusal?.code === "UNSUPPORTED" && refusal.remedy === `omit --${format} from the original command; keep --dry-run and the same deployment selection`, refusal);
+    const apply = await rejection(run([], { ...selectors, [format]: true }));
+    check(`a ${format} ledger teardown by ${Object.keys(selectors).join(" and ")} keeps the deployment selection`,
+      apply?.code === "UNSUPPORTED" && apply.remedy === `omit --${format} from the original command; keep the same deployment selection`, apply);
+  }
+
   // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
   // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));
@@ -353,6 +363,23 @@ try {
   check("...and its preview refuses the same way, naming the preview to run there",
     previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(meshA.root, 0o000);
+    try {
+      const inaccessible = await rejection(run([], { space: "teamA", yes: true }));
+      check("an inaccessible retained root advises restoring access instead of changing folders",
+        inaccessible?.code === "PERMISSION_DENIED" && inaccessible.message?.includes(`${meshA.root} could not be accessed`) === true &&
+        inaccessible.remedy === "restore access to the original project folder, then try again", inaccessible);
+    } finally { chmodSync(meshA.root, 0o700); }
+  }
+  recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
+  for (const preview of [false, true]) {
+    const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));
+    check(`a connection in another folder does not supply the hosting project for a ${preview ? "preview" : "stop"}`,
+      remote?.code === "TARGET_NOT_FOUND" && remote.message?.includes(`connection to space "remote" is registered at ${meshB.root}`) === true &&
+        ["cotal", "pnpm cotal"].some(cli => remote.remedy === `run \`${cli} down ${preview ? "--dry-run" : "--yes"}\` in the project that started the stack`), remote);
+  }
+  removeMesh("remote");
   const unknown = await rejection(run(["web"], { space: "nosuch" }));
   check("--space with an unknown space refuses TARGET_NOT_FOUND",
     unknown?.code === "TARGET_NOT_FOUND" && /no space named "nosuch" is registered here/.test(unknown.message ?? ""), unknown?.message);
@@ -692,14 +719,18 @@ try {
   // step that takes the other registration off the address and the stop to run after it.
   recordMesh({ ...entry("shared-here", stoppedRoot), origin: "up" });
   recordMesh({ ...entry("shared-there", neverRoot), origin: "up" });
+  recordMesh({ ...entry("-old", neverRoot), origin: "manual" });
   const shared = await bareDownIn(stoppedRoot);
   removeMesh("shared-here");
   removeMesh("shared-there");
+  removeMesh("-old");
   check("a second registration at this stack's exact broker address refuses LIFECYCLE_BLOCKED, names that space, and its next step names space show, space forget and the down to run again",
     shared.error?.code === "LIFECYCLE_BLOCKED" && /shared listener/.test(shared.error.message ?? "") &&
       (shared.error as { target?: { otherSpaces?: string[] } } | undefined)?.target?.otherSpaces?.includes("shared-there") === true &&
       /`cotal space show shared-there`/.test(shared.error.remedy ?? "") && /`cotal space forget shared-there`/.test(shared.error.remedy ?? "") &&
       /then run `cotal down` again/.test(shared.error.remedy ?? ""), shared);
+  check("the legacy shared listener guard prints argument-safe commands for a retained dash-leading name",
+    /`cotal space show -- -old`/.test(shared.error?.remedy ?? "") && /`cotal space forget -- -old`/.test(shared.error?.remedy ?? ""), shared);
   // An installed extension may record its process deeper in `.cotal` or under another suffix. While
   // either still runs, bare down does not call the stack stopped, and it leaves both as they were.
   const priorXdg = process.env.XDG_CONFIG_HOME;

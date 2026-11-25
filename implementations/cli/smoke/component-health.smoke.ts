@@ -25,8 +25,8 @@
  */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createConnection } from "node:net";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -54,9 +54,10 @@ import {
   serveIssuanceGateKv,
   writeServiceStatus,
 } from "@cotal-ai/core";
-import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, processStopped, renewalRecordPath, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
+import { DELIVERY_PIDFILE, MANAGER_PIDFILE, WEB_PIDFILE, WEB_SERVICE_ADAPTER, WEB_SESSION_FILE, canonicalLocalProcessPath, defaultStartToken, deliveryCredsKey, processStopped, renewalRecordPath, setAdoptedCurrent, spaceKey, writeRenewalRecord } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -112,6 +113,44 @@ async function portOpen(port: number): Promise<boolean> {
   });
 }
 
+async function checkOpenRestartAdvice(space: string, server: string, health: string): Promise<void> {
+  const moved = `${openRoot}-moved`;
+  const port = Number(new URL(server).port);
+  renameSync(openRoot, moved);
+  try {
+    const implicit = cliIn(moved, ["status", "--components"]);
+    const implicitRows = implicit.stdout.split("Component Health")[1] ?? "";
+    check("implicit component status preserves the reachable listener and move-back guidance for an open project",
+      implicit.status === 3 && /target\s+refused/.test(implicitRows) && implicitRows.includes(`registered ${server} · reachable · stack health cannot be checked at the recorded project folder`)
+      && implicitRows.includes(`move this folder back to ${openRoot}`), `${implicit.stdout}${implicit.stderr}`);
+    const status = cliIn(moved, ["status", "--components", "--space", space]);
+    const rows = status.stdout.split("Component Health")[1] ?? "";
+    check("moving an open project preserves listener reachability without grading the broker absent",
+      status.status === 3 && status.stdout.includes("project folder was moved or deleted") && rows.includes(`broker           refused · registered ${server} · reachable`) && rows.includes("stack health cannot be checked at the recorded project folder"), `${status.stdout}${status.stderr}`);
+    check("the moved open stack keeps the serving manager, unused delivery, and live listener observations",
+      /manager\s+serving/.test(rows) && /delivery\s+not-started.*not used on an open mesh/.test(rows) && await portOpen(port), rows);
+  } finally { renameSync(moved, openRoot); }
+
+  const pid = Number(/^  manager +serving[^\n]*lease pid (\d+)/m.exec(health)?.[1]);
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, health);
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; i < 100 && defaultStartToken(pid) !== undefined; i++) await sleep(50);
+  const seed = join(openRoot, ".cotal", "channels.json");
+  writeFileSync(seed, '{"channels":\n');
+  try {
+    const status = cliIn(openRoot, ["status", "--plain", "--space", space]);
+    const ps = cliIn(openRoot, ["ps", "--plain", "--space", space]);
+    for (const [result, code] of [[status, 0], [ps, 2]] as const) {
+      const text = `${result.stdout}${result.stderr}`.replace(/\s+/g, " ");
+      check(`exit ${code} names the malformed channel seed before a manager restart`, result.status === code && text.includes(`the channels file ${seed} is not valid JSON`) && text.includes(`fix or remove ${seed}`) && !text.includes("Restart this stack's stopped members") && !text.includes("with bare `cotal up`"), text);
+    }
+    check("the restart diagnosis keeps the owned broker running and manager gone observations",
+      /^  stack-broker +[^\n]* running /m.test(status.stdout) && /^  stack-manager +[^\n]* gone /m.test(status.stdout) && ps.stderr.includes("TARGET_UNAVAILABLE") && await portOpen(port), `${status.stdout}${ps.stderr}`);
+  } finally { rmSync(seed); }
+  const ps = cliIn(openRoot, ["ps", "--plain", "--space", space]);
+  check("with the seed repaired ps gives normal manager restart advice", ps.status === 2 && /with bare `cotal up`/.test(ps.stderr), `${ps.stdout}${ps.stderr}`);
+}
+
 function cli(...args: string[]) {
   return cliIn(root, args);
 }
@@ -121,8 +160,58 @@ function cliIn(cwd: string, args: string[], timeout = 30_000, childEnv = env) {
   return spawnSync(TSX, [CLI, ...args], { cwd, env: childEnv, encoding: "utf8", timeout });
 }
 
-async function cliAsync(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+async function checkStoppedRestartBlockers(cwd: string, server: string): Promise<void> {
+  const inspect = (remedy: string) => {
+    const report = cliIn(cwd, ["status", "--components"]);
+    const [main = "", health = ""] = report.stdout.split("\nComponent Health\n");
+    check(`component health preserves absence and names the prerequisite: ${remedy}`,
+      report.status === 1 && main.includes(remedy) && /target\s+absent · not-started/.test(health) &&
+      health.includes(remedy) && !health.includes("start it again with"), report.stdout + report.stderr);
+  };
+  const store = join(cwd, ".cotal", "nats");
+  if (process.getuid?.() !== 0) {
+    chmodSync(store, 0o500);
+    try { inspect(`chmod -R u+w ${store}`); }
+    finally { chmodSync(store, 0o700); }
+  }
+  const { hostname, port } = new URL(server);
+  const listener = createServer((socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    listener.once("error", reject);
+    listener.listen(Number(port), hostname, resolve);
+  });
+  try { inspect(`stop the process listening on ${hostname}:${port}`); }
+  finally { await new Promise<void>((resolve) => listener.close(() => resolve())); }
+}
+
+function checkStoppedDirectoryRepair(cwd: string, space: string): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const control = join(cwd, ".cotal");
+  const mode = statSync(control).mode & 0o777;
+  const before = readdirSync(control).sort();
+  const remedy = `chmod u+wx ${control}`;
+  const verdict = `"${space}" is stopped; its last operation, \`cotal down\`, completed`;
+  chmodSync(control, 0o500);
+  try {
+    for (const [flag, exit] of [["--plain", 0], ["--components", 1]] as const) {
+      const report = cliIn(cwd, ["status", flag, "--space", space]);
+      const [main = "", health = ""] = report.stdout.split("\nComponent Health\n");
+      check(`status ${flag} keeps the stopped verdict and names the control directory repair`,
+        report.status === exit && main.includes(verdict) && main.includes(remedy) && !report.stdout.includes("start it again with") &&
+        (flag === "--plain" || (/target\s+absent · not-started/.test(health) && health.includes(verdict) && health.includes(remedy))), `${report.stdout}${report.stderr}`);
+    }
+    const report = cliIn(cwd, ["ps", "--json", "--space", space]);
+    const body = JSON.parse(report.stdout) as { error?: { code?: string; message?: string; remedy?: string } };
+    check("ps keeps the stopped refusal and gives the control directory repair instead of a restart",
+      report.status === 2 && body.error?.code === "TARGET_UNAVAILABLE" && body.error.message?.startsWith(verdict) === true &&
+      body.error.remedy?.includes(remedy) === true && !body.error.remedy.includes("start it again with"), body);
+    check("stopped-stack diagnostics leave the control directory and its permissions alone",
+      (statSync(control).mode & 0o777) === 0o500 && JSON.stringify(readdirSync(control).sort()) === JSON.stringify(before));
+  } finally { chmodSync(control, mode); }
+}
+
+async function cliAsync(args: string[], childEnv = env): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, ["--import", TSX_LOADER, CLI, ...args], { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout?.setEncoding("utf8");
@@ -379,7 +468,12 @@ try {
   check("REPRO: existing ps cannot identify the live lease-holder as a component",
     oldPresent.status !== 0 && /service registry.*stream not found|no manager reachable/i.test(oldPresentText), oldPresentText);
 
-  const present = cli("status", "--components", "--space", SPACE, "--server", server);
+  const intake = await openTelemetryIntake();
+  const present = await cliAsync(["status", "--components", "--space", SPACE, "--server", server], {
+    ...env, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, DO_NOT_TRACK: undefined, COTAL_TELEMETRY: "regular", COTAL_TELEMETRY_URL: intake.url,
+  }).finally(() => intake.server.close());
+  const events = intake.received.filter((body) => body.event === "command");
+  check("a non-serving component reports an error without sending component facts", events.length === 1 && events[0]?.command === "status" && events[0]?.exitCode === 2 && events[0]?.outcome === "error" && events[0]?.errorCode === null && events[0]?.errorMessage === null && events[0]?.errorStack === null);
   const presentText = `${present.stdout}${present.stderr}`;
   check("live lease-holder that never serves exits present-not-serving (2)", present.status === 2, presentText);
   check("manager row names not-serving and its PID, and blames no manager build that never answered",
@@ -489,7 +583,8 @@ try {
   // it runs on its own stack in `webRoot`, which these cells stop before the open-mesh cells below.
   const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
   check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
-  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const webServer = `nats://127.0.0.1:${await freePort()}`;
+  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", webServer], 120_000);
   webStack = webUp.status === 0;
   check("the dashboard's static-auth stack starts", webStack, `${webUp.stdout}${webUp.stderr}`);
   const notStarted = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
@@ -514,19 +609,22 @@ try {
     const resumed = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
     check("resuming that broker restores serving health", resumed.status === 0 && /broker\s+serving/.test(resumed.stdout), `${resumed.stdout}${resumed.stderr}`);
   }
-  const managerGuidance = (cwd: string, openMesh: boolean) => {
-    const roster = cliIn(cwd, ["ps", "--json"]);
+  const managerGuidance = (cwd: string, openMesh: boolean, space: string, server: string) => {
+    const roster = cliIn(cwd, ["ps", "--space", space, "--json"]);
     const manager = (JSON.parse(roster.stdout) as { result: { managers: { instanceId: string }[] } }).result.managers[0]!.instanceId;
-    for (const name of ["manager", manager]) {
-      const read = cliIn(cwd, ["status", name, "--json"]);
+    for (const name of ["manager", manager]) for (const flags of [[], ["--space", space, "--server", server]]) {
+      const from = flags.length && openMesh ? webRoot : cwd;
+      const read = cliIn(from, ["status", name, ...flags, "--json"]);
       const error = (JSON.parse(read.stdout) as { error?: { code: string; remedy?: string } }).error;
-      check(`status ${name === "manager" ? "manager" : "manager instance"} explains the answering manager is not an agent`,
+      const target = flags.length ? ` ${flags.join(" ")}` : "";
+      check(`status ${name === "manager" ? "manager" : "manager instance"} keeps its ${flags.length ? "explicit" : "implicit"} target in Manager guidance`,
         read.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy !== undefined
           && error.remedy.includes(`${name} is this space's manager, which is answering, not an agent it runs`)
-          && error.remedy.includes("`cotal status`") && error.remedy.includes("`cotal endpoint describe manager`") === !openMesh, `${read.stdout}${read.stderr}`);
+          && error.remedy.includes(`\`cotal status${target}\``) && error.remedy.includes("cotal endpoint describe manager") === !openMesh
+          && (openMesh || error.remedy.includes(`\`cotal endpoint describe manager${target}\``)), `${read.stdout}${read.stderr}`);
     }
   };
-  managerGuidance(webRoot, false);
+  managerGuidance(webRoot, false, WEB_SPACE, webServer);
   if (process.platform !== "win32") {
     const deliveryCreds = join(webRoot, ".cotal", deliveryCredsKey(WEB_SPACE, { injected: false, root: webRoot }));
     chmodSync(deliveryCreds, 0o644);
@@ -560,10 +658,34 @@ try {
   const openHealth = cliIn(openRoot, ["status", "--components"]);
   const openText = `${openHealth.stdout}${openHealth.stderr}`;
   check("a healthy open stack needs no delivery daemon and exits zero", openHealth.status === 0 && /delivery\s+not-started.*not used on an open mesh/.test(openText) && /broker\s+serving/.test(openText) && /manager\s+serving/.test(openText), openText);
-  managerGuidance(openRoot, true);
+  managerGuidance(openRoot, true, openSpace, openServer);
+  await checkOpenRestartAdvice(openSpace, openServer, openText);
   const openDown = cliIn(openRoot, ["down", "--yes"], 120_000);
   openStack = openDown.status !== 0;
   check("the open controller stack stops", openDown.status === 0, `${openDown.stdout}${openDown.stderr}`);
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const previousHome = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = home;
+    try { setAdoptedCurrent(WEB_SPACE); }
+    finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+    const read = () => cliIn(openRoot, ["status", "--plain"]);
+    const writable = read();
+    check("a writable stopped project gets its own restart banner", writable.status === 0 && writable.stdout.includes(`this folder holds the stopped space "${openSpace}"; restart it with \`cotal up\``), writable.stdout);
+    chmodSync(openStore, 0o500);
+    try {
+      const held = read();
+      const text = held.stdout.replace(/\s+/g, " ");
+      check("status keeps the selected space but replaces the stopped folder's restart banner with store repair",
+        held.status === 0 && text.includes(`Mesh: ${WEB_SPACE}`) && text.includes(`the broker store ${openStore} is not writable`) && text.includes(`chmod -R u+w ${openStore}`) && !text.includes(`this folder holds the stopped space "${openSpace}"`), text);
+    } finally { chmodSync(openStore, 0o700); }
+    const control = join(openRoot, ".cotal"), mode = statSync(control).mode & 0o777;
+    chmodSync(control, 0o500);
+    try {
+      const held = read();
+      check("status keeps the selected space but replaces the stopped folder's restart banner with directory repair",
+        held.status === 0 && held.stdout.includes(`Mesh: ${WEB_SPACE}`) && held.stdout.includes(`chmod u+wx ${control}`) && !held.stdout.includes(`this folder holds the stopped space "${openSpace}"; restart it`), held.stdout);
+    } finally { chmodSync(control, mode); }
+  }
   const stoppedStore = (cwd: string, store = join(cwd, ".cotal", "nats"), target?: { space: string; server: string; otherServer: string }) => {
     if (process.platform === "win32" || process.getuid?.() === 0) return;
     const cleared = cliIn(cwd, ["use", "--clear"]);
@@ -779,7 +901,7 @@ try {
   await sleep(10_500);
 
   servingManager = await serveManagerWithForeignRefusal();
-  const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
+  const benignRefusal = await cliAsync(["status", "--components", "--space", SPACE, "--server", server]);
   const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
   // No dashboard was started on this open mesh. Its installed extension is optional, so it must
   // not fail an otherwise serving stack.
@@ -839,6 +961,8 @@ try {
   const stoppedController = cliIn(controllerRoot, ["status", "--components"]);
   check("a cleanly stopped controller target is absent (1), not refused",
     stoppedController.status === 1 && /target\s+absent.*not-started/.test(stoppedController.stdout), `${stoppedController.stdout}${stoppedController.stderr}`);
+  checkStoppedDirectoryRepair(controllerRoot, controllerSpace);
+  await checkStoppedRestartBlockers(controllerRoot, controllerServer);
   const selectedStopped = cliIn(webRoot, ["status", "--components"]);
   const selectedHealth = selectedStopped.stdout.split("Component Health")[1] ?? "";
   check("component health preserves the header's stopped selection instead of probing the folder's space",

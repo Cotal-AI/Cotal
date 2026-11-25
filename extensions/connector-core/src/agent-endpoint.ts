@@ -3,8 +3,8 @@
  * process serves an endpoint once for its lifecycle, and the served table is exactly the cluster's
  * commands, so this module is the one owner of that serve.
  */
-import type { CotalEndpoint } from "@cotal-ai/core";
-import { createCommandLane, type CommandDispatcher, type CommandQueue } from "./agent-commands.js";
+import type { CotalEndpoint, FirstCommand } from "@cotal-ai/core";
+import { createCommandLane, servedCommands, type CommandDispatcher, type CommandQueue } from "./agent-commands.js";
 import { createNameLane } from "./agent-name.js";
 import { PROMPT_DESK_MIN_MAX_PAYLOAD, createPromptDesk, type PromptDesk } from "./prompt-desk.js";
 
@@ -20,21 +20,24 @@ export interface AgentEndpoint {
 }
 
 /**
- * Serve this process's `agent` endpoint on `ep` and show the `prompts` presence field. Resolves once
- * the broker accepted the subscription. `dispatcher` runs the agent's harness commands, and
- * `onQueued` is told each time a command waits for a turn. Without a dispatcher, `commands` answers
- * `supported: false` and `command` is refused.
+ * Serve this process's `agent` endpoint on `ep` and show the `prompts` and `agentEndpoint` presence
+ * fields. Resolves once the broker accepted the subscription. `dispatcher` runs the agent's harness
+ * commands, and `onQueued` is told each time a command waits for a turn. Without a dispatcher,
+ * `commands` answers `supported: false`, `command` is refused, and `agentEndpoint` shows nothing
+ * served. Each time the dispatcher's `watch` reports a change, `agentEndpoint` is derived again.
+ * `first` is the command its launch handed the agent, queued before any other. `onNamed` is told
+ * when an owner's `set-name` is about to change the name.
  *
- * Rejects on an open mesh, under a static credential and without a lifecycle UID, when the broker
- * refuses the subscription (a credential minted before the rows existed), and when the connection's
+ * Rejects without a lifecycle UID, when the broker refuses the subscription (a credential minted
+ * before the rows existed), and when the connection's
  * `max_payload` is under {@link PROMPT_DESK_MIN_MAX_PAYLOAD}, which the largest prompt replies need.
- * Then nothing is served and presence shows no `prompts` field. The same checks run on every replaced
+ * Then nothing is served and presence shows neither field. The same checks run on every replaced
  * connection, and a failure there closes the endpoint and warns. Stopping `ep` ends the serve and not
  * the prompts, so call `close()` first: it ends every prompt and gives each open dialog back.
  */
 export async function openAgentEndpoint(
   ep: CotalEndpoint,
-  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void },
+  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void; first?: FirstCommand; onNamed?(): void },
 ): Promise<AgentEndpoint> {
   if (typeof opts?.warn !== "function") throw new TypeError("openAgentEndpoint needs opts.warn");
   const max = ep.maxPayload;
@@ -46,12 +49,18 @@ export async function openAgentEndpoint(
     } catch { /* a logger that throws stops nothing */ }
   };
   const desk = createPromptDesk(ep, warn);
-  const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}));
-  const naming = createNameLane(ep, warn);
+  const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}), opts.first);
+  const naming = createNameLane(ep, warn, opts.onNamed);
   const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler] });
   desk.served(serve.ready);
 
   let closing: Promise<void> | undefined;
+  const showServed = (): void => {
+    if (closing) return;
+    ep.setAgentEndpointPresence(servedCommands(opts.dispatcher)).catch((e) => warn(`presence does not show what the agent endpoint serves: ${(e as Error).message}`));
+  };
+  showServed();
+  opts.dispatcher?.watch?.(showServed);
   const close = (): Promise<void> => (closing ??= (() => {
     ep.off("transport", onTransport);
     desk.close();

@@ -1,7 +1,10 @@
 import { CotalEndpoint, durableCovers, subjectMatches, type DeliveryClass, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
-import { brokerAddressForDisplay, CommandFailure, exitCode, isCommandFailure, isConnectRefusal, isMeshRegistryError, streamRecord, writeStreamRecord, writeResult, renderReport, userViewAuthOrThrow, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, codeSpan, CommandFailure, exitCode, isCommandFailure, isConnectRefusal, isMeshRegistryError, streamRecord, writeStreamRecord, writeResult, renderReport, userViewAuthOrThrow, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
+import { targetWords } from "../lib/confirmation-required.js";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
+import { onRerun } from "../lib/control.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { membershipSetupFailureRecords } from "../lib/stream-setup-failure.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { recordTelemetryFailure } from "../telemetry.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -28,8 +31,7 @@ export async function channelMembers(values: Values, channel: string, presentati
     recordTelemetryFailure(failure.outcome, failure.code, error);
     const refusedSpace = refusal?.target?.space;
     const target = { space: state.space ?? (typeof refusedSpace === "string" ? refusedSpace : values.space ?? null), channel };
-    writeStreamRecord(streamRecord("membership", "error", target, { code: failure.code, message: failure.message, ...(failure.remedy === undefined ? {} : { remedy: failure.remedy }) }));
-    writeStreamRecord(streamRecord("membership", "end", target, { reason: "setup-failed", lastAsOf: null }));
+    for (const record of membershipSetupFailureRecords(target, failure)) writeStreamRecord(record);
     process.exitCode = exitCode(failure.outcome, failure.code);
   }
 }
@@ -39,7 +41,7 @@ async function readMembers(values: Values, channel: string, presentation: Presen
   if (state) state.space = connection.space;
   // The delivery service writes the feed, and an open mesh runs none, so no poll would ever arrive.
   if (connection.mode === "open")
-    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh runs no delivery service, so it has no membership feed", { target: { space: connection.space, channel }, remedy: "`cotal who` lists who is present; channel membership is observed on a static-auth or user-auth space" });
+    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh runs no delivery service, so it has no membership feed", { target: { space: connection.space, channel }, remedy: `${codeSpan(onRerun("cotal who", { ...values, space: connection.space }))} lists who is present; channel membership is observed on a static-auth or user-auth space` });
   const user = connection.bearer ? await (state ? userViewAuthOrThrow : userViewAuthOrExit)(connection, "admin") : undefined;
   const ep = new CotalEndpoint({
     space: connection.space, servers: connection.server,
@@ -90,7 +92,7 @@ async function readMembers(values: Values, channel: string, presentation: Presen
   };
   const show = (next: Members) => {
     emit("event", next);
-    if (presentation !== "json") console.log(renderReport(membersView(next, true), presentation, process.stdout));
+    if (presentation !== "json") console.log(renderReport(membersView(next), presentation, process.stdout));
   };
   // A dropped connection or a failed read ends the follow only once its credential can no longer
   // connect, with the refusal a one-shot command with it gets. Otherwise it is reported once, and the
@@ -171,7 +173,7 @@ async function readMembers(values: Values, channel: string, presentation: Presen
       process.once("SIGTERM", terminate);
       emit("snapshot", last);
       if (state) state.streaming = true;
-      if (presentation !== "json") console.log(renderReport(membersView(last, true), presentation, process.stdout));
+      if (presentation !== "json") console.log(renderReport(membersView(last), presentation, process.stdout));
       if (last.asOf === null) emit("gap", { reason: "The membership feed has no successful poll yet." });
       watch = await ep.watchMembership(onMembership, watchClosed);
       await ended;
@@ -219,7 +221,7 @@ async function readMembers(values: Values, channel: string, presentation: Presen
   if (!streaming && last) writeResult(presentation, {
     command: "channel", target, result: { kind: "membership", ...last },
     ...(last.asOf === null ? { completeness: "partial" as const, partial: { message: "The membership feed has no successful poll to establish a census.", remedy: "Check the selected space's delivery service." } } : {}),
-  }, membersView);
+  }, (result) => membersView(result, `cotal ch members ${shellWord(channel.startsWith("-") ? `#${channel}` : channel)}${targetWords({ ...values, space: result.space })} --follow`));
 }
 
 /** The name a members row shows. A blank roster name is not a participant, so the row uses the id.
@@ -235,7 +237,7 @@ function census(result: Members | undefined): string {
 }
 
 /** A follow already shows each change, so its view offers no command to follow. */
-function membersView(result: Members, following = false): Report {
+function membersView(result: Members, followCommand?: string): Report {
   return { space: result.space, sections: [
     { title: `Members · #${result.channel}`, blocks: [
       { kind: "fields", rows: [["Space", result.space], ["Feed observed", result.asOf === null ? "no successful poll reported" : new Date(result.asOf).toISOString()]] },
@@ -245,6 +247,6 @@ function membersView(result: Members, following = false): Report {
       } : { kind: "lines", lines: [result.asOf === null ? "Membership is not established. An empty feed does not prove there are no members." : "No members in this feed snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived observations, not access grants. This does not establish whether an agent is working or blocked.", tone: "hint" }] },
     ] },
-    ...following ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal ch members ${shellWord(result.channel.startsWith("-") ? `#${result.channel}` : result.channel)} --follow`, description: "Follow membership observations; Ctrl-C leaves without changing members" }] }] }],
+    ...followCommand === undefined ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: followCommand, description: "Follow membership observations; Ctrl-C leaves without changing members" }] }] }],
   ] };
 }

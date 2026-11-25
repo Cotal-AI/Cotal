@@ -20,6 +20,9 @@ fragments and TCP paths refuse with `USAGE_INVALID` before connecting. WebSocket
 for proxy routes. Commands using the shared target connection, including `send`, `history` and
 `who`, require TLS for `tls://` and `wss://`, including with an unregistered space or explicit
 `--creds`. Registry-resolved connections also keep the registered space's TLS requirement.
+If file permissions prevent the CLI from inspecting the project's authentication marker, it refuses
+`--creds` with `PERMISSION_DENIED` (exit 2) before connecting. Check that the account running
+Cotal can read the project's authentication settings and traverse their parent folders.
 For `up -f`, a comma-separated list is checked entry by entry, then refused with the instruction
 to pass one URL for the new broker to listen on. The refusal does not repeat the addresses.
 
@@ -88,6 +91,8 @@ Both forms accept operands after the command or its final subcommand. For exampl
 `cotal help docs cli` and `cotal docs cli --help` both show the usage for `docs`.
 `cotal help service status manager` and `cotal service status manager --help` both show the usage
 for `service status`.
+`cotal help service list` and `cotal service list --help` both show the help for bare `service`.
+The `list` spelling works but is not listed under Commands.
 Both forms also accept a channel for `history`: `cotal help history general` and
 `cotal history general --help` show the usage for `history`. The words `clear` and `limit` select
 their own help. Both forms refuse a misspelled word where a subcommand is required and exit 1.
@@ -115,8 +120,10 @@ command's help: `sp` (spawn), `a` (attach), `s` (status), `r` (run), `x` (ext), 
 `cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
 subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. The refusal for an
 unknown command, leading flag, subcommand or option names the nearest one when it is one edit away,
-or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. Option suggestions
-use the flags for the selected subcommand. `cotal despawn`
+or two for a word longer than four characters, so `cotal spaw` suggests `spawn`. For a nested
+subcommand, the CLI names the unrecognized word and suggests a match under its parent, just as
+`--help` does. For example, it suggests `inspect` for `inspec` under `cotal auth handle`.
+Option suggestions use the flags for the selected subcommand. `cotal despawn`
 suggests `stop`, the command Cotal's own text calls a despawn. A command, alias,
 or extension command that would claim a word another one already claims is refused when it
 registers or installs.
@@ -162,7 +169,7 @@ subcommand is also a usage error. So is input a command checks before it acts, s
 argument, an invalid flag value or two flags that conflict, and `cotal help` with a subcommand that
 does not exist. So is a word that starts with an en dash, an em
 dash or a minus sign followed by one of the command's flag names, as an autocorrecting editor writes
-`--`: the refusal names the dash and the flag to type. After `--` such a word is an argument as
+`--`: the refusal names the dash and can suggest the flag to type. After `--` such a word is an argument as
 typed. The command prints the error, then any remedy,
 then its help on stderr, writes nothing on stdout, exits 1, and does not run. The help is the one
 `--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
@@ -178,18 +185,31 @@ longer than 128 characters, such as an unknown command, a space name or a run id
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 A word that starts with `-` reads as an option. A message or name that starts with one goes after
-`--`, which the refusal names when the command takes an operand rather than a subcommand name.
+`--`. The refusal can suggest `--` when an operand is still available and there is no spelling
+suggestion. Once `space add` has its name, `endpoint check` has its contract file, or
+`endpoint work lease` has its target and pool, the refusal tells you to drop an unknown option instead.
+The same applies to `team check`, `team boot` and `team deploy` once you have supplied the manifest file.
+Service verbs with a definition name, such as `service add <name>`, give the same remedy.
+`service list` takes no operands and gives it too. So do manager lifecycle commands such as
+`manager status`, which already select the manager service by name.
+`ext root` takes no operands, so the refusal tells you to drop an unknown option instead of suggesting `--`.
+When the refusal suggests an option spelling, replace the mistyped option and keep its value,
+as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
+the refusal tells you to drop the unknown option instead.
 An option value that starts with `-` is written `--limit=-1`,
 which the refusal gives. The refusal quotes values that a POSIX shell would split or expand, as in
 `--search='-help usage'`. An option given with no value at the end of the command or just before
-another option or `--` is refused with the option and its placeholder. Put the value before `--`
-and leave the operands after it. Before another option or `--`, a missing value on an option
-that cannot be repeated can also report the duplicate and ask you to use the option once.
+another option, a group of short options, or `--` is refused with the option and its placeholder.
+Put the value before `--` and leave the operands after it. Before another option or `--`, a missing
+value on an option that cannot be repeated can also report the duplicate and ask you to use the option once.
 A short option takes its value after a space, so `-c=general` is refused rather than read as the
-value `=general`. An option typed with a typographic dash, as pasted from
-typeset text, is refused rather than read as a positional. The correction keeps any attached value
-the option accepts, as in `--limit=10`. Before the
-command word the same holds for the leading flags, so `cotal ––json status` names `--json`.
+value `=general`. An option such as `--help` or `-h` typed with a typographic dash is refused
+rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
+any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
+for the leading flags, so `cotal ––json status` names `--json`.
+For extension commands, the correction depends on the subcommand. `ext list` accepts `--json`;
+`ext root` prints a path, so the refusal asks you to omit that option.
+For `endpoint check`, the refusal asks you to omit a pasted `--file` option. Pass the contract file as an argument.
 `cotal ext seed` takes no operands. An invalid seed option or extra word shows seed help instead
 of suggesting `--` to pass an operand.
 
@@ -216,8 +236,10 @@ prompt behaves as it does without a terminal, `web` prints its link without open
 `personas edit` is refused. A refusal for a missing `--yes` names what kept the command from asking:
 `--json`, `--no-input`, `COTAL_NO_PROMPT=1` or no interactive terminal. `--json` implies `--no-input`. `--no-color` and `--no-input` work before
 the command word on every command, and after it on every command except one that takes its words
-raw. After `--` they are ordinary words. Each is given once, as any flag is, before or after the
-command word. No command may declare a flag with either name. The output
+raw. A global flag just after an option that needs a value leaves that value missing. After `--`
+global flags are ordinary words. Each is given once, as any flag is, before or after the command
+word. Neither flag takes a value. If you attach one, the refusal tells you to omit the flag or pass
+it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
 refuses them as it does after the command word. A command that takes its words raw, such as the
@@ -245,10 +267,13 @@ previous installation is a warning that names the copy, not a failed add.
 
 ## Structured output [#structured-output]
 
-A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
-one JSON document on stdout. Most commands have one, among them `cotal status`, `cotal space`,
-`cotal service`, `cotal up`, `cotal down`, `cotal ps`, `cotal history` and `cotal config`.
-`cotal help <command>` shows whether a command and each of its subcommands has one.
+A command or subcommand whose help lists `json` under Structured output takes `--json` (`-j`).
+Finite JSON output is one document on stdout. Streaming commands and modes can use the same flag
+for newline-delimited JSON (NDJSON), with one record per line. See the stream formats for
+[`history --follow`](cli-messaging.mdx#history),
+[`channel members --follow`](cli-messaging.mdx#channel) and [`watch`](cli-observation.mdx#observer-stream).
+The envelope below applies to finite JSON output.
+
 `cotal version --json` writes:
 
 ```json
@@ -265,6 +290,8 @@ installed extensions by `package` and `version`.
 If the extension manifest cannot be read, `cotal version --json` still reports the running CLI
 version. The report is partial, includes an `EXTENSIONS_UNREADABLE` warning, and exits 4. For a
 corrupt manifest, the reconciliation instruction and error remedy both point to `cotal ext seed --repair`.
+If a file occupies the config folder and blocks the inventory read, the report names that file
+and tells you to move it aside instead.
 The version command does not repair the manifest itself.
 
 | Field | Meaning |
@@ -279,18 +306,26 @@ The version command does not repair the manifest itself.
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`. `remedy` is the step to take, present when the refusal names one, and the text report prints it under Next. `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
 
-Diagnostics stay on stderr. A command that refuses or fails under `--json` reports it with the
-envelope alone and writes no text report on stderr. The text report goes to stderr only when the
-envelope cannot be written to stdout, and the exit code is the same either way. A usage error under
-`--json` is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout. A word that names none of a command's
-subcommands and is near none of them is a usage error that lists the subcommands the command takes.
+Diagnostics stay on stderr. A command with finite JSON output reports a refusal or failure with the
+envelope alone and writes no text report on stderr. If the reader closes stdout early, the command
+keeps its exit code without printing a text report. Other failures to write the envelope send the
+text report to stderr and keep the same exit code. A usage error under
+finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
+This also applies when `-j` comes before a short option that is unknown or needs a value, as in
+`cotal config get harness -jZ` or `cotal config get harness -js`.
+If several leading global switches have attached values, the JSON refusal names the first malformed switch.
+A word that names none of a command's subcommands and is near none of them is a usage error that
+lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
+
+When a retained extension command collides with a built-in, the built-in wins. A finite JSON
+envelope from a built-in carries `EXTENSION_COMMAND_COLLISION` in `warnings` rather than printing
+the warning on stderr.
 
 An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
 on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
 
-A subcommand's help has its own `structured output` line, and only the forms that show one write a
-document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
+Bare `cotal ext` and `cotal ext list` write a JSON document with `--json`. `ext add`, `ext remove`, `ext root` and
 `ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
 failure.
 
@@ -358,7 +393,7 @@ answer at once, and Enter takes the selection.
 Without a terminal, or with `--no-input` or `--json`, `history clear`, `channel remove`,
 `persona remove` and `endpoint remove` refuse and print the command that confirms them with
 `--yes`. That command keeps the `--space`, `--server` and `--creds` you gave, so it acts on the
-same space.
+same space. For `channel remove` and `persona remove`, it also keeps `--json` when requested.
 
 A usage line breaks only between options, never between an option and its argument. A ` | ` stays
 on the line before it whenever it fits there. A compact `|`, such as the one in
@@ -396,7 +431,9 @@ On Linux, a broker on a loopback address whose process is stopped by a signal, s
 still accepts connections and never answers. Once the first dial to it times out, the refusal names
 that process's pid and gives `kill -CONT <pid>` as the remedy, without waiting out the longer
 confirm, so a command such as `send` or `run` returns in a few seconds. `cotal status` shows the
-connection as `broker process <pid> is stopped` and offers the same command. A broker that runs but
+connection as `broker process <pid> is stopped` and offers the same command. On Linux, if a stopped
+listener holds the broker address and its executable identifies it as another program, `status` and `ps` name the
+occupied address without suggesting a signal. A broker that runs but
 does not answer, or one on another host, still waits out the confirm.
 
 
@@ -423,6 +460,9 @@ the default persona failed, including creation of its `agents` directory, it rep
 `OPERATION_PARTIAL`, exit 4, names what was saved and
 warns that the persona file may be incomplete. After fixing the write problem, check the persona
 file and run the same `space create` again to finish preparing the space.
+If `up` or `down` cannot write the initial maintenance lock because of a storage limit,
+no stack member is started or stopped by that attempt. When no lock needs cleanup, the
+command exits 5 and names the lock file and the storage limit. Correct the limit and retry.
 On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
 Directory creation preserves that native cause without treating a missing parent or a dangling
 symlink as a quota failure.
@@ -432,10 +472,17 @@ failure. A command run from a folder that no longer exists refuses with `USAGE_I
 before it does anything, and says to `cd` to an existing folder. It prints that line and the `cd`
 remedy without the command's help, because the command itself was not mistyped. A command whose folder has a
 `.cotal` that is a file rather than a directory, such as a notes file, refuses with `CONFLICT`, exit
-2, before it does anything, names that file and says to rename or move it. `help`, `version` and
+2, before it does anything, names that file and says to rename or move it. With `--json`,
+`watch`, `history --follow` and `channel members --follow` write an `error` record and then an
+`end` record with reason `setup-failed`, without a snapshot. `help`, `version` and
 `completion` still work in both. `docs` and `telemetry` also work from a folder that no longer
 exists. There, bare `cotal` and `cotal help` exit 0 and say the folder is gone, even if `PATH`
 contains relative entries.
+
+If `COTAL_HOME` points to a file, the command refuses with `SCHEMA_INVALID` and exits 1. With
+`--json`, `watch`, `history --follow` and `channel members --follow` report this as an `error`
+record followed by an `end` record with reason `setup-failed`, without a snapshot.
+Without `--follow`, `history --json` still writes one refusal envelope.
 
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
@@ -493,8 +540,9 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Messaging | [`pending`](cli-messaging.mdx#pending) | Inspect one DM durable's native counts and bounded candidate IDs |
 | Agents | [`spawn`](cli-agents.mdx#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
 | Agents | [`models`](cli-agents.mdx#models) | List connector model catalogs and variants from the manager |
+| Agents | [`mcp`](cli-messaging.mdx#mcp) | Serve Cotal tools over stdio for an MCP-only host |
 | Agents | [`app-identity`](cli-auth.mdx#plumbing) | Plumbing for a Claude app conversation's identity on a local mesh; you never run it directly |
-| Agents | [`start`](cli-agents.mdx#spawn) | Removed: `cotal start` was merged into `cotal spawn --detach` |
+| Agents | [`start`](cli-agents.mdx#spawn) | Removed: migrate to `cotal spawn`, with `--foreground` for `--live-only` |
 | Agents | [`stop`](cli-agent-control.mdx#managed-seats) | Ask the manager to stop a managed agent |
 | Agents | [`ps`](cli-agent-control.mdx#managed-seats) | List managed agents and their mesh status |
 | Agents | [`attach`](cli-agent-control.mdx#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
@@ -532,7 +580,8 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 
 The table has one row per command, including the hidden ones `cotal help` leaves out, under the
 section help lists it in.
-Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command, and
+Installed extensions add their own: `@cotal-ai/linear` adds the [`linear`](cli-integrations.mdx#linear) command,
+`@cotal-ai/acp` adds the [`acp`](acp-clients.mdx#acp) command, and
 `@cotal-ai/web` adds the [web dashboard](cli-observation.mdx#web) as a service preset.
 
 The manifest modes of `up`, `spawn`, and `down` (`-f <cotal.yaml>`) plus `topology` are covered

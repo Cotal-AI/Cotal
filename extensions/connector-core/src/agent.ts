@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import {
+  AGENT_LABEL_META_KEY,
+  AGENT_NAMING_META_KEY,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
   CotalEndpoint,
@@ -33,6 +35,8 @@ import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { claimOnceHandoff } from "./once.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+import { AutoNaming } from "./agent-naming.js";
+import { takeFirstCommand } from "./first-command.js";
 import type { CommandDispatch } from "./agent-commands.js";
 import type { PromptDesk } from "./prompt-desk.js";
 import { AgentInbox, deliveryNoticeOf, type InboxItem, type InboxSnapshot, type InboxScope, type ExactDrainResult, type RecallMark } from "./agent-inbox.js";
@@ -139,6 +143,8 @@ export class MeshAgent extends EventEmitter {
     { fromId: string; contextId?: string; text?: string; pending?: boolean }
   >();
   private _stopping = false;
+  /** Labelling from the first message, while the seat's launch asked for it and its connector can. */
+  private readonly naming?: AutoNaming;
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
   constructor(config: AgentConfig, env?: NodeJS.ProcessEnv, options: MeshAgentOptions = {}) {
@@ -212,9 +218,19 @@ export class MeshAgent extends EventEmitter {
         actor: config.userAuth?.actor,
         // Display-only discovery metadata so observers can show which harness an agent runs on
         // and (when pinned) which model. Each is omitted when unset rather than faked.
-        meta: buildMeta(config, !options.withholdProcessCwd, options.eventsArmed),
+        meta: buildMeta(config, !options.withholdProcessCwd, options.eventsArmed, config.autoName === true && options.naming !== undefined),
       },
     });
+    if (config.autoName && options.naming)
+      this.naming = new AutoNaming({
+        events: this,
+        owner: this.ep.principal.owner,
+        request: options.naming.request,
+        settle: (label) => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: label() })),
+        log: (msg) => this.log(msg),
+      });
+    else if (config.autoName)
+      this.log(`COTAL_AUTO_NAME is set, but ${config.connector ? `the ${config.connector}` : "this"} connector cannot ask its model for a label, so the seat shows no label`);
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
       const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
       if (notice !== undefined) void this.inboxState.ingestNotice(m, d, meta!, notice);
@@ -435,6 +451,8 @@ export class MeshAgent extends EventEmitter {
   /** Begin connecting with background retry. Resolves after the first completed mesh join. */
   start(retryMs = 3000): Promise<void> {
     if (this._stopping) throw new Error("cannot start a stopped mesh session");
+    const launchPrompt = this.options.naming?.launchPrompt;
+    if (launchPrompt?.trim()) this.naming?.observe(launchPrompt);
     if (!this.consumerClaim && this.config.lifecycleUid) {
       const { owner, actor } = this.ep.principal;
       this.consumerClaim = acquireLocalConsumer(this.config.servers, this.config.space, owner, actor, this.config.lifecycleUid);
@@ -505,16 +523,18 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
-  /** Only a user-auth credential names who may call (SPEC 13.21), so an open or static mesh serves
-   *  nothing. */
+  /** Served on every mesh mode (SPEC 13.21). A credential without the serve rows, one minted before
+   *  they existed, is refused by the broker, and the log line names the remedy. */
   private async serveAgentEndpoint(): Promise<void> {
-    if (this.agentEndpointOpened || !this.config.userAuth) return;
+    if (this.agentEndpointOpened) return;
     this.agentEndpointOpened = true;
     try {
       const served = await openAgentEndpoint(this.ep, {
         warn: (msg) => this.log(msg),
+        onNamed: () => this.naming?.end(),
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
+        first: takeFirstCommand(),
       });
       if (this._stopping) return void served.close();
       this.agentEndpoint = served;
@@ -527,8 +547,8 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** The prompt desk of this process's `agent` endpoint, where a harness adapter opens the dialogs it
-   *  offers remotely. Undefined until the broker accepted the serve, and on an open or static mesh or
-   *  when the endpoint was refused. Once the endpoint closed, `open` refuses with `closed`. */
+   *  offers remotely. Undefined until the broker accepted the serve, and when the endpoint was
+   *  refused. Once the endpoint closed, `open` refuses with `closed`. */
   get prompts(): PromptDesk | undefined {
     return this.agentEndpoint?.prompts;
   }
@@ -550,6 +570,8 @@ export class MeshAgent extends EventEmitter {
   }
 
   private async stopOnce(): Promise<void> {
+    // Before stopping refuses presence writes, so the departure record carries no naming key.
+    this.naming?.end();
     this._stopping = true;
     this.emit("stopping");
     this.inboxState.stop();

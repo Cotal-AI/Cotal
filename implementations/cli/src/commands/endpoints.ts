@@ -1,6 +1,7 @@
 import { peerLabel, presenceText, type FlagSpec, type ParsedArgs, type Presence, type PresenceStamps } from "@cotal-ai/core";
-import { jsonFlag, recordOperationSpace, plainFlag, presentationOf, renderReport, targetFlags, writeResult, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, jsonFlag, recordOperationSpace, plainFlag, presentationOf, renderReport, targetFlags, writeResult, type Report } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../ui.js";
+import { onRerun } from "../lib/control.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 
 export const endpointsFlags = [...targetFlags, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
@@ -42,21 +43,28 @@ const factsText = (item: Row): string => {
 /** Authorized live presence, not the endpoint-registration or saved-reference inventory. */
 export async function endpoints(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
-  const { ep, space } = await openTransient(args.values as ConnectValues, "endpoints", { throwOnRefusal: true });
+  const values = args.values as ConnectValues;
+  const { ep, space, connection } = await openTransient(values, "endpoints", { throwOnRefusal: true });
   recordOperationSpace(space);
   let items: Row[];
   try {
     await ep.waitForPresenceSnapshot();
     items = rowsOf(ep.getRoster());
   } finally { await ep.stop(); }
-  writeResult(presentation, { command: "endpoints", target: { space }, result: { kind: "live-presence", scope: "authorized live presence including agents and infrastructure", items } }, (result) => endpointsView(result.items, space));
+  const format = presentation === "plain" ? ["--plain"] : [];
+  const rosterCommand = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server ? null :
+    onRerun("cotal who", values, [...(values.creds === undefined ? [] : [`--creds=${values.creds}`]), ...format]);
+  // Native contract reads need a registered, authenticated target and cannot reuse a raw presence credential.
+  const describeCommand = (connection.mode !== "auth" && connection.mode !== "user") || connection.source === "local-space" || brokerAddressForDisplay(connection.server) !== connection.server ? null :
+    onRerun("cotal endpoint describe <endpoint>", { space, server: connection.server }, format);
+  writeResult(presentation, { command: "endpoints", target: { space }, result: { kind: "live-presence", scope: "authorized live presence including agents and infrastructure", items } }, (result) => endpointsView(result.items, space, rosterCommand, describeCommand));
 }
 
 export function printEndpoints(roster: Presence[], space: string): void {
   console.log(renderReport(endpointsView(rowsOf(roster), space), "rich", process.stdout));
 }
 
-function endpointsView(items: readonly Row[], space: string): Report {
+function endpointsView(items: readonly Row[], space: string, rosterCommand: string | null = "cotal who", describeCommand: string | null = null): Report {
   return { sections: [
     { title: `Live presence · ${space}`, blocks: [items.length ? {
       kind: "table",
@@ -73,6 +81,13 @@ function endpointsView(items: readonly Row[], space: string): Report {
       })),
     } : { kind: "lines", lines: ["No participants in this presence snapshot."] },
     { kind: "lines", lines: [{ text: "Live presence includes agents and infrastructure. It is not the saved-reference or service-registration inventory, and reported activity is not task completion.", tone: "hint" }] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal who", description: "Read the agent roster and its reported work signals" }, { command: "cotal endpoint describe <endpoint>", description: "Resolve a native endpoint's verified command contract" }] }] },
+    { title: "Next", blocks: [
+      ...(rosterCommand === null ? [{ kind: "lines" as const, lines: ["To read the agent roster, run `cotal who` with the same target flags."] }] : []),
+      { kind: "commands", items: [
+        ...(rosterCommand === null ? [] : [{ command: rosterCommand, description: "Read the agent roster and its reported work signals" }]),
+        ...(describeCommand === null ? [] : [{ command: describeCommand, description: "Resolve a native endpoint's verified command contract" }]),
+      ] },
+      ...(describeCommand === null ? [{ kind: "lines" as const, lines: ["To read a verified contract, run `cotal endpoint describe` with the same `--space` and `--server` on a registered authenticated target. If you pass `--creds`, use a paired native caller file, not a presence credential."] }] : []),
+    ] },
   ] };
 }

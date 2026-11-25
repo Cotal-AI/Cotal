@@ -36,16 +36,16 @@ const base = {
 
 const status = (eventPlane: boolean) => ({
   ...base,
-  connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane, prompts: false }],
+  connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane, prompts: false, askPermissions: false, reasoningEvents: false }],
 });
 
-check("the Manager contract retains connector event-plane facts after the prompts fact advances it", shipped.revision === 52, shipped);
+check("the Manager contract retains connector event-plane facts after the launch fields advance it", shipped.revision === 56, shipped);
 check("status accepts eventPlane true on a connector row", MANAGER_STATUS_CONTRACT.output.validate(status(true)) === true);
 check("status accepts eventPlane false on a connector row", MANAGER_STATUS_CONTRACT.output.validate(status(false)) === true);
 check("status requires an explicit eventPlane fact and never defaults it to true",
-  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, prompts: false }] }) === false);
+  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, prompts: false, askPermissions: false, reasoningEvents: false }] }) === false);
 check("status keeps connector eventPlane typed as a boolean",
-  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: "yes", prompts: false }] }) === false);
+  MANAGER_STATUS_CONTRACT.output.validate({ ...base, connectors: [{ agent: "probe", state: "available", binaries: {}, eventPlane: "yes", prompts: false, askPermissions: false, reasoningEvents: false }] }) === false);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 const EXPECTED = 5;

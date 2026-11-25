@@ -191,7 +191,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       warnings: [...warnings, ...labels],
       ...(unread ? { partial: { message: `who could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}`, ...(remedy ? { remedy } : {}) } } : {}),
     },
-    (r) => whoView(r, space, scope, shared, roster),
+    (r) => whoView(r, space, scope, shared, roster, Boolean(v.waiting)),
   );
 }
 
@@ -203,7 +203,7 @@ export function whoLabel(name: string, id: string, role?: string | null): string
 const STATUS_TONE: Record<Presence["status"], Styled["tone"]> = { working: "ok", waiting: "waiting", idle: undefined, offline: "hint" };
 const STATUS_MARK: Record<Presence["status"], string> = { working: "●", waiting: "◐", idle: "○", offline: "⨯" };
 
-function whoView(r: WhoResult, space: string, scope: "all" | "waiting" | "agents", shared: ReadonlySet<string>, roster: readonly Presence[]): Report {
+function whoView(r: WhoResult, space: string, scope: "all" | "waiting" | "agents", shared: ReadonlySet<string>, roster: readonly Presence[], waiting: boolean): Report {
   const all = scope === "all";
   const now = Date.now();
   const byId = new Map(roster.map((p) => [p.card.id, p]));
@@ -236,7 +236,7 @@ function whoView(r: WhoResult, space: string, scope: "all" | "waiting" | "agents
     };
   });
   const notes: Cell[] = [];
-  if (!r.items.length) notes.push({ text: `no ${all ? "participants" : "agents"} present in ${space}`, tone: "hint" });
+  if (!r.items.length) notes.push({ text: `no ${all ? "participants" : "agents"} ${waiting ? "match --waiting" : "present"} in ${space}`, tone: "hint" });
   if (r.hidden && !all) {
     const change = scope === "waiting" ? "`--all` instead of `--waiting`" : "`--all`";
     notes.push({ text: `${r.hidden} infrastructure ${r.hidden === 1 ? "endpoint is" : "endpoints are"} not listed; repeat this command with ${change} to list them`, tone: "hint" });

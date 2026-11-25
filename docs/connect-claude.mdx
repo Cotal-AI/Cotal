@@ -223,10 +223,23 @@ cotal spawn --harness claude --model sonnet
 `--model` overrides the persona's model pin.
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
-A logged-out `claude` reports `claude is not logged in; run claude to log in`.
-The Claude connector rejects `--variant`.
-It also rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
+With a logged-out `claude`, the read fails with `claude is not logged in; run claude to log in`.
+An alias such as `opus` is listed with the model it currently resolves to, for example `Opus 5.5 (claude-opus-5-5)`.
+The Claude connector rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
 Choose the corresponding connector for another provider's model.
+
+### Choose an effort level
+
+`--variant` sets Claude's effort level, which the connector passes as `--effort`:
+
+```bash
+cotal spawn --harness claude --model opus --variant high
+```
+
+Claude accepts `low`, `medium`, `high`, `xhigh` and `max`, and the connector refuses any other value before launch.
+`cotal models --harness claude` lists the levels each model supports as its variants.
+Claude does not run a model at a level that model lacks, so pick one from that list.
+A launch option `--opt effort=<level>` wins over `--variant`, and the seat's roster entry then shows no variant.
 
 ### Choose a permission mode
 
@@ -246,7 +259,8 @@ cotal spawn --harness claude --opt permission-mode=default
 ```
 
 For an unattended agent, arrange a way to answer prompts before using that mode.
-On a signed-in space, the agent's owner can answer each tool permission from another session while Claude's dialog stays open.
+A launch with the [`askPermissions` field](connectors.mdx#opt-in-launch-fields) starts in that mode without `--opt`.
+The agent's owner can answer each tool permission from another session while Claude's dialog stays open.
 See [Tool permissions](claude-connector-reference.mdx#tool-permissions).
 Native `--opt` values carry host-launch authority. See [Launch agents](launch-agents.mdx#set-launch-options).
 
@@ -418,6 +432,29 @@ First-run style, login, and bypass warnings need your own foreground confirmatio
 If Claude reaches neither the development-channels prompt nor its input screen, managed startup fails within the startup bound. `cotal spawn --detach` exits nonzero and reports the startup failure instead of offering an attach command for that seat.
 If Claude opens its input screen without the prompt, the seat stays running and the spawn receipt warns that mesh traffic cannot wake it while idle.
 Use `--foreground` to handle a native dialog yourself.
+
+### Managed settings refuse the plugin flag
+
+Cotal loads its plugin into a managed seat with `--plugin-dir`.
+When your organization's managed settings set `disableSideloadFlags`, Claude refuses that flag and exits at startup.
+The launch then fails with Claude's own reason.
+Managed launches need an administrator to remove `disableSideloadFlags`.
+
+An administrator can still install the Cotal plugin for sessions that people open themselves.
+Place a directory marketplace that lists the `cotal` plugin at a fixed path that only root can write, then add these managed settings:
+
+```json
+{
+	"extraKnownMarketplaces": {
+		"cotal-org": { "source": { "source": "directory", "path": "/opt/cotal-marketplace" } }
+	},
+	"enabledPlugins": { "cotal@cotal-org": true },
+	"prependPlugins": ["cotal@cotal-org", "sec-default@builtin"]
+}
+```
+
+If your organization manages settings from the Claude admin console, set these keys there.
+Claude ignores a managed settings file on the computer in that case.
 
 ### A second session cannot consume an inbox
 

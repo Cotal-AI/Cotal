@@ -27,8 +27,10 @@ cotal run check <runId> (<program> | --file <program>) [--local] [--endpoint <ep
 `ps` (or `list`), `journal` and `migrate` still work as compatibility aliases of bare `run`, `show`
 and `check`.
 
-Every verb also takes `--space <s>`, `--server <url>` and `--creds <path>` to pick the mesh and the
-credential. A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
+Operator run commands use `--space <s>` and `--server <url>` to pick the mesh and
+`--creds <path>` to select a credential where supported. Offline commands take no mesh or caller
+selection. The seat-only `turns` and `yield` forms do not take `--creds`.
+A hosted verb refuses a raw `--creds` file `UNSUPPORTED`, exit 2, because the file
 carries no endpoint-caller triple for the manager call and that route cannot mint one. Its next step
 is to run the verb again without `--creds`, in the mesh's project folder or with `--space`, where
 the CLI mints the one-shot caller itself.
@@ -49,7 +51,11 @@ in the run ID the command named or the manager returned, only when it matches th
 run-token shape. Keep the pin on later status, answer and resume calls.
 
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
-on every verb that takes one, before anything is contacted.
+on every verb that takes one, before anything is contacted. When `run show` needs a valid ID,
+its list and journal commands keep the space, broker, manager or local endpoint you requested.
+If the manager has no record for that ID, the suggested lookup also keeps those selectors and your output format.
+A journal row limit applies only to the text journal. If you give both `--limit` and `--json`,
+choose a limited text view or the full JSON journal before looking up a missing run ID.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
 `--json` as one refusal envelope on stdout. A refusal the manager makes before acting is refused: a
 denied credential or a step in the wrong state exits 2, and a program that does not validate is
@@ -60,10 +66,14 @@ before anything is written; the refusal names the runs still activating, and the
 wait until one has activated and run it again. Any other refusal of `start`, `resume`, `answer` or
 `amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
-An unpinned hosted verb run by the operator reads the space's service registry first. When it
+Hosted `start` on a known open mesh refuses `UNSUPPORTED` (exit 2) before looking for a manager.
+Use `cotal r simulate <file>` to test the program offline. Use a static-auth mesh to host the run.
+
+Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
-(exit 2) at once, as `ps` does, and names bare `cotal up` as the next step, instead of waiting out
-the manager's answer deadline.
+(exit 2) before waiting for a reply. If this machine started the stack at the requested broker,
+the next step names its project folder. A machine that only registered the space points you to
+the host where its stack runs.
 
 A mesh a run verb cannot resolve or connect to is refused before any request under the refusal's
 own code, hosted or `--local`, as `ps` refuses it. With no mesh running that is `TARGET_NOT_FOUND`,
@@ -118,9 +128,9 @@ escape. A run that failed records its cause on its status. Its recorded state re
 view prints the message under `Failure`. When a step's error is the run's failure, `Failure` names
 that step and the message stays under `Step errors`. A run that failed before its status recorded a
 cause shows only `failed`. A failure raised by program code outside any step is recorded in no
-journal row. When the status recorded no cause either, the view says so under `Failure`. Either way
-it names `cotal service logs stack-manager --space <space>`, because a hosted run's cause is in its
-manager's log.
+journal row. When the status recorded no cause either, the view says so under `Failure`. The hosted
+view names `cotal service logs stack-manager --space <space>`. With `--local`, the view points to
+the driving process's output if the run was driven locally.
 The failure records no line or column in the program: a source position belongs to a problem
 `run validate` reports before the program runs.
 
@@ -137,6 +147,8 @@ interrupted a journal append, the same manager can resume the run after recordin
 It replays the journal under a new attempt instead of retrying the interrupted append. It does
 not take over a run that was revoked or that another attempt already holds. If the manager
 stops first, its next boot takes back runs still recorded `running`.
+The manager scans run records in batches. It checks programs, admissions and journals only for
+runs recorded `running`, so finished runs do not each require a separate broker round trip.
 
 A run recorded `released` has no recorded reason. Its `Released` section points to the executing
 manager's log for a hosted run or the driving process's output for a locally driven run. A journal
@@ -221,8 +233,12 @@ migration is admissible, every orphaned step with its verdict and code, and exit
 and non-zero on not. An edited program that does not validate is refused before the replay, with
 each problem's code, position, cause and fix. It writes nothing: the commit that would file the
 migration is not reachable yet, and the report says so. A run ID with no record on the endpoint is refused
-`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. `check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
-before mesh preparation or connection, since they decide what a commit does and the check files nothing. `--timeout` sets the default
+`TARGET_NOT_FOUND`, exit 2, as `run show` refuses it. Its next step is `run list --local` on the same
+space, broker, credential and endpoint. The list reads the records without a manager.
+`check` refuses `--adopt`, `--release` and `--discard-approvals` as `USAGE_INVALID` (exit 1)
+before mesh preparation or connection, since they decide what a commit does and the check files nothing.
+If you pass `--adopt` or `--release` without a handle, the refusal tells you to remove the flag.
+`--timeout` sets the default
 limit of a checkpoint, `ask` or turn that sets none of its own (default 1h). A checkpoint that
 expires under `onExpiry: "fail"` says in its L4007 whether the deadline came from its own `timeout`
 or from this default. It takes a duration
@@ -233,14 +249,19 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`); `answer --local` and `amend --local` take
+(`cotal run resume <runId> --local --file <program>`). If a local `resume`, `answer` or `amend` has a
+malformed run ID, use `cotal run list --local` with the same target options. Then replace only the run
+ID in the original command. For a local `resume` with no run ID, use the same list and add the ID.
+`answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
-patterns or `none`), the run's channel ceiling. An entry that is not a channel or a pattern, such as
-`a b`, is refused `USAGE_INVALID` naming it. When the run's status records that its program failed
-under this drive, `start --local` and `resume --local` fail `OPERATION_FAILED`, exit 5, naming the
-run and its language code with that code's title. A failure whose code has no title shows the first
-line of its recorded message instead, with control characters escaped. Their Next is
+patterns or `none`), the run's channel ceiling. An omitted option or a list containing only commas
+and whitespace is refused as `USAGE_INVALID` before contacting the broker. An entry that is not a
+channel or a pattern, such as `a b`, is refused `USAGE_INVALID` naming it. When the run's status
+records that its program failed under this drive, `start --local` and `resume --local` fail
+`OPERATION_FAILED`, exit 5, naming the run and its language code with that code's title. A failure
+whose code has no title shows the first line of its recorded message instead, with control
+characters escaped. Their Next is
 `cotal run show <runId> --local`, which prints the whole message. Any other error the drive ends on
 stays `unknown`, exit 3. On a
 user-auth mesh the host's own manager refuses the family by name, and `--local` has no credential
@@ -253,8 +274,8 @@ records the path. The guide is [workflows](workflows.mdx).
 
 ## Workflow command forms [#workflow-command-forms]
 
-`cotal run` (or `cotal r`) lists the authorized workflow records. On an open mesh, the text list
-points to offline simulation because that mesh cannot host runs. `run show <run-id>` reads
+`cotal run` (or `cotal r`) lists the authorized workflow records. On an open mesh, both the hosted
+and local text lists point to offline simulation because that mesh cannot host runs. `run show <run-id>` reads
 recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
 prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. A settled
 `race` row names the branch it took, and a cancelled row in a branch that lost a race names the
@@ -263,6 +284,9 @@ whose pause was cancelled after accepting it, is listed as `not acted on`. Its J
 the full returned status and journal. The JSON and answer commands under `Next` keep `--local` and
 any explicit target selectors. The JSON command omits `--limit`, and a local answer requires
 `--by <who>`. Answer and amendment receipts keep the same route in their `show` command.
+If `run show --local` finds no record for the ID, it points to `cotal run list --local` on the same
+target. The local list does not need a manager. The list's `show` command keeps `--local` and any
+explicit target selectors so it reads from the same place.
 Revoked admission and unreadable revocation markers remain distinct from the record's state.
 Neither a record nor a receipt is a live agent-progress report.
 
@@ -290,8 +314,8 @@ L1031 because the program has no statements. A lone `;` is an empty statement an
 start sends the program to the manager in one message, so a program over the broker's message limit
 (`max_payload`) is refused `UNSUPPORTED` with its size and the limit, and nothing is sent. Resume uses the host's recorded program. Hosted answers
 and amendments are attributed to the authenticated caller, never a supplied name. On a static-auth mesh that caller is one actor derived from the OS login and host, so hosted run commands from that login and host record the same actor. Each command still mints a fresh short-lived credential and lifecycle. A signed-in user keeps that user's `cli` actor, and a managed seat keeps the seat's name. Local answers and
-amendments require `--by <who>`; a missing or empty value refuses `USAGE_INVALID` before contacting
-the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
+amendments require `--by <who>`. If the value is missing, empty or whitespace-only, the CLI refuses it with
+`USAGE_INVALID` before contacting the broker, with a JSON refusal under `--json`. `check <run-id> <file>`
 replays the run's recorded journal
 against the edited program and prints whether the migration is admissible, and it files no migration. Revocation keeps
 the existing local trust and explicit actor/reason requirements and does not cancel a task.
@@ -311,15 +335,20 @@ These three forms are offline and reject mesh or caller selection. Validation ch
 language and nothing a broker decides, so a valid program over the broker's message limit is still
 refused by a hosted `start`. A program that does not validate is refused by all three with every problem listed: its
 code, position, cause and fix, as a hosted `start` lists them. `--json` carries them under
-`result.problems`. For a JavaScript syntax error, use the reported position. Its line and column
+`result.problems`. If the JSON cannot be written, the CLI prints the problems on stderr unless the
+reader closed the pipe. For a JavaScript syntax error, use the reported position. Its line and column
 both start at 1, and the cause describes the error without repeating the position.
-A warning leaves the program valid. All three print it on stderr with its code,
-position, cause and fix, and `validate --json` lists it under `result.warnings`. One is L3021, a `fanOut` over a list written in the call whose items carry no
+A warning leaves the program valid. Text output prints it on stderr with its code, position, cause
+and fix. JSON output puts it in the envelope's `warnings` and leaves stderr empty. The warning stays
+in the output if the CLI refuses the results script or the simulator fails after validation.
+`validate --json` also lists it under `result.warnings`. One is
+L3021, a `fanOut` over a list written in the call whose items carry no
 `id` and that passes no `key`, which the run refuses when it reaches it. A list held in a variable
 gets no warning, because it can change before the call; the run refuses it the same way.
 Plan lists validated static call sites in source order with their one-based line numbers. It counts
-JavaScript line breaks, including bare CR, the same way validation does. It does not evaluate
-branches, loop counts or an execution schedule. Simulation uses the native simulator with a JSON
+JavaScript line breaks, including bare CR, the same way validation does. It labels calls through
+computed properties `derived call` without evaluating the property. It does not evaluate branches,
+loop counts or an execution schedule. Simulation uses the native simulator with a JSON
 results script. It executes no JavaScript handler and invents no unscripted outcome. A scripted
 checkpoint result needs a `status` of `resolved` or `expired` and may carry `value`, `by` and
 `artifact`. An invalid checkpoint result is refused with `SCHEMA_INVALID`. The refusal names the
@@ -329,11 +358,13 @@ time, so you cannot script it. A scripted turn result needs a `status` of `done`
 handle such as `{ "agent": "sim.reviewer", "persona": "reviewer" }` instead of an agent name.
 Invalid turn results are refused before simulation with `SCHEMA_INVALID`. This includes an invalid
 status, a non-string note, an unknown field, a scripted `at`, and a missing, malformed or
-unexpected destination. A destination refusal names the `to` field, including the array index
-for a list entry.
+unexpected destination. The refusal names the results file and the field or result to correct
+before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
-table and step and suggests what to add. For an exhausted list it names the needed result, counted
+table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
+The retry command keeps `--json` or `--plain` when you pass either flag.
+For an exhausted list it names the needed result, counted
 from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
 journal entry matches the error code. That can be a different step from the one in the message,
 for example when parallel branches both raise L6001.
@@ -352,12 +383,15 @@ The `--handler` file is one JSON object in UTF-8, with an optional leading byte-
 It must be a regular file or a symlink to one, as the program file must be.
 A missing file or dangling link is refused with `TARGET_NOT_FOUND`, and an unreadable file with
 `PERMISSION_DENIED`, exit 2. A directory, device, FIFO or socket is refused with `USAGE_INVALID`,
-exit 1. An empty file or invalid JSON is refused with `SCHEMA_INVALID`, exit 1.
-These refusals name the path, the cause and a next step. A file that is not valid UTF-8 is refused
+exit 1. An empty file, invalid JSON, or a top-level value other than an object is refused with `SCHEMA_INVALID`, exit 1.
+These refusals name the path, the cause and a next step. An unknown top-level key is also refused
+with `SCHEMA_INVALID`, exit 1. The refusal names the file and suggests a replacement, such as
+`turns` for `turn`, or lists the supported keys. A file that is not valid UTF-8 is refused
 with `SCHEMA_INVALID`, exit 1, before simulation, naming the path and how to save it as UTF-8.
 No invalid bytes are replaced. A repeated key is refused with `SCHEMA_INVALID`, exit 1. Use an array
-under one key to give that step multiple sequential results. Each table maps a step's name to its result: one value
-for every occurrence, or a list used in order. A step with no name is keyed by its effect, such as
+under one key to give that step multiple sequential results. Each results table is an object keyed
+by step name, with one value for every occurrence or an array used in order. If a table is not an
+object, the refusal names the results file and the expected shape. A step with no name is keyed by its effect, such as
 `ask`. `spawn`, `sleep`, `notify`, `monitor`, `observe` and conclaves need no entry, and a sleep
 moves the virtual clock forward.
 
@@ -379,14 +413,26 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `asks` | `ask` replies, each checked against the step's `schema` |
 | `checkpoints` | `checkpoint` results: `{status, value, by, artifact}`, where `status` is `resolved` or `expired` |
 | `events` | `wait` results. `null` is a timeout |
-| `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a finite number in milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
+| `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+
+An invalid clock value is refused with `SCHEMA_INVALID`, exit 1. The refusal names the field and
+results file and tells you how to correct the value before rerunning the simulation.
+
+To fail a race or a parallel step before any branch runs in `run simulate`, target its own step key,
+such as `/race:first#0` or `/parallel:batch#0`. To fail an effect inside a branch, use that effect's
+step key instead.
 
 An invalid clock duration is refused before simulation with `SCHEMA_INVALID`, exit 1, even if the
 program does not reach that effect. The refusal names the results file and the field to correct.
 
 If the `clock.wait` delay is longer than the step's `timeout`, the simulated wait returns `null`
 and advances virtual time only to that timeout.
+
+A simulated `turn` or `ask` rejects a reply that arrives at or after the step's `deadline`.
+All `ask` attempts share one deadline, and `clock.ask` is the delay for each attempt. When the
+deadline expires, virtual time advances only to that deadline. The step fails with `L4003` for
+`turn` or `L4006` for `ask`.
 
 A checkpoint scripted as `expired` expires at the step's `timeout`, as a live deadline does. A
 resolved checkpoint, or an expired one without a `timeout`, takes the `clock.checkpoint` delay.
@@ -405,7 +451,7 @@ When the simulation returns a report, `cotal run simulate <file> --json` puts th
 | `result.agents` | Simulated `spawn` requests with `persona` and channel names in `joins`, plus `worktree`, `role` and `permits` if supplied. No agents were launched. |
 | `result.waits` | One entry per reached `waitUntil` that starts polling, with `step`, `name`, polling interval `every` and duration `deadline`. Channel `wait` calls appear in `result.effects`. |
 | `result.checkpoints` | One row per checkpoint request sent to the simulator, with `step`, `name`, `prompt` and any `timeout`, `onExpiry` and `to` from the request. An escalation adds a second row with the same step key and `onExpiry: "proceed"`. |
-| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. |
+| `result.unusedScript` | Keys from `turns`, `asks`, `checkpoints` and `events` that were never selected during result lookup, in `table.name` form (for example, `checkpoints.approve-plan`). A matching list counts as used even when empty or exhausted. A fault injected before lookup does not use the key. A fault that was never injected is listed as `faults.<at>` (for example, `faults./sleep:typo#0`); the simulation still completes, since the fault may target a branch this run did not take. |
 | `result.log` | `log(...)` calls in order, each with `scope` and `values`. In plain output these appear under `Log`. |
 
 In `result.failure`, `step` and `stepOutcome` describe the last failed entry in journal order with
@@ -424,8 +470,8 @@ Inside a manager-launched static or open seat, `run turns` reads that seat's ass
 `run yield <turn-id> --status <done|blocked|handoff>` reports an outcome. Handoff also requires
 `--to <agent>`; `--note <text>` carries context. If the turn ID is missing, the refusal points to
 `cotal run turns` and shows the status and handoff flags. The native launcher supplies the caller context.
-These forms verify the seat's own credential and manager, never substitute an operator caller,
-and refuse user-auth self impersonation. They skip operator catalog and installation repair.
+These forms use the launcher's seat identity and manager and reject `--creds` with `USAGE_INVALID`
+(exit 1). They refuse user-auth self impersonation and skip operator catalog and installation repair.
 Yielding one turn does not complete the entire workflow.
 
 

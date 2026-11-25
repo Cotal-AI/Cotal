@@ -37,7 +37,8 @@ See the [route and verb reference](control-discovery.mdx#request-routes).
 
 The principal route, `prin`, carries the commands an agent serves about itself, addressed by its own principal, lifecycle, and process.
 It needs no registration. The agent's own credential serves it, and the caller's credential says whether it may call with the `owner` or the `grant` word.
-The `agent` endpoint on it lets an authorized session read and answer the prompts an agent's harness raises, and lets the agent owner's interactive session list and run the agent's own harness commands and skills, interrupt its running turn, and rename the agent.
+The `agent` endpoint on it lets an authorized session read and answer the prompts an agent's harness raises, and lets the agent's owner list and run the agent's own harness commands and skills, give it a turn, interrupt its running turn, read its usage, and rename the agent.
+An agent serves it on every mesh mode. The owner calls from an interactive session on a user-auth space and from an `agent-caller` connection on a static space; on an open mesh any client calls.
 See [SPEC §13.21](../SPEC.md#1321-principal-route) and [§13.22](../SPEC.md#1322-the-agent-endpoint).
 
 ## Lifecycle identity [#lifecycle-identity]
@@ -128,9 +129,13 @@ See the [attach session contract](control-lifecycle.mdx#attach-sessions).
 
 `input` writes text into a running seat's terminal in one request.
 It lets an operator send a command such as `/compact` without maintaining an attach stream.
-This is terminal control, so the command is limited to operator credentials and runtimes that own the input stream.
+This is terminal control, so the command is limited to operator credentials, a person's own sign-in for the agents under their owner, and runtimes that own the input stream.
 
 See the [input authority and outcome reference](control-lifecycle.mdx#seat-input) for the distinction between refusal before delivery and failure after delivery starts.
+
+The manager's `interrupt` command writes the key a seat's connector declares, such as Escape, into the seat's terminal, which stops a live turn.
+Its reply means the key was written. It has the same authority as `input`.
+The `agent` endpoint's own `interrupt`, described above, is a separate command that stops the turn through the agent's connector and answers `interrupted` or `idle`.
 
 ## Grants [#grants]
 

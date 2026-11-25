@@ -62,10 +62,19 @@ function main(): void {
       const listed = child([entry, "ext", "--json"]);
       check("installed root is the retained prefix before initial seeding", before.status === 0 && before.stdout.trim() === expected && listed.status === 0 && JSON.parse(listed.stdout).result.root === expected);
       check("reading the fresh installed root creates no prefix", !existsSync(expected));
+      const added = child([entry, "ext", "add", join(repo, "implementations", "acp")]);
+      assert.equal(added.status, 0, added.stdout + added.stderr);
+      const helpBefore = child([entry, "acp", "--help"]);
+      assert.equal(helpBefore.status, 0, helpBefore.stdout + helpBefore.stderr);
       const seeded = child([entry, "ext", "seed"]);
       assert.equal(seeded.status, 0, seeded.stdout + seeded.stderr);
       const after = child([entry, "ext", "root"]);
       check("initial seeding keeps the advertised installed root", after.status === 0 && after.stdout === before.stdout && existsSync(expected));
+      const helpAfter = child([entry, "acp", "--help"]);
+      check("initial seeding keeps the installed ACP command", helpAfter.status === 0 && helpAfter.stdout === helpBefore.stdout);
+      const listAfter = child([entry, "ext", "list", "--json"]);
+      const items = listAfter.status === 0 ? JSON.parse(listAfter.stdout).result.items as { pkg: string; seeded: boolean }[] : [];
+      check("initial seeding keeps ACP alongside the seven built-ins", items.some(item => item.pkg === "@cotal-ai/acp" && !item.seeded) && items.filter(item => item.seeded).length === 7);
     }
     {
       const dir = join(root, "remove");
@@ -83,8 +92,8 @@ function main(): void {
       check("remove: invalid remove keeps the manifest and installed package", readFileSync(join(prefix, "extensions.json"), "utf8") === manifestBefore && existsSync(join(kept, "dist", "index.js")));
       const before = digest(join(kept, "dist", "index.js"));
       check("remove: installed bytes match built source", before === sourceDigest);
-      const siblingName = "cotal-ext-copy-remove";
-      const sibling = join(dir, siblingName);
+      const siblingName = "@_cotal-test/_copy-remove";
+      const sibling = join(dir, "sibling");
       mkdirSync(sibling);
       writeFileSync(join(sibling, "package.json"), JSON.stringify({ name: siblingName, version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
       writeFileSync(join(sibling, "index.js"), `import { registry } from "@cotal-ai/core"; registry.register({ kind: "command", name: "copy-sibling", summary: "fixture", run: async () => {} });\n`);
@@ -93,7 +102,7 @@ function main(): void {
       check("remove: adding a sibling preserves the built-in copy", !lstatSync(kept).isSymbolicLink());
       const removed = cli(["ext", "remove", siblingName], offline);
       if (removed.status !== 0) console.error(removed.stderr.trim());
-      check("remove: the real command succeeds offline with an empty npm cache", removed.status === 0);
+      check("remove: a package with leading underscores in its scope and name is removed offline with an empty npm cache", removed.status === 0);
       check("remove: unrelated built-in remains a copy", !lstatSync(kept).isSymbolicLink() && realpathSync(kept) !== realpathSync(source));
       check("remove: unrelated built-in bytes are unchanged", digest(join(kept, "dist", "index.js")) === before);
       check("remove: operated package is absent", !existsSync(join(prefix, "node_modules", siblingName)));
@@ -205,7 +214,7 @@ registry.register({ kind: "command", name: "greet-example", summary: "Print a gr
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 36 : 33, "all expected copy/rollback checks ran");
+  assert.equal(passed + failed, process.platform === "linux" || process.platform === "darwin" ? 38 : 33, "all expected copy/rollback checks ran");
   console.log(`ext-install-copies smoke: ${passed} passed, ${failed} failed`);
   emitSentinel({ passed, failed });
   process.exit(failed ? 1 : 0);

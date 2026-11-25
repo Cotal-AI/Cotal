@@ -22,7 +22,8 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, skipSuite, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
-import { readManagerSeatCap } from "@cotal-ai/workspace";
+import { codeSpan, readManagerSeatCap } from "@cotal-ai/workspace";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 if (process.platform !== "linux") skipSuite("the native manager child is Linux-only");
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -47,14 +48,15 @@ const server = `nats://127.0.0.1:${await freePort()}`;
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 let anchor: SmokeSandboxAnchor | undefined;
-const cotal = (...words: string[]) => {
-  const options = { cwd: root, env, encoding: "utf8" as const, timeout: 120_000 };
+const from = (cwd: string, ...words: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 120_000 };
   assertSmokeSandboxDown(anchor, words, options);
   const r = spawnSync(process.execPath, [BIN, ...words], options);
   let parsed: Envelope | undefined;
   try { parsed = JSON.parse(r.stdout) as Envelope; } catch { parsed = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", env: parsed };
 };
+const cotal = (...words: string[]) => from(root, ...words);
 const shown = (r: ReturnType<typeof cotal>) => ({ status: r.status, error: r.env?.error, stdout: r.stdout.slice(0, 1500), stderr: r.stderr.slice(0, 800) });
 const instances = (): Instance[] => (cotal("service", "--space", space, "--json").env?.result?.instances as Instance[] | undefined) ?? [];
 const running = (definition: string) => instances().find((row) => row.definition === definition && row.observedProcess === "running");
@@ -71,6 +73,17 @@ try {
   const refusedCap = conflictingStore("2");
   check("a conflicting store refuses without saving the requested seat cap",
     refusedCap.status === 2 && refusedCap.env?.error?.code === "CONFLICT" && refusedCap.env.error.message.includes("recorded broker inputs") && cap() === undefined, { refused: shown(refusedCap), seatCap: cap() });
+  for (const flags of [[], ["--no-manager"]]) {
+    const conflict = cotal("up", ...flags, "--max-file-store", "536870912", "--log-file", join(root, "broker.log"), "--json");
+    const restart = ["up", ...flags], step = codeSpan(`cotal ${restart.join(" ")}`), remedy = conflict.env?.error?.remedy ?? "";
+    check(`broker input conflict with ${step} keeps the same startup in both suggestions`,
+      conflict.status === 2 && conflict.env?.error?.code === "CONFLICT" && remedy.includes(`${step} from ${root}`)
+        && remedy.includes(`then ${step} with the requested log flags`), shown(conflict));
+    if (flags.length && remedy.includes(`${step} from ${root}`)) {
+      const retried = cotal(...restart, "--json");
+      check("keeping the recorded inputs leaves the broker running without a manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+    }
+  }
   const added = cotal("service", "add", "mgr", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", space);
   const started = cotal("service", "start", "mgr", "--space", space);
   const mgr = running("mgr");
@@ -94,6 +107,13 @@ try {
       && refused.env.error.message.startsWith(`the mgr service of this space runs this root's manager (pid ${mgr?.pid}, instance ${id})`)
       && launcher !== undefined && refused.env.error.remedy === `${stop}, then run \`${launcher} up\` again`
       && JSON.stringify(refused.env.target?.services) === JSON.stringify([{ definition: "mgr", instanceId: id }]), shown(refused));
+  const rooted = from(home, "up", "--root", root, "--space", space, "--json");
+  check("an ordinary retry from another folder names the requested stack",
+    rooted.status === 2 && rooted.env?.error?.code === "LIFECYCLE_BLOCKED" && launcher !== undefined
+      && rooted.env.error.remedy === `${stop}, then run ${codeSpan(`${launcher} up --space ${space} --root ${shellWord(root)}`)} again`, shown(rooted));
+  const foreground = cotal("up", "--foreground", "--server", server);
+  check("a blocked foreground start keeps its service stop and retries the original invocation",
+    foreground.status === 2 && foreground.stderr.replace(/\s+/g, " ").includes(`${stop}, then repeat your original foreground startup command from the same folder with the same options`), shown(foreground));
   const brokerOnly = cotal("up", "--no-manager", "--json");
   const retry = /then run `([^`]+)` again$/.exec(brokerOnly.env?.error?.remedy ?? "")?.[1];
   const expectedRetry = `${launcher} up --space ${space} --no-manager`;
@@ -108,7 +128,15 @@ try {
     check("the printed retry succeeds without starting the stack's manager", retried.status === 0 && running("stack-manager") === undefined, shown(retried));
   }
   const again = cotal("up", "--json");
-  check("bare up starts the stack's own manager without saving the refused cap", again.status === 0 && running("stack-manager") !== undefined && cap() === undefined, shown(again));
+  const stackManager = running("stack-manager")?.instanceId;
+  const stackBroker = running("stack-broker")?.instanceId;
+  check("bare up starts the stack's own manager without saving the refused cap", again.status === 0 && stackManager !== undefined && stackBroker !== undefined && cap() === undefined, shown(again));
+  const sameCap = cotal("up", "--seat-cap", "unlimited", "--json");
+  check("explicit unlimited reuses the default-cap manager and broker", sameCap.status === 0 && cap() === undefined
+    && running("stack-manager")?.instanceId === stackManager && running("stack-broker")?.instanceId === stackBroker, shown(sameCap));
+  const changedCap = cotal("up", "--seat-cap", "3", "--json");
+  check("changing the cap of a live manager still requires a stop", changedCap.status === 2 && changedCap.env?.error?.code === "LIFECYCLE_BLOCKED"
+    && changedCap.env.error.remedy?.includes("cotal down") === true && cap() === undefined, shown(changedCap));
   const after = cotal("status", "--json");
   const settled = after.env?.result?.folder as { noManager?: boolean; managerService?: unknown } | undefined;
   check("status no longer reads the stack as --no-manager", after.status === 0 && settled?.noManager === false && settled.managerService === null, shown(after));
@@ -132,6 +160,14 @@ try {
     retire.status === 2 && retire.env?.error?.code === "LIFECYCLE_BLOCKED" && retire.env.error.message.includes("agents from an earlier manager may still be running")
       && retire.env.error.remedy?.includes("131072 bytes") === true && retire.env.error.remedy.includes("263168 bytes") && !retire.env.error.remedy.includes("`cotal up`")
       && retirementPreview.status === 0 && retirementPreview.env?.outcome === "no-op" && retirementPreview.stdout.includes(retire.env.error.message), { apply: shown(retire), preview: shown(retirementPreview) });
+  const absent = cotal("down", "--abandon-stop", randomUUID(), "--yes", "--json");
+  const remedy = absent.env?.error?.remedy ?? "";
+  const restart = /To restart without a manager, run `cotal ([^`]+)`/.exec(remedy)?.[1];
+  check("no retained stop requires no action and distinguishes the two restart commands", absent.status === 2 && absent.env?.error?.code === "TARGET_NOT_FOUND" && remedy.includes("no further stop is needed") && restart === "up --no-manager" && remedy.includes("to restart with a manager, run `cotal up`") && running("stack-broker") === undefined, shown(absent));
+  if (restart === "up --no-manager") {
+    const retried = cotal(...restart.split(" "), "--json");
+    check("the broker-only restart after an absent stop starts no manager", retried.status === 0 && running("stack-broker") !== undefined && running("stack-manager") === undefined, shown(retried));
+  }
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {

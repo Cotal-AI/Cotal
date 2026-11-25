@@ -11,7 +11,7 @@
  *  D. `COTAL_DEFAULT_PERSONA` supplies the persona for a bare `spawn --detach`.
  *  G. a persona the manager cannot find is refused (exit 2) with the manager's reason, and nothing launches.
  *  I. an agent that exits at once fails OPERATION_FAILED (exit 5) with the manager's reason.
- *  E. the `start` tombstone errors, naming `spawn --detach` (subprocess through bin/cotal.ts).
+ *  E. `start` refuses, and its catalog and file retries launch through the manager.
  *  F. `--foreground --creds` fails loud (subprocess).
  *  H. a spawn in this terminal refuses a missing persona or connector with its code and Next, before
  *     it prints that it is starting the application (subprocess).
@@ -19,9 +19,9 @@
  * COTAL_HOME is sandboxed; kills ONLY the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:spawn-detach:live   (build first — bin/cotal.ts subprocess checks run dist)
  */
-import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
+import { execFile, spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -41,7 +41,7 @@ const scratch = makeScratch("cotal-detach-");
 const home = mkdtempSync(join(tmpdir(), "cotal-detach-home-"));
 process.env.COTAL_HOME = home;
 
-const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError } = await import("@cotal-ai/core");
+const { parseCommandArgs, probeConnect, registry, CotalEndpoint, openSessionRail, EpEnvelopeError, eventChannel } = await import("@cotal-ai/core");
 const { connect } = await import("@nats-io/transport-node");
 const { recordMesh, recordPreparedSpace, getCurrent, setCurrent, clearCurrent, isCommandFailure, exitCode, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/cli"); // registers the CLI commands (spawn/stop/ps/attach) into the registry
@@ -197,17 +197,20 @@ const cmd = (name: string): Command => {
 };
 /** Run a REAL CLI command exactly as the dispatcher would: kernel-parsed argv → run(). */
 const run = (name: string, argv: string[]) => cmd(name).run(parseCommandArgs(cmd(name), argv));
-/** Capture what a run writes on stdout (ps prints a report, or one envelope under --json). */
-async function capture(fn: () => Promise<void>): Promise<string> {
+/** Capture stdout and optionally collect progress written through console.error. */
+async function capture(fn: () => Promise<void>, onError?: (line: string) => void): Promise<string> {
   let out = "";
   const real = console.log;
+  const realError = console.error;
   const write = process.stdout.write;
   console.log = (...a: unknown[]) => void (out += a.join(" ") + "\n");
+  if (onError) console.error = (...a: unknown[]) => onError(a.join(" "));
   process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
   try {
     await fn();
   } finally {
     console.log = real;
+    console.error = realError;
     process.stdout.write = write;
   }
   return out;
@@ -247,7 +250,7 @@ try {
     const noModel = await hermesWithoutUv();
     ok("foreground Hermes without uv or a model reports both and gives a basic launch example",
       isCommandFailure(noModel) && noModel.code === "DEPENDENCY_UNAVAILABLE" && noModel.message.includes("needs uv on PATH")
-        && noModel.message.includes("needs a model") && noModel.remedy?.includes("spawn --harness hermes --no-events --model <model>") === true
+        && noModel.message.includes("needs a model") && noModel.remedy?.includes("spawn --harness hermes --model <model>") === true
         && !noModel.remedy.includes("then retry:"), noModel);
     const hasModel = await hermesWithoutUv(["--model", "test-model"]);
     ok("foreground Hermes with a model retains the missing-uv retry",
@@ -384,6 +387,49 @@ try {
   ok("ps --json is one envelope whose items carry the manager's row verbatim",
     psEnvelope?.outcome === "ok" && psJson.trim().split("\n").length === 1 && jsonRow !== undefined && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
 
+  const outside = mkdtempSync(join(scratch, "unregistered-client-"));
+  const file = "./repeat.md";
+  writeFileSync(join(workspaceRoot, file), "---\nname: bard\n---\nYou write verse.\n");
+  const pin = String(jsonRow?.instanceId);
+  const portFlags = ["--space", SPACE, "--server", SERVER];
+  const outsideEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+  const fromOutside = (args: string[]) => new Promise<{ status: number | string | null; stdout: string; stderr: string }>((resolve) => execFile(process.execPath, [join(import.meta.dirname, "..", "dist", "cotal.js"), ...args], {
+    cwd: outside, env: { ...outsideEnv, HOME: outside, COTAL_HOME: join(outside, "home"), XDG_CONFIG_HOME: join(outside, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000,
+  }, (error, stdout, stderr) => resolve({ status: error ? error.code ?? null : 0, stdout, stderr })));
+  const remotePs = async () => {
+    const row = await fromOutside(["ps", ...portFlags, "--on", pin, "--json"]);
+    if (row.status !== 0) throw new Error(row.stdout + row.stderr);
+    return (JSON.parse(row.stdout).result.items as Record<string, unknown>[]).filter((item) => item.name === "bard");
+  };
+  const beforeRepeat = await remotePs();
+  ok("ps from an unregistered home sees the exact manager and seat", beforeRepeat.length === 1 && beforeRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid, beforeRepeat);
+  const repeat = ["spawn", "--file", file, "--detach", "--no-events", "--harness", "e2e", "--name", "bard", "--cwd", ".", ...portFlags];
+  const pinned = await fromOutside([...repeat, "--on", pin, "--plain"]);
+  const attachArgs = `attach bard --space ${SPACE} --server ${SERVER} --on ${pin}`;
+  ok("pinned duplicate spawn keeps the explicit broker, space and manager in its attach command",
+    pinned.status === 0 && pinned.stdout.includes(`bard is already running on ${pin}`) && pinned.stdout.includes(attachArgs), pinned.stdout + pinned.stderr);
+  const unpinned = await fromOutside([...repeat, "--json"]);
+  const noOp = unpinned.status === 0 ? JSON.parse(unpinned.stdout) : undefined;
+  ok("unpinned duplicate spawn reports the same manager and attach command without launching another seat",
+    noOp?.outcome === "no-op" && noOp?.result?.managerInstanceId === pin && noOp?.result?.attach?.endsWith(attachArgs), unpinned.stdout + unpinned.stderr);
+  const afterRepeat = await remotePs();
+  ok("the original lifecycle and process remain after both duplicate spawns", afterRepeat.length === 1 && afterRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid && afterRepeat[0]?.pid === jsonRow?.pid, afterRepeat);
+
+  const staleServer = `nats://127.0.0.1:${await freePort()}`;
+  const registered = await fromOutside(["meshes", "add", SPACE, "--root", outside, "--mode", "open", "--server", staleServer, "--force"]);
+  ok("the caller registers an offline broker for the space", registered.status === 0, registered.stderr);
+  const joined = await fromOutside([...repeat, "--plain"].map((arg) => arg === "bard" ? "joined-broker" : arg));
+  const joinedTarget = `joined-broker --space ${SPACE} --server ${SERVER} --on ${pin}`;
+  const printedCommand = (verb: string) => joined.stdout.split("\n").map((line) => line.trim().split(/\s{2,}/)[0] ?? "")
+    .find((command) => ["cotal", "pnpm cotal"].some((cli) => command.startsWith(`${cli} ${verb} `)));
+  ok("the joined receipt keeps the live broker and manager pin in both shortcuts despite the stale registration",
+    joined.status === 0 && joinedAs(joined.stdout, "joined-broker") && printedCommand("attach")?.endsWith(`attach ${joinedTarget}`) === true
+    && printedCommand("status")?.endsWith(`status ${joinedTarget}`) === true, joined.stdout + joined.stderr);
+  const joinedStatus = await fromOutside(printedCommand("status")!.replace(/^(?:pnpm )?cotal /, "").split(" "));
+  ok("the printed status command reaches the running agent from the stale registration",
+    joinedStatus.status === 0 && /Agent:\s+joined-broker/.test(joinedStatus.stdout) && /Process:\s+running/.test(joinedStatus.stdout), joinedStatus.stdout + joinedStatus.stderr);
+  await capture(() => run("stop", ["joined-broker", "--space", SPACE]));
+
   // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
   // continuation must not repeat it now that provenance lives in the identity row.
   writeFileSync(join(workspaceRoot, ".cotal", "agents", "lutist.md"), "---\nname: lutist\nrole: writer\nvariant: high\n---\nYou play.\n");
@@ -510,6 +556,49 @@ try {
     ok("...and ps is still empty", NO_AGENTS.test(psRefused), psRefused);
   }
 
+  if (process.platform !== "win32") {
+    for (const [path, target, selector] of [
+      [join(workspaceRoot, "broken.md"), "./missing-persona.md", ["--file", "./broken.md"]],
+      [join(workspaceRoot, ".cotal", "agents", "broken-catalog.md"), "../../missing-persona.md", ["broken-catalog"]],
+    ] as const) {
+      symlinkSync(target, path);
+      try {
+        const failure = await capture(() => run("spawn", [...selector, "--detach", "--no-events", "--agent", "e2e", "--space", SPACE]))
+          .then(() => undefined, (error: unknown) => isCommandFailure(error) ? error : undefined);
+        ok(`managed spawn identifies the dangling link selected by ${selector.join(" ")}`,
+          failure?.code === "LIFECYCLE_BLOCKED" && failure.native?.outcome === "not-executed" &&
+          failure.message.includes(path) && failure.message.includes(`symbolic link to a missing target: ${target}`) &&
+          failure.message.includes("Restore the link's target on the manager's host") &&
+          failure.message.includes("put a regular persona file in its place") &&
+          !failure.remedy?.includes("create that file") && lastOpts === undefined && readlinkSync(path) === target, failure);
+      } finally { rmSync(path); }
+    }
+  }
+
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const folder = join(workspaceRoot, "no-traverse");
+    const file = join(folder, "sample.md");
+    mkdirSync(folder, { mode: 0o700 });
+    writeFileSync(file, "---\nname: path-check\n---\nA sample persona.\n", { mode: 0o600 });
+    const args = ["--file", "./no-traverse/sample.md", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE];
+    for (const [path, label] of [[folder, "its parent cannot be traversed"], [file, "the file cannot be read"]] as const) {
+      const mode = statSync(path).mode & 0o777;
+      chmodSync(path, path === folder ? 0o600 : 0o000);
+      try {
+        const failure = await capture(() => run("spawn", args))
+          .then(() => undefined, (error: unknown) => isCommandFailure(error) ? error : undefined);
+        ok(`managed spawn explains the persona permission problem when ${label}`,
+          failure?.outcome === "refused" && failure.code === "LIFECYCLE_BLOCKED" && exitCode(failure.outcome, failure.code) === 2 &&
+          failure.native?.code === "failed-precondition" && failure.native.outcome === "not-executed" &&
+          failure.message.includes(`cannot read persona: ${file} (EACCES) on the manager's host`) &&
+          failure.message.includes("the manager's account can read the file and traverse its parent directories") &&
+          lastOpts === undefined, failure);
+      } finally { chmodSync(path, mode); }
+    }
+    const psRefused = await capture(() => run("ps", ["--space", SPACE]));
+    ok("managed spawn permissions refusals leave ps empty", NO_AGENTS.test(psRefused), psRefused);
+  }
+
   // I — an agent whose process exits at once is a launch the manager reports failed. The CLI says so
   // with the manager's reason, OPERATION_FAILED, exit 5, never as an unknown outcome.
   {
@@ -537,6 +626,34 @@ try {
   // the sandbox either. Customers never see this state (the lockstep release publishes core +
   // connectors together).
   const subEnv = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+
+  {
+    const retryConnector: Connector = { ...e2eCon, name: "retry-e2e", eventChannel };
+    registry.register(retryConnector);
+    const file = join(workspaceRoot, "sample $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "-keep `text`\non another line";
+    writeFileSync(file, "---\nname: file-agent\nagent: e2e-exit\nrole: writer\n---\nExplicit persona.\n");
+    const ps = await capture(() => run("ps", ["--space", SPACE]));
+    const instance = /instance:\s+([a-z0-9]{26,32})/.exec(ps)?.[1];
+    ok("ps names the live manager instance for a spawn retry", instance !== undefined, ps);
+    const refused = spawnSync(process.execPath, [cli, "--no-color", "spawn", "--file", file,
+      "--detach", "--no-events", "--harness", "retry-e2e", "--name", "retry-agent", `--prompt=${prompt}`,
+      "--subscribe", "", "--opt", "one=a b", "--opt", "two=c", "--on=not-a-pin", "--space", SPACE, "--server", SERVER],
+    { cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000 });
+    const retry = /rerun it as (`+)(cotal spawn [^\n]+)\1\r?$/m.exec(refused.stderr)?.[2];
+    ok("an invalid pin is refused with a single replaceable manager selector",
+      refused.status === 1 && retry?.match(/--on <instance>/g)?.length === 1 && !retry.includes("not-a-pin"), refused.stderr);
+    const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry!.replace("--on <instance>", `--on ${instance}`)}`], { encoding: "utf8" });
+    const [bin, verb, ...args] = shell.stdout.split("\0").slice(0, -1);
+    ok("the printed retry is a shell command", shell.status === 0 && bin === "cotal" && verb === "spawn", shell.stderr);
+    const launched = await capture(() => run("spawn", args));
+    ok("following the retry launches the explicit file, harness and seat with events off",
+      joinedAs(launched, "retry-agent") && /Application:\s+retry-e2e/.test(launched) && lastOpts?.role === "writer"
+      && lastOpts?.events === false && lastOpts?.prompt === prompt && JSON.stringify(lastOpts?.subscribe) === "[]"
+      && JSON.stringify(lastOpts?.launchOptions) === JSON.stringify({ one: "a b", two: "c" }), { launched, lastOpts });
+    await capture(() => run("stop", ["retry-agent", "--space", SPACE, "--on", instance!]));
+  }
 
   {
     const agents = join(workspaceRoot, ".cotal", "agents");
@@ -575,13 +692,29 @@ try {
     ok("stopped the restored default seat", stopped(stoppedOut, "default"), stoppedOut);
   }
 
-  // E — the start tombstone (true subprocess through bin/cotal.ts, i.e. built dist).
-  const tomb = spawnSync(TSX, [join(import.meta.dirname, "..", "cotal.ts"), "start", "--name", "x"], {
-    encoding: "utf8",
-    env: subEnv,
-  });
-  ok("tombstone exits non-zero", tomb.status === 1, tomb.status);
-  ok("tombstone names spawn --detach", /spawn --detach/.test(tomb.stderr), tomb.stderr.slice(0, 200));
+  {
+    const file = join(workspaceRoot, "start $file's.md");
+    const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+    const prompt = "Review the first draft.";
+    writeFileSync(file, "---\nname: file-agent\nrole: writer\n---\nExplicit persona.\n");
+    for (const config of ["default", file]) {
+      const name = config === file ? "file-example" : "example";
+      const tomb = spawnSync(process.execPath, [cli, "start", "--config", config, "--name", name,
+        "--no-events", "--harness", "e2e", "--space", SPACE, "--prompt", prompt], {
+        cwd: workspaceRoot, env: subEnv, encoding: "utf8", timeout: 30_000,
+      });
+      const retry = tomb.stderr.split("\n").find(line => line.startsWith("  "))?.trim();
+      ok("start refuses and names a detached replacement", tomb.status === 1 && tomb.stdout === "" && retry?.includes("--detach") === true, tomb.stderr);
+      const shell = spawnSync("bash", ["-c", `printf '%s\\0' ${retry}`], { encoding: "utf8" });
+      const words = shell.stdout.split("\0").slice(0, -1);
+      const spawn = words.indexOf("spawn");
+      ok("the replacement is a shell command without --config", shell.status === 0 && spawn >= 1 && !words.includes("--config"), shell.stderr);
+      const launched = await capture(() => run("spawn", words.slice(spawn + 1)));
+      ok(`the ${config === file ? "file" : "catalog"} replacement launches and retains the name and prompt`,
+        joinedAs(launched, name) && lastOpts?.prompt === prompt && (config !== file || lastOpts?.role === "writer"), launched);
+      await capture(() => run("stop", [name, "--space", SPACE]));
+    }
+  }
 
   // H — a spawn in this terminal checks its persona and connector before it says it is starting the
   // application, and refuses each with the full block: code, Next and exit 2.
@@ -729,8 +862,12 @@ try {
       }
     };
     try {
-      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]));
-      ok("the stand-in reports no terminal answer, so the CLI reads null", (JSON.parse(reportJson) as { result: { streamsTerminal: unknown } }).result.streamsTerminal === null, reportJson);
+      const progress: string[] = [];
+      const reportJson = await capture(() => run("spawn", ["poet", "--detach", "--no-events", "--agent", "e2e", "--space", SPACE, "--name", "oldpane0", "--on", on3, "--json"]), (line) => progress.push(line));
+      const { result } = JSON.parse(reportJson) as { result: { streamsTerminal: unknown; readiness: string } };
+      ok("the stand-in reports no terminal answer, so the CLI reads null", result.streamsTerminal === null, reportJson);
+      ok("a detached spawn reports waiting on stderr without promising a time limit",
+        result.readiness === "joined" && plain(progress.join(" ")).replace(/\s+/g, " ").includes("waiting for the manager: it answers when it refuses the launch, or when the agent joins or exits …"), progress);
 
       // Its refusal carries the marker: the seat's runtime streams no terminal.
       process.exitCode = undefined;

@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken, resolveOnPath } from "@cotal-ai/workspace";
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
+import { npmInvocation, npmUpdateChildEnvironment } from "../lib/npm-invocation.js";
 import { compareSemver } from "../seed/reconcile.js";
 
 export interface CommandResult {
@@ -16,6 +17,9 @@ export interface CommandResult {
 }
 
 export class RegistryUnavailable extends Error {}
+export class StagingTimeout extends Error {
+  constructor(readonly npmOutput: string) { super("Package staging reached its time limit"); }
+}
 
 export function parseNpmVersion(output: string): string {
   const parsed: unknown = JSON.parse(output.trim());
@@ -73,21 +77,10 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   return entry;
 }
 
-function npmInvocation(env: NodeJS.ProcessEnv) {
-  const cwd = parse(homedir()).root;
-  if (process.platform === "win32" || env.PATH === undefined) return { file: "npm", env, cwd };
-  const lookup = { PATH: env.PATH.split(delimiter).map(dir => resolve(cwd, dir)).join(delimiter) };
-  const file = resolveOnPath("npm", lookup);
-  if (!file) return { file: "npm", env, cwd };
-  const node = resolveOnPath("node", lookup);
-  if (node && realpathSync(node) === realpathSync(process.execPath)) return { file: "npm", env, cwd };
-  return { file, env: { ...env, PATH: `${dirname(process.execPath)}${delimiter}${env.PATH}` }, cwd };
-}
-
 export async function runNpmAsync(args: string[], archiveCache?: string): Promise<CommandResult> {
   try {
-    const npm = npmInvocation(process.env);
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const gated = archiveCache !== undefined && (process.platform === "linux" || process.platform === "darwin");
     const gate = 'IFS= read -r permit <&3 && [ "$permit" = run ] || exit 1; exec 3<&-; exec "$@"';
     const child = spawn(gated ? "/bin/sh" : file, gated ? ["-c", gate, "cotal-release-check", file, ...spawnArgs] : spawnArgs, {
@@ -118,8 +111,8 @@ export async function runNpmAsync(args: string[], archiveCache?: string): Promis
 
 export function runNpm(args: string[], inherit = false): CommandResult {
   try {
-    const npm = npmInvocation(process.env);
-    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, args);
+    const npm = npmInvocation(process.env, args);
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
     const result = spawnSync(file, spawnArgs, {
       cwd: npm.cwd, env: npm.env, windowsVerbatimArguments,
       ...(inherit ? { stdio: "inherit" as const } : { encoding: "utf8" as const }),
@@ -138,6 +131,7 @@ export function runNpm(args: string[], inherit = false): CommandResult {
 }
 
 export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
+  env = npmUpdateChildEnvironment(env);
   const result = withInstallUmask(() => spawnSync(file, args, inherit ? { stdio: "inherit", env } : { encoding: "utf8", env }));
   return {
     status: result.status,
@@ -167,14 +161,21 @@ export async function runGlobalProcess(
   let idle: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<void> | undefined;
   try {
-    const npm = operation === "install" && file === "npm" ? npmInvocation(env) : undefined;
-    file = npm?.file ?? file;
-    cache = mkdtempSync(join(tmpdir(), "cotal-update-npm-"));
-    const recordCache = gated && staging !== undefined;
+    if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
+    const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
+    if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
+    const reconcileCache = gated && operation === "reconcile";
+    cache = mkdtempSync(join(tmpdir(), reconcileCache ? "cotal-update-reconcile-" : "cotal-update-npm-"));
+    let recordCache = gated && (staging !== undefined || reconcileCache);
     if (recordCache) {
-      const start = processStartToken(process.pid);
-      if (!start) throw new Error("cannot identify the staged npm cache owner");
-      writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+      try {
+        const start = processStartToken(process.pid);
+        if (!start) throw new Error("cannot identify the staged npm cache owner");
+        writeFileSync(join(cache, ".owner"), `${process.pid}\n${start}\n`, { mode: 0o600, flag: "wx" });
+      } catch (cause) {
+        if (!reconcileCache) throw cause;
+        recordCache = false;
+      }
     }
     if (staging !== undefined) {
       // npm is quiet during a download. Its private cache receives the archive bytes and
@@ -210,7 +211,10 @@ export async function runGlobalProcess(
     if (child.pid !== undefined) {
       try {
         // Publish cache custody before the gate permits npm to write to it.
-        if (recordCache) writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" });
+        if (recordCache) {
+          try { writeFileSync(join(cache, `.worker-${child.pid}`), "", { mode: 0o600, flag: "wx" }); }
+          catch (cause) { if (!reconcileCache) throw cause; }
+        }
         mutation.markLive(child.pid);
         published = true;
       } catch (e) {
@@ -265,7 +269,7 @@ export async function runGlobalProcess(
     if (stopping) {
       await stopping;
       if (published) mutation.clear();
-      throw new RegistryUnavailable("target staging could not reach the registry");
+      throw new StagingTimeout(`${stderr}\n${stdout}`);
     }
     if (published) mutation.complete(
       closed.status,
@@ -276,7 +280,7 @@ export async function runGlobalProcess(
     );
     return { status: error ? null : closed.status, signal: closed.signal, stdout, stderr, ...(error ? { error } : {}) };
   } catch (e) {
-    if (e instanceof RegistryUnavailable) throw e;
+    if (e instanceof StagingTimeout) throw e;
     return { status: null, stdout: "", stderr: "", error: message(e) };
   } finally {
     for (const watcher of watchers) watcher.close();

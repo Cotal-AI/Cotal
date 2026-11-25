@@ -5,21 +5,18 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import type { Manager } from "./manager.js";
 import { userMeshEndpointsRefusal } from "./seat-launch.js";
+import type { ManagerConfig } from "./manager-config.js";
+import type { ManagerParts } from "./manager-parts.js";
+import type { ManagerStartState } from "./manager-start-state.js";
 
 /** What {@link PersonaCatalog} reads from the Manager. Every entry is read at use, so a field the Manager
  *  assigns after construction is always current, and a Manager method a test replaces is the one that runs. */
 export interface PersonaCatalogDeps {
   agents: () => Manager["agents"];
-  execution: () => Manager["execution"];
   meshMode: () => Manager["meshMode"];
-  remoteAuthority: () => Manager["remoteAuthority"];
-  space: () => Manager["space"];
-  userMode: () => Manager["userMode"];
-  workspaceRoot: () => Manager["workspaceRoot"];
   executionRefusal: (...args: Parameters<Manager["executionRefusal"]>) => ReturnType<Manager["executionRefusal"]>;
   managedPrincipal: (...args: Parameters<Manager["managedPrincipal"]>) => ReturnType<Manager["managedPrincipal"]>;
   nameError: (...args: Parameters<Manager["nameError"]>) => ReturnType<Manager["nameError"]>;
-  spawnBoundRefusal: (...args: Parameters<Manager["spawnBoundRefusal"]>) => ReturnType<Manager["spawnBoundRefusal"]>;
   spawnRun: (...args: Parameters<Manager["spawnRun"]>) => ReturnType<Manager["spawnRun"]>;
   staticSpawnBound: (...args: Parameters<Manager["staticSpawnBound"]>) => ReturnType<Manager["staticSpawnBound"]>;
 }
@@ -29,16 +26,10 @@ export interface PersonaCatalogDeps {
 export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
   return {
     agents: () => m["agents"],
-    execution: () => m["execution"],
     meshMode: () => m["meshMode"],
-    remoteAuthority: () => m["remoteAuthority"],
-    space: () => m["space"],
-    userMode: () => m["userMode"],
-    workspaceRoot: () => m["workspaceRoot"],
     executionRefusal: (...args) => m["executionRefusal"](...args),
     managedPrincipal: (...args) => m["managedPrincipal"](...args),
     nameError: (...args) => m["nameError"](...args),
-    spawnBoundRefusal: (...args) => m["spawnBoundRefusal"](...args),
     spawnRun: (...args) => m["spawnRun"](...args),
     staticSpawnBound: (...args) => m["staticSpawnBound"](...args),
   };
@@ -46,22 +37,18 @@ export function personaCatalogDeps(m: Manager): PersonaCatalogDeps {
 
 /** The persona catalog doors: define, remove, list and show, with the definer's grant check and read reach. */
 export class PersonaCatalog {
-  constructor(private readonly deps: PersonaCatalogDeps) {}
+  constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: PersonaCatalogDeps, private readonly state: ManagerStartState, private readonly parts: Pick<ManagerParts, "seatLaunch">) {}
 
   // The Manager members these bodies read, under their Manager names. Each reads through its dep at
   // use, so a field the Manager assigns later is current and a method a test replaces on the Manager
   // is the one that runs.
   private get agents() { return this.deps.agents(); }
-  private get execution() { return this.deps.execution(); }
   private get meshMode() { return this.deps.meshMode(); }
-  private get remoteAuthority() { return this.deps.remoteAuthority(); }
-  private get space() { return this.deps.space(); }
-  private get userMode() { return this.deps.userMode(); }
-  private get workspaceRoot() { return this.deps.workspaceRoot(); }
+  private get remoteAuthority() { return this.config.remoteAuthority; }
+  private get userMode() { return this.state.userMode; }
   private executionRefusal(...args: Parameters<Manager["executionRefusal"]>): ReturnType<Manager["executionRefusal"]> { return this.deps.executionRefusal(...args); }
   private managedPrincipal(...args: Parameters<Manager["managedPrincipal"]>): ReturnType<Manager["managedPrincipal"]> { return this.deps.managedPrincipal(...args); }
   private nameError(...args: Parameters<Manager["nameError"]>): ReturnType<Manager["nameError"]> { return this.deps.nameError(...args); }
-  private spawnBoundRefusal(...args: Parameters<Manager["spawnBoundRefusal"]>): ReturnType<Manager["spawnBoundRefusal"]> { return this.deps.spawnBoundRefusal(...args); }
   private spawnRun(...args: Parameters<Manager["spawnRun"]>): ReturnType<Manager["spawnRun"]> { return this.deps.spawnRun(...args); }
   private staticSpawnBound(...args: Parameters<Manager["staticSpawnBound"]>): ReturnType<Manager["staticSpawnBound"]> { return this.deps.staticSpawnBound(...args); }
 
@@ -79,14 +66,14 @@ export class PersonaCatalog {
    *  the privileged tier only if `file.owner == caller`, else admin is required. Fail-closed: an
    *  ownerless file (legacy / operator-written) is admin-only. */
   async opDefinePersona(args: Record<string, unknown>, caller: string, admin: boolean, authenticated?: EpCaller): Promise<ControlReply> {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, error: "name required" };
     const nameErr = this.nameError(name);
     if (nameErr) return { ok: false, error: nameErr };
     const persona = String(args.persona ?? "").trim();
     if (!persona) return { ok: false, error: "persona required" };
-    const path = agentFilePath(this.workspaceRoot, name);
+    const path = agentFilePath(this.config.workspaceRoot, name);
     const strList = (v: unknown): string[] | undefined => {
       if (v === undefined || v === null) return undefined;
       return (Array.isArray(v) ? v : [v]).map((x) => String(x));
@@ -191,14 +178,14 @@ export class PersonaCatalog {
     if (this.meshMode === "static") {
       const run = await this.spawnRun(authenticated, undefined);
       const bound = await this.staticSpawnBound(authenticated, run !== undefined && "admission" in run ? run : undefined);
-      return ({ capabilities, endpoints }) => this.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
+      return ({ capabilities, endpoints }) => this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, "define-persona");
     }
     if (this.remoteAuthority)
       return ({ capabilities, namesEndpoints }) => namesEndpoints
         ? userMeshEndpointsRefusal("define-persona")
         : capabilities.length ? "define-persona: this manager's user authority is hosted, so it cannot read the definer's grant and its persona can grant no capabilities." : undefined;
     const p = parsePrincipalKey(caller);
-    const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: p.owner, actor: p.actor }) : undefined;
+    const scope = p ? await resolveAuthProvider().actorScope({ dir: userAuthStateDir(this.config.workspaceRoot, this.config.space), owner: p.owner, actor: p.actor }) : undefined;
     return ({ capabilities, namesEndpoints }) => {
       if (namesEndpoints) return userMeshEndpointsRefusal("define-persona");
       if (scope?.includes("admin")) return undefined;
@@ -215,12 +202,12 @@ export class PersonaCatalog {
    *  current spawn-name length or user-mode actor rules, so an obsolete invalid-name entry remains
    *  repairable. Ownership matches redefine: the recorded owner, or admin for an ownerless file. */
   opRemovePersona(args: Record<string, unknown>, caller: string, admin: boolean): ControlReply {
-    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    if (this.config.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const name = String(args.name ?? "").trim();
     if (!name) return { ok: false, code: "bad-request", error: "name required" };
     if (!/^[A-Za-z0-9_-]+$/.test(name))
       return { ok: false, code: "bad-request", error: `unsafe persona name ${JSON.stringify(name)} (allowed: letters, digits, _ -)` };
-    const path = agentFilePath(this.workspaceRoot, name);
+    const path = agentFilePath(this.config.workspaceRoot, name);
     if (!existsSync(path)) return { ok: false, code: "not-found", error: `no persona "${name}"` };
     let owner: string | undefined;
     try {
@@ -282,7 +269,7 @@ export class PersonaCatalog {
    *  broken card). */
   opListPersonas(caller: string, admin: boolean): ControlReply {
     const personas = [];
-    for (const e of listPersonaCatalog(this.workspaceRoot)) {
+    for (const e of listPersonaCatalog(this.config.workspaceRoot)) {
       if (e.error) {
         if (!admin) continue;
         personas.push({ name: e.name, error: "unparseable" });
@@ -313,7 +300,7 @@ export class PersonaCatalog {
     if (!name) return { ok: false, error: "name required" };
     const nameErr = this.nameError(name);
     if (nameErr) return { ok: false, error: nameErr };
-    const path = agentFilePath(this.workspaceRoot, name);
+    const path = agentFilePath(this.config.workspaceRoot, name);
     if (!existsSync(path)) return { ok: false, error: `no persona "${name}"` };
     let def;
     try {

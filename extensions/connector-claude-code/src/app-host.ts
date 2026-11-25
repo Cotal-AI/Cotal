@@ -8,7 +8,10 @@ import type { ConversationApprovalPending, ConversationGrant, ConversationPendin
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
+import type { CommandFeed } from "./command-feed.js";
+import { claudeCommands, commandTurns } from "./commands.js";
 
+const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
 const PLUMBING_MS = 60_000;
 const JOIN_MS = 20_000;
 /** How long a disconnect waits for the event plane's queued work before it stops the agent. */
@@ -31,6 +34,8 @@ interface AppHostOptions {
   participate?: (connection: GatewayConnection) => Promise<NativeTurnParticipationLease>;
   /** Deliver one pending workflow turn through the bound native session wake feed. */
   turn?: (session: string, connectionId: string, text: string) => boolean;
+  /** This Claude Code process's command socket, which serves each connection's agent commands. */
+  commands?: CommandFeed;
   watch?: typeof WATCH;
 }
 
@@ -279,12 +284,17 @@ export function createAppHost(o: AppHostOptions): AppHost {
       // secret for a manager-call view, so manager calls carry only what its grant holds.
       config.turnRelay = false;
       if (eventPlaneArmed(config, env) && !binding) throw new Error("this mesh requires a bound native event source");
-      agent = new MeshAgent(config, env, { withholdProcessCwd: true });
+      let hooks: ClaudeHooks | undefined;
+      agent = new MeshAgent(config, env, {
+        withholdProcessCwd: true,
+        ...(o.commands ? { commands: claudeCommands({ feed: () => o.commands, interrupting: () => hooks?.interrupting(agent!), warn, onStop: (stop) => agent!.once("stopping", stop) }) } : {}),
+      });
+      const turns = o.commands ? commandTurns(agent) : undefined;
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));
       if (eventPlaneArmed(config, env)) plane = createClaudeEventPlane(agent, config, env, source);
       // Native ingress owns messages. Lifecycle forwarding has no command-hook reply consumer,
       // so it must not acquire a second delivery hold for context that nobody can receive.
-      const hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false, turns: true }) : undefined;
+      hooks = binding ? createClaudeHandle({ env, events: () => plane?.events, delivery: false, turns: true, idle: () => turns?.idle() }) : undefined;
       hooks?.adoptTranscript(binding!.path, "resume");
       void agent.start();
       for (let waited = 0; !agent.connected && waited < JOIN_MS; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));

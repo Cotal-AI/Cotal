@@ -2,12 +2,12 @@ import { existsSync, lstatSync, readlinkSync, realpathSync, unlinkSync, type Sta
 import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import {
   DEV_OWNER, accountRevocations, acquireLock, agentFilePath, assertValidRole, credsClaims, ensureDirNoSymlink, identityFromCreds,
-  loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionAgentDurables,
+  loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, oneLine, principalKey, provisionAgentDurables,
   resolveReadAcl, writeSecretFileAtomic, writeSecretFileCreateOnly,
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, authDir, credentialMintFlags,
+  parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, authDir, codeSpan, credentialMintFlags,
   isCommandFailure, preflightTarget, presentationOf,
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments, workspaceErrorParts,
@@ -104,11 +104,13 @@ function outFolderRefusal(target: object, out: string, error: unknown): CommandF
     try { found = lstatSync(dir, { throwIfNoEntry: false }); } catch { break; }
     if (found === undefined) break;
     if (found.isSymbolicLink()) {
-      let real: string | undefined;
-      try { real = realpathSync(dir); } catch { /* a link that names no folder */ }
+      let physical: string | undefined;
+      try { physical = join(realpathSync(dir), relative(dir, out)); } catch { /* a link that names no folder */ }
+      // An escaped display path would send the retry to a different file.
+      const suggested = physical !== undefined && oneLine(physical) === physical ? codeSpan(shellWord(physical)) : undefined;
       return new CommandFailure("refused", "PERMISSION_DENIED", `the --out path goes through ${dir}, a symbolic link to ${readlinkSync(dir)}, and a private credential is never written through a link; no credential was written`, {
         target: { ...target, folder: dir },
-        remedy: `name the --out file by a path with no symbolic link in it${real === undefined ? "" : `, such as ${join(real, relative(dir, out))} if that folder is yours`}`,
+        remedy: `name the --out file by a path with no symbolic link in it${suggested === undefined ? "" : `, such as ${suggested} if that folder is yours`}`,
       });
     }
     if (!found.isDirectory())
@@ -117,6 +119,10 @@ function outFolderRefusal(target: object, out: string, error: unknown): CommandF
   const code = (error as NodeJS.ErrnoException).code;
   if (code !== "EACCES" && code !== "EPERM") return undefined;
   return new CommandFailure("refused", "PERMISSION_DENIED", `the --out folder ${parent} could not be reached or made by this account (${code}); no credential was written`, { target: { ...target, folder: parent }, remedy: "name an --out file in a folder you own, or make that folder first" });
+}
+
+function personaCommand(verb: "show" | "edit", name: string, space: string): string {
+  return `cotal persona ${verb} ${shellWord(name)} --space${space.startsWith("-") ? "=" : " "}${shellWord(space)}`;
 }
 
 /** Native static profiles only. Labels, files and broker provisioning share one resolved authority. */
@@ -195,7 +201,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
       try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path, { deferRoleValidation: true }) : undefined; }
-      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
+      catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`${personaCommand("show", name, space)}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = parseCommaList(values["allow-subscribe"]);
       allowSubscribe = readFlag === undefined && carried ? carried.read : resolveReadAcl(definition?.subscribe ?? [], readFlag ?? definition?.allowSubscribe);
@@ -203,7 +209,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       role = values.role ?? (carried ? carried.role ?? undefined : definition?.role);
       if (values.role === undefined && !carried && role !== undefined) {
         try { assertValidRole(role); }
-        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`cotal persona edit ${name}\`, then mint again`); }
+        catch { throw unusable("sets a role that is not one word of letters, digits, _ or -", `give it such a role with \`${personaCommand("edit", name, space)}\`, then mint again`); }
       }
       lifecycleUid = mintLifecycleUid();
     }

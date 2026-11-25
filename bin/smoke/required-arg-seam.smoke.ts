@@ -574,7 +574,12 @@ const SEAMS: Seam[] = [
   // It states `tls: false` for the suite's loopback broker.
   // 467/374 -> 468/375: up-resume-render-lock adds one loopback connection factory to
   // seed and verify the preserved membership bucket. It states `tls: false` explicitly.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 468, untypecheckedSites: 375 },
+  // The run-host-live history writer uses a run-pinned credential and explicit loopback TLS policy.
+  // 469/376 -> 470/377: first-command-live adds its launcher's manager-caller connection, which
+  // states `tls: false` for the suite's loopback broker.
+  // 470/377 -> 471/378: spawn-auto-name adds one admin control connection to the Manager it
+  // drives. It states `tls: false` for the suite's loopback broker.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 471, untypecheckedSites: 378 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

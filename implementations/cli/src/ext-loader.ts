@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   registry,
   type Command,
@@ -41,10 +43,29 @@ export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: r
   herdr: { names: ["herdr"] },
 };
 
+/** The ACP clients `cotal setup` connects, client-setup provider name → the package that registers it
+ *  and how to tell the application is on this machine before that package is installed: any one of
+ *  `tools` on PATH, or one of `dirs` present. Once installed, the provider's own `available()`
+ *  decides. Kept beside {@link OFFICIAL_RUNTIME_TOOLS} because an uninstalled provider cannot be asked. */
+export const OFFICIAL_CLIENT_APPS: Readonly<Record<string, { readonly package: string; readonly title: string; readonly tools: readonly string[]; readonly dirs: () => readonly string[] }>> = {
+  // T3 Code's base directory (its `resolveBaseDir`).
+  t3: { package: "@cotal-ai/acp", title: "T3 Code", tools: ["t3"], dirs: () => [process.env.T3CODE_HOME?.trim() ? resolve(process.env.T3CODE_HOME.trim().replace(/^~(?=$|[/\\])/, homedir())) : join(homedir(), ".t3")] },
+  // Zed's config directory (its `paths::config_dir`).
+  zed: {
+    package: "@cotal-ai/acp",
+    title: "Zed",
+    tools: ["zed", "zeditor"],
+    dirs: () => [process.platform === "win32" ? join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), "Zed")
+      : process.platform === "linux" && process.env.XDG_CONFIG_HOME?.trim() ? join(process.env.XDG_CONFIG_HOME.trim(), "zed")
+      : join(homedir(), ".config", "zed")],
+  },
+};
+
 /** The commands official first-party extensions add that the binary does not seed, command name →
  *  npm package, so running one before its extension is added names the package. Not authority, as
  *  for {@link OFFICIAL_RUNTIMES}: the command exists only once `cotal ext add` installs it. */
 export const OFFICIAL_COMMANDS: Readonly<Record<string, string>> = {
+  acp: "@cotal-ai/acp",
   linear: "@cotal-ai/linear",
 };
 

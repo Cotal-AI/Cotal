@@ -1,5 +1,5 @@
 /**
- * Agent commands on OpenCode 2.x through the agent endpoint (SPEC 13.22): the real plugin, booted
+ * Agent commands, interrupt, the owner's turns and usage on OpenCode 2.x through the agent endpoint (SPEC 13.22): the real plugin, booted
  * in-process with a fake plugin context, against a fake OpenCode server and a JWT broker with the
  * shipped auth callout. The fake answers as opencode 2.2.5 was measured to: `GET /api/command` is
  * `{ location, data: [{ name, description? }] }`, `GET /api/skill` is `{ location, data: [{ id,
@@ -7,7 +7,10 @@
  * `POST /api/session/:id/command` is a 204 or a 404 `CommandNotFoundError`, and
  * `POST /api/session/:id/prompt` is a 200 or a 400 `InvalidRequestError` whose field is `skills`.
  * The first `GET` of each list answers only the built-ins, and `command.updated` and `skill.updated`
- * follow 200 ms after both first reads, as a fresh 2.2.5 loads a location's lists.
+ * follow 200 ms after both first reads, as a fresh 2.2.5 loads a location's lists. As 2.0.24 was
+ * measured: `GET /api/session/:id` carries the session's `cost`, `GET /api/session/:id/message`
+ * lists records newest first, where an assistant record is one model step with its `model` and
+ * `tokens`, and `GET /api/model` lists each model's `limit`.
  *
  * Covered: the owner's session lists OpenCode's commands, then its skills by id, with no `path` or
  * `content` on the wire, and the first list is complete. The fake also lists the commands the
@@ -25,7 +28,12 @@
  * the broker refuses a sibling agent of the same owner. A command queued behind a turn that never
  * ends stays queued until the owner's `interrupt`, which POSTs `/api/session/:id/interrupt` once and
  * answers `interrupted`; OpenCode's `session.execution.interrupted` then frees the session, and the
- * command runs. With no turn running, `interrupt` answers `idle`.
+ * command runs. With no turn running, `interrupt` answers `idle`. Presence says the agent serves
+ * interrupt, turns with images and usage. `usage` before any model step reports nothing. A turn goes
+ * out as one prompt, its text and each image as a file with a data URL, and a 4xx answer ends it
+ * refused, failed-precondition. `usage` then reports the newest step's input, cache and output
+ * tokens of the model's input limit and the session's cost, reading the model list once; a model the
+ * list has no window for leaves the context out.
  *
  * Run: pnpm smoke:opencode2-command:auth   (needs `nats-server` on PATH; local-only)
  */
@@ -125,6 +133,13 @@ const PERSONA = "You are Cody, a careful reviewer who explains every finding.";
 let mode: "ok" | "bad-text" | "crash" | "stall" = "ok";
 let slow: { answered: boolean; clientLeft: boolean } | undefined;
 let failSkills = false;
+let refusePrompt = false;
+let records: unknown[] = [];
+let sessionCost = 0;
+const MODELS = [
+  { id: "m1", modelID: "m1", providerID: "opencode", limit: { context: 200000, input: 160000, output: 32000 } },
+  { id: "m3", modelID: "m3", providerID: "opencode", limit: { context: 262144, output: 65536 } },
+];
 let turnRunning = false; // a turn the fake holds open, which only an interrupt ends
 const calls: string[] = [];
 const bodies: Record<string, unknown>[] = [];
@@ -176,7 +191,14 @@ const oc = createServer((req, res) => {
       calls.push(skill === undefined ? "prompt" : `skill ${skill}`);
       bodies.push(body);
       if (skill !== undefined && !SKILLS.some((s) => s.id === skill)) return json(res, 400, { _tag: "InvalidRequestError", message: `Skill not found: ${skill}`, field: "skills" });
+      if (refusePrompt) return json(res, 400, { _tag: "InvalidRequestError", message: "text is too long", field: "text" });
       return json(res, 200, { data: { id: `msg_${calls.length}`, sessionID: SID, type: "user" } });
+    }
+    if (req.method === "GET" && req.url === `/api/session/${SID}`) return json(res, 200, { data: { id: SID, cost: sessionCost } });
+    if (req.method === "GET" && req.url === `/api/session/${SID}/message?limit=200&order=desc`) return json(res, 200, { data: records, cursor: null });
+    if (req.method === "GET" && req.url === "/api/model") {
+      calls.push("models");
+      return json(res, 200, { data: MODELS });
     }
     unexpected.push(`${req.method} ${req.url}`);
     res.writeHead(404).end();
@@ -191,6 +213,12 @@ let dispose: (() => Promise<void>) | void = undefined;
 let seq = 0;
 const feed = (type: string) => ctx.feed({ type, durable: { aggregateID: SID, seq: ++seq }, data: { sessionID: SID } } as never);
 const runAndEndTurn = async () => { feed("session.execution.started"); feed("session.execution.succeeded"); await sleep(300); };
+/** A DM turn replies before it ends, as a model would, so its clean end drives no reply reminder. */
+const replyAndEndTurn = async () => {
+  const sent = await ctx.addedTools.find((t) => t.name === "cotal_dm")!.execute({ to: "web", text: "ok" });
+  if (sent.content.startsWith("⚠")) throw new Error(`the reply failed: ${sent.content}`);
+  await runAndEndTurn();
+};
 const addressOf = (w: Who): EpPrincipal => ({ owner: w.owner, actor: w.actor, uid: w.uid, runtimeId: processRuntime(w.uid).id });
 const verdict = (r: { ok: true; value: EndpointReply } | { ok: false; error: unknown }): string =>
   r.ok ? (r.value.ok ? "ok" : `${r.value.error.code}/${r.value.error.outcome ?? "-"}`)
@@ -268,6 +296,8 @@ try {
   const served = await until(() => webEp.getRoster().some((p: Presence) => p.card.id === `${A}.cody` && p.prompts !== undefined), 20_000);
   check("the plugin came online and serves its agent endpoint", served);
   await sleep(300);
+  const row = webEp.getRoster().find((p: Presence) => p.card.id === `${A}.cody`);
+  check("presence says it serves interrupt, the owner's turns with images, and usage", same(row?.agentEndpoint, { interrupt: true, turn: true, images: true, usage: true }), row?.agentEndpoint);
 
   const listStart = Date.now();
   const listed = await call(webEp, "commands");
@@ -324,7 +354,7 @@ try {
   const second = bodies[1] as { text?: string; system?: string } | undefined;
   check("after the command turn, the waiting message goes first, and the persona does not ride again",
     calls[1] === "prompt" && typeof second?.text === "string" && second.text.includes("hello from the inbox") && second.system === undefined, { calls, second });
-  await runAndEndTurn();
+  await replyAndEndTurn();
   const skillState = await settle(queued.id);
   check("then the second queued command, the skill, runs under its listed id as a turn of its own: it reads started, and the cancelled one never reached OpenCode",
     skillState.label === "started" && calls[2] === "skill opencode" && same(bodies[2], { text: "", skills: [{ id: "opencode" }] }) && !calls.includes("command init"),
@@ -369,7 +399,7 @@ try {
   check("with no execution started 5 s after OpenCode answered, the session is free: a DM then reaches POST /prompt",
     freed && calls[beforeDm] === "prompt" && String((bodies[beforeDm] as { text?: string }).text).includes("after the goal") && freedAfter >= 4500,
     { calls: calls.slice(beforeDm), freedAfter });
-  await runAndEndTurn();
+  await replyAndEndTurn();
   const next = await run({ target: "command", name: "review" });
   const nextAt = next.at;
   check("...and the next command runs: it reads started", next.label === "started" && calls.at(-1) === "command review", [next.label, calls.at(-1)]);
@@ -381,9 +411,9 @@ try {
   await sleep(Math.max(0, nextAt + 6500 - Date.now()));
   check("the last command's 5 s bound frees no later submission: a DM waits while the DM before it has not started its turn",
     same(calls.slice(held), ["prompt"]), calls.slice(held));
-  await runAndEndTurn();
+  await replyAndEndTurn();
   await until(() => calls.length > held + 1);
-  await runAndEndTurn();
+  await replyAndEndTurn();
 
   {
     const beforeHang = calls.length;
@@ -404,6 +434,42 @@ try {
     check("with no turn running, interrupt asks OpenCode once and answers idle",
       idle.ok && idle.value.ok && same(idle.value.data, { state: "idle" }) && same(calls.slice(beforeHang), ["interrupt", "command review", "interrupt"]),
       [verdict(idle), calls.slice(beforeHang)]);
+  }
+
+  {
+    const usageOf = async () => {
+      const r = await call(webEp, "usage");
+      return r.ok && r.value.ok ? r.value.data : verdict(r);
+    };
+    check("usage before any model step reports nothing yet", same(await usageOf(), { supported: true }), await usageOf());
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    const beforeTurn = calls.length;
+    const turned = await call(webEp, "turn", { text: "What color is this?", images: [{ mimeType: "image/png", data: png }] });
+    const turnState = await settle(turned.ok && turned.value.ok ? (turned.value.data as { id?: string }).id : undefined);
+    check("a turn reads started and goes out as one prompt: its text and the image as a file with a data URL",
+      turnState.label === "started" && same(calls.slice(beforeTurn), ["prompt"]) && same(bodies.at(-1), { text: "What color is this?", files: [{ uri: `data:image/png;base64,${png}` }] }),
+      [verdict(turned), turnState.label, calls.slice(beforeTurn), bodies.at(-1)]);
+    await runAndEndTurn();
+    refusePrompt = true;
+    const refused = await call(webEp, "turn", { text: "refused" });
+    const refusedState = await settle(refused.ok && refused.value.ok ? (refused.value.data as { id?: string }).id : undefined);
+    refusePrompt = false;
+    check("a turn OpenCode answers with a 4xx ends refused, failed-precondition, with OpenCode's message",
+      refusedState.label === "refused/failed-precondition" && message(refusedState.state).includes("text is too long"), refusedState);
+    const step = (id: string, input: number, output: number, read: number, write: number) =>
+      ({ type: "assistant", id, model: { id: "m1", providerID: "opencode", variant: "default" }, finish: "stop", cost: 0, tokens: { input, output, reasoning: 7, cache: { read, write } }, content: [] });
+    records = [{ type: "idle", id: "msg_9" }, step("msg_8", 1000, 50, 3000, 200), step("msg_7", 500, 20, 100, 0), { type: "user", id: "msg_6" }];
+    sessionCost = 0.75;
+    const modelReads = calls.filter((c) => c === "models").length;
+    const reported = await usageOf();
+    const again = await usageOf();
+    check("usage reports the newest step's input, cache and output tokens of the model's input limit, and the session's cost, reading the model list once",
+      same(reported, { supported: true, context: { used: 4250, size: 160000 }, cost: { amount: 0.75, currency: "USD" } }) && same(again, reported)
+      && calls.filter((c) => c === "models").length === modelReads + 1, { reported, again, modelReads: calls.filter((c) => c === "models").length - modelReads });
+    (records[1] as { model: { id: string } }).model.id = "m2";
+    check("a model the model list gives no window leaves the context out", same(await usageOf(), { supported: true, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
+    (records[1] as { model: { id: string } }).model.id = "m3";
+    check("a model with no input limit is measured against its context limit", same(await usageOf(), { supported: true, context: { used: 4250, size: 262144 }, cost: { amount: 0.75, currency: "USD" } }), await usageOf());
   }
 
   mode = "stall";

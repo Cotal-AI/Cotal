@@ -28,6 +28,7 @@ import {
   registry,
   token,
   type AuthProvider,
+  type ManagerInstanceListing,
   type EpCaller,
   type MintOpts,
   type ProbeResult,
@@ -41,12 +42,12 @@ import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from 
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
 import { brokerUrlKey, canonicalRoot, findMesh, loadMeshes, movedProject, pruneMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
-import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
-import { findPreparedSpace } from "./prepared-spaces.js";
+import { isWorkspaceTargetError, MeshTargetError, preparedLifecycle, recordsElsewhereError, resolveMeshTarget, resolveReadsLiveness, retainedLegacyBroker, stoppedStack, targetErrorSpace, type MeshTarget, type ResolveFlags, credsSpace } from "./mesh-target.js";
+import { findPreparedSpace, projectRootProblem, projectRootProblemText } from "./prepared-spaces.js";
 import { shellPath } from "./local-record-source.js";
 import { codeSpan } from "./text-wrap.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
-import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
+import { preparedRootRemedy, renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type NativeCause, type RefusalCode } from "./output.js";
 import { credentialFileExposure, localRecordAccess, protectedLocalDirectory } from "./protected-records.js";
 import { localStackRoot, spaceStreamsAbsent, spaceStreamsExpected } from "./space-streams.js";
@@ -186,15 +187,10 @@ export interface UserViewAuth {
   source: () => Promise<string>;
 }
 
-/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
- *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
- *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
- *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
- *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
- *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
+/** The auth provider and this machine's sign-in state for a user-mode {@link Connection}. */
+function userAuthState(conn: Connection, what: string): { provider: AuthProvider; dir: string; store: ReturnType<typeof workspaceSecretStore>; bearer: string } {
   if (!conn.bearer || !conn.userAuth || !conn.root)
-    throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
+    throw new Error(`userViewAuth: not a user-mode registry connection (${what})`);
   const ua = conn.userAuth;
   let provider: AuthProvider;
   try {
@@ -204,8 +200,63 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
       `space "${conn.space}" uses the "${ua.provider}" auth provider, which this build does not register - user-auth spaces need it (the official cotal binary includes @cotal-ai/auth)`,
     );
   }
-  const dir = userAuthStateDir(conn.root, conn.space);
-  const store = workspaceSecretStore(conn.root);
+  return { provider, dir: userAuthStateDir(conn.root, conn.space), store: workspaceSecretStore(conn.root), bearer: conn.bearer };
+}
+
+/** {@link userSignInAuth}'s source refused a bearer for another sign-in: the person's row was
+ *  granted again, or this machine signed in as another account, while a reader held the old one.
+ *  The reader cannot recover in place. */
+export class SignInChangedError extends Error {}
+
+/** Why `bearer` is not the sign-in `started` names, or undefined when it is the same owner, actor and
+ *  lifecycle. A caller that must act as one sign-in throughout checks each bearer it is handed. */
+export function signInChange(started: { owner: string; actor: string; lifecycleUid: string }, bearer: string): SignInChangedError | undefined {
+  const now = principalFromBearer(bearer);
+  if (now.owner !== started.owner || now.actor !== started.actor)
+    return new SignInChangedError(`this machine is now signed in as ${now.owner}.${now.actor}, not ${started.owner}.${started.actor}; restart to act as that account`);
+  if (now.lifecycleUid !== started.lifecycleUid)
+    return new SignInChangedError(`your sign-in ${started.owner}.${started.actor} was granted again (lifecycle ${now.lifecycleUid}; this reader started on ${started.lifecycleUid}); restart it to read under the new grant`);
+  return undefined;
+}
+
+/** The person's own sign-in as a standing reader's auth material: the plain bearer a user-mode
+ *  {@link Connection} carries, and a source that runs the exchange again for each new connection, so
+ *  a long-running reader holds no elevated view. A person's sign-in reads the event channels of
+ *  every agent under their owner (SPEC 13.21). Call ONLY with a user-mode connection. */
+export function userSignInAuth(conn: Connection): UserViewAuth {
+  const { provider, dir, store, bearer } = userAuthState(conn, "the sign-in");
+  const { sentinelCreds } = conn;
+  if (!sentinelCreds) throw new Error("userSignInAuth: the connection carries no sentinel credential");
+  const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
+  // A reader's history consumer is named for this lifecycle, and a re-grant retires it. A bearer
+  // for another sign-in is refused, so the reader fails loud instead of reading under a name its
+  // new credential does not hold.
+  const source = async () => {
+    const next = (await provider.userCredentials({ store, dir, space: conn.space, actor: CLI_USER_ACTOR })).bearer;
+    const changed = signInChange({ owner, actor, lifecycleUid }, next);
+    if (changed) throw changed;
+    return next;
+  };
+  return { bearer, sentinelCreds, owner, actor, lifecycleUid, source };
+}
+
+/** The signed-in person's own Manager instances, as the space's auth service lists them: each Manager
+ *  their owner registered and the space host's own, with the verdict an unpinned selection reads.
+ *  The list spends no selection. Call ONLY with a user-mode connection. */
+export async function ownManagerInstances(conn: Connection): Promise<ManagerInstanceListing[]> {
+  const { provider, dir, store } = userAuthState(conn, "the manager list");
+  if (!provider.listManagerInstances) throw new Error(`the "${provider.name}" auth provider cannot list a person's managers`);
+  return provider.listManagerInstances({ store, dir, space: conn.space });
+}
+
+/** Mint an elevated-view bearer over an existing user-mode {@link Connection} — the user-mode
+ *  path for the operator surfaces (`web`, `console`, `history clear`, `channels`, `spawn -f`).
+ *  The view is authorized server-side against the fresh ledger row; a refusal THROWS the exact
+ *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
+ *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
+ *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
+  const { provider, dir, store, bearer: signIn } = userAuthState(conn, `view "${view}"`);
   if (opts.managerInstanceId !== undefined) {
     if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
     assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
@@ -213,7 +264,7 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
   if ((view === "transfer-writer") !== (opts.transferWriter !== undefined))
     throw new Error("the transfer-writer view and the one object it uploads come together or not at all");
   const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
-  const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
+  const original = view === "manager-caller" ? principalFromBearer(signIn) : undefined;
   const mint = async () => {
     const result = await provider.userCredentials(request);
     if (!original) return { ...result, principal: principalFromBearer(result.bearer) };
@@ -305,8 +356,19 @@ export function principalFromBearer(bearer: string): { owner: string; actor: str
 export function refuseStaticCredsForKnownUserAuth(space: string, server: string | undefined, what: string): void {
   const recorded = findMesh(space);
   const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
-  const knownLocalUser = hasUserAuthState(findCotalRoot(), space);
-  if (!knownRecordedUser && !knownLocalUser) return;
+  const root = findCotalRoot();
+  try {
+    if (!hasUserAuthState(root, space) && !knownRecordedUser) return;
+  } catch (error) {
+    const native = error as NodeJS.ErrnoException | undefined;
+    const code = native?.code;
+    if (native?.syscall !== "lstat" || (code !== "EACCES" && code !== "EPERM")) throw error;
+    throw new ConnectRefusal(
+      `✗ cannot check the local authentication mode for space "${space}" (${code})`,
+      "  Check that this account can read the project's authentication settings and traverse their parent folders.",
+      { code: "PERMISSION_DENIED", cause: error, native: { code }, target: { space, root } },
+    );
+  }
   throw new ConnectRefusal(
     `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
@@ -640,12 +702,16 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // for that very space even when the registry lost (or never had) the entry — treating it as an
     // open broker would credless-connect into a callout denial whose copy sends the operator
     // port-hunting. Name the real state and the recovery instead.
-    if (hasUserAuthState(findCotalRoot(), flags.space))
+    const root = findCotalRoot();
+    if (hasUserAuthState(root, flags.space)) {
+      const retained = retainedLegacyBroker(root);
+      const restart = codeSpan(`cotal up --user-auth --space ${shellPath(flags.space)}${retained && !retained.open ? ` --server ${shellPath(retained.server)}` : ""}`);
       throw new ConnectRefusal(
-        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with ${restart} from its project folder, then sign in (\`cotal login\`)`,
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
+    }
     const tls = tlsIntent(flags.server, false);
     try {
       await reachableOrThrow(flags.server, { tls });
@@ -654,17 +720,21 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       // Preparation can guide recovery, but it must not affect which broker we dial.
       const prepared = findPreparedSpace(flags.space);
       const at = checkServer(flags.server, "--server").ok && !flags.server.includes(",") ? new URL(flags.server) : undefined;
-      if (prepared && at) {
+      const rootProblem = prepared ? projectRootProblem(prepared.root) : undefined;
+      if (prepared && at && rootProblem === undefined) {
         const stopped = stoppedStack(prepared.root, flags.space, flags.server);
         if (stopped) {
           const target = new MeshTargetError("not-started", `"${flags.space}" is stopped; its last operation, ${stopped.operation}, ${stopped.outcome}`, { space: flags.space, root: prepared.root, stopped }, { cause: error });
           throw workspaceRefusal({ kind: "target", error: target }, { cause: target, kind: error.kind, code: error.code });
         }
       }
-      const local = prepared && existsSync(prepared.root) && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0"
-        && preparedLifecycle(prepared.root, flags.space).state === "prepared";
-      const command = local && codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`);
-      const remedy = command ? `if you meant to start the prepared space here, run ${command}. Otherwise, check that address and that a broker runs there` : "check that address and that a broker runs there";
+      const local = prepared && at?.protocol === "nats:" && at.hostname === "127.0.0.1" && at.port && at.port !== "0";
+      const addressRemedy = "check that address and that a broker runs there";
+      const remedy = !local || rootProblem === "missing" ? addressRemedy
+        : rootProblem !== undefined ? `${addressRemedy}. The recorded project path ${prepared.root} ${projectRootProblemText(rootProblem)}. ${preparedRootRemedy(flags.space, rootProblem)}`
+        : preparedLifecycle(prepared.root, flags.space).state === "prepared"
+          ? `if you meant to start the prepared space here, run ${codeSpan(`cotal up --root ${shellPath(prepared.root)} --space ${shellPath(flags.space)} --server ${shellPath(flags.server)}`)}. Otherwise, ${addressRemedy}`
+          : addressRemedy;
       const message = error.failure().message;
       throw new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, {
         cause: error, kind: error.kind, code: error.code, parts: { message, remedy },
@@ -774,7 +844,7 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
     // no stack journal. Run from it, the refusal is the one the command gives there with no --space (#7315).
     const elsewhere = recordsElsewhereError(findCotalRoot());
     if (elsewhere?.details.stackSpace === target.space && elsewhere.details.recordedRoot !== undefined && canonicalRoot(elsewhere.details.recordedRoot) === canonicalRoot(target.root))
-      throw workspaceRefusal({ kind: "target", error: elsewhere }, { code: targetErrorCode(elsewhere.code) });
+      throw workspaceRefusal({ kind: "target", error: elsewhere }, { cause: elsewhere, code: targetErrorCode(elsewhere.code) });
     // The folder is gone, deleted or moved somewhere this command cannot see, so no seed is missing (#7318).
     if (!existsSync(target.root)) {
       const parts = { message: `mesh "${target.space}" is registered for ${target.root}, which no longer exists`, remedy: `if that folder was moved or renamed, move it back to ${target.root} and run the command again; otherwise forget the space with \`cotal space forget ${target.space}\`` };

@@ -108,9 +108,11 @@ cell("the channel guidance sends a status for a peer to the shared channel with 
   assert.ok(CHANNEL_GUIDANCE.includes("Use cotal_dm only for something one peer alone needs"), CHANNEL_GUIDANCE);
 });
 
-cell("the briefing says a live post misses an agent that is away, and where once works", () => {
+// The manager refuses once for a connector that cannot take it, so the briefing keeps no harness list.
+cell("the briefing says a live post misses an agent that is away, and offers once without a harness list", () => {
   assert.ok(CHANNEL_GUIDANCE.includes("on a live channel, one that is disconnected or busy then misses it, unless the post mentions it by a name only it has and it may read the channel."), CHANNEL_GUIDANCE);
-  assert.ok(MESH_FIRST_STEER.includes("starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends."), MESH_FIRST_STEER);
+  assert.ok(MESH_FIRST_STEER.includes("For a single task, cotal_spawn with once: true starts a helper that is stopped when the task ends."), MESH_FIRST_STEER);
+  for (const [h, text] of all) assert.ok(!text.includes("Claude Code, jcode, OpenCode or pi"), `${h}: still names the once harnesses`);
 });
 
 cell("every harness states channel retention defaults and operator control", () => {

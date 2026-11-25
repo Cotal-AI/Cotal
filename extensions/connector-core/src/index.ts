@@ -10,6 +10,9 @@ export * from "./launch.js";
 export * from "./agui.js";
 export * from "./agui-emitter.js";
 export * from "./durable-source.js";
+export * from "./delta-journal.js";
+export * from "./merged-source.js";
+export * from "./streamed-parts.js";
 export * from "./event-wal.js";
 export * from "./subject-frontier.js";
 export * from "./agui-holder.js";
@@ -29,10 +32,12 @@ export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";
 export { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+export type { AgentNaming, NameFromMessage, NameRequest } from "./agent-naming.js";
 export {
   COMMAND_LIST_MS, CommandRefused, ENDED_COMMANDS_KEPT, MAX_QUEUED_COMMANDS,
-  type AgentCommand, type CommandDispatch, type CommandDispatcher, type CommandQueue,
+  type AgentCommand, type AgentTurn, type AgentUsage, type CommandDispatch, type CommandDispatcher, type CommandQueue,
 } from "./agent-commands.js";
+export { firstCommandEnv } from "./first-command.js";
 export {
   PromptRefused, PROMPT_ANSWER_REPLY_MS, PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_OPEN_MS, PROMPT_SETTLE_MS,
   PROMPT_SUMMARY_MAX_BYTES,

@@ -9,7 +9,7 @@ import { readBrokerPolicy } from "./broker-policy.js";
 import { DELIVERY_PIDFILE, localProcessPath, MANAGER_PIDFILE } from "./local-process.js";
 import { CommandFailure, isCommandFailure, recordOperationSpaceNote, recordOperationWarning, SHOWN_VALUE_MAX } from "./output.js";
 import { assertRecordIdentity, parsePid, probeLiveness, readPidfile, type ProcessIdentityRecord } from "./pid.js";
-import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
+import { findPreparedSpace, preparedSpaceAt, projectRootDisplaced, projectRootProblem, projectRootProblemText, type ProjectRootProblem } from "./prepared-spaces.js";
 import {
   canonicalRoot,
   brokerUrlKey,
@@ -175,14 +175,18 @@ export interface MeshTargetErrorDetails {
   /** For `not-started` in a folder whose stack journal another folder recorded: the next step that
    *  `up` and `down` name there too, from {@link stackElsewhereRemedy}. */
   stackRemedy?: string;
-  /** For `not-started` on a prepared space: its root no longer exists, so `up` cannot start it there. */
+  /** For `not-started` on a prepared space: no project directory is available at its root. */
   rootMissing?: boolean;
+  /** Why the recorded project directory is unavailable. */
+  rootProblem?: ProjectRootProblem;
   /** For `not-started` on a root with no registration: `server` is the broker its last start
    *  configured, which a bare `cotal up` there starts again. */
   lastRun?: boolean;
   /** For `not-started` on a prepared space whose controller stack launched a member and was
    *  stopped: its last operation, whether to restart without a manager, and its store cap. */
   stopped?: { operation: string; outcome: string; noManager?: true; storeCap?: number };
+  /** A retained local stack needs the user-auth launcher on restart. */
+  restartUserAuth?: true;
   /** For `not-started` on a prepared space: the last whole-stack operation its root's stack journal
    *  records for it with no outcome, which `cotal status` there names the way out of. */
   unsettled?: "up" | "down";
@@ -440,10 +444,11 @@ export function isGenuineSpace(root: string): boolean {
 function notStarted(space: string, cwd?: string): void {
   const prepared = findPreparedSpace(space);
   if (!prepared) return;
-  if (!existsSync(prepared.root)) {
-    const stack = cwd === undefined ? undefined : stackRecord(findCotalRoot(cwd));
+  const rootProblem = projectRootProblem(prepared.root);
+  if (rootProblem !== undefined) {
+    const stack = cwd !== undefined && projectRootDisplaced(rootProblem) ? stackRecord(findCotalRoot(cwd)) : undefined;
     const moved = stack?.stackSpace === space && stack.recordedRoot === prepared.root ? stack.stackRemedy : undefined;
-    throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which no longer exists${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, ...(moved ? { stackRemedy: moved } : {}) });
+    throw new MeshTargetError("not-started", `"${space}" is prepared in ${prepared.root}, which ${projectRootProblemText(rootProblem)}${moved ? ", and this folder's stack journal was recorded there, so this folder was moved from there" : ""}`, { space, root: prepared.root, rootMissing: true, rootProblem, ...(moved ? { stackRemedy: moved } : {}) });
   }
   const lifecycle = preparedLifecycle(prepared.root, space);
   if (lifecycle.state === "unsettled") throw new MeshTargetError("not-started", `"${space}" is prepared, and the last ${lifecycle.unsettled} of its stack in ${prepared.root} has no recorded outcome`, { space, root: prepared.root, unsettled: lifecycle.unsettled, ...(lifecycle.stopped ? { stopped: lifecycle.stopped } : {}) });
@@ -654,7 +659,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
   if (existsSync(stackJournalPath(recordedRoot))) return { kind: "copy", message: `${recordedRoot} still holds the stack journal of "${space}", so this folder is a copy of a stack that runs from there`, remedy: `use the stack from ${recordedRoot}, which holds it` };
   const instances = new ProtectedRecordStore("services", space, (value) => value, "instances");
   const known = journalInstanceIds(members).find((id) => instances.read(id) !== undefined);
-  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot) };
+  if (known) return { kind: "known", message: `this machine records instance ${known} of the stack that ${recordedRoot} recorded, so that stack is this machine's own`, remedy: movedRootRemedy(recordedRoot, "use the stack there without adopting it") };
   const registered = findMesh(space), recorded = registered?.root ?? findPreparedSpace(space)?.root;
   if (recorded !== undefined) return { kind: "recorded", message: `"${space}" is ${registered ? "registered" : "prepared"} on this machine at ${recorded}`, remedy: `forget it with ${codeSpan(`cotal space forget ${shellPath(space)}`)}, then run ${codeSpan(`cotal space create ${shellPath(space)} --adopt --root ${shellPath(root)}`)}` };
   return undefined;
@@ -663,7 +668,7 @@ export function stackAdoptionBlock(root: string, recordedRoot: string, space: st
 /** The next step in `root`, whose stack journal `recordedRoot` recorded for `space`, which every
  *  command run there names. A linked `.cotal`, and a copy whose recorded folder still holds the
  *  journal, use the stack from there. A moved folder moves back when this machine records its stack
- *  or its space. A confirmed stopped stack at a missing path can also be forgotten and adopted.
+ *  or its space. A confirmed stopped stack at a missing path can be forgotten and adopted.
  *  When the machine records neither, moving it back would not start it. */
 export function stackElsewhereRemedy(root: string, recordedRoot: string, space: string, members: unknown, operation?: unknown): string {
   if (cotalDirLink(root) !== undefined) return `use the stack from ${recordedRoot}, which holds it; this folder only links to its records`;
@@ -705,6 +710,23 @@ function stackRecord(root: string): { server?: string; stackSpace?: string; home
   } catch {
     return {};
   }
+}
+
+/** The space of this project's live open broker at the requested address. */
+function runningOpenStackSpace(root: string, requestedServer: string): string | undefined {
+  if (!isGenuineSpace(root) || cotalDirLink(root) !== undefined) return undefined;
+  try {
+    const bytes = readLocalRecordSource(stackJournalPath(root), 64 * 1024, true);
+    if (bytes === undefined) return undefined;
+    const journal = decodeLocalJson(bytes) as { schemaVersion?: unknown; kind?: unknown; root?: unknown; mode?: unknown; server?: unknown; space?: unknown; members?: unknown } | null;
+    if (journal?.schemaVersion !== 1 || journal.kind !== "cotal-stack-controller" || journal.root !== canonicalRoot(root) || journal.mode !== "open" ||
+        typeof journal.server !== "string" || brokerUrlKey(journal.server) !== requestedServer || typeof journal.space !== "string" || !journal.space || !Array.isArray(journal.members)) return undefined;
+    const broker = (journal.members as ({ role?: unknown; state?: unknown; process?: Partial<ProcessIdentityRecord> } | null)[]).find((row) => row?.role === "broker");
+    const pin = broker?.process;
+    if ((broker?.state === "started" || broker?.state === "reused") && typeof pin?.pid === "number" && parsePid(String(pin.pid)) === pin.pid &&
+        typeof pin.token === "string" && assertRecordIdentity({ pid: pin.pid, token: pin.token }).kind === "match") return journal.space;
+  } catch { /* Unusable journal evidence cannot change a raw target. */ }
+  return undefined;
 }
 
 /** The `host:` and `port:` a rendered broker configuration names, as a broker URL. */
@@ -1028,8 +1050,11 @@ export function folderSpace(cwd: string, { refuseAmbiguous = false } = {}): stri
  *  is the target. */
 export function folderSpaceOverSelection(cwd: string, current: string | null, offline: readonly string[] = []): string | undefined {
   if (current === null || readCurrentSelection()?.source === "explicit") return undefined;
-  const folder = folderSpace(cwd);
-  return folder !== undefined && folder !== current && !offline.includes(folder) ? folder : undefined;
+  const folder = folderSpaces(cwd, loadMeshes());
+  if (!folder || folder.registered.includes(current)) return undefined;
+  const running = folder.registered.filter((space) => !offline.includes(space));
+  const space = running.length === 1 ? running[0] : folder.registered.length === 0 ? unfinishedStackSpace(folder.root) : undefined;
+  return space !== undefined && space !== current && !offline.includes(space) ? space : undefined;
 }
 
 /** The one registration recorded for `root`, if any. A broker that runs several spaces records one
@@ -1038,8 +1063,12 @@ export function folderSpaceOverSelection(cwd: string, current: string | null, of
  *  name the tenants and refuse instead (the same posture as `soleSpaceOf` for an unrecorded
  *  multi-space root). The names ride along as `spaces`: `update` replaces the one binary they all
  *  share, so it reads each of them in turn rather than refusing the machine-wide question. */
-function registrationAt(root: string, meshes: readonly MeshEntry[]): MeshEntry | undefined {
+function registrationAt(root: string, meshes: readonly MeshEntry[], offline?: ReadonlySet<string>): MeshEntry | undefined {
   const rootMatches = meshes.filter((m) => canonicalRoot(m.root) === canonicalRoot(root));
+  if (rootMatches.length > 1 && offline?.size) {
+    const running = rootMatches.filter((m) => !offline.has(m.space));
+    if (running.length === 1) return running[0];
+  }
   if (rootMatches.length > 1)
     throw new MeshTargetError(
       "ambiguous-target",
@@ -1096,7 +1125,7 @@ export function resolveReadsLiveness(cwd: string, flags: ResolveFlags = {}): boo
 
 /**
  * Resolve the mesh target by precedence (first match wins):
- *  1. `--space` — registry lookup, or this project's matching retained static space for file-only signing.
+ *  1. `--space` selects a registered space or identifies this project's matching stopped space.
  *  2. `--server` — registry entry on that server (for creds/personas), else the local project.
  *  3. The `current` selected by `cotal use`, except inside a project whose root has one RUNNING space
  *     other than it, where step 4 applies. A space this folder prepared and never started, and one
@@ -1123,13 +1152,16 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     if (!m) {
       notStarted(flags.space, cwd);
       const root = findCotalRoot(cwd);
-      if (flags.server === undefined && isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
+      if (isGenuineSpace(root) && !stackRecord(root) && !preparedSpaceAt(root)) {
         const retained = retainedLegacyBroker(root);
-        if (retained && !retained.open && !legacyStackOtherHome(root)) {
-          const { spaces } = rootInventory(root);
+        // A --server naming the retained broker is the same target, not another mesh: the
+        // file-only mint for the stopped space may use it. Any other address stays refused.
+        if (retained && !legacyStackOtherHome(root)
+          && (flags.server === undefined || (!retained.open && brokerUrlKey(flags.server) === brokerUrlKey(retained.server)))) {
+          const spaces = retained.open ? [retainedOpenSpace(root)] : rootInventory(root).spaces;
           if (spaces.length === 1 && spaces[0] === flags.space && !loadMeshes().some(m => m.space === flags.space || canonicalRoot(m.root) === canonicalRoot(root))) {
-            if (flags.allowStoppedLocal) return localTarget(root, retained.server, "local-space", flags.readOnly);
-            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space });
+            if (flags.allowStoppedLocal && !retained.open) return localTarget(root, retained.server, "local-space", flags.readOnly);
+            throw new MeshTargetError("not-started", `the mesh "${flags.space}" in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, stackSpace: flags.space, ...(!retained.open && userAuthSpacesOnDisk(authDir(root)).includes(flags.space) ? { restartUserAuth: true } : {}) });
           }
         }
       }
@@ -1197,7 +1229,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
         available: nearby.map((e) => `${e.space} (${brokerAddressForDisplay(e.server) ?? "an invalid broker address"})`),
       });
     }
-    return local;
+    const stackSpace = local.mode === "open" && local.space === DEFAULT_SPACE ? runningOpenStackSpace(local.root, requestedServer) : undefined;
+    return stackSpace === undefined ? local : { ...local, space: stackSpace };
   }
 
   const selection = readCurrentSelection();
@@ -1241,7 +1274,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // recorded project as UNRECORDED — discarding the recorded server and mode and falling through
     // to `DEFAULT_SERVER` below, silently. `mesh-registry.ts` states the rule on `meshesForRoot`:
     // "a raw `===` silently misses". This is the same rule, one predicate, not a second spelling.
-    const recorded = registrationAt(root, meshes);
+    // An adopted selection yields to the one registration here that the liveness sweep kept.
+    const recorded = registrationAt(root, meshes, selection?.source === "adopted" ? offline : undefined);
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
     // A root whose own stack recorded a broker is not given the default address: with no
     // registration that stack is not running here, and the default port may hold another mesh. The
@@ -1266,7 +1300,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // or take it over rather than start what the caller asked for. Name that folder instead.
       const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
       if (flags.allowStoppedLocal && named !== undefined && !elsewhere) return localTarget(root, retained.server, "local-space", flags.readOnly);
-      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
+      const restartUserAuth = !retained.open && named !== undefined && !elsewhere && userAuthSpacesOnDisk(authDir(root)).includes(named);
+      throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }), ...(restartUserAuth ? { restartUserAuth: true } : {}) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the

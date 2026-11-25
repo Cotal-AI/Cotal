@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { cmdSpawnSpec, codeSpan, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, codeSpan, isWorkspaceTargetError, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 import { workingFolderRemoved } from "./paths.js";
@@ -221,6 +221,10 @@ export function displayCmd({ fromAnyFolder = false } = {}): string {
 export function displayRemedy(remedy: string, cmd?: string): string {
   return remedy.replace(/(?<!`)(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (span, _fence, command: string) =>
     command.startsWith("cotal ") ? codeSpan(`${cmd ??= displayCmd()}${command.slice("cotal".length)}`) : span);
+}
+
+export function hasMovedStackRemedy(error: unknown): boolean {
+  return isWorkspaceTargetError(error) && error.code === "not-started" && error.details.home === undefined && error.details.stackRemedy !== undefined;
 }
 
 /** The self-invocation as a shell-ready, double-quoted command prefix (for cmux pane commands).

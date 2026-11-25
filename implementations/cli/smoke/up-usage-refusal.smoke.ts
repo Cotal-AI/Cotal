@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -126,6 +126,70 @@ for (const { args, message } of cases) {
   const authManifest = join(manifests, "cotal.yaml"), openManifest = join(manifests, "open.yaml");
   writeFileSync(authManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagaudit\nchannels: {}\n");
   writeFileSync(openManifest, "apiVersion: cotal/v1\nkind: Mesh\nspace: flagauditopen\nbroker:\n  auth: false\nchannels: {}\n");
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refused = run(["up", "--dry-run", ...flags]);
+    const remedy = refused.envelope?.error?.remedy ?? refused.stderr;
+    const retryFlags = flags.filter((flag) => !remedy.includes(`omit ${flag}`));
+    const preview = run(["up", "--dry-run", "-f", openManifest, ...retryFlags]);
+    check(`missing-manifest advice with ${flags[0] ?? "default output"} leads to a read-only plan`,
+      refused.status === 1 && remedy.includes("pass -f <cotal.yaml>") && (flags.length > 0 || !remedy.includes("and omit --"))
+        && preview.status === 0 && preview.stdout.includes("flagauditopen") && readdirSync(folder).length === 0, shown(preview));
+
+    const foreground = run(["up", "--foreground", "--dry-run", ...flags], manifests);
+    const advice = foreground.envelope?.error?.remedy ?? foreground.stderr;
+    const command = `team boot cotal.yaml --foreground --dry-run${flags.length ? ` ${flags[0]}` : ""}`;
+    check(`foreground dry-run with ${flags[0] ?? "default output"} points directly to team boot`,
+      foreground.status === 1 && (flags[0] !== "--json" || foreground.envelope?.error?.code === "USAGE_INVALID")
+        && (flags[0] === "--json" ? ["cotal"] : ["cotal", "pnpm cotal"]).some((cli) => advice.includes(`\`${cli} ${command}\``))
+        && !advice.includes("pass -f <cotal.yaml>") && !existsSync(join(manifests, ".cotal")), shown(foreground));
+    const foregroundPreview = run(command.split(" "), manifests);
+    check(`the foreground retry with ${flags[0] ?? "default output"} previews terminal custody without writes`,
+      foregroundPreview.status === 0 && (foregroundPreview.envelope?.result?.lifetimeRequest === "terminal-bound"
+        || /Lifetime request:\s+terminal-bound/.test(foregroundPreview.stdout))
+        && !existsSync(join(manifests, ".cotal")), shown(foregroundPreview));
+  }
+  writeFileSync(join(manifests, "-mesh.yaml"), readFileSync(openManifest));
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "--file=-mesh.yaml", "--dry-run", "--foreground", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const command = /preview with `((?:pnpm )?cotal) ([^`]+)`/.exec(advice);
+    const expected = ["team", "boot", "./-mesh.yaml", "--foreground", "--dry-run", ...flags].join(" ");
+    const retry = command?.[2] === expected ? run(command[2].split(" "), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const json = flags[0] === "--json";
+    check(`the printed foreground retry with ${flags[0] ?? "default output"} previews a dash-leading manifest without writes`,
+      refusal.status === 2 && retry?.status === 0 && retry.stderr === "" && !existsSync(join(manifests, ".cotal"))
+        && (json ? command?.[1] === "cotal" && refusal.stderr === "" && refusal.envelope?.error?.code === "UNSUPPORTED"
+          && retry.envelope?.outcome === "ok" && result?.kind === "fresh-team-boot-preview"
+          && result.lifetimeRequest === "terminal-bound" && result.effectAttempted === false && result.persisted === false
+          : /Lifetime request:\s+terminal-bound/.test(retry.stdout)),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
+  const originalServer = "nats://127.0.0.1:1";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const manifest = readFileSync(openManifest, "utf8").replace("  auth: false\n", `  auth: false\n  servers: ${originalServer}\n`);
+  const original = "team.yaml", copy = "team-copy.yaml";
+  writeFileSync(join(manifests, original), manifest);
+  writeFileSync(join(manifests, copy), manifest.replace(originalServer, server));
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "-f", original, "--server", server, "--foreground", "--dry-run", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const preview = ["team", "boot", "<manifest-copy>", "--foreground", "--dry-run", ...flags];
+    const json = flags[0] === "--json";
+    const command = /`((?:pnpm )?cotal) (team boot [^`]+)`/.exec(advice);
+    const retry = command?.[2] === preview.join(" ") && (!json || command[1] === "cotal")
+      ? run(preview.map((word) => word === "<manifest-copy>" ? copy : word), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const correctPreview = json ? result?.brokerCandidate === server && result.lifetimeRequest === "terminal-bound"
+      : retry !== undefined && /Lifetime request:\s+terminal-bound/.test(retry.stdout)
+        && retry.stdout.split("\n").some((line) => line.trim().startsWith("Broker candidate:") && line.trimEnd().endsWith(` ${server}`));
+    check(`foreground preview with --server and ${flags[0] ?? "default output"} inspects the broker from the manifest copy`,
+      refusal.status === 2 && (json ? refusal.envelope?.error?.code === "UNSUPPORTED" : /Code:\s+UNSUPPORTED/.test(refusal.stderr))
+        && advice.includes("copy the manifest") && advice.includes("`broker.servers`") && advice.includes("`--server`")
+        && !advice.includes(`team boot ${original}`) && !advice.includes(server) && retry?.status === 0 && retry.stderr === "" && correctPreview
+        && readFileSync(join(manifests, original), "utf8") === manifest && !existsSync(join(manifests, ".cotal")),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
@@ -158,6 +222,14 @@ for (const [flag, value] of [
       && error.remedy?.includes("--user-auth instead of --open") === true && !existsSync(join(folder, ".cotal")), shown(result));
 }
 
+for (const port of ["nope", "", "-1", "1.5", "65536"]) {
+  const result = run(["up", "--user-auth", "--no-manager", "--space", "bad-exchange", "--exchange-public-port", port, "--json"]);
+  check(`up refuses exchange port ${JSON.stringify(port)} before touching the project`,
+    result.status === 1 && result.envelope?.error?.code === "USAGE_INVALID"
+      && result.envelope.error.message?.includes("--exchange-public-port must be a whole number from 0 to 65535") === true
+      && !existsSync(join(folder, ".cotal")), shown(result));
+}
+
 // First-enable user auth must not leave static signing authority on any startup route.
 for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
   for (const idp of [undefined, "not-an-idp", "https://user:secret@example.com/auth"]) {
@@ -187,7 +259,10 @@ for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
   }
 }
 
-const servers: { server: string; message: RegExp; example: string }[] = [
+const servers: { server: string; host?: string; message: RegExp; example: string }[] = [
+  { server: "127.0.0.2:43131", host: "127.0.0.2", message: /--server is not a URL/, example: "--server nats://127.0.0.2:43131" },
+  { server: "tls://broker.example:4443", host: "127.0.0.2", message: /--server names the host/, example: "--server tls://127.0.0.2:4443" },
+  { server: "nats://localhost:43131", host: "0.0.0.0", message: /--server names the host/, example: "--server nats://127.0.0.1:43131" },
   { server: "http://127.0.0.1:43131", message: /--server must be a nats:\/\/ or tls:\/\/ URL/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://localhost:43131", message: /--server names the host localhost/, example: "--server nats://127.0.0.1:43131" },
   { server: "tls://broker.example:4443", message: /--server names the host broker\.example/, example: "--server tls://127.0.0.1:4443" },
@@ -196,8 +271,8 @@ const servers: { server: string; message: RegExp; example: string }[] = [
   { server: "nats://127.0.0.1:43131?a=1", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://127.0.0.1:43131#a", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
 ];
-for (const { server, message, example } of servers) {
-  const text = run(["up", "--server", server]);
+for (const { server, host, message, example } of servers) {
+  const text = run(["up", "--server", server, ...(host ? ["--host", host] : [])]);
   check(`up --server ${server} is the classified USAGE_INVALID report with no help, exit 1, giving ${example}`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Code:\s+USAGE_INVALID/.test(text.stderr) && text.stderr.includes(example) && !/Usage|Options/.test(text.stderr), shown(text));
 }
 
@@ -237,6 +312,20 @@ const prepared = mkdtempSync(join(tmpdir(), "cotal-up-usage-prepared-"));
 process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
+const upHelp = run(["up", "--help"]);
+check("up help marks every public exchange flag as legacy user-auth only",
+  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>
+    new RegExp(`^  --${flag} .*legacy user-auth startup only`, "m").test(upHelp.stdout)), shown(upHelp));
+const preparedExchange = run(["up", "--user-auth", "--no-manager", "--server", "nats://127.0.0.1:1", "--idp", "https://idp.example.test/auth",
+  "--exchange-public-port", "0", "--exchange-public-url", "https://mesh.example.test", "--json"], prepared);
+const exchangeError = preparedExchange.envelope?.error;
+check("a prepared root refuses public exchange and names a route that keeps the broker, IdP and exchange flags",
+  preparedExchange.status === 2 && exchangeError?.code === "UNSUPPORTED"
+    && exchangeError.message?.includes("--exchange-public-port and --exchange-public-url") === true
+    && exchangeError.remedy?.includes("new, unprepared project folder") === true
+    && exchangeError.remedy.includes("cotal up --user-auth --idp <auth base URL>")
+    && exchangeError.remedy.includes("Keep the broker and public exchange flags")
+    && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(preparedExchange));
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
@@ -337,9 +426,14 @@ if (process.platform !== "win32") {
   check("a bare up in a fresh folder under the home makes the folder's own .cotal and reaches its own checks", runtimeUp.status === 2 && /Code:\s+DEPENDENCY_UNAVAILABLE/.test(runtimeUp.stderr) && runtimeUp.stderr.includes(`made ${nestedRecords} for this folder's records; the machine's home .cotal was not used`), shown(runtimeUp));
   check("that refused up removed the .cotal it made and wrote nothing in the home's", !existsSync(nestedRecords) && homeWrites().length === 0, homeWrites());
   const inherited = "this folder inherits the machine's home .cotal; up did not start a stack in that home root";
-  const prepare = "prepare this folder with `cotal space create <space> --root .`, then run `cotal up` again from this folder";
-  const manifestUp = run(["up", "-f", "cotal.yaml", "--json"], nested);
-  check("up -f there still refuses CONFLICT, exit 2, naming space create and up from the folder, and writes nothing", manifestUp.status === 2 && manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(manifestUp));
+  const prepare = "prepare this folder with `cotal space create <space> --root .`, then repeat your manifest command from this folder";
+  for (const flag of ["", "--plain", "--json"]) {
+    const manifestUp = run(["up", "-f", "cotal.yaml", ...(flag ? [flag] : [])], nested);
+    const remedy = prepare + (flag ? `, but omit ${flag}` : "");
+    const correct = flag === "--json" ? manifestUp.envelope?.error?.code === "CONFLICT" && manifestUp.envelope.error.message === inherited && manifestUp.envelope.error.remedy === remedy
+      : manifestUp.stderr.includes(inherited) && manifestUp.stderr.includes(remedy) && (flag !== "" || !manifestUp.stderr.includes(", but omit"));
+    check(`up -f under the home with ${flag || "default output"} keeps the manifest in its retry and writes nothing`, manifestUp.status === 2 && correct && !existsSync(nestedRecords), shown(manifestUp));
+  }
   const { displayWidth, findMesh, recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   // On an 80-column terminal the note wraps at spaces to stderr's width, each line dimmed on its own.
   // `redirect` sends one stream to a file, so stdout and stderr can be told apart.
@@ -379,7 +473,7 @@ if (process.platform !== "win32") {
   check("under a home that holds a stack, a bare up there starts the folder's own space and reaches its own checks",
     holdsUp.status === 2 && holdsUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && holdsUp.envelope.target?.space === "fresh" && holdsUp.envelope.target.root === realpathSync(nested), shown(holdsUp));
   check("it removed the .cotal it made and left the home's registration and records as they were", !existsSync(nestedRecords) && homeAfter === homeEntry && homeWrites().length === 0, { homeEntry, homeAfter, writes: homeWrites() });
-  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === prepare && !existsSync(nestedRecords), shown(holdsManifest));
+  check("up -f there still refuses CONFLICT the same way", holdsManifest.status === 2 && holdsManifest.envelope?.error?.code === "CONFLICT" && holdsManifest.envelope.error.message === inherited && holdsManifest.envelope.error.remedy === `${prepare}, but omit --json` && !existsSync(nestedRecords), shown(holdsManifest));
 }
 
 // A bare up in a new project names its space after the folder. `--runtime nosuch` stops each start
@@ -398,12 +492,15 @@ if (process.platform !== "win32") {
   }
   const spaced = project("My Project");
   const invalid = run(["up", "--server", "nats://127.0.0.1:1", "--json"], spaced);
-  check("a folder name that is no valid space name refuses USAGE_INVALID, exit 1, naming --space, and writes nothing",
-    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === "name the space with `cotal up --space <name>`"
+  const prepareNamed = "for a controller-supported start, prepare this folder with `cotal space create <name> --root .` using a valid unused name, then repeat your startup command with the same options; for native startup, add `--space <name>` and omit the output flag instead";
+  check("an invalid folder name refuses without writes and names the preparation needed to keep JSON output",
+    invalid.status === 1 && invalid.envelope?.error?.code === "USAGE_INVALID" && invalid.envelope.target?.space === undefined && invalid.envelope.error.remedy === prepareNamed
       && invalid.envelope.error.message === `${named} the folder name "My Project" cannot be one: a space name is 1 to 64 letters, digits, underscores or hyphens, which \`cotal up\` needs to start it; nothing was started or written` && !records(spaced), shown(invalid));
   const invalidText = run(["up", "--server", "nats://127.0.0.1:1"], spaced);
-  check("its text form is the refusal and the --space step, without the help", invalidText.status === 1 && invalidText.stdout === ""
-    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  name the space with \`cotal up --space <name>\`\n` && !records(spaced), shown(invalidText));
+  check("the text remedy adds the space without discarding the requested server", invalidText.status === 1 && invalidText.stdout === ""
+    && invalidText.stderr === `✗ ${invalid.envelope?.error?.message}\n  repeat your startup command with the same options, adding \`--space <name>\` with a valid unused name\n` && !records(spaced), shown(invalidText));
+  const invalidPlain = run(["up", "--server", "nats://127.0.0.1:1", "--plain"], spaced);
+  check("plain output also directs the caller to prepare the same folder", invalidPlain.status === 1 && `${invalidPlain.stdout}${invalidPlain.stderr}`.includes(prepareNamed) && !records(spaced), shown(invalidPlain));
   const override = run(["up", "--space", "custom", ...probe], spaced);
   check("--space names the space there", resolved(override, "custom") && !records(spaced), shown(override));
   for (const space of ["bad space", "café", "a.b"]) {
@@ -602,9 +699,13 @@ try {
       plainUp.status === 2 && plainUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
   }
 
-  const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
+  const bind = run(["up", "--foreground", "--open", "--no-manager", `--server=nats://127.0.0.1:${held}`], unprepared);
   check("the legacy route refuses a held address CONFLICT, exit 2, naming the address, and launches nothing",
     bind.status === 2 && /CONFLICT/.test(bind.stderr) && new RegExp(`another process holds the broker address 127\\.0\\.0\\.1:${held}`).test(bind.stderr) && !started(unprepared), shown(bind));
+  const retry = /another address with `([^`]+)`, or .* and run `([^`]+)` again/.exec(bind.stderr);
+  const alternate = / up --foreground --open --no-manager --server nats:\/\/127\.0\.0\.1:(\d+)$/.exec(retry?.[1] ?? "");
+  check("both busy-port retries preserve the foreground open broker-only start, with only the alternate changing the port",
+    alternate !== null && Number(alternate[1]) !== held && retry?.[2]?.endsWith(` up --foreground --open --no-manager --server nats://127.0.0.1:${held}`) === true, shown(bind));
 
   // A port nothing listens on can still refuse the bind: an open client connection's local end holds
   // it, and after that client closes first, its TIME-WAIT holds it for up to a minute. The refusal
@@ -678,6 +779,17 @@ try {
     members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
     operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
   });
+  for (const mode of ["--open", "--user-auth"]) {
+    for (const members of [[], ["--no-manager"]]) {
+      const mismatch = run(["up", mode, ...members, "--json"], journalRoot);
+      const keep = ["cotal up", ...members].join(" ");
+      const separate = ["cotal up", mode, ...(mode === "--user-auth" ? ["--idp <auth base URL>"] : []), ...members].join(" ");
+      const remedy = mismatch.envelope?.error?.remedy ?? "";
+      check(`a pinned-mode refusal with ${[mode, ...members].join(" ")} keeps the requested members in both retries`,
+        mismatch.status === 2 && mismatch.envelope?.error?.code === "CONFLICT" && remedy.includes(`\`${keep}\` to keep static auth`)
+          && remedy.includes(`then \`${separate}\``) && !started(journalRoot), shown(mismatch));
+    }
+  }
   writeFileSync(join(journalRoot, "cotal.yaml"), `apiVersion: cotal/v1\nkind: Mesh\nspace: upusagejournal\nbroker:\n  servers: nats://127.0.0.1:${held}\nchannels:\n  general:\n    subscribe: []\n`);
   for (const args of [["up", "-f", "cotal.yaml"], ["up", "-f", "cotal.yaml", "--dry-run"]]) {
     const beside = run(args, journalRoot);
@@ -688,8 +800,8 @@ try {
         && !beside.stderr.includes("cotal team deploy") && !started(journalRoot), shown(beside));
   }
 
-  // A bare up whose folder names a space that runs from another folder names a separate space for
-  // this folder, and the stop for the other one in its own folder. The folder's account names main,
+  // A bare up whose folder names a space that runs elsewhere needs a new project folder for a
+  // separate space, or the stop for the running one in its own folder. The folder's account names main,
   // as one does after an earlier `up --space main` there. A child process that sends the broker's
   // greeting stands in for the other folder's broker, since `run` blocks this process while up probes it.
   const other = realpathSync(mkdtempSync(join(tmpdir(), "cotal-up-usage-other-")));
@@ -705,15 +817,25 @@ try {
   const { recordMesh, removeMesh } = await import("@cotal-ai/workspace");
   process.env.COTAL_HOME = join(home, ".cotal");
   recordMesh({ space: "main", server: `nats://127.0.0.1:${greeting}`, root: other, mode: "auth", origin: "up", ts: now });
-  const inUse = run(["up", "--server", `nats://127.0.0.1:${await freePort()}`], legacy);
+  const requested = `nats://127.0.0.1:${await freePort()}`;
+  const inUse = run(["up", "--server", requested], legacy);
+  const otherNameHere = run(["up", "--space", "separate", "--server", requested], legacy);
+  for (const flags of [["--root", legacy], ["--json"], ["--plain"]]) {
+    const r = run(["up", "--space", "separate", "--server", requested, ...flags], legacy);
+    const remedy = r.envelope?.error?.remedy ?? r.stderr;
+    check(`a second space with ${flags[0]} needs a separate prepared root and keeps the startup options`,
+      r.status === 2 && remedy.includes("`cotal space create --root <new-folder> -- separate`") && remedy.includes("--root set to that folder and the other options unchanged"), shown(r));
+  }
   // A regression that took the name over started a stack, which is stopped before the cell fails.
   if (started(legacy)) { sandbox(legacy); run(["down", "--yes"], legacy); }
   removeMesh("main");
   delete process.env.COTAL_HOME;
   greeter.kill();
-  check("a bare up whose folder names a space that runs from another folder refuses CONFLICT, exit 2, naming cotal up --space <name> and the down in that folder",
+  check("a bare up whose folder names a space running elsewhere offers a new project folder or the stop in the running folder",
     inUse.status === 2 && /Code:\s+CONFLICT/.test(inUse.stderr) && inUse.stderr.includes(`space "main" is already in use by a mesh at nats://127.0.0.1:${greeting} (${other})`)
-      && inUse.stderr.includes(`start a separate space in this folder with \`cotal up --space <name>\`, naming one no other folder uses, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
+      && inUse.stderr.includes(`start a separate space in a new project folder outside this one with \`cotal up --space <name>\`, using an unused name and keeping --server if you specified a free address, or stop "main" first with \`cotal down\` in ${other}`), shown(inUse));
+  check("changing only the name in the account's folder cannot start that separate space",
+    otherNameHere.status === 2 && /Code:\s+CONFLICT/.test(otherNameHere.stderr) && otherNameHere.stderr.includes(`it can't also run "separate"`), shown(otherNameHere));
 
   // THE SAME SPACE, RUNNING FROM THIS VERY PROJECT, started again at another address. The refusal
   // above belongs to a name another folder holds; here the folder IS that space's project, so the
