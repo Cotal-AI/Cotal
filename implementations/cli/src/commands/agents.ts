@@ -46,6 +46,7 @@ import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type Attach
 import { completingFlagValue } from "../lib/completion.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { targetWords } from "../lib/confirmation-required.js";
 import { legacyBrokerPidfileBlock, runningStackManagerPid, stackManagerAbsent, stackManagerStarting, unusableStackJournal } from "../lib/stack-journal.js";
 import { connectorHarnesses } from "../lib/status.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
@@ -1069,10 +1070,10 @@ async function readYourManagers(v: ConnectFlags & FlagValues<typeof psFlags>, co
   return seatCensus({ space, scope: "your-managers" }, instances, command, mode, v);
 }
 
-/** The remedy for a seat whose runtime streams no terminal, naming what does reach it in this
- *  CLI's own commands. */
-function noTerminalRemedy({ space, name }: { space: string; name: string }): string {
-  return `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(`${displayCmd()} send -t ${shellWord(name)} "<message>"`)} and ${codeSpan(`${displayCmd()} watch --space ${shellWord(space)}`)}`;
+/** Mesh commands for a seat whose runtime streams no terminal. Keep a private broker address out of the receipt. */
+export function noTerminalCommands(name: string, space: string, server?: string): { send: string; watch: string } {
+  const target = targetWords({ space, server: server !== undefined && brokerAddressForDisplay(server) !== server ? "<original-server>" : server });
+  return { send: `${displayCmd()} send -t ${shellWord(name)} "<message>"${target}`, watch: `${displayCmd()} watch${target}` };
 }
 
 /**
@@ -1087,7 +1088,10 @@ export async function attachSeat(
 ): Promise<AttachVerdict> {
   if (opts.onRefusal === "exit") refuseControlCreds(v.creds, v.space);
   const pin = opts.on === undefined && opts.onRefusal === "exit" ? await pinForTarget(v as never, "cotal attach") : { instanceId: opts.on };
-  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy });
+  return attachSeatWith({ ...v, expectedSeat: pin.expectedSeat ?? v.expectedSeat }, { ...opts, on: pin.instanceId, control: cliControl, verb: "cotal attach", noTerminalRemedy: ({ name, space }) => {
+    const { send, watch } = noTerminalCommands(name, space, v.server);
+    return `nothing was attached and the agent was not touched; follow the runtime's own guidance above, or reach the seat over the mesh with ${codeSpan(send)} and ${codeSpan(watch)}`;
+  } });
 }
 
 async function pickAttach(values: FlagValues<typeof attachFlags>): Promise<{ name: string; on: string; expectedTarget: NonNullable<ManagerPin["expectedTarget"]> } | undefined> {

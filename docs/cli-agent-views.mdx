@@ -96,7 +96,9 @@ answers with that fact and the launch stops there: no attach is asked for, nothi
 the command exits 0 with the agent running. Its `Runtime` row reads `<runtime> · no terminal
 stream`, its `View` row reads `not attached; the seat runs in the manager's <runtime> session`, and
 its Next gives `cotal watch` and `cotal send -t <name>` with one line saying `attach` is not
-available there. `--json` carries the same answer as `result.streamsTerminal`, beside the
+available there. Both the launch receipt and a refused attach keep the seat's space and any explicit
+broker in the send and watch commands. If the broker address cannot be printed unchanged, supply
+its original value in place of `<original-server>`. `--json` carries the same answer as `result.streamsTerminal`, beside the
 `result.runtime` that names the backend. A manager from before 0.104.2 reports neither, so
 `streamsTerminal` is null and the launch asks for an attach. When that manager refuses it because
 the runtime streams no terminal, the launch ends there too, with one line that names the runtime,
