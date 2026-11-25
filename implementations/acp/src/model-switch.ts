@@ -8,12 +8,15 @@ import { AGENT_CMD_SET_MODEL, type SetModelInput, type SetModelOutput } from "@c
 import { AgentCallFailed, type Mesh, type SeatRef } from "./mesh.js";
 import { applyOption, DEFAULT_VARIANT, parseModel, type Offer, type Selection } from "./options.js";
 
-/** Why the seat cannot switch: its connector does not serve `set-model`, or the space has no agent
- *  endpoint. Names the harness and the way to another model. */
-function cannotSwitch(m: Mesh, seat: SeatRef, agent: string): string {
-  const why = m.agentEndpoints
-    ? `${seat.name} runs ${agent}, whose connector cannot switch the model of a running agent`
-    : `${seat.name} runs ${agent} on a space where agents serve no agent endpoint, so its model cannot switch while it runs`;
+/** Why the seat cannot switch: its connector cannot now, for `cause` when the seat gave one, or it
+ *  predates `set-model`, or the space has no agent endpoint. Names the harness and the way to another
+ *  model. */
+function cannotSwitch(m: Mesh, seat: SeatRef, agent: string, cause?: string): string {
+  const why = !m.agentEndpoints
+    ? `${seat.name} runs ${agent} on a space where agents serve no agent endpoint, so its model cannot switch while it runs`
+    : cause !== undefined
+      ? `${seat.name} runs ${agent}: ${cause}`
+      : `${seat.name} runs ${agent}, whose connector cannot switch the model of a running agent`;
   return `${why}. Use /despawn, then start a new agent on the model you want.`;
 }
 
@@ -45,12 +48,14 @@ export async function switchSeat(m: Mesh, seat: SeatRef, offer: Offer, selection
   if (next.model !== selection.model && want.model === undefined)
     throw RequestError.invalidParams(undefined, `${agent}'s default model applies when an agent starts. Choose a named model, or use /despawn and start a new agent on the default.`);
   if (next.model === selection.model && next.variant === selection.variant) return selection;
-  if (!m.served(seat)?.setModel) throw RequestError.invalidParams(undefined, cannotSwitch(m, seat, agent));
+  // A seat that shows `setModel` false still serves the command, and its refusal says why it cannot
+  // switch, such as a Claude Code session with mods off. One that shows no flag predates it.
+  if (m.served(seat)?.setModel === undefined) throw RequestError.invalidParams(undefined, cannotSwitch(m, seat, agent));
   let ran: SetModelOutput;
   try {
     ran = (await m.agentCall(seat, AGENT_CMD_SET_MODEL, { ...request(next) })) as SetModelOutput;
   } catch (e) {
-    if (e instanceof AgentCallFailed && e.code === "unimplemented") throw RequestError.invalidParams(undefined, cannotSwitch(m, seat, agent));
+    if (e instanceof AgentCallFailed && e.code === "unimplemented") throw RequestError.invalidParams(undefined, cannotSwitch(m, seat, agent, e.message));
     const message = `${seat.name} did not switch: ${(e as Error).message}`;
     if (e instanceof AgentCallFailed && ["not-found", "failed-precondition", "bad-request"].includes(e.code)) throw RequestError.invalidParams(undefined, message);
     throw new RequestError(-32603, message);

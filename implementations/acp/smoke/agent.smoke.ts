@@ -48,7 +48,8 @@
  *  - on a running thread, choosing a model or a reasoning variant of the seat's application switches
  *    the seat through its `set-model`, and the options show the choice; the seat's refusal fails the
  *    choice with its reason; another application and an option that applies at spawn are refused
- *    naming `/despawn`, and so is a seat whose connector cannot switch, naming its harness;
+ *    naming `/despawn`, and so is a seat whose connector cannot switch, naming its harness and the
+ *    cause the seat gives, or nothing is called when the seat predates `set-model`;
  *  - a prompt or seat command the seat queues behind work the thread did not start answers once its
  *    own run ends, however long it waited. Cancelled while still queued, it leaves the queue through
  *    `command-cancel` and the other work is not interrupted; cancelled once taken, its run is; its
@@ -1139,10 +1140,16 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   const persona = await errorOf(set("persona", "reviewer"));
   check("an option that applies only at spawn is still refused on a running thread", persona?.code === -32602 && String(persona.message).includes("/despawn"), persona);
   space.serving = { ...shown, setModel: false };
-  const called = calls().length;
+  refusal = new AgentCallFailed("this agent's connector cannot switch its model now: the command mod is not running in this Claude Code session", "unimplemented");
   const unsupported = await errorOf(set("model", "claude/haiku"));
-  check("a seat whose connector cannot switch is refused with the harness named and /despawn, and nothing is called",
-    unsupported?.code === -32602 && String(unsupported.message).includes("claude") && String(unsupported.message).includes("/despawn") && calls().length === called, unsupported);
+  check("a seat that shows it cannot switch now is refused with the harness, the seat's own cause and /despawn",
+    unsupported?.code === -32602 && String(unsupported.message).includes("claude: this agent's connector cannot switch its model now: the command mod is not running") && String(unsupported.message).includes("/despawn"), unsupported);
+  refusal = undefined;
+  space.serving = { interrupt: true, turn: true, images: true, usage: true };
+  const called = calls().length;
+  const older = await errorOf(set("model", "claude/haiku"));
+  check("a seat that predates set-model is refused with the harness named and /despawn, and nothing is called",
+    older?.code === -32602 && String(older.message).includes("whose connector cannot switch") && String(older.message).includes("/despawn") && calls().length === called, older);
   c.conn.close();
 }
 // /name, /open and the thread links.
