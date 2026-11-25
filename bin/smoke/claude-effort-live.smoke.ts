@@ -7,6 +7,7 @@
  *   1. The shipped catalog asks this machine's `claude` for its models, within 12 s. Every model is
  *      named, an alias names the model it resolves to, each variant is a level `claude --effort`
  *      takes, one model is the default, and opus offers ultracode where claude-opus-4-6 does not.
+ *      Opus lists fast, with claude's reason when this login cannot run it.
  *   2. `cotal up --detach`, then two `cotal spawn --detach` of one persona on haiku, at
  *      `--variant low` and at `--variant high`, each with a prompt. Claude records the effort of
  *      each turn as `perTurnEffort` on the assistant line of its own transcript, and each seat's
@@ -17,7 +18,9 @@
  *   4. An opus seat spawned with `--mode ultracode=true` and a prompt: Claude records ultracode on
  *      for its turn as an `ultra_effort_enter` attachment in its transcript, and the haiku seats
  *      record none. Ultracode on claude-opus-4-6 is refused before launch. `--variant high` with
- *      no `--model` is checked against the catalog's default model and starts a seat.
+ *      no `--model` is checked against the catalog's default model and starts a seat. When this
+ *      login cannot run fast, `cotal models` prints claude's reason, and `--mode fast=true` on opus
+ *      is refused before launch with it; a login that can run fast skips both and says so.
  *   5. `cotal down --yes` stops the sandbox stack, seats included.
  *
  * The Manager reads claude's catalog to check each variant, so the stack runs with this machine's
@@ -55,6 +58,8 @@ if (!existsSync(CLI)) throw new Error(`${CLI} is missing: run pnpm build first`)
 
 const { check, finish } = createSuite();
 
+/** Why this login cannot run fast on opus, as the catalog says, or undefined when it can. */
+let fastOff: string | undefined;
 console.log("the catalog, from this machine's claude:");
 {
   const asked = Date.now();
@@ -62,13 +67,16 @@ console.log("the catalog, from this machine's claude:");
   const waited = Date.now() - asked;
   check("claude lists its models within 12 s", catalog.unavailable === undefined && catalog.models.length > 0 && waited < 12_000, { waited, unavailable: catalog.unavailable });
   for (const m of catalog.models)
-    console.log(`  ${m.id}${m.isDefault ? " (default)" : ""}: ${m.name} [${m.variants?.map((v) => v.name + (v.name === m.defaultVariant ? "*" : "")).join(", ") ?? "no effort levels"}] modes: ${m.modes?.map((x) => x.id).join(", ") || "none"}`);
+    console.log(`  ${m.id}${m.isDefault ? " (default)" : ""}: ${m.name} [${m.variants?.map((v) => v.name + (v.name === m.defaultVariant ? "*" : "")).join(", ") ?? "no effort levels"}] modes: ${m.modes?.map((x) => x.id + (x.unavailable ? ` (unavailable: ${x.unavailable})` : "")).join(", ") || "none"}`);
   console.log(`  read in ${waited} ms; fast offered on ${catalog.models.filter((m) => m.modes?.some((x) => x.id === "fast")).length} models`);
   check("one model is the default", catalog.models.filter((m) => m.isDefault).length === 1, catalog.models.map((m) => [m.id, m.isDefault]));
   const read = await readModelCatalog({ name: "claude", listModels: () => catalog }, {}).then(() => "read", (e: Error) => e.message);
   check("core reads the catalog as consistent, every default among its model's values", read === "read", read);
   const ultracode = (id: string) => catalog.models.find((m) => m.id === id)?.modes?.some((x) => x.id === "ultracode");
   check("opus offers ultracode and claude-opus-4-6 does not, as the seats below need", ultracode("opus") === true && ultracode("claude-opus-4-6") !== true, catalog.models);
+  const opusFast = catalog.models.find((m) => m.id === "opus")?.modes?.find((x) => x.id === "fast");
+  check("opus lists fast", opusFast !== undefined, catalog.models.find((m) => m.id === "opus"));
+  fastOff = opusFast?.unavailable;
   check("every model has a name", catalog.models.every((m) => !!m.name), catalog.models);
   const aliases = catalog.models.filter((m) => !m.id.startsWith("claude-"));
   check("every alias names the claude- model it resolves to", aliases.length > 0 && aliases.every((m) => /\(claude-[^()]+\)$/.test(m.name ?? "")), aliases);
@@ -171,6 +179,14 @@ try {
     unlisted.status !== 0 && /claude lists (no modes|modes [^\n]*) for model "claude-opus-4-6", not "ultracode" \(modes\)/.test(unlisted.out), unlisted.out);
   const byDefault = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--variant", "high", "--name", "default_high");
   check("spawn --variant high with no --model is checked against the default model and starts a seat", byDefault.status === 0, byDefault.out);
+  if (fastOff === undefined) console.log("  skip: this login can run fast, so no fast launch is refused");
+  else {
+    const listed = cotal(anchor, "models", "--harness", "claude", "--plain");
+    check("cotal models prints fast as unavailable with claude's reason", listed.status === 0 && listed.out.includes(`fast (unavailable: ${fastOff})`), listed.out);
+    const fast = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--model", "opus", "--mode", "fast=true", "--name", "fast_off");
+    check("spawn --mode fast=true on opus is refused before launch with claude's reason",
+      fast.status !== 0 && fast.out.includes(`mode "fast" of model "opus" is unavailable: ${fastOff} (modes)`), fast.out);
+  }
 
   const ps = cotal(anchor, "ps", "--json");
   const line = ps.stdout.split("\n").find((l) => l.startsWith("{\"schemaVersion\""));

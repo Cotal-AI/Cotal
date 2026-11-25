@@ -2,7 +2,7 @@
  * The models a Claude Code seat can launch, read before any seat exists from one headless `claude`.
  * Its `initialize` answer lists the models. With each model applied in turn, its `get_settings`
  * answer names the effort that model runs at and whether it can run ultracode, and its fast-mode state
- * says whether this account can run fast.
+ * says whether this account can run fast, and why not.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,11 +18,14 @@ const PROBE_SETTINGS = { fastMode: true };
  *  the organization allows fast, claude reports fast on with no disabled reason, and no event marks
  *  the answer. So the catalog trusts the state it reads this long after claude's first answer. The
  *  check took 0.25 to 0.75 s on 2.1.332. The cost: when its answer comes later, on a slow network, or
- *  never, because the check failed or claude skipped it at start, the catalog lists fast for an
- *  organization that turns it off, and a seat launched with fast runs at standard speed with nothing
- *  said. */
+ *  never, because the check failed or claude skipped it at start, the catalog lists fast as usable for
+ *  an organization that turns it off, and a seat launched with fast runs at standard speed with
+ *  nothing said. */
 const FAST_SETTLE_MS = 2_000;
 const FAST_POLL_MS = 200;
+/** Claude's own message for each `fast_mode_disabled_reason` it reported here: 2.1.332 shows this text
+ *  for `preference` when an organization turns fast mode off. Another code is shown as claude gave it. */
+const FAST_OFF_MESSAGES = new Map([["preference", "Fast mode has been disabled by your organization"]]);
 
 const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
 
@@ -68,13 +71,17 @@ async function appliedFor(ask: AskClaude, model: string): Promise<Applied> {
   return appliedOf(await ask({ subtype: "get_settings" }));
 }
 
-/** Whether claude still reports fast mode on for `model` once its organization check had time to answer. */
-async function fastSettledOn(ask: AskClaude, model: string, answeredAt: number): Promise<boolean> {
+/** Why claude reports fast mode off for `model`, or undefined when it still reports it on once its
+ *  organization check had time to answer. */
+async function fastOffReason(ask: AskClaude, model: string, answeredAt: number): Promise<string | undefined> {
   await ask({ subtype: "apply_flag_settings", settings: { model } });
   for (;;) {
-    const { fast_mode_state: state } = await ask({ subtype: "initialize" });
-    if (state !== "on") return false;
-    if (Date.now() - answeredAt >= FAST_SETTLE_MS) return true;
+    const { fast_mode_state: state, fast_mode_disabled_reason: code } = await ask({ subtype: "initialize" });
+    if (state !== "on") {
+      if (typeof code !== "string") return `claude reports fast mode ${String(state)}`;
+      return FAST_OFF_MESSAGES.get(code) ?? `claude reports fast mode off: ${code}`;
+    }
+    if (Date.now() - answeredAt >= FAST_SETTLE_MS) return undefined;
     await new Promise((wake) => setTimeout(wake, FAST_POLL_MS));
   }
 }
@@ -82,12 +89,12 @@ async function fastSettledOn(ask: AskClaude, model: string, answeredAt: number):
 /** An alias such as `opus` follows each new release, and some logins name it only "Opus", so its name
  *  also carries the model it resolves to today. A value that extends that model, such as
  *  `claude-fable-5-2[1m]`, is the more specific of the two and is carried instead. */
-function modelInfo(row: ModelRow, applied: Applied, fast: boolean): ModelInfo {
+function modelInfo(row: ModelRow, applied: Applied, fastOff: string | undefined): ModelInfo {
   const { value, resolvedModel, description } = row;
   const resolves = resolvedModel && resolvedModel !== value ? ` (${value.startsWith(resolvedModel) ? value : resolvedModel})` : "";
   const levels = row.supportedEffortLevels ?? [];
   const modes: ModeInfo[] = [
-    ...(fast && row.supportsFastMode ? [{ id: "fast", label: "Fast", kind: "toggle" as const, default: false }] : []),
+    ...(row.supportsFastMode ? [{ id: "fast", label: "Fast", kind: "toggle" as const, default: false, ...(fastOff ? { unavailable: fastOff } : {}) }] : []),
     ...(applied.ultracodeAvailable ? [{ id: "ultracode", label: "Ultracode", kind: "toggle" as const, default: applied.ultracode }] : []),
   ];
   return {
@@ -113,8 +120,8 @@ async function readModels(ask: AskClaude): Promise<ModelCatalog> {
   const applied: Applied[] = [];
   for (const row of listed) applied.push(await appliedFor(ask, row.value));
   const fastRow = listed.find((m) => m.supportsFastMode);
-  const fast = fastRow !== undefined && (await fastSettledOn(ask, fastRow.value, answeredAt));
-  const models = listed.map((row, i) => modelInfo(row, applied[i]!, fast));
+  const fastOff = fastRow && (await fastOffReason(ask, fastRow.value, answeredAt));
+  const models = listed.map((row, i) => modelInfo(row, applied[i]!, fastOff));
   const defaultAt = applied.findIndex((a) => a.model === launchDefault);
   if (defaultAt >= 0) models[defaultAt] = { ...models[defaultAt]!, isDefault: true };
   return { source: "claude stream-json initialize and get_settings", models };

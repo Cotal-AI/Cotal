@@ -52,6 +52,11 @@ const alive = (pid: number): boolean => {
 const withModels = (models: unknown) => ({ ...recorded.loggedIn, response: { ...recorded.loggedIn.response, response: { ...recorded.loggedIn.response.response, models } } });
 const withSettings = (changes: Record<string, unknown>) => ({ ...settings, ...changes });
 const modeIds = (catalog: ModelCatalog, mode: string) => catalog.models.filter((m) => m.modes?.some((x) => x.id === mode)).map((m) => m.id);
+/** The models claude says support fast mode, in claude's order. */
+const FAST_IDS = ["opus", "fable", "claude-opus-5", "claude-opus-4-8"];
+/** The fast toggle of each model that lists one, by model id. */
+const fastModes = (catalog: ModelCatalog) => Object.fromEntries(catalog.models.flatMap((m) => m.modes?.filter((x) => x.id === "fast").map((x) => [m.id, x]) ?? []));
+const ORG_OFF = "Fast mode has been disabled by your organization";
 
 console.log("claude connector: the model catalog asks claude, and never hangs or throws");
 
@@ -119,7 +124,13 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
       catalog.models.every((m) => (m.modes ?? []).filter((x) => x.id === "ultracode").every((x) => JSON.stringify(x) === JSON.stringify({ id: "ultracode", label: "Ultracode", kind: "toggle", default: false }))),
     ultracode,
   );
-  check("claude turned fast off once its organization check answered, so no model offers fast", modeIds(catalog, "fast").length === 0, catalog.models);
+  const fast = fastModes(catalog);
+  check(
+    "claude turned fast off once its organization check answered, so each model that supports fast lists it unavailable with claude's own message",
+    JSON.stringify(Object.keys(fast)) === JSON.stringify(FAST_IDS) &&
+      Object.values(fast).every((x) => JSON.stringify(x) === JSON.stringify({ id: "fast", label: "Fast", kind: "toggle", default: false, unavailable: ORG_OFF })),
+    fast,
+  );
   const checked = await readModelCatalog({ name: "claude", listModels: () => catalog }, {}).then(() => "read", (e: Error) => e.message);
   check("core reads the catalog as consistent: one default model, and every default among its model's values", checked === "read", checked);
   check(
@@ -169,12 +180,12 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
 {
   // An organization that allows fast mode: claude keeps reporting it on.
   const { catalog } = await timed(standIn("fast-allowed", recorded.loggedIn, {}, withSettings({ fastStates: [{ fast_mode_state: "on" }] })).bin);
-  const fast = catalog.models.filter((m) => m.modes?.some((x) => x.id === "fast"));
+  const fast = fastModes(catalog);
   check(
-    "an account that can run fast gets an off-by-default fast toggle on each model claude says supports it, and on no other",
-    JSON.stringify(fast.map((m) => m.id)) === JSON.stringify(["opus", "fable", "claude-opus-5", "claude-opus-4-8"]) &&
-      fast.every((m) => JSON.stringify(m.modes?.find((x) => x.id === "fast")) === JSON.stringify({ id: "fast", label: "Fast", kind: "toggle", default: false })),
-    catalog.models,
+    "an account that can run fast gets a usable, off-by-default fast toggle on each model claude says supports it, and on no other",
+    JSON.stringify(Object.keys(fast)) === JSON.stringify(FAST_IDS) &&
+      Object.values(fast).every((x) => JSON.stringify(x) === JSON.stringify({ id: "fast", label: "Fast", kind: "toggle", default: false })),
+    fast,
   );
 }
 
@@ -182,7 +193,20 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   // claude reports fast on for its first answers, then off once its organization check answers.
   const late = [...Array(4).fill({ fast_mode_state: "on" }), { fast_mode_state: "off", fast_mode_disabled_reason: "preference" }];
   const { catalog } = await timed(standIn("fast-off-late", recorded.loggedIn, {}, withSettings({ fastStates: late })).bin);
-  check("fast that claude turns off a few answers in, before its organization check could be missed, is not offered", catalog.unavailable === undefined && modeIds(catalog, "fast").length === 0, catalog);
+  check(
+    "fast that claude turns off a few answers in, before its organization check could be missed, is listed unavailable with claude's message",
+    catalog.unavailable === undefined && Object.keys(fastModes(catalog)).length === FAST_IDS.length && Object.values(fastModes(catalog)).every((x) => x.unavailable === ORG_OFF),
+    catalog,
+  );
+}
+
+for (const [name, state, reason] of [
+  ["fast-off-other-code", { fast_mode_state: "off", fast_mode_disabled_reason: "network_error" }, "claude reports fast mode off: network_error"],
+  ["fast-off-no-code", { fast_mode_state: "off" }, "claude reports fast mode off"],
+] as const) {
+  const { catalog } = await timed(standIn(name, recorded.loggedIn, {}, withSettings({ fastStates: [state] })).bin);
+  const fast = Object.values(fastModes(catalog));
+  check(`${name}: a reason claude gave no message for here is shown in claude's own words`, fast.length === FAST_IDS.length && fast.every((x) => x.unavailable === reason), fast);
 }
 
 {
