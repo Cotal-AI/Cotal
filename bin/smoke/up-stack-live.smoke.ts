@@ -646,8 +646,11 @@ process.report.getReport = () => {
     const cloned = clonedRoot;
     mkdirSync(join(cloned, ".cotal", "agents"), { recursive: true, mode: 0o700 });
     writeFileSync(join(cloned, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["COTAL_STACK_TRUST_PROBE"] } }));
-    const args = ["up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"];
-    const managerFile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: cloned, space: basename(cloned) });
+    const space = basename(cloned);
+    const prepared = cliIn(cloned, "space", "create", space, "--root", cloned);
+    ok("the cloned root can be prepared without trusting its existing .cotal", prepared.status === 0 && !trustedRoots().includes(realpathSync(cloned)), plain(prepared.stdout + prepared.stderr));
+    const args = ["up", "--detach", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`, "--json"];
+    const managerFile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: cloned, space });
     const clonedUp = cliIn(cloned, ...args);
     const brokerFile = join(cloned, ".cotal", "nats.pid");
     const broker = existsSync(brokerFile) ? Number(readFileSync(brokerFile, "utf8").trim()) : 0;
