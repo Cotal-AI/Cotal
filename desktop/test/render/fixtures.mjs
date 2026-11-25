@@ -97,6 +97,7 @@ export function nativeStub(scenario) {
         return ok({ state: "disconnected" });
       }
       if (request.op === "login") {
+        if (state.loginLost) return fail("DAEMON_LOST", "The background service stopped before this could finish, so it did not complete. Try again when the service is running.");
         if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
         send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
         if (state.waiting || state.expired) await new Promise(() => {});
@@ -594,6 +595,16 @@ export const scenarios = [
     assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
     assert.equal(await page.locator("#recover").textContent(), "Check status");
     assert.equal(await page.locator("#refusal-detail").textContent(), "DEPENDENCY_UNAVAILABLE (NOT_ANSWERING)\nCotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+  } },
+  // The service is killed while sign-in waits on it: say so, and clear once it answers again.
+  { name: "sign-in-service-lost", state: { installed: true, loginLost: true }, act: page => page.click("#login"), expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service stopped");
+    assert.equal(await page.locator("#connection-description").textContent(), "It stopped before this could finish, so nothing was completed. This clears when the service is running again.");
+    assert.equal(await page.locator("#recover").textContent(), "Check status");
+    assert.ok(!(await page.locator("body").textContent()).includes("cotal daemon"), "no CLI is offered to a desktop user");
+    await page.evaluate(() => window.__pushStatus());
+    await page.waitForFunction(() => document.querySelector("#connection-title")?.textContent !== "The background service stopped");
+    assert.equal(await page.locator("#details").isHidden(), true, "the stopped-service details clear when it answers again");
   } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {

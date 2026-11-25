@@ -849,7 +849,7 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   ready = status.state === "ready";
   daemonVersion = String(status.version);
   upgradeNeeded = appVersion !== undefined && status.version !== appVersion;
-  if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
+  if ((statusProblem && !upgradeNeeded) || (ready && (problem === "NOT_ANSWERING" || problem === "DAEMON_LOST" || (!upgradeNeeded && el("refusal-detail").textContent?.startsWith("App version:"))))) clearDetails();
   renderAgents(status, el("running-agents"));
   requestAnimationFrame(sizeSpaceList);
   updateStatus = status.update as UpdateStatus | undefined;
