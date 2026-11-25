@@ -43,6 +43,12 @@
  *    and on a load, not marked as replay, and whenever its presence shows another name, as a label or
  *    a rename made elsewhere; a refused rename, an unchanged name or a seat the roster stops showing
  *    sends no title;
+ *  - where the session lists a thread server (a stand-in for T3 Code's `t3-code` MCP server), the
+ *    bridge sets the client's own title through it too, and a listed server without the thread tools
+ *    is never called; a rename in the client renames the agent before the next prompt reaches it and
+ *    is not written back; a title the bridge wrote is not read back as a rename; a read the server
+ *    fails, or a rename the agent refuses, is said in the thread and logged, and the prompt still runs;
+ *    a refused title goes back to the agent's name;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
  *    permission request, without options ACP cannot answer and only when its digest matches, and the
  *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
@@ -56,9 +62,10 @@
  *
  * Run: pnpm --filter @cotal-ai/acp test
  */
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
@@ -1189,6 +1196,54 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   await again.agent.request(methods.agent.session.delete, { sessionId: opener.sessionId });
   check("deleting a linked thread hides its seat's run", again.hidden.ids.has("life-helper"), [...again.hidden.ids]);
   again.conn.close();
+  c.conn.close();
+}
+
+// The client's thread server: a stand-in for T3 Code's `t3-code`, listed in session/new.
+{
+  const space = new FakeMesh();
+  const c = connect(async () => space);
+  await c.init;
+  const state = join(dir, "thread.json");
+  const calls = join(dir, "thread-calls.jsonl");
+  const otherCalls = join(dir, "other-calls.jsonl");
+  const setThread = (t: { title: string; failRead?: string }) => writeFileSync(state, JSON.stringify({ threadId: "t3-thread-1", ...t }));
+  setThread({ title: "New thread" });
+  writeFileSync(calls, "");
+  writeFileSync(otherCalls, "");
+  const fixture = fileURLToPath(new URL("./fake-thread-server.mjs", import.meta.url));
+  const server = (name: string, env: Record<string, string>) => ({ name, command: process.execPath, args: [fixture], env: Object.entries(env).map(([key, value]) => ({ name: key, value })) });
+  const title = () => (JSON.parse(readFileSync(state, "utf8")) as { title: string }).title;
+  const writes = () => readFileSync(calls, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { tool: string; args: { title?: string } }).filter((x) => x.tool === "t3_thread_update").map((x) => x.args.title);
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [server("other", { THREAD_STATE: state, THREAD_CALLS: otherCalls, THREAD_TOOLS: "t3_thread_read" }), server("t3-code", { THREAD_STATE: state, THREAD_CALLS: calls })] });
+  const said = (): string => c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  for (let i = 0; i < 100 && title() !== "acp-s1"; i++) await tick(100);
+  check("once the agent starts, the client's thread server titles the thread with its name", title() === "acp-s1" && JSON.stringify(writes()) === '["acp-s1"]', { title: title(), writes: writes() });
+  check("a listed server without the thread tools is never called", readFileSync(otherCalls, "utf8") === "", readFileSync(otherCalls, "utf8"));
+  let renamedAtInput = -1;
+  space.onInput = (seat) => { renamedAtInput = space.renamed.length; space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
+  const prompt = (text: string) => within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text }] }));
+  setThread({ title: "Login work" });
+  await prompt("next");
+  check("a rename in the client renames the agent before the next prompt reaches it", JSON.stringify(space.renamed) === '[{"seat":"acp-s1","name":"Login work"}]' && renamedAtInput === 1 && space.typed.at(-1)?.text === "next", { renamed: space.renamed, renamedAtInput, typed: space.typed.at(-1) });
+  check("and is not written back to the client", !writes().includes("Login work"), writes());
+  space.show("actor-acp-s1", "Login work");
+  space.show("actor-acp-s1", "Fixing login");
+  for (let i = 0; i < 50 && title() !== "Fixing login"; i++) await tick(100);
+  await prompt("again");
+  check("a name the agent shows is written to the client, and is not read back as a rename", title() === "Fixing login" && JSON.stringify(writes()) === '["acp-s1","Fixing login"]' && space.renamed.length === 1 && space.typed.at(-1)?.text === "again", { title: title(), writes: writes(), renamed: space.renamed });
+  setThread({ title: "Fixing login", failRead: "the thread store is down" });
+  c.updates.length = 0;
+  await prompt("still");
+  check("a read the client's server fails is said in the thread and logged, and the prompt still runs", said().includes("the thread store is down") && c.logs.some((l) => l.includes("the thread store is down")) && space.typed.at(-1)?.text === "still", { said: said(), typed: space.typed.at(-1) });
+  setThread({ title: "Other name" });
+  space.renameRefusal = "the name is taken";
+  c.updates.length = 0;
+  await prompt("onward");
+  check("a rename the agent refuses is said in the thread, the title goes back to the agent's name, and the prompt still runs", said().includes('Could not rename acp-s1 to "Other name": the name is taken') && title() === "Fixing login" && space.typed.at(-1)?.text === "onward", { said: said(), title: title(), typed: space.typed.at(-1) });
+  space.renameRefusal = undefined;
   c.conn.close();
 }
 

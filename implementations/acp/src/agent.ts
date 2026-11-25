@@ -26,16 +26,19 @@
  * the first prompt, or `/open`) reopens on it.
  *
  * A thread's title is the name its seat shows. It is sent when the thread binds the seat, and again
- * whenever the seat's presence shows another name.
+ * whenever the seat's presence shows another name. Where the client lists its own thread server
+ * (`thread-title.ts`), the bridge also sets the client's title there, and a title the person gave the
+ * thread in the client since the bridge last saw it renames the seat before the next prompt reaches it.
  */
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { AGENT_CMD_COMMAND, AGENT_CMD_COMMANDS, AGENT_CMD_INTERRUPT, type AgentPrompt, type CommandEntry, type CommandsOutput } from "@cotal-ai/core";
-import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type AvailableCommand, type ClientCapabilities, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
+import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type AvailableCommand, type ClientCapabilities, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type McpServer, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
 import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
+import { ClientTitle, findThreadTitles } from "./thread-title.js";
 import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, type Offer, type Selection } from "./options.js";
 
@@ -171,6 +174,10 @@ interface Session {
   agentCommands?: CommandEntry[];
   /** The title last sent to the client: the name the thread's agent shows. */
   title?: string;
+  /** The MCP servers the client listed for the session, where its own thread server may be. */
+  readonly mcpServers: readonly McpServer[];
+  /** The client's thread server, looked for once the session first binds a seat. */
+  clientTitle?: ClientTitle;
 }
 
 /** The application a session's seat runs, as its model choice names it. */
@@ -242,14 +249,26 @@ interface Bridge {
   readonly close: () => Promise<void>;
 }
 
+/** Say `line` in the session's thread. A failure to send it is logged. */
+function sayIn(send: Bridge["send"], log: (line: string) => void, session: Session, line: string): Promise<void> {
+  return send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => log(`session ${session.id}: update not sent: ${e.message}`));
+}
+
 /** A thread's title is the name its agent shows (SPEC 13.22): its label, else its name. */
-function titles(sessions: ReadonlyMap<string, Session>, send: Bridge["send"], log: (line: string) => void) {
-  /** Send `name` as the session's title unless it is the title last sent. An undefined name, as of a
-   *  seat the roster does not show now, keeps the title. */
+function titles(sessions: ReadonlyMap<string, Session>, send: Bridge["send"], options: Pick<CotalAgentOptions, "log" | "version">) {
+  const { log } = options;
+  /** Send `name` as the session's title unless it is the title last sent, through ACP and the
+   *  client's thread server. An undefined name, as of a seat the roster does not show now, keeps the
+   *  title. */
   const retitle = (session: Session, name: string | undefined): void => {
     if (name === undefined || name === session.title) return;
     session.title = name;
     void send(session, { sessionUpdate: "session_info_update", title: name }).catch((e: Error) => log(`session ${session.id}: title not sent: ${e.message}`));
+    session.clientTitle ??= new ClientTitle(findThreadTitles(session.mcpServers, options.version, (line) => log(`session ${session.id}: ${line}`)));
+    session.clientTitle.push(name).catch((e: Error) => {
+      log(`session ${session.id}: the client's title not set: ${e.message}`);
+      void sayIn(send, log, session, `Could not set this thread's title in the client: ${e.message}`);
+    });
   };
   /** Retitle each thread whose agent shows another name, as a label it takes, `/name` or a rename made
    *  elsewhere changes it. Returns a function that stops following. */
@@ -269,7 +288,7 @@ function bridge(options: CotalAgentOptions): Bridge {
 
   const send = (session: Session, update: SessionUpdate, replay = false): Promise<void> =>
     session.client.notify(methods.client.session.update, { sessionId: session.id, update, ...(replay ? { _meta: { isReplay: true } } : {}) });
-  const { retitle, follow } = titles(sessions, send, options.log);
+  const { retitle, follow } = titles(sessions, send, options);
 
   const route = (frame: SeatFrame): void => {
     const key = principal(frame);
@@ -402,6 +421,7 @@ function bridge(options: CotalAgentOptions): Bridge {
     for (const stop of following.splice(0)) stop();
     for (const s of sessions.values()) {
       s.prompts?.stop();
+      void s.clientTitle?.close();
       if (s.turn) s.turn.fail(new Error("the client disconnected"));
     }
     if (opened) await (await opened.catch(() => undefined))?.close();
@@ -790,6 +810,32 @@ function openCommand(b: Bridge, offers: Offers) {
   };
 }
 
+/** Rename the session's agent to a title the person gave the thread in the client since the bridge
+ *  last saw it, before the prompt reaches the agent. A failed read or a refused rename is said in the
+ *  thread and logged, and the prompt runs either way. A refused title is set back to the agent's name,
+ *  so the two stay one value. */
+async function followClientTitle(b: Bridge, session: Session, m: Mesh): Promise<void> {
+  const seat = session.seat;
+  if (!seat || !session.clientTitle) return;
+  const { log } = b.options;
+  let title: string | undefined;
+  try {
+    title = await session.clientTitle.pull();
+  } catch (e) {
+    log(`session ${session.id}: the client's title not read: ${(e as Error).message}`);
+    return sayIn(b.send, log, session, `Could not read this thread's title from the client: ${(e as Error).message}`);
+  }
+  const shown = m.shownName(seat) ?? seat.name;
+  if (title === undefined || title === shown) return;
+  try {
+    b.retitle(session, await m.rename(seat, title));
+  } catch (e) {
+    log(`session ${session.id}: rename to the client's title refused: ${(e as Error).message}`);
+    await sayIn(b.send, log, session, `Could not rename ${seat.name} to "${title}": ${(e as Error).message}`);
+    await session.clientTitle.push(shown).catch((err: Error) => log(`session ${session.id}: the client's title not set back: ${err.message}`));
+  }
+}
+
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
   const { options, sessions, mesh, bind, sessionOf, announce, reportUsage } = b;
@@ -803,7 +849,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
         throw e;
       });
       const id = newName();
-      const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
+      const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client, mcpServers: params.mcpServers };
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
       return { sessionId: id, configOptions: configOptions(offer, session.selection), models: modelState(offer, session.selection) };
@@ -841,6 +887,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (session.turn) throw RequestError.invalidRequest(undefined, "a prompt is already running in this session");
       const { text, images } = promptParts(params.prompt);
       const m = await mesh();
+      await followClientTitle(b, session, m);
       const handled = images.length ? undefined : await slash(session, m, text);
       if (handled) return { stopReason: handled };
       if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
@@ -921,9 +968,12 @@ function historyHandlers(b: Bridge, offers: Offers) {
       if (matches.length === 0) throw notListed(m, params.sessionId, listed);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);
       const row: SeatRow = matches[0]!;
-      const session: Session = { id: params.sessionId, cwd: params.cwd, ...(await offers.seatThread(m, row)), mapper: new FrameMapper(row.agent, row.cwd), open: new Map(), client };
+      const session: Session = { id: params.sessionId, cwd: params.cwd, ...(await offers.seatThread(m, row)), mapper: new FrameMapper(row.agent, row.cwd), open: new Map(), client, mcpServers: params.mcpServers };
       const previous = sessions.get(params.sessionId);
-      if (previous) unbind(previous);
+      if (previous) {
+        unbind(previous);
+        void previous.clientTitle?.close();
+      }
       const other = holder(row);
       if (other && other !== previous) unbind(other);
       sessions.set(params.sessionId, session);
@@ -946,6 +996,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
         const seat = session.seat;
         unbind(session);
         sessions.delete(params.sessionId);
+        void session.clientTitle?.close();
         // A session that never spawned, such as a client's probe, has no run to hide. One whose first
         // spawn is pending hides the seat once the manager answers.
         const run = seat ?? (await session.spawning?.catch(() => undefined));

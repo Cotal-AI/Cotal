@@ -90,7 +90,7 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
 | The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The agent's name is the thread's id, or the name you gave it with `/name`. The turn ends when that first task's run ends. |
 | A later prompt | Reaches the agent as your own words: through the agent's `turn` where its presence says it takes one now, else typed into its terminal through its manager. The thread picks the path from the agent's presence before it sends the prompt, and a path that fails is reported, not retried another way. The turn ends once the agent has started working and stopped again. |
-| The thread's title | The name the agent shows: the label it took from its first message, else its name. The thread sends it when it starts or loads its agent, and again each time the agent's presence shows another name, as after `/name`, a label or a rename made elsewhere. |
+| The thread's title | The name the agent shows: the label it took from its first message, else its name. The thread sends it when it starts or loads its agent, and again each time the agent's presence shows another name, as after `/name`, a label or a rename made elsewhere. Where the client lists its own thread server, as T3 Code does, a title you give the thread there renames the agent too (see [Thread titles](#titles)). |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. An agent a thread spawned or opened is listed as that thread. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
@@ -114,6 +114,18 @@ On a space where people sign in, the thread also uses the agent's `agent` endpoi
 - The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
 - A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
 - After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage. The usage arrives before the prompt answers, unless the agent takes more than 3 seconds to report it.
+
+## Thread titles [#titles]
+
+T3 Code lists an MCP server of its own for each thread in `session/new` and `session/load`.
+The bridge finds such a thread server by the tools it offers, `t3_thread_configure`, `t3_thread_read` and `t3_thread_update`, and never by the client's name.
+When the thread first starts or loads an agent, the bridge starts each stdio server the client listed, with the command, arguments and environment the client gave and only the variables the MCP SDK passes by default. It keeps the first server that offers the three tools and closes the others.
+
+- Each time the bridge sends the thread's title, it also sets the title on the thread server.
+- At the start of each prompt, the bridge reads the thread's title there. A title that changed since the bridge last set or read it, and differs from the name the agent shows, renames the agent before the prompt reaches it.
+- A title the bridge set itself is never taken as a rename.
+- A read that fails, or a rename the agent refuses, is said in the thread and logged, and the prompt runs. A refused title is set back to the agent's name.
+- A client that lists no thread server gets the title through ACP alone.
 
 ## Choose the agent [#options]
 
@@ -176,12 +188,11 @@ person controls every agent under their own owner (see
 - Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
 - When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
 - Renaming a running agent with `/name` needs a space where people sign in, because only there does an agent take a new name from its owner.
-- Renaming a thread in the client does not rename its agent. The bridge takes no title from a client, and T3 Code does not tell an ACP agent about a rename. Use `/name` to rename the agent.
-- T3 Code 0.1.11 records the title the thread sends but keeps showing its own title for the thread.
+- A title you give a thread in the client renames its agent only through a thread server, only on a space where people sign in, and only once you send the next prompt in that thread.
 - `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - Questions an agent stops to ask, and the agent's own commands, reach the client only on a space where people sign in.
-- The client's own MCP servers are not passed to the agent.
+- The client's own MCP servers are not passed to the agent. The bridge itself uses only a thread server (see [Thread titles](#titles)).
 
 ## cotal acp [#acp]
 
