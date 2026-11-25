@@ -100,7 +100,7 @@ import {
   readChannelDefaults,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
-import type { EndpointIdentity } from "./endpoint-identity.js";
+import { OBSERVER_INBOX_NONCE_PREFIX, type EndpointIdentity } from "./endpoint-identity.js";
 import { newConnectionState, type ConnectionState } from "./endpoint-connection-state.js";
 import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
 import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
@@ -298,7 +298,6 @@ export class CotalEndpoint extends EventEmitter {
   get presenceBindingDropCount(): number {
     return this.presence.bindingDropCount;
   }
-
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
    *  ⇒ loud refusal naming the operation (the hard cut of SPEC §13.1 — no alias-keyed fallback). */
   private requireLifecycleUid(what: string): string {
@@ -316,6 +315,7 @@ export class CotalEndpoint extends EventEmitter {
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
     this.identity.space = opts.space;
+    this.identity.omitFromLiveMembership = opts.omitFromLiveMembership === true;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through. A role is an address too, refused here before
@@ -355,7 +355,7 @@ export class CotalEndpoint extends EventEmitter {
         this.identity.actor = claims.actor;
         this.cred.currentBearer = opts.bearer;
       }
-      this.identity.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
+      this.identity.connId = assertInboxConnId(`${this.identity.omitFromLiveMembership ? OBSERVER_INBOX_NONCE_PREFIX : "ibx"}${randomUUID().replace(/-/g, "")}`);
       this.identity.sentinelCreds = opts.sentinelCreds;
       // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
       // them), never self-minted — the ephemeral value here is the inbox nonce, which is the
@@ -2466,8 +2466,9 @@ export class CotalEndpoint extends EventEmitter {
    * and runtime id, with no registration. `handlers` serves the cluster's commands with
    * `AGENT_CONTRACTS`; `describe` is built in.
    *
-   * Throws on an open mesh and on a static credential, where no row names who may call, without a
-   * lifecycle UID, before the endpoint has started, while it already serves `agent`, for an
+   * Serves under a user-auth or static credential, whose rows name who may call, and on an open mesh,
+   * where the broker confines no caller (SPEC 13.21). Throws without a lifecycle UID, before the
+   * endpoint has started, while it already serves `agent`, for an
    * `endpoint` or `cluster` field, which this entry point does not take, and for a set of handlers
    * that is not the cluster's commands with its contracts. It subscribes this process's own subject
    * with no queue group.
@@ -2483,10 +2484,6 @@ export class CotalEndpoint extends EventEmitter {
     if ("endpoint" in spec || "cluster" in spec)
       throw new Error(`servePrincipal serves only the "${AGENT_ENDPOINT}" endpoint with AGENT_CLUSTER and takes handlers alone; an endpoint or cluster is refused, never ignored (SPEC 13.22)`);
     const serve = { endpoint: AGENT_ENDPOINT, cluster: AGENT_CLUSTER, handlers: spec.handlers };
-    if (!this.authed)
-      throw new Error("the principal route is served only on an authenticated mesh: on an open mesh no row says who may call (SPEC 13.21)");
-    if (!this.identity.userMode)
-      throw new Error("the principal route is served only under a user-auth credential: a static credential names no one who may call (SPEC 13.21)");
     const uid = this.identity.ownLifecycleUid;
     if (uid === undefined)
       throw new Error("serving the principal route needs this endpoint's lifecycleUid: the subject names it (SPEC 13.21)");

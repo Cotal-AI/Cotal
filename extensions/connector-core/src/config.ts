@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEV_OWNER, LAUNCH_MATERIAL_ENV, MODEL_POLICY_ENV, assertValidName, brokerUrlHasUserinfo, discardLaunchMaterial, assertLifecycleToken, assertValidChannel, assertValidKind, channelInAllow, credsClaims, eventChannel, idFromCreds, isConcreteChannel, loadAgentFile, parseJoinLink, parsePersonaEndpoints, resolveReadAcl, type AgentDef, type EndpointKind, type PersonaEndpoint } from "@cotal-ai/core";
 import { readMaterial } from "./session-env.js";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -120,6 +120,9 @@ export interface AgentConfig {
   /** Connector-defined model variant (for example reasoning effort), from `COTAL_VARIANT`, set the
    *  same way as {@link model}. Display-only discovery metadata. */
   variant?: string;
+  /** The role whose `modelPolicy` this agent launched under, from `COTAL_MODEL_POLICY`
+   *  ({@link MODEL_POLICY_ENV}). The policy is judged at launch, so the agent refuses `set-model`. */
+  modelPolicy?: string;
   token?: string;
   user?: string;
   pass?: string;
@@ -411,6 +414,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     endpoints: env.COTAL_ENDPOINTS !== undefined ? endpointsEnv(env.COTAL_ENDPOINTS) : def?.endpoints,
     model: env.COTAL_MODEL?.trim() || undefined,
     variant: env.COTAL_VARIANT?.trim() || undefined,
+    modelPolicy: env[MODEL_POLICY_ENV] || undefined,
     servers: material?.servers || env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,
     allowSubscribe: resolvedAllowSub,

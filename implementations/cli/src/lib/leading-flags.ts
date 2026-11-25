@@ -13,9 +13,9 @@ export const GLOBAL_FLAG_WORDS: ReadonlySet<string> = new Set(GLOBAL_FLAGS.map((
 function leadingFlagCount(argv: readonly string[], forRefusal = false): number {
   let lead = 0;
   for (const word of argv) {
-    // Only refusal rendering can look past a global switch with an attached value.
-    const global = forRefusal ? word.split("=", 1)[0]! : word;
-    if (!OUTPUT_FLAG_WORDS.has(word) && !GLOBAL_FLAG_WORDS.has(global)) break;
+    // Only refusal rendering can look past a switch with an attached value.
+    const flag = forRefusal ? word.split("=", 1)[0]! : word;
+    if (!OUTPUT_FLAG_WORDS.has(flag) && !GLOBAL_FLAG_WORDS.has(flag)) break;
     lead++;
   }
   return lead;

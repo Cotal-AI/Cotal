@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
+import { agentFilePath, chatStream, checkEventStartup, controlReplyFromThrown, copyPersonaEndpoints, describeCleanupFailures, DEV_OWNER, EpEnvelopeError, eventChannelPrincipal, EventStateConflictError, grantOverreach, isPermissionDenied, lifecycleBlocked, loadCotalConfig, lowerPersonaEndpoints, managedRetirementOpId, mintAcceptedToken, mintGeneration, mintLifecycleUid, modelPolicyEnv, modelPolicyRefusal, newIdentity, parsePrincipalKey, principalKey, provisionAgent, rejectionText, renderLifecycleBlocked, resolveReadAcl, saveAgentFile, STANDING_RENEWABLE_TTL_SEC as MANAGED_STATIC_TTL_SEC, STATIC_GENERATION_HORIZON_SEC, type AgentDef, type CleanupFailure, type Connector, type ControlReply, type CotalConfig, type CotalEndpoint, type EpCaller, type EpCapability, type GoalRef, type IssuedStore, type LaunchOpts, type LaunchSpec, type LifecycleStateTransport, type PersonaEndpoint, type UserAuthLaunch } from "@cotal-ai/core";
 import { agentLifecycleSecretFilePaths, agentSecretKeyForFile, materializeSecretToFile, mergeLaunchOptions, retainConnectorSeat } from "@cotal-ai/workspace";
 import type { KV } from "@nats-io/kv";
 import { CHAT_ALIAS_PREFIX } from "./chat-session.js";
@@ -117,9 +117,8 @@ export class SeatStart {
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
 
   /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
-   *  on its `agent` endpoint, which only a user-auth mesh serves, as its first turn. */
+   *  on its `agent` endpoint, which it serves on every mesh mode, as its first turn. */
   private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
-    if (!this.userMode) return "a first command runs on the agent endpoint, which only a user-auth mesh serves (firstCommand)";
     if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
     if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
     if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
@@ -940,7 +939,7 @@ export class SeatStart {
         }
         spec = connector.buildLaunch(launchOpts);
         if (carried) this.transcripts!.consume(opts.resumeClaim!, opts.resume!);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(cotalConfig, role) };
         handle = await this.seatCustody.spawnCustodied(runtime, name, spec, cwd, custody);
       }
       if (onceTask && !handle.waitForExit)

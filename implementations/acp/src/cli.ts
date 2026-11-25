@@ -45,9 +45,9 @@ export function hiddenStore(dir = join(homeCotalDir(), "acp")): HiddenSessions {
   };
 }
 
-/** The thread links, one JSON line per link, `{ space, thread, lifecycleUid }`, in the order they were
- *  stored. Every read goes to the file, as for {@link hiddenStore}, and each link is one append. A
- *  line that does not parse is refused, naming the file, rather than skipped. */
+/** The thread links, one JSON line per link, `{ space, thread, lifecycleUid, title? }`, in the order
+ *  they were stored. Every read goes to the file, as for {@link hiddenStore}, and each link is one
+ *  append. A line that does not parse is refused, naming the file, rather than skipped. */
 export function threadStore(dir = join(homeCotalDir(), "acp")): ThreadLinks {
   const path = join(dir, "threads");
   return {
@@ -66,16 +66,17 @@ export function threadStore(dir = join(homeCotalDir(), "acp")): ThreadLinks {
         } catch {
           throw new Error(`${path}: line ${at + 1} is not a thread link`);
         }
-        const { space: s, thread, lifecycleUid } = (row ?? {}) as Record<string, unknown>;
-        if (typeof s !== "string" || typeof thread !== "string" || typeof lifecycleUid !== "string") throw new Error(`${path}: line ${at + 1} is not a thread link`);
-        return s === space ? [{ thread, lifecycleUid }] : [];
+        const { space: s, thread, lifecycleUid, title } = (row ?? {}) as Record<string, unknown>;
+        if (typeof s !== "string" || typeof thread !== "string" || typeof lifecycleUid !== "string" || (title !== undefined && typeof title !== "string"))
+          throw new Error(`${path}: line ${at + 1} is not a thread link`);
+        return s === space ? [{ thread, lifecycleUid, ...(title !== undefined ? { title } : {}) }] : [];
       });
     },
     add(space, link) {
       mkSecretDir(dir);
       const fd = openPrivateAppend(path);
       try {
-        writeSync(fd, `${JSON.stringify({ space, thread: link.thread, lifecycleUid: link.lifecycleUid })}\n`);
+        writeSync(fd, `${JSON.stringify({ space, thread: link.thread, lifecycleUid: link.lifecycleUid, title: link.title })}\n`);
       } finally {
         closeSync(fd);
       }

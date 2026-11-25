@@ -987,6 +987,9 @@ const takeoverRun = startedId()!;
     ["malformed", ["resume", "bad/id"], { file: PURE, timeout: "5m" }, replaceId],
     ["malformed", ["answer", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
     ["malformed", ["amend", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+    ["malformed", ["check", "bad/id", PURE], {}, replaceId],
+    ["malformed", ["migrate", "bad/id", PURE], { local: undefined }, replaceId],
+    ["malformed", ["revoke", "bad/id"], { by: "operator", reason: "review" }, replaceId],
   ] as const) {
     const refusal = await wf([...positionals], { endpoint, ...flags }).then(() => undefined, (e: Error) => e);
     const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
@@ -1185,7 +1188,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 143;
+const DECLARED = 146;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
