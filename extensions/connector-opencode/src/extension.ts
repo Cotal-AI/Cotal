@@ -1,4 +1,6 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo } from "@cotal-ai/core";
@@ -7,6 +9,7 @@ import { openCodeCommandCatalog } from "./command-catalog.js";
 import { opencodeLine } from "./opencode-line.js";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { OPENCODE_READINESS_TIMEOUT_MS } from "./startup.js";
+import { readSettledModels } from "./settled-models.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
  *  file: OpenCode 2.x drops a file plugin path (`configured plugin path must be a directory`)
@@ -79,24 +82,20 @@ function parseModels(stdout: string): ModelInfo[] {
   return models;
 }
 
-/** The 2.x catalog read. `--standalone` makes the CLI start a private `opencode serve` for this one
- *  request and stop it on exit, so a catalog read never starts OpenCode's background service. */
-const OPENCODE2_CATALOG_ARGS = ["api", "--standalone", "GET", "/api/model"];
-const OPENCODE2_CATALOG_TIMEOUT_MS = 6_000;
+/** The private server OpenCode's own `--standalone` flag starts, so a catalog read never starts
+ *  OpenCode's background service. With `--stdio` it reports `{"url":...}` on its first stdout line
+ *  once it listens and exits when its stdin closes, so it cannot outlive this process. Its basic-auth
+ *  password rides the environment, never argv. */
+const OPENCODE2_SERVE_ARGS = ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"];
+const OPENCODE2_CATALOG_SOURCE = "opencode serve --stdio GET /api/model";
+const OPENCODE2_SERVE_START_MS = 6_000;
+/** How long OpenCode's own `opencode models` waits for the plugins (see settled-models.ts). */
+const OPENCODE2_PLUGIN_WAIT_MS = 5_000;
 
-/** Maps the `GET /api/model` reply (`{ location, data: Model.Info[] }`, the same shape since 2.0.0)
- *  to `provider/model` ids, the form `--model` accepts. Only ids, names and variant names are read:
- *  a model's `settings` and `headers` carry provider credentials. */
-function parseModels2(stdout: string): ModelInfo[] {
-  let reply: unknown;
-  try {
-    reply = JSON.parse(stdout);
-  } catch {
-    // JSON.parse quotes the input in its message, and this input can hold provider keys.
-    throw new Error("the reply is not JSON");
-  }
-  const data = (reply as { data?: unknown } | null)?.data;
-  if (!Array.isArray(data)) throw new Error("the reply has no model list");
+/** Maps the `GET /api/model` list (`Model.Info[]`, the same shape since 2.0.0) to `provider/model`
+ *  ids, the form `--model` accepts. Only ids, names and variant names are read: a model's `settings`
+ *  and `headers` carry provider credentials. */
+function parseModels2(data: unknown[]): ModelInfo[] {
   return data.map((raw: unknown, i) => {
     const { id, providerID, name, variants } = (raw ?? {}) as Record<string, unknown>;
     if (typeof id !== "string" || !id || typeof providerID !== "string" || !providerID)
@@ -116,33 +115,47 @@ function parseModels2(stdout: string): ModelInfo[] {
   });
 }
 
-function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
-  const source = `opencode ${OPENCODE2_CATALOG_ARGS.join(" ")}`;
-  const unavailable = (why: string): ModelCatalog => ({
-    models: [],
-    unavailable: `OpenCode 2.x did not list its models (${source}: ${why}); pass --model provider/model`,
-  });
-  return new Promise((settle) => {
-    const child = execFile(
-      bin,
-      OPENCODE2_CATALOG_ARGS,
-      { encoding: "utf8", env, maxBuffer: 16 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        clearTimeout(timer);
-        if (err) return settle(unavailable((stderr.trim() || err.message).replace(/\s+/g, " ")));
-        try {
-          settle({ source, models: parseModels2(stdout) });
-        } catch (e) {
-          settle(unavailable((e as Error).message));
-        }
-      },
-    );
-    child.stdin?.end();
-    // execFile calls back only once every pipe closes, which a killed CLI's children can delay.
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      settle(unavailable(`no answer within ${OPENCODE2_CATALOG_TIMEOUT_MS / 1000} seconds`));
-    }, OPENCODE2_CATALOG_TIMEOUT_MS);
+/** An empty list is reported unavailable, never as a catalog: it is what a server answers before its
+ *  plugins load, and it leaves nothing to pick. */
+async function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
+  const password = randomBytes(24).toString("hex");
+  const serve = spawn(bin, OPENCODE2_SERVE_ARGS, { env: { ...env, OPENCODE_PASSWORD: password }, stdio: ["pipe", "pipe", "ignore"] });
+  try {
+    const url = await reportedUrl(serve);
+    const auth = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+    const models = parseModels2(await readSettledModels(url, auth, OPENCODE2_PLUGIN_WAIT_MS));
+    if (models.length === 0) throw new Error("the server listed no models");
+    return { source: OPENCODE2_CATALOG_SOURCE, models };
+  } catch (e) {
+    return {
+      models: [],
+      unavailable: `OpenCode 2.x did not list its models (${OPENCODE2_CATALOG_SOURCE}: ${(e as Error).message}); pass --model provider/model`,
+    };
+  } finally {
+    serve.stdin?.end();
+  }
+}
+
+/** The address a `--stdio` server reports on its first stdout line. A server that has not reported
+ *  one in time is killed, since closing its stdin stops only a server that still reads it. */
+function reportedUrl(serve: ChildProcess): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fail = (why: string): void => {
+      clearTimeout(timer);
+      serve.kill("SIGKILL");
+      reject(new Error(why));
+    };
+    const timer = setTimeout(() => fail(`opencode serve reported no address within ${OPENCODE2_SERVE_START_MS / 1000} s`), OPENCODE2_SERVE_START_MS);
+    serve.once("error", (e) => fail(e.message));
+    serve.once("exit", (code, signal) => fail(`opencode serve exited (${code ?? signal}) before it reported its address`));
+    createInterface({ input: serve.stdout! }).once("line", (line) => {
+      clearTimeout(timer);
+      try {
+        resolve(new URL((JSON.parse(line) as { url: string }).url).origin);
+      } catch {
+        fail("opencode serve reported no address");
+      }
+    });
   });
 }
 
