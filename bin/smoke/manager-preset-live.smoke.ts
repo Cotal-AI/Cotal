@@ -11,6 +11,10 @@
  * prints that line on stderr after its Mesh heading and lifetime notice and says its output went
  * there. On an 80-column pty that line wraps at 80 columns, each continuation under the text.
  *
+ * A start with `--idle-exit` records it on the instance and never in the saved definition, and with
+ * no agents the manager stops itself: status shows the stop and the next start, and the log says why.
+ * A later start without the flag runs with none. The flag is refused off start and on another service.
+ *
  * Bare `cotal down` on that legacy root then refuses while the saved service runs: its dry run lists
  * the running manager, warns with the refusal and changes nothing, `down --preserve-state` and bare
  * `down` refuse and name the running manager and its stop, and an unreadable service record refuses
@@ -26,7 +30,7 @@ import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_pro
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 
@@ -47,7 +51,7 @@ process.env.XDG_CONFIG_HOME = xdg;
 const { isReachable, parseCommandArgs, registry } = await import("@cotal-ai/core");
 type Command = import("@cotal-ai/core").Command;
 type LocalProcess = import("@cotal-ai/workspace").LocalProcess;
-const { findMesh, isCommandFailure, recordMesh, removeMesh, spaceKey, validateServiceAdapterPaths } = await import("@cotal-ai/workspace");
+const { findMesh, identityRecord, isCommandFailure, MAX_IDLE_EXIT_SECONDS, publishServiceIdleExit, readServiceIdleExit, recordMesh, removeMesh, spaceKey, validateServiceAdapterPaths } = await import("@cotal-ai/workspace");
 const { managerServiceChild } = await import("../../implementations/manager/src/service-child.js");
 const { serviceInstanceStore, serviceInstances } = await import("../../implementations/cli/src/lib/service-instances.js");
 const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
@@ -118,6 +122,9 @@ else {
   check("the launch passes the roster to the native child", args.includes("__service-manager") && at > 0 && args[at + 1] === roster, built);
   const resumed = await rejection(() => adapter.buildServiceLaunch!({ ...context, attempt: { kind: "maintenance-resume", attemptId: "resume1" } }));
   check("a resumed launch takes no roster", resumed?.includes("boots no roster") === true, resumed);
+  const idleBuilt = await Promise.resolve().then(() => adapter.buildServiceLaunch!({ ...context, managerIdleExit: 600 })).then((plan) => plan.args, describe);
+  const idleArgs = typeof idleBuilt === "string" ? [] : idleBuilt;
+  check("a start with --idle-exit passes it to the native child, and one without passes none", idleArgs[idleArgs.indexOf("--idle-exit") + 1] === "600" && !args.includes("--idle-exit"), idleBuilt);
 
   const child = registry.resolve<Command>("command", "__service-manager");
   const childArgs = (extra: string[]) => parseCommandArgs(child, [
@@ -127,6 +134,16 @@ else {
   const parsed = (() => { try { return managerServiceChild(childArgs(["--roster", roster])).roster ?? []; } catch (error) { return describe(error); } })();
   check("the native child parses the roster once at validation",
     typeof parsed !== "string" && JSON.stringify(parsed.map((entry) => [entry.name, entry.agent])) === JSON.stringify([["ghost", "nosuchconnector"]]), parsed);
+  const idleChild = (() => { try { return managerServiceChild(childArgs(["--idle-exit", "600"])).idleExitSeconds; } catch (error) { return describe(error); } })();
+  check("the native child reads its idle exit in seconds", idleChild === 600, idleChild);
+  const badIdle = ["0", "1.5", "-1", String(MAX_IDLE_EXIT_SECONDS + 1)].map((value) => refusal(() => managerServiceChild(childArgs(["--idle-exit", value]))));
+  check("the native child refuses an idle exit that is not a whole number of seconds in range", badIdle.every((r) => r?.startsWith("USAGE_INVALID") === true), badIdle);
+  const receipt = { space: OFFLINE, instanceId: context.instanceId, launchRequestId: context.launchRequestId, stateDirectory };
+  const self = identityRecord(process.pid) as { pid: number; token: string };
+  publishServiceIdleExit(receipt, 600);
+  check("an idle-exit receipt reads back for its own launch and process", readServiceIdleExit(receipt, self)?.idleSeconds === 600);
+  check("  and is refused for another process, never read as this one's", refusal(() => readServiceIdleExit(receipt, { pid: self.pid, token: "0" }))?.startsWith("SCHEMA_INVALID") === true);
+  check("  and a launch that left none reads as none", readServiceIdleExit({ ...receipt, launchRequestId: randomUUID() }, self) === undefined);
   const invalid = refusal(() => managerServiceChild(childArgs(["--roster", misspelt])));
   check("a roster with an unknown key is refused by name", invalid?.startsWith("SCHEMA_INVALID") === true && invalid.includes("share_tools is not a roster key"), invalid);
   const relativeChild = refusal(() => managerServiceChild(childArgs(["--roster", "roster.yaml"])));
@@ -348,18 +365,57 @@ try {
         && wrapped.map((line) => line.trim()).join(" ") === cause.trim(), { ttyCode, screen: clean(screen) });
     rmSync(capRecord);
 
+    // ---- --idle-exit applies to one start: the manager stops itself once it holds no agents --------
+    const misplaced = cotal(["service", "stop", "mgr", "--space", SPACE, "--idle-exit", "5", "--yes"]);
+    check("--idle-exit on anything but start is a usage refusal", misplaced.status !== 0 && out(misplaced).includes("--idle-exit belongs to start"), out(misplaced));
+    const other = cotal(["service", "add", "idleother", "--exec", "sleep 30", "--space", SPACE]);
+    const otherStart = cotal(["service", "start", "idleother", "--space", SPACE, "--idle-exit", "5"]);
+    check("--idle-exit on another service is refused before anything launches",
+      other.status === 0 && otherStart.status !== 0 && out(otherStart).includes("--idle-exit belongs to the manager") && serviceInstances(SPACE, "idleother").length === 0, out(otherStart));
+    cotal(["service", "remove", "idleother", "--space", SPACE, "--yes"]);
+    const idle = cotal(["service", "start", "mgr", "--space", SPACE, "--idle-exit", "2"]);
+    const idleRow = serviceInstances(SPACE, "mgr")[0]?.record.value;
+    const saved = serviceDefinitionStore(SPACE).read("mgr")?.record.value.launch;
+    check("a start with --idle-exit records it on the instance only, never in the saved definition",
+      idle.status === 0 && idleRow?.managerIdleExit === 2 && saved?.type === "adapter" && !("idle-exit" in saved.options), { out: out(idle), saved });
+    check("  and its status shows it", out(idle).includes("after 2 s with no agents"), out(idle));
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    for (let i = 0; i < 60 && idleRow?.process && alive(idleRow.process.pid); i++) await sleep(500);
+    const idleStatus = cotal(["service", "status", "mgr", "--space", SPACE]);
+    check("a manager that holds no agents stops itself, and status says so and names the next start",
+      idleStatus.status === 0 && /Stopped:\s+by itself at \S+, after 2 s with no agents/.test(out(idleStatus)) && out(idleStatus).includes(`cotal service start mgr --space ${SPACE}`) && !out(idleStatus).includes("no recorded stop"), out(idleStatus));
+    const idleLog = cotal(["service", "logs", "mgr", "--space", SPACE]);
+    check("  and its log says why", out(idleLog).includes("manager: no agents for 2 s; stopping"), out(idleLog));
+    const stopping = cotal(["service", "start", "mgr", "--space", SPACE, "--idle-exit", "600"]);
+    const stoppedEarly = cotal(["service", "stop", "mgr", "--space", SPACE, "--yes"]);
+    const stoppedStatus = cotal(["service", "status", "mgr", "--space", SPACE]);
+    check("a manager stopped before its idle exit shows no idle exit row once stopped",
+      stopping.status === 0 && out(stopping).includes("after 600 s with no agents") && stoppedEarly.status === 0 && !out(stoppedStatus).includes("Idle exit") && !out(stoppedStatus).includes("by itself"), out(stoppedStatus));
+
     // ---- Bare down refuses while the space's service runs, and skips it once stopped -------------
+    // This start's manager reads spawn.env: a name set where it starts reaches it, while an
+    // Object.prototype member, which a seat never gets, does not.
+    const spawnConfig = join(xdg, "cotal", "config.json");
+    mkdirSync(dirname(spawnConfig), { recursive: true, mode: 0o700 });
+    writeFileSync(spawnConfig, JSON.stringify({ spawn: { env: ["SMOKE_SPAWN_PROBE", "constructor", "toString"] } }), { mode: 0o600 });
+    env.SMOKE_SPAWN_PROBE = "1";
     const start = cotal(["service", "start", "mgr", "--space", SPACE]);
+    delete env.SMOKE_SPAWN_PROBE;
+    rmSync(spawnConfig);
     const live = serviceInstances(SPACE, "mgr")[0];
     liveInstance = live?.name;
     const liveState = () => live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.state : undefined;
     check("service start runs the saved manager in the background", start.status === 0 && liveState() === "running", out(start));
+    check("  and a start without --idle-exit after an idle exit runs with none", live?.record.value.managerIdleExit === undefined && !out(start).includes("Idle exit"), out(start));
     // The controller starts the preset's native child under the daemon node flag: it is among the
     // node flags before the entry script, which is what the child's own process.execArgv holds.
     const childPid = live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.process?.pid : undefined;
     const childArgv = childPid ? readFileSync(`/proc/${childPid}/cmdline`, "utf8").split("\0").filter(Boolean) : [];
     const childEntry = childArgv.indexOf(BIN);
     check("the controller runs the manager preset under node --max-semi-space-size=1", childEntry > 0 && childArgv.slice(1, childEntry).includes("--max-semi-space-size=1"), childArgv);
+    const childNames = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0").map((entry) => entry.slice(0, entry.indexOf("="))) : [];
+    check("the started manager gets a spawn.env name set where it starts, and no Object.prototype member it lists",
+      childNames.includes("SMOKE_SPAWN_PROBE") && !childNames.some((name) => ["constructor", "toString"].includes(name)), childNames);
     const stopCommand = `cotal service stop mgr --instance ${live?.name} --space ${SPACE} --yes`;
     const preview = cotal(["down", "--dry-run", "--json"]);
     let checks: { definition?: string; instanceId?: string; action?: string }[] = [], warnings: { code?: string; message?: string }[] = [];
