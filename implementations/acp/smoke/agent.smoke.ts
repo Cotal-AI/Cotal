@@ -23,6 +23,8 @@
  *    launch lists the caller may not read loads with only its own model and cannot start another
  *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
  *    and deleting it fails;
+ *  - a running seat whose application's models the manager could not read loads and opens on its
+ *    model, and after `/despawn` the thread still refuses to start that application;
  *  - with no manager of the person's on this machine, a new session has no machine: the Machine
  *    option offers the other computers, also only one, and a prompt before one is chosen fails with
  *    one line and spawns nothing;
@@ -287,6 +289,41 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   check("beside another application, it is not offered", select?.options.some((g) => g.group === "opencode") === false, select?.options.map((g) => g.group));
   const chosen = await errorOf(both.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: "opencode/default" }));
   check("and choosing it fails with the read's reason", chosen?.message?.includes(why) === true, chosen);
+  both.conn.close();
+}
+
+// A running seat of such an application still opens, since driving it launches nothing.
+{
+  const why = "Database is not empty and has no session table";
+  const unread: AgentCatalog = { agent: "opencode", available: true, eventPlane: true, models: [], modelsUnread: why };
+  const seat: SeatRow = { name: "reader", owner: "local", actor: "r1", lifecycleUid: "life-r", managerInstanceId: "m1", agent: "opencode", model: "anthropic/claude-sonnet-4-5", cwd: dir, status: "running" };
+  const modelOf = (r: { configOptions?: unknown[] | null } | undefined) => {
+    const o = r?.configOptions?.find((x) => (x as { id: string }).id === "model") as { currentValue?: string; options?: { options?: { value: string }[] }[] } | undefined;
+    return { current: o?.currentValue, values: (o?.options ?? []).flatMap((g) => (g.options ?? []).map((c) => c.value)) };
+  };
+  const only = new FakeMesh();
+  only.catalogList = [unread];
+  only.rows = [seat];
+  const alone = connect(async () => only);
+  await alone.init;
+  let loadFailed: unknown;
+  const loaded = await alone.agent.request(methods.agent.session.load, { sessionId: "reader", cwd: dir, mcpServers: [] }).catch((e: unknown) => { loadFailed = e; return undefined; });
+  check("session/load opens a running seat whose application's models could not be read, on the seat's model, which the select lists",
+    loadFailed === undefined && modelOf(loaded).current === "opencode/anthropic/claude-sonnet-4-5" && JSON.stringify(modelOf(loaded).values) === JSON.stringify(["opencode/anthropic/claude-sonnet-4-5"]), loadFailed ?? modelOf(loaded));
+  if (loaded) await within(alone.agent.request(methods.agent.session.prompt, { sessionId: "reader", prompt: [{ type: "text", text: "/despawn" }] }));
+  const relaunch = loaded ? await errorOf(within(alone.agent.request(methods.agent.session.prompt, { sessionId: "reader", prompt: [{ type: "text", text: "again" }] }))) : undefined;
+  check("after /despawn, a prompt there still refuses to start that application, with the read's reason",
+    relaunch?.code === -32602 && relaunch.message?.includes(why) === true && only.spawned.length === 0, relaunch);
+  alone.conn.close();
+  const beside = new FakeMesh();
+  beside.catalogList = [...CATALOGS, unread];
+  beside.rows = [seat];
+  const both = connect(async () => beside);
+  await both.init;
+  const s = await both.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const opened = await errorOf(within(both.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "/open reader" }] })));
+  const said = both.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
+  check("/open drives such a seat too", opened === undefined && said.includes("now drives reader"), opened ?? said);
   both.conn.close();
 }
 
