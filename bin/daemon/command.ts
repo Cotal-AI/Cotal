@@ -29,7 +29,7 @@ import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-a
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, isCotalCloudIdp, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
-import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
+import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, ensureStateDir, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
@@ -522,6 +522,14 @@ async function serve(args: ParsedArgs): Promise<void> {
   if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
   const { paths, home } = resolveTarget(args);
+  // The app's Background service log reads a private daemon.log in the state directory.
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.platform !== "win32") {
+    const log = await import("./native-log.js");
+    ensureStateDir(paths);
+    // launchd writes the file itself, readable by others; systemd sends the output to the journal instead.
+    if (process.platform === "darwin") log.privateLaunchdLog(paths.state);
+    else log.captureNativeDaemonOutput(paths.state);
+  }
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;

@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -147,7 +147,8 @@ try {
     encoding: "utf8", timeout: 60_000, maxBuffer: 256 * 1024, windowsHide: true, input: `${JSON.stringify({ op: "log" })}\n`,
   });
   const logFrame = JSON.parse((logRead.stdout ?? "").trim().split("\n").at(-1) || "{}");
-  report.calls.push({ verb: "desktop log", exit: logRead.status, ok: logFrame.ok, code: logFrame.error?.code, message: logFrame.error?.message });
+  const logMode = existsSync(join(home, "daemon.log")) ? (statSync(join(home, "daemon.log")).mode & 0o777).toString(8) : "absent";
+  report.calls.push({ verb: "desktop log", exit: logRead.status, ok: logFrame.ok, code: logFrame.error?.code, message: logFrame.error?.message, logMode });
   check("the app's service log view reads the installed service's log", logFrame.ok === true && typeof logFrame.result?.text === "string" && logFrame.result.text.length > 0);
   if (process.platform === "linux") {
     const unit = linuxUnit();
