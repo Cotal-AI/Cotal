@@ -186,9 +186,10 @@ export function validateDownArguments(args: ParsedArgs): void {
       });
     }
     refuseLegacySpaceMismatch(args.values);
-    if (args.values["dry-run"] === true && (args.values.file !== undefined || args.values.run !== undefined)) {
-      throw new CommandFailure("refused", "UNSUPPORTED", "a legacy deployment preview does not support --json or --plain", {
-        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep --dry-run and the same deployment selection`, selfContained: true,
+    if (args.values.file !== undefined || args.values.run !== undefined) {
+      const preview = args.values["dry-run"] === true;
+      throw new CommandFailure("refused", "UNSUPPORTED", `a legacy deployment ${preview ? "preview" : "teardown"} does not support --json or --plain`, {
+        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep ${preview ? "--dry-run and " : ""}the same deployment selection`, selfContained: true,
       });
     }
     const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
