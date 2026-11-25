@@ -11,7 +11,7 @@ import { TTL_RECONCILE_CANARY_KEY } from "./streams.js";
 import { presenceBucket } from "./subjects.js";
 import { isPresenceRow, assertPresenceRow } from "./subjects.js";
 import { assertValidName } from "./resolve.js";
-import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
+import { AGENT_LABEL_META_KEY, AGENT_MODEL_SET_META_KEY, AGENT_NAMING_META_KEY } from "./agent-endpoint.js";
 
 type PresenceWatch = Awaited<ReturnType<KV["watch"]>>;
 
@@ -803,7 +803,8 @@ export class EndpointPresence {
     // readiness race), which then timed out "uncertain" on a healthy agent (#29). A changed display
     // name is never a heartbeat either: `set-name` changes nothing else, and a watcher keyed on these
     // events, such as the manager keeping a seat's name, would never see the rename. Nor is a changed
-    // label or naming mark (SPEC 13.22): readers show the label in place of the name.
+    // label or naming mark (SPEC 13.22): readers show the label in place of the name. Nor is a model
+    // an owner's `set-model` switched to, which the manager keeps for a relaunch.
     if (
       prev &&
       prev.status !== "offline" &&
@@ -811,6 +812,7 @@ export class EndpointPresence {
       prev.card.name === p.card.name &&
       prev.card.meta?.[AGENT_LABEL_META_KEY] === p.card.meta?.[AGENT_LABEL_META_KEY] &&
       prev.card.meta?.[AGENT_NAMING_META_KEY] === p.card.meta?.[AGENT_NAMING_META_KEY] &&
+      sameModelSet(prev.card.meta?.[AGENT_MODEL_SET_META_KEY], p.card.meta?.[AGENT_MODEL_SET_META_KEY]) &&
       prev.lifecycleUid === p.lifecycleUid &&
       sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&
@@ -928,6 +930,13 @@ function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | 
     && a?.since === b?.since;
 }
 
+/** Whether two `ai.cotal.model-set` values name one model and variant. Each record parses to a new
+ *  object, so they are compared by field. */
+function sameModelSet(a: unknown, b: unknown): boolean {
+  const x = a as { model?: unknown; variant?: unknown } | undefined, y = b as { model?: unknown; variant?: unknown } | undefined;
+  return typeof a === typeof b && x?.model === y?.model && x?.variant === y?.variant;
+}
+
 function sameAgentEndpoint(a: PresenceAgentEndpoint | undefined, b: PresenceAgentEndpoint | undefined): boolean {
-  return a?.interrupt === b?.interrupt && a?.turn === b?.turn && a?.images === b?.images && a?.usage === b?.usage;
+  return a?.interrupt === b?.interrupt && a?.turn === b?.turn && a?.images === b?.images && a?.usage === b?.usage && a?.setModel === b?.setModel;
 }

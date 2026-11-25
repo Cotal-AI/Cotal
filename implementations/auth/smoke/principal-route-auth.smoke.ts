@@ -277,6 +277,7 @@ function testAgent(ep: CotalEndpoint, w: Who): TestAgent {
     { command: "set-name", contract: AGENT_CONTRACTS["set-name"], handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent keeps its name", undefined, "not-executed"); } },
     { command: "turn", contract: AGENT_CONTRACTS.turn, handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent takes no turn", undefined, "not-executed"); } },
     { command: "usage", contract: AGENT_CONTRACTS.usage, handler: () => ({ supported: false }) },
+    { command: "set-model", contract: AGENT_CONTRACTS["set-model"], handler: () => { throw new EpEnvelopeError("unimplemented", "this test agent keeps its model", undefined, "not-executed"); } },
   ];
   agent.serve = ep.servePrincipal({ handlers });
   return agent;
@@ -375,7 +376,7 @@ try {
   check("cell 1: describe answers the fixed cluster inline, public, under the agent's owner",
     answer?.public === true && answer.descriptor.endpoint === "agent" && answer.descriptor.owner === A
     && answer.descriptor.clusters[0].digest === agentClusterArtifacts().closureDigest
-    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage"]), describe);
+    && JSON.stringify(answer.descriptor.clusters[0].commands) === JSON.stringify(["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage", "set-model"]), describe);
   check("cell 1: the agent's handlers saw three requests, each under the owner word from alice.web's triple",
     coder.calls.length === 3 && coder.calls.every((c) => c.authority === "owner" && c.caller === `${A}.web.${W.web.uid}`), coder.calls);
   await until(() => webEp.getRoster().find((p) => p.card.id === `${A}.coder`)?.prompts?.seq === coder.seq, 8000);
@@ -831,7 +832,7 @@ try {
   }
 
   // ── cell 30: stopping the endpoint ends its principal serve ──
-  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage"] as const).map((command) => ({
+  const stubHandlers = (prompts?: EpPrincipalCommandDef["handler"]): EpPrincipalCommandDef[] => (["prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage", "set-model"] as const).map((command) => ({
     command, contract: AGENT_CONTRACTS[command],
     handler: command === "prompts" && prompts ? prompts : (ctx) => ({ runtime: { id: ctx.principal.runtimeId, startedAt: 1 }, seq: 0, open: [], closed: [] }),
   }));
@@ -1002,15 +1003,15 @@ try {
     check("a caller minted before the rows: permission-denied, not-executed", !oldCaller.ok && codeOf(oldCaller.error) === "permission-denied/not-executed", oldCaller);
     const laterContract = { input: AGENT_CONTRACTS.prompts.input, output: compileContract({ root: { type: "object", properties: { runtime: {}, seq: {}, open: {}, closed: {}, interrupted: {} } } }) };
     const pinned = await webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: coderAt, command: "prompts", authority: "owner", args: {}, deadlineMs: 4000, contract: laterContract });
-    check("a caller pinned to a later prompts contract and a revision-5 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
+    check("a caller pinned to a later prompts contract and a revision-6 agent: contract-mismatch, not-executed", !pinned.ok && pinned.error.code === "contract-mismatch" && pinned.error.outcome === "not-executed", pinned);
     const d = await call(webEp, coderAt, "describe", "owner");
     const doc = d.ok ? (d.data as DescribeAnswer).descriptor.clusters[0] : undefined;
     const parsed = doc?.document ? parseClusterDocument(doc.document) : undefined;
-    check("then describe: the agent serves revision 5, and the document matches the caller's embedded artifacts",
-      parsed?.revision === 5 && doc?.digest === agentClusterArtifacts().closureDigest
+    check("then describe: the agent serves revision 6, and the document matches the caller's embedded artifacts",
+      parsed?.revision === 6 && doc?.digest === agentClusterArtifacts().closureDigest
       && parsed.commands.every((c) => c.inputDigest === AGENT_CONTRACTS[c.name].input.closureDigest && c.outputDigest === AGENT_CONTRACTS[c.name].output.closureDigest), d);
     const current = await call(webEp, coderAt, "prompts", "owner", {});
-    check("then revision 5 answers", current.ok, current);
+    check("then revision 6 answers", current.ok, current);
   }
 
   // ── a reconnect that rebinds ──
