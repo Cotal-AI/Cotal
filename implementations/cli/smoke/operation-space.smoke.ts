@@ -275,6 +275,17 @@ for (const words of [["describe", "manager"], ["invoke", "ep:manager", "ps"]]) {
 const otherEndpoint = cotal("endpoint", "invoke", "ref:reviews", "read", "--args", '{"note":"fixture body"}', "--on", "bad", "--json");
 check("a saved endpoint pin keeps the original request and never suggests a Manager roster", otherEndpoint.status === 1 &&
   otherEndpoint.envelope?.error?.message?.includes("Replace only the --on value") === true && !otherEndpoint.stdout.includes("cotal ps") && !otherEndpoint.stdout.includes("fixture body"), shown(otherEndpoint));
+for (const words of [["watch", "ref:reviews", "progress"], ["session", "ref:reviews", "read"], ["work", "lease", "ref:reviews", "pool"]]) {
+  const pin = "a".repeat(26), server = "nats://127.0.0.1:39200";
+  const denied = cotal("endpoint", ...words, "--space", "elsewhere", "--server", server, "--on", pin, "--json");
+  const lookup = `cotal endpoint describe ref:reviews --space elsewhere --server ${server} --on ${pin} --json`;
+  check(`unsupported endpoint ${words[0]} keeps the selected reference and route for discovery`, denied.status === 2 &&
+    denied.envelope?.error?.code === "UNSUPPORTED" && denied.envelope.error.remedy?.includes(`\`${lookup}\``) === true, shown(denied));
+}
+const privateDiscovery = cotal("endpoint", "watch", "ref:reviews", "progress", "--creds", "unopened.creds", "--json");
+check("endpoint discovery keeps an explicit caller without printing its file", privateDiscovery.status === 2 &&
+  privateDiscovery.envelope?.error?.remedy?.includes("same --space, --server, --creds and --on options") === true &&
+  !privateDiscovery.stdout.includes("unopened.creds"), shown(privateDiscovery));
 const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
 check("a malformed named status pin keeps plain output on the retry",
   plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));
