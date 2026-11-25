@@ -1081,7 +1081,7 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 54. The closed `spawn` input accepts optional boolean
+The Manager cluster revision is 55. The closed `spawn` input accepts optional boolean
 `eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
 `status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
 that carries it. Revision 52 requires `prompts` on every `status.connectors` row (§13.7), and the
@@ -1093,6 +1093,17 @@ view (§13.21). It refuses with `unimplemented` when the connector declares no k
 no terminal input.
 Revision 54 adds the `harness-commands` launch read, the `spawn` input field `firstCommand` and the
 acceptance field `firstCommand.id`. They are defined with the agent's commands (§13.22).
+Revision 55 adds the `spawn` input field `modes`, a map of 1 to 32 mode ids to a boolean or a
+non-empty option id. A model row in a `models` catalog MAY carry `isDefault`, `defaultVariant` and
+`modes`, where a mode is `{ id, label, kind: "toggle", default: boolean }` or
+`{ id, label, kind: "choice", options: [{ id, label }], default }`. At most one row is the default,
+and each default MUST name one of its own variants or options. Before anything is minted, the
+Manager MUST refuse a `spawn` whose `variant` or `modes` the connector's catalog does not list for
+the launched model, or for the default row when the spawn names no model. It MUST also refuse
+`modes` for a connector that does not render them, and for a runtime that starts seats outside its
+host. It checks against the last catalog it read and reads one only when it holds none for the
+harness files it would launch. A resumed seat replays its recorded modes, and a connector that no
+longer renders them refuses the resume.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -8150,6 +8161,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-25 | **A spawn runs only the variant and modes its model catalog lists (§13.6), breaking.** The Manager cluster advances to revision 55. A variant the catalog does not list was launched and then run at another effort by the harness; it is now refused. `spawn` takes `modes`, a map of mode ids to a toggle's boolean or a choice's option id. A `models` row MAY carry `isDefault`, `defaultVariant` and `modes`. Before anything is minted, the Manager refuses a variant or mode the connector's catalog does not list for the launched model, or for the default row when none is named, and refuses `modes` for a connector that does not render them or a runtime that starts seats elsewhere. A seat's modes are recorded with its launch and replayed on resume. A launch that names no variant and no mode is unchanged. |
 | 2026-11-24 | **A launcher lists a harness's commands before launch and starts an agent with one (§13.6, §13.22, Appendix B), additive.** The Manager cluster advances to revision 54. The `harness-commands` launch read answers `{ agent, cwd, supported: true, commands }` with the entries a harness lists for a directory on the Manager's host, under the names a seat's `command` takes, or `{ supported: false, reason }` for a harness whose seats run no commands. It starts no seat, is granted where `list-dir` is, and a failed lookup is `unavailable`, never an empty list. `spawn` takes `firstCommand: { target, name, args? }`, and its acceptance names `firstCommand.id`, derived from the goal id. The agent queues the command under that id before any other and runs it as its first turn once its harness runs commands. A spawn whose harness runs no commands of that target, whose mesh is not user-auth, whose runtime starts seats elsewhere, or that also names `prompt` or `once` is refused before anything is provisioned. A harness that runs no commands within 60 s ends the command `refused` with its cause. Earlier commands, schemas and digests are unchanged. |
 | 2026-11-23 | **`commands` can answer `supported: false` for a while (§13.22), clarification.** `{ supported: false }` means the connector runs no commands now. It can change within a lifecycle, as for a Claude Code seat whose command mod is not running, so a reader asks again later. `command` and `interrupt` then answer `unimplemented`, `not-executed`, with the cause in the message. No subject, schema or digest changes. |
 | 2026-11-21 | **A person controls their own agents without `admin` (§9, §13.9, §13.21), additive.** A signed-in person could not type into or interrupt their own agents through the Manager unless their actor row held `admin`, and could read their agents' event channels only through a channel grant. Both are now keyed on the ledger row being `interactive`, as the principal route's `owner` rows are. The person's `manager-caller` view carries `inspect` and `ps`, and owner-mode `despawn`, `attach`, `input` and `interrupt`, on its instance whatever the row's scope, the target owner pinned to their own. Their `agent` credential subscribes `chat.<owner>.*.events.<owner>.*` and holds one create of its own `chathist_` reader with that filter. A `managed-agent` row gets none of these, so the Manager's `input` and `interrupt` stay out of every agent credential, and a person cannot hand them on. They ride the person's sign-in, so a process using that sign-in uses them. |
