@@ -1,5 +1,14 @@
 # @cotal-ai/cli
 
+## 0.180.1
+
+### Patch Changes
+
+- d69dda2: Keep stack records when `cotal down` cannot access the project's `.cotal` directory.
+- feeef8e: Self-update reinstalls first-party extensions that cannot load even when their installed versions match the CLI.
+- @cotal-ai/core@0.180.1
+  - @cotal-ai/workspace@0.180.1
+
 ## 0.180.0
 
 ### Minor Changes

@@ -1,5 +1,27 @@
 # cotal-ai
 
+## 0.180.1
+
+### Patch Changes
+
+- 54b924d: The desktop app's Background service log now shows the service's output on macOS and Linux. On macOS, launchd created `daemon.log` readable by others, so the app refused to show it. On Linux the output went only to the journal. The service now makes its log private (macOS), or keeps the same bounded private copy as Windows (Linux), first thing when it starts. A space row that says "Manager is not answering" now also gives the Manager's own reason. Reading the application PATH from the login shell no longer hangs on a startup file that waits for input, or waits on a job a startup file left running. It stops at 30 seconds and kills whatever the shell started. It also works for tcsh and csh, which read `~/.login`, and for PowerShell, which reads `~/.profile`. The Windows MSI installer now registers `cotal:` links. Its template wrote the literal key `Software\Classes{{protocol}}`, so links did not open the app after an MSI install. Device sign-in (the app's and `cotal login`) now keeps waiting when one poll gets no usable answer from the provider, such as a dropped connection or a proxy's 5xx page during a restart. It used to end the sign-in at once, even when the person approved a moment later. If the provider is still unreachable when the code expires, sign-in reports it as unreachable, not as expired.
+- d9ce761: The desktop app's Settings now opens before you sign in, from the window and from the tray's Settings…, so the computer name, the background service log and the version are there when a first sign-in fails. Before, the tray item only showed the window. If the background service was set up but has stopped, the Welcome screen now says so and offers Start service, instead of showing only "Not connected", and the tray says Needs attention. After choosing "Use another Cotal host", a Use Cotal Cloud button goes back.
+- 5e73af2: If the desktop app's background service stops while sign-in or setup is waiting on it, the app now says "The background service stopped" and clears that screen once the service is running again. Before, it showed a generic error that pointed to a `cotal daemon` command the app doesn't include, and it stayed on that screen until you chose Try again.
+- f92ebb8: On Windows, the background service now starts again within a minute after it exits, also in the Windows session in which it was installed. Its one-minute restart sat on the sign-in trigger, which only begins repeating at the next sign-in, so after a fresh install a service that crashed or was ended stayed down until the person signed out or restarted the computer. The restart now sits on a time trigger, and the sign-in trigger still starts the service at sign-in. Existing installs keep their task until they are installed again; their restart works from the next sign-in.
+- Updated dependencies [54b924d]
+- Updated dependencies [d69dda2]
+- Updated dependencies [feeef8e]
+  - @cotal-ai/auth@0.180.1
+  - @cotal-ai/cli@0.180.1
+  - @cotal-ai/connector-core@0.180.1
+  - @cotal-ai/manager@0.180.1
+  - @cotal-ai/delivery@0.180.1
+  - @cotal-ai/registry@0.180.1
+  - @cotal-ai/runtime@0.180.1
+  - @cotal-ai/core@0.180.1
+  - @cotal-ai/seat@0.180.1
+  - @cotal-ai/workspace@0.180.1
+
 ## 0.180.0
 
 ### Patch Changes
