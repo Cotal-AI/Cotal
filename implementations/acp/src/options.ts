@@ -2,7 +2,8 @@
  * A session's config options, built from what the managers offer.
  *
  * The model select lists `<agent>/<model>` grouped by agent, with a `<agent>/default` choice for
- * the application's own default. Each choice's name starts with its agent, because a client may
+ * the application's own default. A catalog model whose id is `default` is that choice, with its
+ * name and variants. Each choice's name starts with its agent, because a client may
  * flatten the groups and drop their names (T3 Code does). A Harness select names the application on
  * its own. The model value names it too, so the two always agree: choosing a model moves the harness
  * to its application, and choosing another harness starts it on that application's default model.
@@ -131,10 +132,10 @@ function selectionOf(offer: Offer, model: string, machine = defaultManager(offer
   return { model, variant: DEFAULT_VARIANT, persona: DEFAULT_PERSONA, channel: NO_CHANNEL, ...(machine ? { machine } : {}) };
 }
 
-/** The variants of one `<agent>/<model>` choice: none for an application's default or a custom id. */
+/** The variants of one `<agent>/<model>` choice, as its catalog entry lists them: for an
+ *  application's default, the entry whose id is `default`. None for a custom id. */
 function variantsOfModel(offer: Offer, value: string): readonly string[] {
-  const { agent, model } = parseModel(value);
-  if (model === undefined) return [];
+  const { agent, model = DEFAULT_MODEL } = parseModel(value);
   return offer.catalogs.find((c) => c.agent === agent)?.models.find((m) => m.id === model)?.variants ?? [];
 }
 
@@ -225,12 +226,14 @@ function listed(offer: Offer, selection: Selection): AgentCatalog[] {
 /** The model select's choices, grouped by application. */
 function modelGroups(offer: Offer, selection: Selection): { group: string; name: string; options: { value: string; name: string }[] }[] {
   return listed(offer, selection).map((c) => {
+    // A model whose id is the default's is the default choice, since its value already means the application's default.
+    const own = c.models.find((m) => m.id === DEFAULT_MODEL);
+    const named = c.models.filter((m) => m !== own);
     // A seat-only thread offers the model its agent runs, and the default only when it names none.
     // A thread on a seat of an application whose models went unread offers only the seat's model.
     const choices = c.modelsUnread !== undefined ? [] : [
-      ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
-      // A model whose id is the default's would repeat its value, which already means the application's default.
-      ...c.models.filter((m) => m.id !== DEFAULT_MODEL).map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
+      ...(offer.seatOnly && named.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: ${own?.name ?? DEFAULT_MODEL}` }]),
+      ...named.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
     ];
     // The current value is always a choice, a custom id included.
     if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))

@@ -21,7 +21,7 @@
  *  - `managerChoices` describes a listed manager with no row under the person's principal, as the
  *    space's own, by the host it reports, so a new thread there defaults to it on this host;
  *  - the model select and model state list `<agent>/default` once when the catalog names a model
- *    `default`;
+ *    `default`, with that model's name and reasoning variants;
  *  - `agentCatalogs` carries a failed models read, so the application is refused with its reason.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
@@ -31,7 +31,7 @@ import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
 import { agentCatalogs, answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
-import { configOptions, defaultManager, initialSelection, modelState, refusal, type Offer } from "../src/options.js";
+import { applyOption, configOptions, defaultManager, initialSelection, modelState, refusal, type Offer } from "../src/options.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -307,6 +307,31 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   check("a catalog model named default does not list <agent>/default twice", values.filter((v) => v === "hermes/default").length === 1, values);
   const listed = modelState(offer, selection).availableModels.map((m) => m.modelId);
   check("nor does the session's model state", listed.filter((v) => v === "hermes/default").length === 1, listed);
+}
+
+// That model is the application's default choice, with its name and reasoning variants. A Hermes
+// provider that lists an id `default` gives it Hermes's efforts, as every model it lists.
+{
+  const row = { agent: "hermes", state: "available", eventPlane: true };
+  const offerOf = (models: unknown[]): Offer => ({ personas: [], channels: [], managers: [], catalogs: agentCatalogs([row], [{ agent: "hermes", supported: true, models }] as never) });
+  const offer = offerOf([{ id: "a", variants: [{ name: "low" }] }, { id: "default", name: "Hermes pick", variants: [{ name: "high" }] }]);
+  const selection = initialSelection(offer);
+  const own = modelState(offer, selection).availableModels.find((m) => m.modelId === "hermes/default");
+  const efforts = (own?._meta.reasoningEfforts as { value: string }[] | undefined)?.map((e) => e.value);
+  check("the model state gives <agent>/default that model's name and reasoning variants", own?.name === "hermes: Hermes pick" && JSON.stringify(efforts) === JSON.stringify(["default", "high"]), own);
+  const select = configOptions(offer, selection).find((o) => o.id === "model") as unknown as { options: { options: { value: string; name: string }[] }[] };
+  const choice = select.options.flatMap((g) => g.options).find((o) => o.value === "hermes/default");
+  check("and so does the model select", choice?.name === "hermes: Hermes pick", choice);
+  let variant: string;
+  try {
+    variant = applyOption(offer, selection, "variant", "high").variant;
+  } catch (e) {
+    variant = (e as Error).message;
+  }
+  check("one of its variants can be chosen on <agent>/default", variant === "high", variant);
+  const alone = offerOf([{ id: "default", variants: [{ name: "high" }] }]);
+  const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "variant") as unknown as { options: { value: string }[] } | undefined;
+  check("where it is the only model, the Reasoning select holds its variants", JSON.stringify(reasoning?.options.map((o) => o.value)) === JSON.stringify(["default", "high"]), reasoning);
 }
 
 // A manager whose read of an application's models failed, as OpenCode 1.19.6 refusing its database:

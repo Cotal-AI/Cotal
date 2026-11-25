@@ -21,8 +21,8 @@
  *  - `session/list` hides deleted runs and matches a folder through symlinks;
  *  - `session/load` replays before it answers, marked as replay, then follows live; a seat whose
  *    launch lists the caller may not read loads with only its own model and cannot start another
- *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
- *    and deleting it fails;
+ *    after `/despawn`, and one running the model `default` offers it once; a seat no manager listed
+ *    while one did not answer is not called missing, and deleting it fails;
  *  - a running seat whose application's models the manager could not read loads and opens on its
  *    model, and after `/despawn` the thread still refuses to start that application;
  *  - with no manager of the person's on this machine, a new session has no machine: the Machine
@@ -579,6 +579,12 @@ mesh.onInput = (seat) => {
 };
 const narrowTurn = narrow ? await within(agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "go on" }] })) : undefined;
 check("its prompt is typed into the seat through the manager that holds it", narrowTurn?.stopReason === "end_turn" && mesh.typed.at(-1)?.text === "go on" && mesh.typedTo.at(-1) === "m2", { narrowTurn, typed: mesh.typed.at(-1), to: mesh.typedTo.at(-1) });
+mesh.rows = [{ ...outside, name: "plain", actor: "p1", lifecycleUid: "life-p", model: "default" }];
+const plain = await agent.request(methods.agent.session.load, { sessionId: "plain", cwd: dir, mcpServers: [] }).catch(() => undefined);
+const plainModel = plain?.configOptions?.find((o) => o.id === "model") as { currentValue?: string; options?: { options?: { value: string; name: string }[] }[] } | undefined;
+const plainChoices = (plainModel?.options ?? []).flatMap((g) => g.options ?? []);
+check("one whose seat runs the model default offers that model once, as its application's default",
+  plainModel?.currentValue === "claude/default" && JSON.stringify(plainChoices) === JSON.stringify([{ value: "claude/default", name: "claude: default" }]), plain?.configOptions);
 mesh.onInput = () => {};
 mesh.launchRefused = false;
 mesh.rows = rowsBefore;
