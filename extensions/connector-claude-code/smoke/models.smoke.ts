@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ModelCatalog } from "@cotal-ai/core";
+import { readModelCatalog, type ModelCatalog } from "@cotal-ai/core";
 import { createSuite, skipSuite } from "@cotal-ai/smoke-kit";
 import { claudeConnector } from "../src/extension.js";
 
@@ -10,6 +10,11 @@ if (process.platform === "win32") skipSuite("the stand-in claude is a POSIX shel
 
 const { check, finish } = createSuite();
 const recorded = JSON.parse(readFileSync(new URL("./fixtures/claude-initialize.json", import.meta.url), "utf8"));
+// What claude 2.1.332 applies with each model in turn, and the fast-mode states it reported as its
+// organization check answered: on at first, then off, because this account's organization disables it.
+const settings = JSON.parse(readFileSync(new URL("./fixtures/claude-settings.json", import.meta.url), "utf8"));
+/** The whole read, from claude's start to its exit, ends within this bound. */
+const BOUND_MS = 8_000;
 const FAKE = fileURLToPath(new URL("./fake-claude-models.mjs", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "claude-models-smoke-"));
 const LOGGED_IN_IDS = ["opus", "fable", "sonnet", "haiku", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"];
@@ -18,12 +23,13 @@ process.env.CLAUDECODE = "1";
 process.env.COTAL_NAME = "models-smoke";
 
 const logs: string[] = [];
-function standIn(name: string, reply: unknown, vars: Record<string, string> = {}): { bin: string; log: string } {
+function standIn(name: string, reply: unknown, vars: Record<string, string> = {}, recordedSettings: unknown = settings): { bin: string; log: string } {
   const bin = join(dir, name);
   const log = `${bin}.log`;
   logs.push(log);
   writeFileSync(`${bin}.reply.json`, JSON.stringify(reply));
-  const assign = Object.entries({ FAKE_CLAUDE_REPLY: `${bin}.reply.json`, FAKE_CLAUDE_LOG: log, ...vars }).map(([k, v]) => `${k}='${v}'`).join(" ");
+  writeFileSync(`${bin}.settings.json`, JSON.stringify(recordedSettings));
+  const assign = Object.entries({ FAKE_CLAUDE_REPLY: `${bin}.reply.json`, FAKE_CLAUDE_SETTINGS: `${bin}.settings.json`, FAKE_CLAUDE_LOG: log, ...vars }).map(([k, v]) => `${k}='${v}'`).join(" ");
   writeFileSync(bin, `#!/bin/sh\n${assign} exec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o700 });
   return { bin, log };
 }
@@ -44,6 +50,8 @@ const alive = (pid: number): boolean => {
   }
 };
 const withModels = (models: unknown) => ({ ...recorded.loggedIn, response: { ...recorded.loggedIn.response, response: { ...recorded.loggedIn.response.response, models } } });
+const withSettings = (changes: Record<string, unknown>) => ({ ...settings, ...changes });
+const modeIds = (catalog: ModelCatalog, mode: string) => catalog.models.filter((m) => m.modes?.some((x) => x.id === mode)).map((m) => m.id);
 
 console.log("claude connector: the model catalog asks claude, and never hangs or throws");
 
@@ -77,18 +85,43 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
       JSON.stringify(catalog.models.find((m) => m.id === "claude-opus-4-6")?.variants) === JSON.stringify(["low", "medium", "high", "max"].map((name) => ({ name }))),
     catalog.models,
   );
-  const requests = rest.filter((entry) => entry.request);
+  const requests = rest.filter((entry) => entry.request).map((entry) => entry.request);
   check(
-    "asking writes one initialize control request and no user message",
-    requests.length === 1 && requests[0].request.type === "control_request" && requests[0].request.request?.subtype === "initialize",
+    "asking writes only control requests, one get_settings per model among them, and no user message",
+    requests.length > 0 && requests.every((r) => r.type === "control_request") && requests.filter((r) => r.request?.subtype === "get_settings").length === LOGGED_IN_IDS.length + 1,
     requests,
   );
-  const settings = started.argv[started.argv.indexOf("--settings") + 1];
+  const flags = started.argv.flatMap((a: string, i: number) => (a === "--settings" ? [started.argv[i + 1]] : []));
   check(
-    "the question starts no MCP server, runs no hook and saves no session",
-    started.argv.includes("--strict-mcp-config") && started.argv.includes("--no-session-persistence") && JSON.parse(settings ?? "{}").disableAllHooks === true,
+    "the question starts no MCP server, runs no hook, saves no session, and asks for fast mode in claude's one --settings flag",
+    started.argv.includes("--strict-mcp-config") && started.argv.includes("--no-session-persistence") && flags.length === 1 &&
+      JSON.parse(flags[0]).disableAllHooks === true && JSON.parse(flags[0]).fastMode === true,
     started.argv,
   );
+  check("each model carries claude's own description of it", catalog.models.every((m) => m.description !== undefined && m.description === (rows.get(m.id) as { description?: string })?.description), catalog.models);
+  const defaults = Object.fromEntries(catalog.models.map((m) => [m.id, m.defaultVariant]));
+  check(
+    "each model's default variant is the effort claude applies to a launch of it, and a model claude runs at no level has none",
+    defaults.opus === "high" && defaults.fable === "medium" && defaults["claude-opus-4-7"] === "xhigh" && defaults["claude-haiku-4-5-20251001"] === undefined &&
+      catalog.models.every((m) => m.defaultVariant === (settings.byModel[m.id].effort ?? undefined)),
+    defaults,
+  );
+  check(
+    "the one default model is the first claude lists for the model a launch that names none runs",
+    JSON.stringify(catalog.models.filter((m) => m.isDefault).map((m) => m.id)) === JSON.stringify(["opus"]),
+    catalog.models.map((m) => [m.id, m.isDefault]),
+  );
+  const ultracode = modeIds(catalog, "ultracode");
+  check(
+    "ultracode is an off-by-default toggle on each model claude says can run it, and on no other",
+    JSON.stringify(ultracode) === JSON.stringify(LOGGED_IN_IDS.filter((id) => settings.byModel[id].ultracodeAvailable)) &&
+      !["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"].some((id) => ultracode.includes(id)) &&
+      catalog.models.every((m) => (m.modes ?? []).filter((x) => x.id === "ultracode").every((x) => JSON.stringify(x) === JSON.stringify({ id: "ultracode", label: "Ultracode", kind: "toggle", default: false }))),
+    ultracode,
+  );
+  check("claude turned fast off once its organization check answered, so no model offers fast", modeIds(catalog, "fast").length === 0, catalog.models);
+  const checked = await readModelCatalog({ name: "claude", listModels: () => catalog }, {}).then(() => "read", (e: Error) => e.message);
+  check("core reads the catalog as consistent: one default model, and every default among its model's values", checked === "read", checked);
   check(
     "claude gets a launch's env, without this process's mesh identity or Claude session marker",
     started.env.includes("PATH") && !started.env.includes("COTAL_NAME") && !started.env.includes("CLAUDECODE"),
@@ -134,6 +167,63 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
 }
 
 {
+  // An organization that allows fast mode: claude keeps reporting it on.
+  const { catalog } = await timed(standIn("fast-allowed", recorded.loggedIn, {}, withSettings({ fastStates: [{ fast_mode_state: "on" }] })).bin);
+  const fast = catalog.models.filter((m) => m.modes?.some((x) => x.id === "fast"));
+  check(
+    "an account that can run fast gets an off-by-default fast toggle on each model claude says supports it, and on no other",
+    JSON.stringify(fast.map((m) => m.id)) === JSON.stringify(["opus", "fable", "claude-opus-5", "claude-opus-4-8"]) &&
+      fast.every((m) => JSON.stringify(m.modes?.find((x) => x.id === "fast")) === JSON.stringify({ id: "fast", label: "Fast", kind: "toggle", default: false })),
+    catalog.models,
+  );
+}
+
+{
+  // claude reports fast on for its first answers, then off once its organization check answers.
+  const late = [...Array(4).fill({ fast_mode_state: "on" }), { fast_mode_state: "off", fast_mode_disabled_reason: "preference" }];
+  const { catalog } = await timed(standIn("fast-off-late", recorded.loggedIn, {}, withSettings({ fastStates: late })).bin);
+  check("fast that claude turns off a few answers in, before its organization check could be missed, is not offered", catalog.unavailable === undefined && modeIds(catalog, "fast").length === 0, catalog);
+}
+
+{
+  const models = recorded.loggedIn.response.response.models.map(({ supportsFastMode: _, ...m }: Record<string, unknown>) => m);
+  const { bin, log } = standIn("no-fast-model", withModels(models), {}, withSettings({ fastStates: [{ fast_mode_state: "on" }] }));
+  const { catalog, waited } = await timed(bin);
+  const initializes = logged(log).filter((e) => e.request?.request?.subtype === "initialize").length;
+  check(
+    "a login with no model that supports fast offers none, and is not kept waiting on its organization's answer",
+    catalog.unavailable === undefined && modeIds(catalog, "fast").length === 0 && initializes === 1 && waited < 2_000,
+    { initializes, waited },
+  );
+}
+
+{
+  const byModel = { ...settings.byModel, opus: { ...settings.byModel.opus, effort: "turbo" } };
+  const { catalog } = await timed(standIn("default-not-listed", recorded.loggedIn, {}, withSettings({ byModel })).bin);
+  check(
+    "an effort claude applies that is not one of the model's levels is not named its default",
+    catalog.unavailable === undefined && catalog.models.find((m) => m.id === "opus")?.defaultVariant === undefined && catalog.models.find((m) => m.id === "fable")?.defaultVariant === "medium",
+    catalog.models.slice(0, 2),
+  );
+}
+
+{
+  const launchDefault = { ...settings.launchDefault, model: "claude-unlisted-1" };
+  const { catalog } = await timed(standIn("default-unlisted", recorded.loggedIn, {}, withSettings({ launchDefault })).bin);
+  check("a model a launch with none would run, which claude does not list, marks no default", catalog.unavailable === undefined && !catalog.models.some((m) => m.isDefault), catalog.models);
+}
+
+{
+  const { catalog } = await timed(standIn("no-get-settings", recorded.loggedIn, {}, withSettings({ refuse: "get_settings" })).bin);
+  check("a claude that refuses get_settings is unavailable with its reason, not a list without defaults", catalog.models.length === 0 && /refused.*get_settings/.test(catalog.unavailable ?? ""), catalog);
+}
+
+{
+  const { catalog } = await timed(standIn("no-applied", recorded.loggedIn, {}, withSettings({ launchDefault: { model: 7 } })).bin);
+  check("a get_settings answer without the applied settings makes the catalog unavailable", catalog.models.length === 0 && /without the settings it applies/.test(catalog.unavailable ?? ""), catalog);
+}
+
+{
   const models = recorded.loggedIn.response.response.models.map((m: Record<string, unknown>) => (m.value === "opus" ? { ...m, supportedEffortLevels: "high" } : m));
   const catalog = await ask(standIn("levels-not-a-list", withModels(models)).bin);
   check("a model whose effort levels are not a list of names makes the catalog unavailable", catalog.models.length === 0 && /without a model list/.test(catalog.unavailable ?? ""), catalog);
@@ -173,28 +263,28 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   const { catalog, waited } = await timed(bin);
   const [started, ...rest] = logged(log);
   check(
-    "a claude still running a second after its input closes is killed then, well inside the 6s bound",
+    "a claude still running a second after its input closes is killed then, well inside the bound",
     catalog.unavailable === undefined && rest.some((entry) => entry.stdinClosed) && !alive(started.pid) && waited >= 1_000 && waited < 3_000,
     { waited, pid: started.pid, unavailable: catalog.unavailable },
   );
 }
 
 {
-  const { bin, log } = standIn("late-and-stubborn", recorded.loggedIn, { FAKE_CLAUDE_STUBBORN: "1", FAKE_CLAUDE_ANSWER_DELAY_MS: "5500" });
+  const { bin, log } = standIn("late-and-stubborn", recorded.loggedIn, { FAKE_CLAUDE_STUBBORN: "1", FAKE_CLAUDE_ANSWER_DELAY_MS: String(BOUND_MS - 500) });
   const { waited } = await timed(bin);
   const { pid } = logged(log)[0];
-  check("a stubborn claude that answers late still ends the whole read by the 6s bound", waited < 6_500 && !alive(pid), { waited, pid });
+  check("a stubborn claude that answers late still ends the whole read by the bound", waited < BOUND_MS + 500 && !alive(pid), { waited, pid });
 }
 
 {
   const { bin, log } = standIn("silent", "silent", { FAKE_CLAUDE_STUBBORN: "1" });
   const { catalog, waited } = await timed(bin);
   check(
-    "a claude that never answers is unavailable once the 6s bound passes, not a hang",
-    catalog.models.length === 0 && /within 6s/.test(catalog.unavailable ?? "") && waited >= 5_500 && waited < 9_000,
+    "a claude that never answers is unavailable once the bound passes, not a hang",
+    catalog.models.length === 0 && catalog.unavailable?.includes(`within ${BOUND_MS / 1000}s`) === true && waited >= BOUND_MS - 500 && waited < BOUND_MS + 3_000,
     { waited, catalog },
   );
-  check("the 6s bound kills a stuck claude at once, without the exit grace an answered claude gets", waited < 6_900, waited);
+  check("the bound kills a stuck claude at once, without the exit grace an answered claude gets", waited < BOUND_MS + 900, waited);
   const { pid } = logged(log)[0];
   check("the lister kills the claude it gave up on", !alive(pid), pid);
 }
