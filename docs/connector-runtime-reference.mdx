@@ -316,17 +316,22 @@ Messages the agent sends afterwards carry the new `from.name`, and stored histor
 `agent.displayName` reads the current name, and `config.name` stays the launch name.
 A manager keeps the last name a seat showed with the seat, apart from its alias. When it starts the seat again, after a crash or a preserved resume, it passes the name as `COTAL_DISPLAY_NAME`, so the seat comes back under the same alias and actor and shows its last name.
 
-### Naming from the first message [#naming-from-the-first-message]
+### Labels from the first message [#labels-from-the-first-message]
 
-A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) names itself from the first message it gets: its launch prompt, else its first live direct message or `@mention` from a principal of its own owner.
-A message from another owner neither names the seat nor ends naming.
-The connector passes `MeshAgent` a `nameFromMessage` hook, which makes one request to the session's own model outside its conversation, with no tools.
+A seat launched with `COTAL_AUTO_NAME=1` (the Manager `spawn` field `autoName`) labels itself from the first message it gets: its launch prompt, else its first live direct message or `@mention` from a principal of its own owner.
+A message from another owner neither labels the seat nor ends naming.
+The connector passes `MeshAgent` a `naming` hook (`NameFromMessage`), which makes one request to the session's own model outside its conversation, with no tools.
 The request asks for a short name for the message and caps the message at 8,000 characters.
-`MeshAgent` cleans the reply and applies it through the same queue as `set-name`, so an owner's rename is never overwritten.
+`MeshAgent` cleans the reply and sets it as `meta["ai.cotal.label"]`, at most 40 code points.
+The card's `name` stays the launch name, so `@mentions`, direct messages and name lookups keep reaching the seat by it.
+A client that lists agents shows `meta["ai.cotal.label"] ?? name`.
 From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`.
-The key goes when naming settles: a name, a failed or empty reply, 60 seconds, an owner rename, or the seat stopping.
-A failed naming keeps the launch name.
-A connector with no hook never shows the key and logs that the seat keeps its launch name.
+The key goes when naming settles: a label, a failed or empty reply, 60 seconds, an owner `set-name`, or the seat stopping.
+The label and the key's removal reach presence in one record.
+An owner `set-name` sets the name and drops the label in one record, and one made while naming is out ends naming with no label.
+A failed naming leaves no label, and so does a relaunch.
+An agent file cannot set either key.
+A connector with no hook never shows the key and logs that the seat shows no label.
 
 The Claude Code connector runs one `claude -p` with no tools, no MCP server, hooks off and no saved session.
 The Codex connector runs one ephemeral `codex exec` on the seat's own Codex home, without the config file there, at low reasoning, under a read-only sandbox.
