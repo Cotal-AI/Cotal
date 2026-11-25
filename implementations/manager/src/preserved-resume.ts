@@ -1,4 +1,4 @@
-import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadCotalConfig, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
+import { copyPersonaEndpoints, DEV_OWNER, discardLaunchArtifacts, EpEnvelopeError, identityFromCreds, idFromCreds, loadCotalConfig, modelPolicyEnv, parsePrincipalKey, principalKey, rejectionText, resolveAuthProvider } from "@cotal-ai/core";
 import type { Connector, ControlReply, LaunchOpts, LaunchSpec, MeshLaunchAgent, Presence, RuntimeReference, UserAuthLaunch } from "@cotal-ai/core";
 import { agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, isTrustedProject, loadTrustCheckedPersona, manifestPersonaLaunchOptionsRefusal, userAuthStateDir } from "@cotal-ai/workspace";
 import { createHash, randomBytes } from "node:crypto";
@@ -990,8 +990,9 @@ export class PreservedResume {
       }
 
       try {
+        const config = loadCotalConfig(this.config.workspaceRoot, isTrustedProject);
         const launchOpts: LaunchOpts = {
-          ...this.hostLaunchFields(loadCotalConfig(this.config.workspaceRoot, isTrustedProject), entry.launch.connector, entry.launch.shareTools, harness),
+          ...this.hostLaunchFields(config, entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
           displayName: entry.displayName,
           role: entry.role,
@@ -1024,7 +1025,7 @@ export class PreservedResume {
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
-        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
+        spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId, ...modelPolicyEnv(config, entry.role) };
         const value = { spec, launchOpts, ...authority, exact } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };

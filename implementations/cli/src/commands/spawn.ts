@@ -10,7 +10,7 @@ import {
   discardLaunchArtifacts,
   reclaimWithChild,
   loadCotalConfig,
-  modelPolicyRefusal,
+  modelPolicyEnv, modelPolicyRefusal,
   mintCreds,
   newIdentity,
   DEV_OWNER,
@@ -985,6 +985,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       throw new CommandFailure("refused", "USAGE_INVALID", rejectionText(error), { target: { space, path } });
     }
     applyHandoffManagerInstance(spec, handoffManagerInstanceId);
+    spec.env = { ...spec.env, ...modelPolicyEnv(cotalConfig, role) };
     artifacts = spec.artifacts;
     scrubEnrollmentEnv(spec.env);
 

@@ -1463,6 +1463,46 @@ let openInventory: ManagerResumeAgent;
     (second as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
     check("renamed back to its alias, the seat keeps no display name", back.displayName === undefined, back.displayName);
   }
+
+  // SPEC 13.22 `set-model`: the seat keeps the model its own presence marks as an owner's switch, `ps`
+  // reports it, the cut carries it, and the relaunch starts on it.
+  {
+    type Seat = { id: string; lifecycleUid: string; launch: { model?: string; variant?: string } };
+    const first = managerWith((name) => fakeHandle(name), { resumeAttemptId: "model_resume" });
+    (first as unknown as { userMode: boolean }).userMode = true;
+    const resumed = await control(first, "admin", "resumePreserved", { attemptId: "model_resume", inventory: inventoryOf(entry) });
+    const committed = await control(first, "admin", "commitResume", { attemptId: "model_resume" });
+    const seat = (first as unknown as { agents: Map<string, Seat> }).agents.get("worker")!;
+    const ep = (first as unknown as { ep: { getRoster: () => unknown[] } }).ep;
+    const marks = (mark: unknown, lifecycleUid = seat.lifecycleUid): void => {
+      ep.getRoster = () => [{ card: { id: seat.id, name: "worker", meta: { "ai.cotal.model-set": mark } }, lifecycleUid, status: "idle" }];
+      (first as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
+    };
+    check("the resumed seat runs the model its launch named, none here", resumed.ok && committed.ok && seat.launch.model === undefined,
+      JSON.stringify({ resumed: resumed.error, committed: committed.error, model: seat.launch.model }));
+    marks({ model: "big-model", variant: "high" });
+    check("the seat keeps the model and variant its own presence marks as set-model's switch", seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    const rows = (first as unknown as { list: () => { name: string; model?: string; variant?: string }[] }).list();
+    const row = rows.find((r) => r.name === "worker");
+    check("ps reports the model and variant it was switched to", row?.model === "big-model" && row.variant === "high", JSON.stringify(row ?? rows));
+    marks({ model: "has space" });
+    marks("big-model");
+    marks({ model: "x", provider: "y" });
+    marks({ model: "intruder" }, uidFor("another-lifecycle"));
+    check("a mark that is not set-model's answer, or that another lifecycle shows, is not kept: the last good one stays",
+      seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    marks({ model: "small-model" });
+    check("a later switch with no variant leaves none", seat.launch.model === "small-model" && seat.launch.variant === undefined, seat.launch);
+    const cut = await first.preserveState({ attemptId: "model_cut", persistInventory: async () => {} });
+    const carried = cut.inventory?.agents.find((a) => a.name === "worker");
+    check("the preservation cut carries the switched model as the seat's model", cut.ok && carried?.launch.model === "small-model" && carried.launch.variant === undefined, carried?.launch);
+    const second = managerWith((name) => fakeHandle(name));
+    (second as unknown as { userMode: boolean }).userMode = true;
+    resetCapturedLaunch();
+    const relaunched = cut.inventory ? await second.resumePreserved(cut.inventory) : { ok: false, error: "no inventory" };
+    check("a manager that resumes the cut relaunches the seat on the switched model", relaunched.ok && capturedLaunch?.model === "small-model" && capturedLaunch.variant === undefined,
+      { error: relaunched.error, model: capturedLaunch?.model, variant: capturedLaunch?.variant });
+  }
 }
 
 // #964: active-mode stop spares by default; explicit withAgents retains the old teardown.

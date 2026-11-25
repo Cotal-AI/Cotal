@@ -13,7 +13,10 @@ export type CommandAsk =
   | { op: "run"; command: string; args: string }
   | { op: "interrupt" }
   | { op: "prompt"; text: string }
-  | { op: "usage" };
+  | { op: "usage" }
+  /** The owner's model switch: `model` absent keeps the model in force, and `effort` absent leaves
+   *  the session's own effort. */
+  | { op: "model"; model?: string; effort?: string };
 
 export type CommandRequest = CommandAsk & { id: RequestId };
 
@@ -41,6 +44,8 @@ export type ModAnswer =
   /** Claude Code's own figures: the context window, the input tokens of the last response over it,
    *  and the session's cost in US dollars. */
   | { id: RequestId; op: "usage"; window: number; tokens?: number; usd?: number }
+  /** What each main turn after the one running goes out on. */
+  | { id: RequestId; op: "model"; model: string; effort?: string }
   /** Any number of these answer one {@link StreamRequest}. */
   | { id: RequestId; op: "deltas"; deltas: ModDelta[] }
   | { id: RequestId; op: "error"; reason: string };
@@ -56,6 +61,8 @@ export const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const ID = /^[a-z2-7]{26}$/;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 const NAME = /^\S{1,128}$/u;
+const MODEL = /^[^\s\p{C}]{1,256}$/u;
+const EFFORT = /^[a-z]{1,16}$/;
 const MAX_COMMANDS = 2048;
 const MAX_TEXT = 4096;
 const MAX_REASON = 2000;
@@ -149,6 +156,12 @@ const FRAMES: Record<ModFrame["op"], (f: Fields) => void> = {
     count(f.window, "window");
     if (Object.hasOwn(f, "tokens")) count(f.tokens, "tokens");
     if (Object.hasOwn(f, "usd") && !(typeof f.usd === "number" && Number.isFinite(f.usd) && f.usd >= 0)) refuse("usd is not a number of dollars");
+  },
+  model(f) {
+    only(f, ["id", "op", "model", "effort"]);
+    matches(f.id, ID, "id");
+    matches(f.model, MODEL, "model");
+    if (Object.hasOwn(f, "effort")) matches(f.effort, EFFORT, "effort");
   },
   deltas(f) {
     only(f, ["id", "op", "deltas"]);
