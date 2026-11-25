@@ -55,7 +55,9 @@ const SETTLE_MS = 600;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], {
+  stdio: "ignore", env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+});
 const releaseBroker = teardownOnSignal(srv, dir);
 const stops: Array<() => Promise<unknown>> = [];
 

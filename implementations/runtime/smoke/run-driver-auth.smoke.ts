@@ -116,7 +116,9 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}rdauth-`));
 const auth = await createSpaceAuth(S);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
-const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], {
+  stdio: "ignore", env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+});
 teardownOnSignal(broker);
 const conns: NatsConnection[] = [];
 const done = () => {

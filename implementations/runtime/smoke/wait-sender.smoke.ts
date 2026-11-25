@@ -99,7 +99,9 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}waitsender-`));
-const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], {
+  stdio: "ignore", env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+});
 teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
