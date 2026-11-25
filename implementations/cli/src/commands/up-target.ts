@@ -1,13 +1,15 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, isMeshRegistryError, listSpaceAccounts, loadPreparedSpaces, oneLine, preparedRootRemedy, projectRootProblem, projectRootProblemText, type PreparedSpace, type ProjectRootProblem } from "@cotal-ai/workspace";
+import { basename, dirname, join, resolve } from "node:path";
+import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, isMeshRegistryError, listSpaceAccounts, loadPreparedSpaces, oneLine, preparedRootRemedy, projectRootProblem, projectRootProblemText, type NativeCause, type ProjectRootProblem } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { cotalRoot } from "../lib/paths.js";
 import { registryFailure } from "../lib/registry-errors.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { checkSpaceName } from "./meshes-add.js";
+
+const prepareRoot = "prepare it with `cotal space create <space> --root <dir>`, then retry with that root";
 
 /** Port 0 asks the auth service to let the OS pick a free loopback port. */
 export function checkPublicExchangePort(raw: string | undefined): void {
@@ -22,35 +24,57 @@ export function checkPublicExchangePort(raw: string | undefined): void {
 export function preparedUpRoot(value: string): string {
   if (!value) throw new CommandFailure("refused", "USAGE_INVALID", "--root needs an existing prepared project directory; an empty value is not the current folder");
   const requested = resolve(value);
-  const problem = projectRootProblem(requested);
-  if (problem !== undefined)
-    throw unavailableUpRoot(requested, `--root ${oneLine(requested)} ${projectRootProblemText(problem)}`, unavailableRootRemedy(requested, problem));
+  const problem = explicitRootProblem(requested);
+  if (problem !== undefined) throw unusableUpRoot(requested, problem);
   let root: string;
   try {
     root = realpathSync(requested);
     const cotal = lstatSync(join(root, ".cotal"));
     if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
   } catch {
-    throw unavailableUpRoot(requested, "--root must name an existing prepared local project with its own .cotal directory", "prepare it with `cotal space create <space> --root <dir>`, then retry with that root");
+    throw unavailableUpRoot(requested, "--root must name an existing prepared local project with its own .cotal directory", prepareRoot);
   }
   if (canonicalRoot(root) === canonicalRoot(homedir()) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
     throw new CommandFailure("refused", "CONFLICT", "--root names the machine's home store, not a prepared project; no stack was started there", { target: { root }, remedy: "prepare the space in a project folder with `cotal space create <space> --root <dir>`" });
   return root;
 }
 
-function unavailableUpRoot(root: string, message: string, remedy: string): CommandFailure {
-  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; no ancestor or other space was selected`, { target: { root }, remedy });
+function unavailableUpRoot(root: string, message: string, remedy: string, native?: NativeCause): CommandFailure {
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; no ancestor or other space was selected`, { target: { root }, remedy, native });
 }
 
-function unavailableRootRemedy(root: string, problem: ProjectRootProblem): string {
-  if (problem === "inaccessible") return "restore access to the original project folder, then try again";
-  // A replacement link can point at a different preparation's root.
-  let prepared: PreparedSpace | undefined;
-  try { prepared = loadPreparedSpaces().find((space) => resolve(space.root) === root); }
-  catch (error) { throw isMeshRegistryError(error) ? registryFailure(error) : error; }
-  if (prepared === undefined) return "pass the path to an existing prepared project directory";
+function explicitRootProblem(root: string): ProjectRootProblem | "dangling-link" | undefined {
+  const problem = projectRootProblem(root);
+  if (problem !== "missing") return problem;
+  try { return lstatSync(root, { throwIfNoEntry: false })?.isSymbolicLink() ? "dangling-link" : problem; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOTDIR" ? "not-directory" : "inaccessible"; }
+}
+
+// Resolve parent aliases without following a replacement link at the recorded entry itself.
+const rootEntry = (root: string) => join(canonicalRoot(dirname(root)), basename(root));
+
+function unusableUpRoot(root: string, problem: ProjectRootProblem | "dangling-link"): CommandFailure {
+  const shown = `--root ${oneLine(root)}`;
+  if (problem === "inaccessible")
+    return unavailableUpRoot(root, `${shown} ${projectRootProblemText(problem)}`, "restore access to the directory, then try again");
+  const reported = problem === "dangling-link" ? "is a dangling symbolic link" : projectRootProblemText(problem);
+  const message = `${shown} ${problem === "missing" ? "does not exist" : reported}`;
+  const entry = rootEntry(root);
+  let matches;
+  try { matches = loadPreparedSpaces().filter((space) => rootEntry(resolve(space.root)) === entry); }
+  catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    const registry = registryFailure(error);
+    const step = problem === "missing" ? "restore the folder if this is its recorded path" : "if this is the recorded project path, move the obstructing entry aside and restore the original project folder";
+    return unavailableUpRoot(root, message, step, { code: registry.code, detail: oneLine([registry.message, registry.remedy].filter(Boolean).join(". ")) });
+  }
+  if (matches.length === 0)
+    return unavailableUpRoot(root, message, problem === "missing" ? prepareRoot : "pass the path to an existing prepared project directory");
+  if (matches.length > 1)
+    return unavailableUpRoot(root, message, "use `cotal space` to check which preparations record this project path before making changes");
   const restore = problem === "missing" ? "restore the original project folder at its recorded path, or " : "move the obstructing entry aside and ";
-  return `${restore}${preparedRootRemedy(prepared.space, problem)}, using a different directory for <dir>`;
+  const remedy = preparedRootRemedy(matches[0]!.space, problem === "missing" ? "missing" : "not-directory");
+  return unavailableUpRoot(root, `${shown} ${reported}`, `${restore}${remedy}, using a different directory for <dir>`);
 }
 
 /** An invoking folder that vanished during up cannot be restored. Keep the operation's outcome. */
