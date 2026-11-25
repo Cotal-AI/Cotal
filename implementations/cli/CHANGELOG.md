@@ -1,5 +1,72 @@
 # @cotal-ai/cli
 
+## 0.177.0
+
+### Minor Changes
+
+- 0bb3186: A launcher can now list the commands and skills a harness offers in a directory before any agent starts, and start an agent with one of them as its first turn. The Manager's new `harness-commands` read (`{ agent, cwd }`) asks Claude Code, Codex, pi or OpenCode 2.x in that directory and answers the entries a seat's `command` takes, or `supported: false` with a reason for a harness whose seats run no commands; it starts no seat and is granted where `list-dir` is. `spawn` takes `firstCommand: { target, name, args? }` and its acceptance names `firstCommand.id`. The agent queues the command under that id before any other and runs it as its first turn through its own command lane once the harness runs commands, and `command-state` reports a refusal. The Manager cluster advances to revision 54.
+
+### Patch Changes
+
+- 3ee534f: When a broker address matches multiple registered spaces, `cotal history` reads and `cotal ps` print a retry command for each space.
+- dbc91ac: Keep an explicitly selected IPv4 bind address in the suggested broker URL when `up` refuses an invalid server address. A wildcard bind still gets a loopback example.
+- d913e8e: When the first broker start preview refuses `--foreground`, it tells you to remove that flag and keep `--dry-run` and the rest of the command.
+- 3c1d11f: Report an active startup when checking a prepared space with `cotal status --space` from another directory.
+- 1927f75: Keep `--plain` in the confirmation command suggested by `cotal channel remove`.
+- e3d4091: When `cotal config set` or `cotal config unset` already has all its arguments, tell the caller to drop an unknown option rather than move it after `--`.
+- a322bd7: The empty console space picker points to `cotal up` for a local mesh without asking users to add demo personas.
+- d03e96f: Report a missing persona name, not a missing closing fence, when the frontmatter is empty.
+- 6622074: Tell users to omit a pasted `--file` option from `cotal endpoint check` instead of suggesting a spelling the command does not accept.
+- 78d57ec: When `cotal endpoint check` refuses a scaffold directory, its retry command keeps the requested JSON or plain output.
+- 068fc9c: When `cotal ext root` receives an unknown option, tell the caller to drop it instead of suggesting `--`.
+- d649b5f: A damaged extension manifest no longer blocks update preferences or `cotal ext root`, and `cotal ext list --json` reports the damage with repair guidance.
+- 7b7518b: JSON history and channel membership followers report invalid switches in the follow stream regardless of switch order.
+- 3b325e3: Keep `--json` or `--plain` in the command suggested for retrying a foreground manifest preview.
+- 14b6da7: When `COTAL_HOME` points to a file, `watch`, `history --follow`, and `channel members --follow` now write an error record and an end record in JSON mode.
+- f21c228: When `--no-input` or `--no-color` is given a value, the CLI explains how to retry without one.
+- b51ddf7: `cotal join` refusals that suggest a mint command for a dash-prefixed channel now attach the channel to its grant option, so the printed command pastes and runs as issued. A space-separated `--allow-subscribe -general` reads the value as another option and `auth mint` refuses it, so the suggestion attaches it as `--allow-subscribe=-general`; plain channels keep the spaced spelling.
+- e7ad60e: Keep the selected deployment file or run when suggesting how to retry a legacy teardown without an unsupported output format.
+- 2ea3b21: When a Manager restart preview finds no Manager, suggest previewing the first start in the same space and keep the requested output format.
+- fca2d4d: Keep `--json` or `--plain` in the suggested `cotal status` retry when a named agent read is given an invalid manager selector.
+- 708df55: Self-update identifies a refused proxy configured in npm instead of reporting a registry outage.
+- eb9d25f: Keep `--foreground` and `--no-manager` in the suggested restart when another program holds the recorded broker port.
+- 97e1a38: Keep the requested JSON or plain output format in the retry command when an imported persona's name does not match its catalog name.
+- 67328f6: Stop suggesting a persona create that the catalog would refuse when a mismatched import names an existing persona.
+- 731c903: Usage errors under `--plain` keep their help text free of color even when `FORCE_COLOR` is set.
+- d8723ea: Cotal identifies files blocking local space roots and explains how to restore the project or clear its stale registration without touching the file.
+- 8ea5491: Show the same repair as `cotal up` in `doctor auth`, `status`, and `ps` when a prepared space's `.cotal` directory blocks startup.
+- 34fb386: Keep and name changed persona drafts when an editor launched directly by path exits with status 126 or 127.
+- 8aa785c: Keep extensions such as ACP available when you run your first `cotal ext seed` after installing them.
+- 997a401: Self-update uses the compatible Node.js that asdf selects for the current project, including when a symlink points to a version-named executable, and keeps using it for npm during connector reconciliation.
+- 81c5426: When a restore target overlaps the preserved store, Cotal confirms that no restore started and asks for a new store path outside it.
+- e892942: Distinguish a missing or unreadable manifest from invalid contents when previewing a retained local stack. If the manifest path names a directory, the preview explains how to select the file.
+- d274aca: When a reset refuses a linked store path, suggest restoring the space's original store directory before previewing again. The link's destination may no longer exist.
+- a450399: Keep `cotal who --server` on the running project's open space when its local registration is missing and the address matches its recorded broker.
+- e54ad42: Self-update can run npm when a relative PATH entry points to the only Node executable and its directory name contains a colon.
+- e823fc8: Self-update repairs installed first-party extensions with empty entry files even when the CLI is already current.
+- ea285af: When a send destination is empty, tell the caller to correct it in the original command so a file or stdin body, target and output format are retained.
+- cbc08ad: Show the selected preset's required flags in `cotal help -- service add <name> --preset <preset>`.
+- b55ae03: When `cotal service status` or `cotal service logs` refuses an unknown instance ID for a saved service, it names the service and requested ID and shows how to list the full IDs in that space.
+- c528cfe: When a service has no recorded instance, a restart preview suggests a start preview in the same output format instead of an actual start.
+- aefcd66: Self-update keeps the new CLI version when it skips a Claude integration owned by another Cotal home.
+- c9e6ab0: When a direct spawn or preview refuses an unsupported model variant, it tells you which command option or persona field to remove.
+- 37be6e1: Keep the space and explicit broker in the attach command printed for a starting agent so it works even when another space is selected.
+- 6ec3ddc: When `cotal status` refuses `--creds` for an infrastructure report, its retry instructions keep the requested target and output format.
+- a746982: Name the stopped space that reserves a prepared stack's requested broker address and suggest a retry that keeps the original startup options.
+- 3fd0417: When a team removal preview needs a stack restart, the retry command keeps the space, dry-run flag, and output format.
+- b68d521: Point interrupted broker recovery at the project that owns the broker. When startup uses `--root` from another folder and stops before registering the space, both the interrupt notice and the next startup refusal give a stop command for that project.
+- 4717a9a: Registry restores with no previous store now tell you how to retire the restore journal without discarding history or deleting a store.
+- 24c84fe: Report a permission refusal when a connection using an explicit credential cannot check the project's authentication mode. The connection still stops before using the credential.
+- Updated dependencies [d03e96f]
+- Updated dependencies [d649b5f]
+- Updated dependencies [0bb3186]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8aa785c]
+- Updated dependencies [a450399]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes
