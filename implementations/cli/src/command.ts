@@ -64,8 +64,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
-import { historySetupFailureRecords, membershipSetupFailureRecords } from "./lib/follow-setup-failure.js";
-import { watchSetupFailureRecords } from "./commands/watch.js";
+import { historySetupFailureRecords, membershipSetupFailureRecords, watchSetupFailureRecords } from "./lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
@@ -176,6 +175,30 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
   });
 }
 
+function collisionWarning(warnings: OutputWarning[]) {
+  return (message: string) => { warnings.push({ code: "EXTENSION_COMMAND_COLLISION", target: null, message: message.slice(2) }); };
+}
+
+/** Built-in finite JSON receipts carry collision warnings. Other output keeps them on stderr. */
+function routeCollisionWarnings(warnings: OutputWarning[], cmd: Command | undefined, words: string[], wantsHelp: boolean): void {
+  if (!warnings.length) return;
+  let finiteJson = false;
+  if (cmd && !wantsHelp && !isExtensionStub(cmd) && !takesWordsRaw(cmd) && asksForJson(cmd, words)) {
+    const sub = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
+    const outputs = sub ? sub.outputs : cmd.outputs;
+    if (outputs?.includes("json")) {
+      const values = !outputs.includes("ndjson") ? undefined
+        : cmd.name === "history" || cmd.name === "channel" ? streamRefusalArgs(cmd, words)?.values
+        : parseArgs({ args: words, options: parserOptions(cmd), strict: false, allowPositionals: true }).values;
+      finiteJson = values?.follow !== true && values?.wait !== true;
+    }
+  }
+  for (const warning of warnings) {
+    if (finiteJson) recordOperationWarning(warning, { echo: false });
+    else console.error(c.red(`! ${warning.message}`));
+  }
+}
+
 /** Under COTAL_DEBUG, print the failure's stack and the stack of each error that caused it. */
 function debugStacks(failure: Error): void {
   if (!debugFlag("COTAL_DEBUG")) return;
@@ -219,10 +242,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
     const membershipFollow = cmd.name === "channel" && follow && validationArgs.positionals[0] === "members";
-    const space = validationArgs?.values.space;
     const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
       : membershipFollow ? membershipSetupFailureRecords({
-        space: typeof space === "string" && space.trim() ? space : null,
+        space: validationArgs.values.space,
         channel: validationArgs.positionals[1]?.replace(/^#/, "") ?? null,
       }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
@@ -427,6 +449,7 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
   if (cmd.name !== "history" && cmd.name !== "channel" && cmd.name !== "watch") return undefined;
   const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
   const args = [...words];
+  let missingSpace = false;
   for (;;) {
     const { values, positionals, tokens } = parseArgs({ args, options, strict: false, allowPositionals: true, tokens: true });
     // The loose parser consumes an option-looking word after a missing value. Leave that word
@@ -434,7 +457,11 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
     const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
       && token.value?.startsWith("-") && token.value !== "-"
       && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
-    if (!missing) {
+    if (missing?.kind !== "option") {
+      // A later --space cannot supply the value for a missing or blank occurrence.
+      if (missingSpace || tokens.some((token) => token.kind === "option" && token.name === "space" && !token.value?.trim())) {
+        delete values.space;
+      }
       // The caller detected JSON. A malformed repeat cannot mask a bare follow switch.
       if (cmd.name !== "watch") {
         if (!tokens.some((token) => token.kind === "option" && token.name === "follow" && token.value === undefined)) return undefined;
@@ -442,6 +469,7 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
       }
       return { values: values as ParsedArgs["values"], positionals, raw: words };
     }
+    if (missing.name === "space") missingSpace = true;
     args.splice(missing.index + 1, 0, "");
   }
 }
@@ -785,7 +813,7 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
 }
 
 /** A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
- *  Preset details can enrich a duplicate refusal but cannot replace it. */
+ *  Preset details can enrich a global flag refusal but cannot replace it. */
 async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
   try {
@@ -801,18 +829,18 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 }
 
 /** Recover the command and output mode for a malformed leading global without dispatching it. */
-function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): never {
+async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): Promise<never> {
   const equals = word.indexOf("=");
   const flag = equals === -1 ? undefined : word.slice(0, equals);
   if (!beforeSeparator || !flag || !GLOBAL_FLAG_WORDS.has(flag)) usageExit(unknownCommandMessage(commands, word));
   const retry = leadingInvocation(args);
   const found = findCommand(commands, retry.word);
-  const cmd = takesWordsRaw(found) ? undefined : found;
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
-  const end = words.indexOf("--");
-  const plain = (end === -1 ? words : words.slice(0, end)).includes("--plain");
+  const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
+  const end = rest.indexOf("--");
+  const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
   const { message, remedy } = globalFlagValueRefusal(flag);
-  usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, words), plain, remedy, words);
+  return usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, rest), plain, remedy, rest);
 }
 
 /**
@@ -826,7 +854,12 @@ function unknownInvocationExit(commands: readonly Command[], word: string, args:
  * launches nothing. An extension command's flags are parsed after the seed, because its live specs
  * come from importing a package the seed keeps current.
  */
-export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+export function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
+  const scope: OperationScope = {};
+  return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
+}
+
+async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptions, scope: OperationScope): Promise<void> {
   const startedAt = Date.now();
   const { leading, original, word, args } = leadingInvocation(argv);
   const { output, leadingGlobals, repeatedLeading } = prepareLeadingFlags(leading);
@@ -912,14 +945,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       }
     }
   }
-  function collisionWarning(warnings: OutputWarning[]) {
-    return (message: string) => { warnings.push({ code: "EXTENSION_COMMAND_COLLISION", target: null, message: message.slice(2) }); };
-  }
   const pendingWarnings: OutputWarning[] = [];
-  const surface = (warnings?: OutputWarning[]): Command[] => {
+  const surface = (warnings: OutputWarning[]): Command[] => {
     let commands: Command[];
     try {
-      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, warnings && collisionWarning(warnings)) : registry.all<Command>("command");
+      commands = useExtensionOverlay && !versionJson && !extDiagnostics && !configFolder ? overlayExtensions(registry, collisionWarning(warnings)) : registry.all<Command>("command");
     } catch (e) {
       if (skipUnreadableConnectorOverlay(e)) commands = registry.all<Command>("command");
       else {
@@ -941,13 +971,13 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
     return commands;
   };
-  let commands = surface(duplicate(undefined) ? pendingWarnings : undefined);
-  if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
+  let commands = surface(pendingWarnings);
   let cmd = findCommand(commands, word);
   let rest = ownWords(cmd);
   const repeated = duplicate(cmd);
   if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
-  for (const warning of pendingWarnings) console.error(c.red(`! ${warning.message}`));
+  routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
+  if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
   ({ cmd, rest } = await serviceSurface(cmd, rest));
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
@@ -971,7 +1001,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
-  if (!cmd && !awaitingSeed) unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
+  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
@@ -1017,12 +1047,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
     if (!deferred) {
       const warnings: OutputWarning[] = [];
-      commands = surface(duplicate(undefined) ? warnings : undefined);
+      commands = surface(warnings);
       cmd = findCommand(commands, word);
-      if (!cmd) usageExit(unknownCommandMessage(commands, word));
+      if (!cmd) {
+        routeCollisionWarnings(warnings, cmd, rest, wantsHelp);
+        usageExit(unknownCommandMessage(commands, word));
+      }
       const repeated = duplicate(cmd);
       if (repeated) return repeatedGlobalFlag(repeated, cmd, ownWords(cmd), warnings);
-      for (const warning of warnings) console.error(c.red(`! ${warning.message}`));
+      routeCollisionWarnings(warnings, cmd, ownWords(cmd), wantsHelp);
       ({ cmd, rest } = await serviceSurface(cmd, ownWords(cmd)));
       arm();
     }
@@ -1067,7 +1100,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     }
   }
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
-  const scope: OperationScope = cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG") ? { quiet: true } : {};
+  if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
   const execute = async () => npmProjectDirectory.run(updateDirectory, async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);

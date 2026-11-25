@@ -314,6 +314,10 @@ A word that names none of a command's subcommands and is near none of them is a 
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
 
+When a retained extension command collides with a built-in, the built-in wins. A finite JSON
+envelope from a built-in carries `EXTENSION_COMMAND_COLLISION` in `warnings` rather than printing
+the warning on stderr.
+
 An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
 on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
 

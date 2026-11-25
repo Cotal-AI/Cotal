@@ -347,6 +347,12 @@ try {
     brokerStartHelp.status === 0 && brokerHelpCommand.status === 0 && brokerStartHelp.stdout === brokerHelpCommand.stdout
     && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file>/m.test(brokerStartHelp.stdout)
     && examplePreview?.status === 0, { help: out(brokerStartHelp), preview: examplePreview && out(examplePreview) });
+  const badGlobalLeading = cotal(["--no-color=false", "service", "start", "broker"]);
+  const badGlobalTrailing = cotal(["service", "start", "broker", "--no-color=false"]);
+  check("a malformed global before or after broker start refuses with the full preset help",
+    [badGlobalLeading, badGlobalTrailing].every((run) => run.status === 1 && run.stdout === ""
+      && run.stderr.includes("--no-color takes no value") && run.stderr.endsWith(brokerStartHelp.stdout)),
+    { leading: out(badGlobalLeading), trailing: out(badGlobalTrailing) });
   const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
   check("explicit broker start help keeps preset options when passed startup flags",
     brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
