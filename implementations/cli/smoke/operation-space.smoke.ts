@@ -235,6 +235,14 @@ check("an empty slot pin names the JSON manager lookup and a separate JSON slot 
 const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
 check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
   && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
+for (const [verb, ...args] of [["stop", "target"], ["attach", "target"], ["status", "target"], ["input", "target", "review"]] as const) {
+  for (const pin of ["", "local.U123"]) {
+    const server = "nats://127.0.0.1:39200";
+    const refused = cotal(verb, ...args, "--on", pin, "--space", "elsewhere", "--server", server);
+    check(`${verb} keeps the selected space and broker on the manager lookup for ${pin || "an empty pin"}`,
+      refused.status === 1 && refused.stderr.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !refused.stderr.includes("`cotal ps`"), shown(refused));
+  }
+}
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
