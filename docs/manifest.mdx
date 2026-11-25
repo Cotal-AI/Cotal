@@ -19,7 +19,7 @@ Authorization follows [SPEC §9](../SPEC.md#9-nats--jetstream-security-and-autho
 
 If the manifest is missing or its path passes through a non-directory, `team check`, `team boot` and `team deploy` refuse with `TARGET_NOT_FOUND`. If the account cannot read the manifest, they refuse with `PERMISSION_DENIED`. Neither case contacts the broker.
 
-An undeclared agent in a channel list points to the name's line and column. An omitted `allowSubscribe` does not add a second error for the same subscriber. A missing persona file points to the path in the agent declaration, including the `persona` field in the mapping form.
+An unknown manifest key points to the key's line and column, even when its value starts on the next line. An undeclared agent in a channel list points to the name's line and column. An omitted `allowSubscribe` does not add a second error for the same subscriber. A missing persona file points to the path in the agent declaration, including the `persona` field in the mapping form.
 
 The manifest must be UTF-8. A UTF-16 file is refused with `SCHEMA_INVALID` and the instruction to save it as UTF-8.
 

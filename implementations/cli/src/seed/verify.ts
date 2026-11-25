@@ -65,8 +65,8 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
  * generation with the spec the update would install, the prefix lock records the package at that
  * version, every package the lock records is on disk at its recorded version
- * ({@link prefixLockDiffers}), and the extension's resolved entry is a file. Any doubt is a reason,
- * and a reason runs the ordinary reinstall.
+ * ({@link prefixLockDiffers}), and the extension's resolved entry is a nonempty regular file.
+ * Any doubt is a reason, and a reason runs the ordinary reinstall.
  */
 export function operatorInstallDiffers(entry: InstalledExtension, generation: string): string | undefined {
   const spec = `${entry.pkg}@${generation}`;
@@ -81,7 +81,9 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   const installed = installedExtensionPackage(entry.pkg);
   if (!installed) return "not installed on disk";
   const path = resolveExtensionEntry(extensionPackageDir(entry.pkg), installed);
-  if (!statSync(path, { throwIfNoEntry: false })?.isFile()) return "entry file is missing";
+  const file = statSync(path, { throwIfNoEntry: false });
+  if (!file?.isFile()) return "entry file is missing";
+  if (file.size === 0) return "entry file is empty";
   return undefined;
 }
 

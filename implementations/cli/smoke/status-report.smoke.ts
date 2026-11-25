@@ -518,14 +518,14 @@ if (!brokerDisplayOnly) {
 // ── a folder this account cannot read is the one gap, named with its chmod ───────────────────────
 if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const { home } = sandbox();
-  // No `.cotal` above it, so the folder is its own root, as a fresh project folder is.
   const outside = mkdtempSync(join(tmpdir(), "cotal-status-unreadable-"));
   roots.push(outside);
   const folder = join(outside, "project notes");
   mkdirSync(folder, { mode: 0o700 });
+  mkdirSync(join(folder, ".cotal"), { mode: 0o700 });
   const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" };
-  // The shell enters the folder before its mode drops, as it would for an operator already in it.
-  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 000 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
+  // Keep search permission so root discovery sees this project's marker, but deny reads of the root.
+  const r = spawnSync("/bin/sh", ["-c", 'cd "$0" && chmod 100 . && exec "$@"', folder, process.execPath, BIN, "status", "--json"], { env, encoding: "utf8", timeout: 120_000 });
   chmodSync(folder, 0o700);
   const envelope = (r.stdout ?? "").startsWith("{") ? (JSON.parse(r.stdout) as Envelope) : undefined;
   const shownR = { status: r.status, stdout: (r.stdout ?? "").slice(0, 900), stderr: (r.stderr ?? "").slice(0, 600) };
@@ -560,6 +560,16 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       [prepared, alternate, selected].every((r) => r.status === 0) && refused.status === 1 && retry === "status --components --space component-target"
         && retried?.status === 1 && retried.stdout.startsWith("Mesh: component-target\n") && retried.stdout.includes("Component Health"), { refused, retried });
   }
+  const reportArgs = ["status", "--space", "component-target", "--json"];
+  const refused = run([...reportArgs, "--creds", "missing.creds"], {}, other);
+  const retry = run(reportArgs, {}, other);
+  check("infrastructure status refuses --creds and tells the caller to keep the other arguments",
+    refused.status === 2 && refused.stderr === "" && refused.envelope?.outcome === "refused"
+      && refused.envelope.target.space === "component-target" && refused.envelope.error?.code === "UNSUPPORTED"
+      && refused.envelope.error.remedy === "remove --creds and its value, then rerun the same command with the remaining arguments unchanged", shown(refused));
+  check("removing only --creds and its value keeps the requested space and JSON output",
+    retry.status === 0 && retry.stderr === "" && retry.envelope?.outcome === "ok"
+      && retry.envelope.result?.selected.space === "component-target" && retry.envelope.result.meshes.current === "component-other", shown(retry));
   for (const args of [["myagent", "--json", "--plain"], ["myagent", "--wide", "--json"], ["myagent", "--verbose", "--json"], ["myagent", "-v", "--json"]]) {
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is refused as USAGE_INVALID before any target lookup, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));

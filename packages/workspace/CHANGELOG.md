@@ -1,5 +1,28 @@
 # @cotal-ai/workspace
 
+## 0.178.0
+
+### Patch Changes
+
+- aca749c: Backup fallback cleanup drops `--discard-history` for a newer store only when restore verifies that it holds no additional backed-up state.
+- a68895e: When an extension needs an export missing from a peer with the same version, identify the import and linked peer without assuming that reinstalling the CLI will fix it.
+- ee23092: When a symbolic link blocks `auth mint --out`, the suggested physical path stays together as one shell argument, even if it contains spaces.
+- 9370503: Starting a manager with a malformed roster leaves its saved definition unchanged, and the dry run shows why the start would fail.
+- @cotal-ai/core@0.178.0
+
+## 0.177.0
+
+### Patch Changes
+
+- d649b5f: A damaged extension manifest no longer blocks update preferences or `cotal ext root`, and `cotal ext list --json` reports the damage with repair guidance.
+- d8723ea: Cotal identifies files blocking local space roots and explains how to restore the project or clear its stale registration without touching the file.
+- 8aa785c: Keep extensions such as ACP available when you run your first `cotal ext seed` after installing them.
+- a450399: Keep `cotal who --server` on the running project's open space when its local registration is missing and the address matches its recorded broker.
+- 24c84fe: Report a permission refusal when a connection using an explicit credential cannot check the project's authentication mode. The connection still stops before using the credential.
+- Updated dependencies [d03e96f]
+- Updated dependencies [0bb3186]
+  - @cotal-ai/core@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes

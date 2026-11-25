@@ -40,7 +40,7 @@ import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { serviceInstances } from "../lib/service-instances.js";
-import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, unusableStackJournal } from "../lib/stack-journal.js";
+import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, stackUpInProgress, unusableStackJournal } from "../lib/stack-journal.js";
 import { linkedCotalRemedy, preparedRootWriteProblem } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
@@ -48,14 +48,16 @@ import { stackStoreWarnings } from "../lib/store-identity.js";
 import { statusFlags, type Selected, type SelectedPreflight, UnregisteredRoot, type PersonaCatalog, type StatusResult, type SelectedResult, Gaps, displayStatusBroker } from "./status-model.js";
 import { servedStack } from "./status-render.js";
 
-/** Replace the current folder's restart banner only when its own broker store blocks startup. */
-export function reportHeldStoreProblem(root: string, hints: string[]): boolean {
-  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string } | undefined;
+/** Replace the current folder's restart banner when its directory or broker store blocks startup. */
+export function reportHeldRestartProblem(root: string, hints: string[]): boolean {
+  const held = operationWarnings().find((warning) => warning.code === "FOLDER_SPACE_NOT_RUNNING")?.target as { space: string; root: string; state: string } | undefined;
   if (held?.root !== root) return false;
+  const writeProblem = held.state === "stopped" ? preparedRootWriteProblem(root) : undefined;
   const store = rootStoreProblem(root);
-  if (!store) return false;
+  if (!writeProblem && !store) return false;
   withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
-  hints.push(`${store.message}; ${store.remedy}`);
+  if (writeProblem) hints.push(`Restart blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
+  else if (store) hints.push(`${store.message}; ${store.remedy}`);
   return true;
 }
 
@@ -208,7 +210,20 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
-export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, stackStarting: boolean): Promise<SelectedResult> {
+/** A prepared selection can have a live startup writer at a different project root. */
+export function selectedStackStarting(selected: Selected, folder: StatusResult["folder"], stackStarting: boolean): boolean {
+  if (selected.ok || !isWorkspaceTargetError(selected.error) || selected.error.code !== "not-started") return false;
+  const { root, space, rootMissing, unsettled } = selected.error.details;
+  if (root === undefined || space === undefined || rootMissing || cotalDirLink(root) !== undefined) return false;
+  if (root === folder.root) return stackStarting && Boolean(servedStack(folder, { root, space }));
+  if (unsettled !== "up") return false;
+  try {
+    const journal = readStackJournal(root)?.journal;
+    return journal?.space === space && stackUpInProgress(journal);
+  } catch { return false; } // The selection report names an unusable journal.
+}
+
+export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -255,13 +270,13 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
-    if (stackStarting && servedStack(folder, result)) {
+    if (selectedStarting) {
       result.message = `"${result.space}" is prepared and its stack is starting`;
       return result;
     }
     // An unwritable store blocks a restart from this root.
     const store = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? rootStoreProblem(d.root) : undefined;
-    const writeProblem = e.code === "not-started" && preparedNeverStarted(d) ? preparedRootWriteProblem(d.root) : undefined;
+    const writeProblem = e.code === "not-started" && restartRoot !== undefined && (d.stopped || preparedNeverStarted(d)) ? preparedRootWriteProblem(restartRoot) : undefined;
     const journal = e.code === "not-started" && d.root !== undefined && !d.rootMissing ? unusableStackJournal(d.root) : undefined;
     // So does a service instance record of its space that no command can read, which is also a warning.
     const instances = e.code === "not-started" && !journal && d.space !== undefined ? unusableServiceInstances(d.space) : undefined;
@@ -271,7 +286,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
     // settles from its members' processes when it starts.
     if (journal) { const step = journal.remedy ?? journal.message; if (!hints.includes(step)) hints.push(step); }
     else if (instances) hints.push(instances.remedy ?? instances.message);
-    else if (writeProblem) hints.push(`First start blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
+    else if (writeProblem) hints.push(`${d.stopped ? "Restart" : "First start"} blocked: ${writeProblem.message}. ${writeProblem.remedy}`);
     else if (store) hints.push(`${store.message}; ${store.remedy}`);
     else if (restartRoot !== undefined) {
       const block = channelSeedRestartBlock(restartRoot);

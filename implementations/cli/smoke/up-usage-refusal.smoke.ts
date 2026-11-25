@@ -66,7 +66,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; effectAttempted?: boolean; persisted?: boolean } }
+interface Envelope { outcome?: string; target?: { root?: string; space?: string; heldBy?: string }; error?: { code?: string; message?: string; remedy?: string }; result?: { kind?: string; lifetimeRequest?: string; brokerCandidate?: string; effectAttempted?: boolean; persisted?: boolean } }
 const { readStackJournal, writeStackJournal } = await import("../src/lib/stack-journal.js");
 
 const { check, finish } = createSuite();
@@ -165,6 +165,31 @@ for (const { args, message } of cases) {
           : /Lifetime request:\s+terminal-bound/.test(retry.stdout)),
       { refusal: shown(refusal), retry: retry && shown(retry) });
   }
+  const originalServer = "nats://127.0.0.1:1";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const manifest = readFileSync(openManifest, "utf8").replace("  auth: false\n", `  auth: false\n  servers: ${originalServer}\n`);
+  const original = "team.yaml", copy = "team-copy.yaml";
+  writeFileSync(join(manifests, original), manifest);
+  writeFileSync(join(manifests, copy), manifest.replace(originalServer, server));
+  for (const flags of [[], ["--json"], ["--plain"]]) {
+    const refusal = run(["up", "-f", original, "--server", server, "--foreground", "--dry-run", ...flags], manifests);
+    const advice = refusal.envelope?.error?.remedy ?? refusal.stderr;
+    const preview = ["team", "boot", "<manifest-copy>", "--foreground", "--dry-run", ...flags];
+    const json = flags[0] === "--json";
+    const command = /`((?:pnpm )?cotal) (team boot [^`]+)`/.exec(advice);
+    const retry = command?.[2] === preview.join(" ") && (!json || command[1] === "cotal")
+      ? run(preview.map((word) => word === "<manifest-copy>" ? copy : word), manifests) : undefined;
+    const result = retry?.envelope?.result;
+    const correctPreview = json ? result?.brokerCandidate === server && result.lifetimeRequest === "terminal-bound"
+      : retry !== undefined && /Lifetime request:\s+terminal-bound/.test(retry.stdout)
+        && retry.stdout.split("\n").some((line) => line.trim().startsWith("Broker candidate:") && line.trimEnd().endsWith(` ${server}`));
+    check(`foreground preview with --server and ${flags[0] ?? "default output"} inspects the broker from the manifest copy`,
+      refusal.status === 2 && (json ? refusal.envelope?.error?.code === "UNSUPPORTED" : /Code:\s+UNSUPPORTED/.test(refusal.stderr))
+        && advice.includes("copy the manifest") && advice.includes("`broker.servers`") && advice.includes("`--server`")
+        && !advice.includes(`team boot ${original}`) && !advice.includes(server) && retry?.status === 0 && retry.stderr === "" && correctPreview
+        && readFileSync(join(manifests, original), "utf8") === manifest && !existsSync(join(manifests, ".cotal")),
+      { refusal: shown(refusal), retry: retry && shown(retry) });
+  }
   for (const { label, args, json, help, message, remedy } of [
     { label: "-f --dry-run --max-file-store", args: ["-f", authManifest, "--dry-run", "--max-file-store", "1073741824"], json: true, help: false,
       message: "--max-file-store cannot be combined with --file/-f: a manifest launch does not render a store cap, so nothing was started", remedy: "drop --max-file-store, or start the mesh without -f" },
@@ -234,7 +259,10 @@ for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
   }
 }
 
-const servers: { server: string; message: RegExp; example: string }[] = [
+const servers: { server: string; host?: string; message: RegExp; example: string }[] = [
+  { server: "127.0.0.2:43131", host: "127.0.0.2", message: /--server is not a URL/, example: "--server nats://127.0.0.2:43131" },
+  { server: "tls://broker.example:4443", host: "127.0.0.2", message: /--server names the host/, example: "--server tls://127.0.0.2:4443" },
+  { server: "nats://localhost:43131", host: "0.0.0.0", message: /--server names the host/, example: "--server nats://127.0.0.1:43131" },
   { server: "http://127.0.0.1:43131", message: /--server must be a nats:\/\/ or tls:\/\/ URL/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://localhost:43131", message: /--server names the host localhost/, example: "--server nats://127.0.0.1:43131" },
   { server: "tls://broker.example:4443", message: /--server names the host broker\.example/, example: "--server tls://127.0.0.1:4443" },
@@ -243,8 +271,8 @@ const servers: { server: string; message: RegExp; example: string }[] = [
   { server: "nats://127.0.0.1:43131?a=1", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://127.0.0.1:43131#a", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
 ];
-for (const { server, message, example } of servers) {
-  const text = run(["up", "--server", server]);
+for (const { server, host, message, example } of servers) {
+  const text = run(["up", "--server", server, ...(host ? ["--host", host] : [])]);
   check(`up --server ${server} is the classified USAGE_INVALID report with no help, exit 1, giving ${example}`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Code:\s+USAGE_INVALID/.test(text.stderr) && text.stderr.includes(example) && !/Usage|Options/.test(text.stderr), shown(text));
 }
 

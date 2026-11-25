@@ -16,7 +16,9 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {
+  CHANNEL_DEFAULTS_KEY,
   backupProfilePermissions,
+  channelBucket,
   hardenPrivate,
   isReachable,
   restoreProfilePermissions,
@@ -216,6 +218,7 @@ export interface IsolatedBroker {
 export type IsolatedMaintenanceScope =
   | { profile: "backup"; scope: BackupPermissionScope }
   | { profile: "restore"; scope: RestorePermissionScope }
+  | { profile: "registry-read" }
   | { profile: "infrastructure"; streams: readonly string[]; updateStreams?: readonly string[] };
 
 export interface IsolatedMaintenanceLogin {
@@ -271,6 +274,10 @@ export function infrastructureMaintenancePermissions(
 function loginPermissions(space: string, connId: string, operation: IsolatedMaintenanceScope): Record<string, unknown> {
   if (operation.profile === "backup") return backupProfilePermissions(space, connId, operation.scope);
   if (operation.profile === "restore") return restoreProfilePermissions(space, connId, operation.scope);
+  if (operation.profile === "registry-read") {
+    const bucket = exactStreamName(channelBucket(space));
+    return { pub: { allow: [`$JS.API.DIRECT.GET.KV_${bucket}.$KV.${bucket}.${CHANNEL_DEFAULTS_KEY}`] }, sub: { allow: [`_INBOX_${connId}.>`] } };
+  }
   return infrastructureMaintenancePermissions(connId, operation.streams, operation.updateStreams);
 }
 

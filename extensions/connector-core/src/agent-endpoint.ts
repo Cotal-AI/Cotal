@@ -25,7 +25,8 @@ export interface AgentEndpoint {
  * commands, and `onQueued` is told each time a command waits for a turn. Without a dispatcher,
  * `commands` answers `supported: false`, `command` is refused, and `agentEndpoint` shows nothing
  * served. Each time the dispatcher's `watch` reports a change, `agentEndpoint` is derived again.
- * `first` is the command its launch handed the agent, queued before any other.
+ * `first` is the command its launch handed the agent, queued before any other. `onNamed` is told
+ * when an owner's `set-name` is about to change the name.
  *
  * Rejects without a lifecycle UID, when the broker refuses the subscription (a credential minted
  * before the rows existed), and when the connection's
@@ -36,7 +37,7 @@ export interface AgentEndpoint {
  */
 export async function openAgentEndpoint(
   ep: CotalEndpoint,
-  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void; first?: FirstCommand },
+  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void; first?: FirstCommand; onNamed?(): void },
 ): Promise<AgentEndpoint> {
   if (typeof opts?.warn !== "function") throw new TypeError("openAgentEndpoint needs opts.warn");
   const max = ep.maxPayload;
@@ -49,7 +50,7 @@ export async function openAgentEndpoint(
   };
   const desk = createPromptDesk(ep, warn);
   const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}), opts.first);
-  const naming = createNameLane(ep, warn);
+  const naming = createNameLane(ep, warn, opts.onNamed);
   const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler] });
   desk.served(serve.ready);
 

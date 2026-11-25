@@ -79,10 +79,12 @@ export async function readPrivateServe<T>(o: PrivateServe, read: (serve: ServeRe
 }
 
 /** Kill the server and what it started, and wait for it to exit, so nothing writes to its database
- *  once that is removed. */
+ *  once that is removed. On POSIX the group is killed even when the server already exited, since a
+ *  process it started can outlive it. */
 async function stop(server: ChildProcess): Promise<void> {
-  if (server.pid === undefined || server.exitCode !== null || server.signalCode !== null) return;
-  const exited = new Promise((done) => server.once("exit", done));
+  const running = server.exitCode === null && server.signalCode === null;
+  if (server.pid === undefined || (!running && process.platform === "win32")) return;
+  const exited = running ? new Promise((done) => server.once("exit", done)) : undefined;
   try {
     process.kill(process.platform === "win32" ? server.pid : -server.pid, "SIGKILL");
   } catch (e) {

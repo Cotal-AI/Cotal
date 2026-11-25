@@ -45,6 +45,8 @@ import {
   migrateLegacyCotalMaterial,
   preparedSpaceAt,
   preflightTarget,
+  preparedRootRemedy,
+  projectRootProblemText,
   readPreparedSpaces,
   remintDaemonCreds,
   REMINTABLE_DAEMON_CREDS,
@@ -70,7 +72,7 @@ import {
   grantMintFlags,
   type AgentGrants,
 } from "@cotal-ai/workspace";
-import { displayCmd } from "../lib/self-exec.js";
+import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { preparedRootWriteProblem } from "../lib/paths.js";
@@ -204,6 +206,9 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
           : `${correct}.`;
       }
       if (error instanceof MeshTargetError && error.code === "not-started") {
+        const { root: recorded, rootProblem } = error.details;
+        if (recorded !== undefined && rootProblem !== undefined && rootProblem !== "missing")
+          return `"${named}" is prepared in ${recorded}, which ${projectRootProblemText(rootProblem)}. ${displayRemedy(preparedRootRemedy(named, rootProblem))}`;
         if (error.details.rootMissing) registered = error.details.root;
         else if (preparedNeverStarted(error.details)) prepared = error.details.root;
       }
@@ -212,7 +217,12 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    const block = preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
+    const control = join(prepared, ".cotal");
+    let controlIsFile = false;
+    try { controlIsFile = lstatSync(control, { throwIfNoEntry: false })?.isFile() === true; } catch { /* no confirmed obstruction */ }
+    const block = controlIsFile
+      ? { message: `${codeSpan(control)} is a regular file, not a directory`, remedy: "move the file aside and restore the original .cotal directory" }
+      : preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
     return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
@@ -433,7 +443,11 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     if (!bytes) continue;
     const creds = bytes.toString("utf8");
     let claims: ReturnType<typeof credsClaims>;
-    try { claims = credsClaims(creds); } catch { rows.push(row); continue; }
+    try { claims = credsClaims(creds); } catch {
+      row.repair = `The original grants cannot be determined from this file. Restore the complete credential file, or confirm the intended grants before using \`${cmd} auth mint\` to mint a replacement to a new private path.`;
+      rows.push(row);
+      continue;
+    }
     const profile = entry.profile === "agent" ? "" : ` --profile ${entry.profile}`;
     const provision = entry.profile === "agent" && entry.provisioned === true ? " --provision" : "";
     const quotedPath = shellWord(entry.path);

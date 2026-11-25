@@ -65,6 +65,8 @@ export class StartDoors {
     // before `startAgent` (which mints credentials), so a refusal provisions nothing.
     if (args.eventPayloads !== undefined && typeof args.eventPayloads !== "boolean")
       return Promise.resolve({ ok: false, error: "eventPayloads must be a boolean" });
+    if (args.autoName !== undefined && typeof args.autoName !== "boolean")
+      return Promise.resolve({ ok: false, error: "autoName must be a boolean" });
     const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
     let eventsNotice: string | undefined;
     let events: boolean | undefined = requestedEvents;
@@ -118,6 +120,7 @@ export class StartDoors {
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
         firstCommand: args.firstCommand as FirstCommand | undefined,
+        ...(args.autoName === true ? { autoName: true } : {}),
         subscribe: args.subscribe as string[] | undefined,
         allowSubscribe: args.allowSubscribe as string[] | undefined,
         allowPublish: args.allowPublish as string[] | undefined,

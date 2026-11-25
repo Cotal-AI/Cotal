@@ -28,7 +28,7 @@ import { brokerStopBlocked } from "../lib/broker-service.js";
 import { controlsRecordedAdapter, resolveServiceAdapter } from "../lib/service-adapters.js";
 import { assertDefinitionRoot, serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { addedDefinitionStep, stackMemberFor, STACK_ADAPTER } from "../lib/stack-journal.js";
-import { assertManagerStartOptions } from "../lib/service-presets.js";
+import { assertManagerStartOptions, checkManagerStartRoster } from "../lib/service-presets.js";
 import { adapterInstallRefusal, stopPreviewStep, type PresetServiceTarget } from "../lib/service-preset-target.js";
 import { definitionListeners, exposedPlaintext, listenerRow } from "../lib/stack-listeners.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
@@ -221,16 +221,21 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
-  if (mode === "restart" && id === undefined && rows.length === 0)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `cotal service start ${shellWord(name)} --space ${shellWord(space)}`, remedyIsCommand: true });
+  if (mode === "restart" && id === undefined && rows.length === 0) {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const output = presentation === "json" ? " --json" : presentation === "plain" ? " --plain" : "";
+    const preview = values["dry-run"] ? ` --dry-run${output}` : "";
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `${cli} service start ${shellWord(name)} --space ${shellWord(space)}${preview}`, remedyIsCommand: true });
+  }
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
     const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
-  const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const scope = { space, name, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, scope, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
+  const target = { ...scope, instanceId: selected?.name ?? null };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
   // The owned unit entry runs only a direct process, so an adapter definition's install refuses
   // before anything is allocated.
@@ -391,8 +396,11 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     return;
   }
   const launch = definition.record.value.launch;
-  if (launch.type === "adapter" && launch.adapter === STACK_ADAPTER.manager && (mode === "restart" || mode === "start" && (!selected || observeServiceProcess(selected.record.value) !== "running")))
+  let rosterValid = true;
+  if (launch.type === "adapter" && launch.adapter === STACK_ADAPTER.manager && (mode === "restart" || mode === "start" && (!selected || observeServiceProcess(selected.record.value) !== "running"))) {
     assertManagerStartOptions(space, launch.options);
+    if (mode === "start" && !resolved?.saved) rosterValid = checkManagerStartRoster(values["dry-run"] ? args.values.roster ?? launch.options.roster : launch.options.roster, target, values["dry-run"] === true);
+  }
   if (values["dry-run"]) {
     const row = selected ? instanceProjection(selected) : null;
     if (row && !["running", "gone", "previous-boot", "foreign-pid"].includes(row.observedProcess)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the selected instance is unresolved or foreign; a safe process effect cannot be previewed", { target });
@@ -407,12 +415,12 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     // the same records and names that refusal as a warning, as bare `down --dry-run` names its own.
     const blocked = mode !== "start" && row?.observedProcess === "running" && launch.type === "adapter" && launch.adapter === "nats-broker" ? brokerStopBlocked(canonicalRoot(String(launch.options.root)), space, selected!.name) : undefined;
     const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real ${mode} would refuse: ${blocked.message}; ${blocked.remedy}` }] : [];
-    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false, stopSignal }, ...(warnings.length ? { warnings } : {}) }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? "would be assigned; not allocated"], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor], ...(stopSignal ? [["Stop signal", stopSignalText(stopSignal)] as [string, string]] : [])] }, { kind: "lines", lines: [...(stopSignal?.scope === "process-group" ? ["The stop signals the whole process group, so a descendant still in it, such as a server its shell backgrounded, stops too. One that left the group, such as with setsid, is not signalled."] : []), "No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
+    writeResult(presentation, { command: commandName, target, result: { kind: "service-operation-preview", operation: mode, dryRun: true, instance: row, newInstanceWouldBeAllocated: mode === "start" && !selected && rosterValid, allocated: false, signalled: false, launch: definition.record.value.launch.type, readiness: definition.record.value.readiness.type, osSupervisor: "not-checked", recordedSupervisor: row?.supervisor ?? null, adapter: prepared?.adapter?.pin ?? selected?.record.value.adapter ?? null, providerCodeLoaded: false, stopSignal }, ...(warnings.length ? { warnings } : {}) }, (result): Report => ({ sections: [{ title: "Service operation preview", blocks: [{ kind: "fields", rows: [["Action", result.operation], ["Definition", name], ["Space", space], ["Instance", row?.instanceId ?? (rosterValid ? "would be assigned; not allocated" : "would not be allocated")], ["Process observation", row?.observedProcess ?? "no instance selected"], ["Readiness policy", result.readiness], ["Recorded supervisor", result.recordedSupervisor ?? "no instance selected"], ["Supervisor discovery", result.osSupervisor], ...(stopSignal ? [["Stop signal", stopSignalText(stopSignal)] as [string, string]] : [])] }, { kind: "lines", lines: [...(stopSignal?.scope === "process-group" ? ["The stop signals the whole process group, so a descendant still in it, such as a server its shell backgrounded, stops too. One that left the group, such as with setsid, is not signalled."] : []), "No provider code was imported, no process was launched or signalled and no instance record was created. Cached adapter metadata is not a resolved executable launch plan. No native endpoint readiness, manager-impact query or descendant cleanup was inferred. A native stop still requires its live caller-scoped preflight and confirmation."] }] }] }));
     return;
   }
   // A restart whose original process is already gone stops nothing, so it asks for nothing.
   const confirmStop = mode === "stop" || mode === "restart" && !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(selected!.record.value));
-  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values, presentation === "json")}\`, or preview it with --dry-run` });
+  if (confirmStop && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired(mode, presentation === "json"), { target, remedy: `confirm with \`${serviceConfirmCommand(mode, name, space, values, presentation === "json" ? "json" : "rich")}\`, or preview it with --dry-run` });
   if (mode === "restart") assertRestartAdmitted(definition);
   let nativePlan: Awaited<ReturnType<typeof prepareNativeServiceStop>> | undefined;
   try { nativePlan = mode === "stop" || mode === "restart" ? await prepareNativeServiceStop(definition, selected!, values["with-agents"] === true) : undefined; }

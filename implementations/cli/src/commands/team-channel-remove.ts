@@ -1,8 +1,9 @@
 import * as prompts from "../lib/prompts.js";
 import { contractDigest, mintCreds, newIdentity, type ChannelConfig, type ChannelDefaults } from "@cotal-ai/core";
-import { brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
-import { teamRemovalConfirmation } from "../lib/confirmation-required.js";
+import { brokerAddressForDisplay, canonicalRoot, codeSpan, CommandFailure, connectOrThrow, findMesh, oneLine, presentationOf, readMaintenanceJournal, acquireMaintenanceLock, releaseMaintenanceLock, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { targetWords, teamRemovalConfirmation } from "../lib/confirmation-required.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { displayRemedy } from "../lib/self-exec.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, removalOriginal, removedAdditiveDeploymentIds, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
@@ -29,12 +30,14 @@ function fallback(config: ChannelConfig | null, defaults: ChannelDefaults | null
 
 /** The way forward when the registration does not match the deployment. With none, as after the
  *  stack's `cotal down`, starting that stopped stack registers it again. */
-function registrationRemedy(selected: ReturnType<typeof findMesh>, root: string, space: string, deploymentId: string): string {
+function registrationRemedy(selected: ReturnType<typeof findMesh>, root: string, space: string, deploymentId: string, values: TeamValues): string {
   let stopped = false;
   try { stopped = readStackJournal(root)?.journal.space === space; } catch { stopped = false; }
-  return selected === undefined && stopped
-    ? `no registration names ${space}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${root}, which registers it, then run \`cotal team remove ${deploymentId}\` again`
-    : `compare the registration with \`cotal space show ${space}\` and the deployment with \`cotal team show ${deploymentId}\``;
+  if (selected !== undefined || !stopped) return `compare the registration with \`cotal space show ${space}\` and the deployment with \`cotal team show ${deploymentId}\``;
+  const output = presentationOf(values);
+  const previewFlags = values["dry-run"] ? `${targetWords({ space })} --dry-run${output === "rich" ? "" : ` --${output}`}` : "";
+  const remedy = `no registration names ${space}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${root}, which registers it, then run ${codeSpan(`cotal team remove ${deploymentId}${previewFlags}`)} again`;
+  return values["dry-run"] && output !== "json" ? displayRemedy(remedy) : remedy;
 }
 
 /** The card phase of a team removal: only the registry cards a returned deployment created, each by
@@ -42,8 +45,8 @@ function registrationRemedy(selected: ReturnType<typeof findMesh>, root: string,
  * readers, retained history and the channel subject are untouched, and the space defaults then
  * apply. A mixed card phase is accepted only once the agent-retirement receipt for the same
  * deployment reads back complete at execute time. `close` must run once preparation returned. */
-export async function prepareCardRemoval(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: CardReceipt; apply: boolean }) {
-  const { root, space, deploymentId, original, receipt, apply } = input, target = { root, space, deploymentId };
+export async function prepareCardRemoval(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: CardReceipt; apply: boolean; values: TeamValues }) {
+  const { root, space, deploymentId, original, receipt, apply, values } = input, target = { root, space, deploymentId };
   if (!receipt.createdChannels.length || receipt.createdChannels.length > 100) throw new CommandFailure("refused", "UNSUPPORTED", "guarded card removal needs one to 100 returned cards with their create revisions", { target });
   const inventory = listAdditiveTeamAttempts(root);
   // Another recorded deployment naming the same channel shares no authority over this card.
@@ -60,7 +63,7 @@ export async function prepareCardRemoval(input: { root: string; space: string; d
   if (shared.length) throw new CommandFailure("refused", "CONFLICT", "another retained deployment record also names one or more of these channels; no card was deleted", { target: { ...target, sharedChannels: shared } });
 
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment", { target, remedy: registrationRemedy(selected, root, space, deploymentId) });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment", { target, remedy: registrationRemedy(selected, root, space, deploymentId, values) });
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== root || conn.server !== original.server || conn.mode !== original.authMode || conn.tls !== original.tlsRequired) throw new CommandFailure("refused", "CONFLICT", "the scoped connection differs from the original root, broker, auth mode or transport; no card was deleted", { target });
   if (conn.mode === "auth" && !conn.auth) throw new CommandFailure("refused", "PERMISSION_DENIED", "the registered static mesh has no signer for a scoped channel writer; no other credential was substituted", { target });
@@ -169,11 +172,11 @@ export interface CardReconcileRun { recorded: CardSettlement[]; settlements: Car
  * replacement. Each unconfirmed submission settles only when the card's last message in the
  * intent's own registry stream rules out every other outcome. Never-submitted cards are reported
  * unattempted and are not continued. A receipt is written only when every card counts as removed. */
-export async function prepareCardReconcile(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: CardReceipt; intent: ChannelRemovalAttempt }) {
-  const { root, space, deploymentId, original, receipt, intent } = input, target = { root, space, deploymentId };
+export async function prepareCardReconcile(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: CardReceipt; intent: ChannelRemovalAttempt; values: TeamValues }) {
+  const { root, space, deploymentId, original, receipt, intent, values } = input, target = { root, space, deploymentId };
   if (intent.channels.length !== receipt.createdChannels.length || intent.channels.some((row, ordinal) => row.name !== receipt.createdChannels[ordinal]!.name || row.createdRevision !== receipt.createdChannels[ordinal]!.revision)) throw new CommandFailure("refused", "CONFLICT", "the removal intent does not name the original returned cards; nothing was reconciled", { target });
   const selected = findMesh(space);
-  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.server !== intent.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment and its removal intent", { target, remedy: registrationRemedy(selected, root, space, deploymentId) });
+  if (!selected || canonicalRoot(selected.root) !== root || selected.server !== original.server || selected.server !== intent.server || selected.mode !== original.authMode || (selected.tlsRequired === true) !== original.tlsRequired || selected.server.includes(",")) throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the original deployment and its removal intent", { target, remedy: registrationRemedy(selected, root, space, deploymentId, values) });
   const conn = await connectOrThrow({ space }, "deployer", { readOnly: true });
   if (!conn.root || canonicalRoot(conn.root) !== root || conn.server !== original.server || conn.mode !== original.authMode || conn.tls !== original.tlsRequired) throw new CommandFailure("refused", "CONFLICT", "the scoped connection differs from the original root, broker, auth mode or transport; nothing was reconciled", { target });
   let auth: { creds?: string; bearer?: string; sentinelCreds?: string } = { creds: conn.creds };
@@ -267,7 +270,7 @@ function cardSettlementText(row: CardSettlement): string {
 /** Settle the card phase of an unsettled channel-only intent from native observation. */
 async function reconcileChannelTeam(input: { root: string; space: string; deploymentId: string; original: AdditiveTeamAttempt; receipt: CardReceipt; intent: ChannelRemovalAttempt; values: TeamValues }): Promise<void> {
   const { root, space, deploymentId, original, receipt, intent, values } = input, target = { root, space, deploymentId };
-  const phase = await prepareCardReconcile({ root, space, deploymentId, original, receipt, intent });
+  const phase = await prepareCardReconcile({ root, space, deploymentId, original, receipt, intent, values });
   let run: CardReconcileRun | undefined, lockFailure: CommandFailure | undefined;
   try {
     const preview = { kind: "channel-team-removal-reconcile-preview" as const, deploymentId, cards: phase.settlements, recordable: phase.settlements.filter((row) => row.state === "record").length, unattempted: phase.settlements.filter((row) => row.state === "unattempted").length, unknown: phase.settlements.filter((row) => row.state === "unknown").length, effectAttempted: false as const, continuationOffered: false as const };
@@ -324,7 +327,7 @@ export async function removeChannelTeam(deploymentId: string, values: TeamValues
   }
   const unsettled = inventory.channelRemoval?.attempts.find((row) => row.deploymentId === deploymentId);
   if (unsettled) return reconcileChannelTeam({ root, space, deploymentId, original, receipt, intent: unsettled, values });
-  const phase = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: values["dry-run"] !== true });
+  const phase = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: values["dry-run"] !== true, values });
   let run: CardRemovalRun | undefined, lockFailure: CommandFailure | undefined;
   try {
     const preview = phase.preview;

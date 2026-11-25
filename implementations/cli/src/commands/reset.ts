@@ -11,6 +11,7 @@ import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries 
 import { additiveTeamRecordedState, listAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { verdictSection } from "../lib/verdict.js";
 import { STACK_DEFINITION } from "../lib/stack-journal.js";
+import { displayCmd } from "../lib/self-exec.js";
 
 export const resetFlags = [jsonFlag, plainFlag,
   { name: "dry-run", type: "boolean", description: "inspect local store, maintenance and process records without deleting anything" },
@@ -45,7 +46,7 @@ export async function reset(args: ParsedArgs): Promise<void> {
     return resetSpaceApply(space, args);
   }
   if (args.values["dry-run"] !== true) return resetStoreApply(space, args);
-  const mesh = selectResetTarget(space, "reset store", true);
+  const mesh = selectResetTarget(space, "reset store", true, args.values.json === true ? "cotal" : displayCmd());
   const root = mesh.root;
   if (root === canonicalRoot(homedir())) throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated project root for a reset preview", { target: { space } });
   try {

@@ -415,6 +415,21 @@ try {
   const afterRepeat = await remotePs();
   ok("the original lifecycle and process remain after both duplicate spawns", afterRepeat.length === 1 && afterRepeat[0]?.lifecycleUid === jsonRow?.lifecycleUid && afterRepeat[0]?.pid === jsonRow?.pid, afterRepeat);
 
+  const staleServer = `nats://127.0.0.1:${await freePort()}`;
+  const registered = await fromOutside(["meshes", "add", SPACE, "--root", outside, "--mode", "open", "--server", staleServer, "--force"]);
+  ok("the caller registers an offline broker for the space", registered.status === 0, registered.stderr);
+  const joined = await fromOutside([...repeat, "--plain"].map((arg) => arg === "bard" ? "joined-broker" : arg));
+  const joinedTarget = `joined-broker --space ${SPACE} --server ${SERVER} --on ${pin}`;
+  const printedCommand = (verb: string) => joined.stdout.split("\n").map((line) => line.trim().split(/\s{2,}/)[0] ?? "")
+    .find((command) => ["cotal", "pnpm cotal"].some((cli) => command.startsWith(`${cli} ${verb} `)));
+  ok("the joined receipt keeps the live broker and manager pin in both shortcuts despite the stale registration",
+    joined.status === 0 && joinedAs(joined.stdout, "joined-broker") && printedCommand("attach")?.endsWith(`attach ${joinedTarget}`) === true
+    && printedCommand("status")?.endsWith(`status ${joinedTarget}`) === true, joined.stdout + joined.stderr);
+  const joinedStatus = await fromOutside(printedCommand("status")!.replace(/^(?:pnpm )?cotal /, "").split(" "));
+  ok("the printed status command reaches the running agent from the stale registration",
+    joinedStatus.status === 0 && /Agent:\s+joined-broker/.test(joinedStatus.stdout) && /Process:\s+running/.test(joinedStatus.stdout), joinedStatus.stdout + joinedStatus.stderr);
+  await capture(() => run("stop", ["joined-broker", "--space", SPACE]));
+
   // B3 (#651, #905): a variant WITHOUT a model survives in the compact identity and JSON. The wide
   // continuation must not repeat it now that provenance lives in the identity row.
   writeFileSync(join(workspaceRoot, ".cotal", "agents", "lutist.md"), "---\nname: lutist\nrole: writer\nvariant: high\n---\nYou play.\n");

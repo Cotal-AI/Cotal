@@ -380,6 +380,9 @@ stack's manager, and `cotal manager start` reports it running and starts no seco
 If the requested space was prepared but never started, `manager status` suggests running `cotal up`
 in that project's folder. When `status` or `stop` suggests a manager-only start, that command names
 the requested space even when another one is selected.
+When there is no saved or running manager, `cotal manager restart --dry-run` refuses with
+`TARGET_NOT_FOUND` (exit 2) and suggests `cotal manager start --space <space> --dry-run`.
+The suggested command keeps `--json` or `--plain` if you passed it.
 Without `--instance`, `cotal manager status` and `cotal manager stop` select the running stack
 manager even if an older saved `manager` service is stopped. Stopping the stack manager this way
 leaves the broker running. `--instance` still selects the named saved service instance.
@@ -404,16 +407,16 @@ opened for it, `<root>/.cotal/manager.<spaceKey>.log`, and changes nothing. It t
 `--follow` and `--json` as a service's `logs` does, and a follow ends when that manager's process is
 gone. After `cotal down` stops that manager, `logs` still reads the log it left: the text says the
 manager is stopped, with its PID while its record still names one, and names `cotal up` under Next,
-and `--json` carries `recordedProcess` with `state` set to `stopped`. With no such log, `logs`
-refuses `TARGET_NOT_FOUND` and names the file. If the folder's records show a manager ran there (a
-PID record that names a dead manager, or the instance identity a manager keeps once it starts), the
-refusal says the log is no longer there and names `cotal up` with the stack's `--root` and `--space`.
-Otherwise it says no manager has been started and also offers `cotal manager start` with the same
-`--space`. `cotal service logs stack-manager` reads
-the same file when no `stack-manager` is saved. A
-manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`, `install`
-and the other verbs refuse it while it runs, because no saved service owns it; it stops with its
-stack through `cotal down`, or where `cotal supervise` runs it. With no saved `stack-manager`,
+and `--json` carries `recordedProcess` with `state` set to `stopped`. A one-shot tail of a missing
+log refuses `TARGET_NOT_FOUND` (exit 2) and names the file, even if the manager is running. An
+existing empty log returns an empty tail. If no manager is running but the folder's records show
+one ran there (a PID record that names a dead manager, or a retained instance identity), the
+refusal says the log is gone and names `cotal up` with the stack's `--root` and `--space`. If there
+is no such record, it also offers `cotal manager start` with the same `--space`.
+`cotal service logs stack-manager` reads the same file when no `stack-manager` is saved.
+A manager that `cotal supervise` runs in a terminal writes to that terminal instead. `stop`,
+`install` and the other verbs refuse it while it runs, because no saved service owns it. It stops
+with its stack through `cotal down`, or where `cotal supervise` runs it. With no saved `stack-manager`,
 `cotal service stop stack-manager --yes` and `cotal service restart stack-manager --yes` identify
 that running manager and refuse `UNSUPPORTED` with the same stop advice. The refusal explains that
 stopping the manager stops every hosted workflow run it drives, and `cotal down` also stops the

@@ -1,5 +1,153 @@
 # cotal-ai
 
+## 0.178.0
+
+### Patch Changes
+
+- 326c75b: When `cotal backup create` refuses a destination in the maintenance attempt directory, it tells you to choose a destination outside it instead of suggesting cut recovery.
+- 410b000: Reject combining `--dry-run` and `--yes` on `backup recover` and `backup cleanup-fallback` before looking up the attempt.
+- 808a589: The shutdown reference now explains that `cotal down --space` accepts the matching space for a controller stack in its project folder, while a legacy pidfile sweep still requires omitting the flag.
+- 7f8494d: Starting a hosted workflow on an open mesh points to offline simulation or a static-auth mesh instead of suggesting that you start a manager.
+- 41bc2ec: Point unknown manifest key errors at the written key when its value starts on another line.
+- c7b0b9a: When an npm registry fetch times out during self-update staging, Cotal keeps the previous version installed and tells you to retry when the registry responds.
+- e44a59a: On OpenCode 2.x, `cotal models --harness opencode` lists every model instead of an empty list, and a pinned model is checked against the server's complete list. OpenCode answers its model list before its plugins have loaded, with nothing or only some providers' models. The catalog now starts a private `opencode serve --stdio` and the seat's model check reads the list only after `GET /api/plugin` lists a plugin, as `opencode models` does. An empty list, or plugins that do not load in time, reports the catalog unavailable with the reason.
+- f69070f: When `cotal service remove` asks you to retry with `--yes`, the printed command keeps `--plain` so the removal receipt stays uncolored.
+- 2381465: The scripted local setup example now creates the required project folder before running setup.
+- 456eb20: `service add <name>`, `service list`, and manager lifecycle commands such as `manager status` tell you to drop an unknown option instead of moving it after `--`.
+- 3f34bab: When `cotal doctor auth` cannot read an exported credential's claims, it advises restoring the file or confirming the intended grants before minting a replacement to a new private path.
+- 9370503: Starting a manager with a malformed roster leaves its saved definition unchanged, and the dry run shows why the start would fail.
+- Updated dependencies [eb5ace2]
+- Updated dependencies [326c75b]
+- Updated dependencies [410b000]
+- Updated dependencies [166c233]
+- Updated dependencies [38c66ad]
+- Updated dependencies [808a589]
+- Updated dependencies [0f0049d]
+- Updated dependencies [7646952]
+- Updated dependencies [aca749c]
+- Updated dependencies [a68895e]
+- Updated dependencies [7f8494d]
+- Updated dependencies [528bbb7]
+- Updated dependencies [f213be5]
+- Updated dependencies [06f82d3]
+- Updated dependencies [919fe27]
+- Updated dependencies [d15dae4]
+- Updated dependencies [6ad1946]
+- Updated dependencies [41bc2ec]
+- Updated dependencies [ee23092]
+- Updated dependencies [4855ce8]
+- Updated dependencies [c7b0b9a]
+- Updated dependencies [2f9de66]
+- Updated dependencies [4b02224]
+- Updated dependencies [f69070f]
+- Updated dependencies [b056af3]
+- Updated dependencies [d987742]
+- Updated dependencies [0148116]
+- Updated dependencies [f38b204]
+- Updated dependencies [39335ec]
+- Updated dependencies [19e7254]
+- Updated dependencies [7da4ac0]
+- Updated dependencies [dc3b4da]
+- Updated dependencies [2381465]
+- Updated dependencies [ffa2ba3]
+- Updated dependencies [0ff9a67]
+- Updated dependencies [456eb20]
+- Updated dependencies [2328ba7]
+- Updated dependencies [ca6b557]
+- Updated dependencies [f8c38d3]
+- Updated dependencies [1d5bca2]
+- Updated dependencies [c1fc8cd]
+- Updated dependencies [3f34bab]
+- Updated dependencies [f12b4a5]
+- Updated dependencies [9370503]
+- Updated dependencies [0b8cc85]
+  - @cotal-ai/cli@0.178.0
+  - @cotal-ai/connector-core@0.178.0
+  - @cotal-ai/workspace@0.178.0
+  - @cotal-ai/runtime@0.178.0
+  - @cotal-ai/manager@0.178.0
+  - @cotal-ai/auth@0.178.0
+  - @cotal-ai/delivery@0.178.0
+  - @cotal-ai/registry@0.178.0
+  - @cotal-ai/core@0.178.0
+  - @cotal-ai/seat@0.178.0
+
+## 0.177.0
+
+### Patch Changes
+
+- f35ff3d: The local workflow list on an open mesh keeps the journal shortcut and suggests offline simulation instead of starting a hosted run.
+- 997a401: Self-update uses the compatible Node.js that asdf selects for the current project, including when a symlink points to a version-named executable, and keeps using it for npm during connector reconciliation.
+- e54ad42: Self-update can run npm when a relative PATH entry points to the only Node executable and its directory name contains a colon.
+- 744e2b3: When `cotal update --self` makes an owned `node_modules` directory writable, it removes abandoned installation staging in the same run.
+- Updated dependencies [3ee534f]
+- Updated dependencies [dbc91ac]
+- Updated dependencies [d913e8e]
+- Updated dependencies [3c1d11f]
+- Updated dependencies [1927f75]
+- Updated dependencies [e3d4091]
+- Updated dependencies [a322bd7]
+- Updated dependencies [d03e96f]
+- Updated dependencies [6622074]
+- Updated dependencies [78d57ec]
+- Updated dependencies [068fc9c]
+- Updated dependencies [d649b5f]
+- Updated dependencies [7b7518b]
+- Updated dependencies [3b325e3]
+- Updated dependencies [14b6da7]
+- Updated dependencies [f21c228]
+- Updated dependencies [0bb3186]
+- Updated dependencies [4f253b5]
+- Updated dependencies [b51ddf7]
+- Updated dependencies [e7ad60e]
+- Updated dependencies [f35ff3d]
+- Updated dependencies [64438d7]
+- Updated dependencies [dc37dd9]
+- Updated dependencies [2ea3b21]
+- Updated dependencies [fca2d4d]
+- Updated dependencies [708df55]
+- Updated dependencies [eb9d25f]
+- Updated dependencies [97e1a38]
+- Updated dependencies [67328f6]
+- Updated dependencies [731c903]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8ea5491]
+- Updated dependencies [34fb386]
+- Updated dependencies [8aa785c]
+- Updated dependencies [997a401]
+- Updated dependencies [81c5426]
+- Updated dependencies [e892942]
+- Updated dependencies [d274aca]
+- Updated dependencies [a450399]
+- Updated dependencies [e54ad42]
+- Updated dependencies [e823fc8]
+- Updated dependencies [ea285af]
+- Updated dependencies [cbc08ad]
+- Updated dependencies [b55ae03]
+- Updated dependencies [c528cfe]
+- Updated dependencies [27d8f41]
+- Updated dependencies [ff66e76]
+- Updated dependencies [aefcd66]
+- Updated dependencies [c9e6ab0]
+- Updated dependencies [37be6e1]
+- Updated dependencies [6ec3ddc]
+- Updated dependencies [a746982]
+- Updated dependencies [3fd0417]
+- Updated dependencies [b68d521]
+- Updated dependencies [086bf0e]
+- Updated dependencies [4717a9a]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/cli@0.177.0
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/connector-core@0.177.0
+  - @cotal-ai/manager@0.177.0
+  - @cotal-ai/runtime@0.177.0
+  - @cotal-ai/auth@0.177.0
+  - @cotal-ai/delivery@0.177.0
+  - @cotal-ai/registry@0.177.0
+  - @cotal-ai/seat@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes
