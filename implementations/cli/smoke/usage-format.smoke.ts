@@ -625,6 +625,48 @@ const commitMissing = run(["endpoint", "work", "commit", "example", "jobs", "--j
 check("endpoint work commit still asks for its own missing --result value", commitMissing.status === 1
   && commitMissing.stderr === "" && parsed(commitMissing)?.error?.remedy === "write --result <JSON>", shown(commitMissing));
 
+for (const [path, flag, args] of [
+  ["endpoint", "--file", ["--file"]],
+  ["endpoint", "-f", ["-f"]],
+  ["endpoint", "--dir", ["--live", "--dir"]],
+  ["endpoint list", "--file", ["list", "--file"]],
+] as const) {
+  const refused = run(["ep", ...args, "--json"], {}, referenceProject);
+  const error = parsed(refused)?.error;
+  check(`${path} advises removing unsupported ${flag}`, refused.status === 1 && refused.stderr === ""
+    && error?.code === "USAGE_INVALID" && error.message === `${path} does not take ${flag}`
+    && error.remedy === `remove ${flag} and any value supplied for it`, shown(refused));
+}
+const liveMissing = run(["endpoint", "--live", "--server", "--json"], {}, referenceProject);
+check("live inventory still asks for its missing server value", liveMissing.status === 1
+  && parsed(liveMissing)?.error?.remedy === "write --server <url>", shown(liveMissing));
+const unknownEndpointVerb = run(["endpoint", "not-a-verb", "--file", "reference.json", "--json"], {}, referenceProject);
+check("an unknown endpoint verb is not treated as bare inventory", unknownEndpointVerb.status === 1
+  && parsed(unknownEndpointVerb)?.error?.message?.includes('has no subcommand "not-a-verb"') === true, shown(unknownEndpointVerb));
+
+for (const [path, command, flag, args] of [
+  ["endpoint", "endpoint", "file", ["\u2013\u2013file=private-placeholder"]],
+  ["endpoint init", "endpoint init", "file", ["\u2013\u2013file=private-placeholder", "init", "not-created"]],
+  ["endpoint describe", "endpoint", "args", ["describe", "example", "\u2013\u2013args=private-placeholder"]],
+  ["endpoint work lease", "endpoint", "result", ["work", "\u2013\u2013result=private-placeholder", "lease", "example", "jobs"]],
+] as const) {
+  const refused = run(["endpoint", ...args, "--json"], {}, referenceProject);
+  const receipt = parsed(refused);
+  check(`${path} says to omit a pasted --${flag}`, refused.status === 1 && refused.stderr === ""
+    && receipt?.command === command && receipt.error?.code === "USAGE_INVALID"
+    && receipt.error.message?.includes("starts with a typographic dash") === true
+    && receipt.error.remedy === `omit this option; \`cotal ${path}\` does not take --${flag}`
+    && !refused.stdout.includes("private-placeholder") && !existsSync(join(referenceProject, "not-created")), shown(refused));
+}
+const pastedDir = run(["endpoint", "init", "not-created", "\u2013\u2013dir=destination", "--json"], {}, referenceProject);
+check("endpoint init still suggests hyphens for its own --dir", pastedDir.status === 1
+  && parsed(pastedDir)?.error?.remedy === "type the option with hyphens: --dir=destination"
+  && !existsSync(join(referenceProject, "destination")), shown(pastedDir));
+const pastedShow = run(["ep", "\u2013\u2013file=private-placeholder", "show", "example", "--plain"], {}, referenceProject);
+check("a pasted option before endpoint show retains scoped help in plain output", pastedShow.status === 1 && pastedShow.stdout === ""
+  && /omit this option/.test(pastedShow.stderr) && /Usage\n +cotal endpoint show/.test(pastedShow.stderr)
+  && !pastedShow.stderr.includes("private-placeholder"), shown(pastedShow));
+
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
 

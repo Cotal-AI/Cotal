@@ -231,7 +231,7 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // envelope cannot be written for a reason other than a closed pipe. The exit status stands either way.
   if (!json) writeReport();
   else try {
-    const recognize = cmd.name === "backup" ? typographicOptions(cmd) : undefined;
+    const recognize = cmd.name === "backup" || cmd.name === "endpoint" ? typographicOptions(cmd) : undefined;
     const subcommand = cmd.name === "backup" || cmd.name === "auth" || cmd.name === "doctor" || cmd.name === "endpoint"
       ? findSubcommand(cmd, metadataPositionals(cmd, words, recognize && { optionSpelling: (word) => recognize(word)?.spelling }).positionals[0]?.value)?.name
       : undefined;
@@ -542,16 +542,29 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
       return { message: `${word} gives -${short[1]} the value "=${value}"`, remedy: `write ${correction}` };
     }
     const typed = positionals.has(index) ? recognize(word) : undefined;
-    if (typed && (cmd.name === "ext" || cmd.name === "endpoint") && typed.flagName && typed.flagName !== "help") {
-      const first = metadataPositionals(cmd, rest, { optionSpelling: (arg) => recognize(arg)?.spelling }).positionals[0]?.value;
-      const sub = findSubcommand(cmd, first);
-      const accepted = sub ? sub.flagNames : cmd.flagNames;
-      if ((cmd.name === "ext" || sub?.name === "check") && accepted && !accepted.includes(typed.flagName))
-        return { message: typed.message, remedy: `omit this option; \`cotal ${cmd.name}${sub ? ` ${sub.name}` : ""}\` does not take --${typed.flagName}` };
-    }
-    if (typed) return typed;
+    if (typed) return typographicScopeRefusal(cmd, rest, word, typed, (arg) => recognize(arg)?.spelling) ?? typed;
   }
   return undefined;
+}
+
+function typographicScopeRefusal(cmd: Command, words: readonly string[], word: string, typed: NonNullable<ReturnType<typeof typographicOption>>, optionSpelling: (word: string) => string | undefined) {
+  if (!typed.flagName || typed.flagName === "help" || (cmd.name !== "ext" && cmd.name !== "endpoint")) return undefined;
+  const positionals = metadataPositionals(cmd, words, { optionSpelling }).positionals;
+  const scope = cmd.name === "endpoint" ? endpointOptionScope(cmd, positionals)
+    : findSubcommand(cmd, positionals[0]?.value) ?? cmd;
+  if (!scope?.flagNames || scope.flagNames.includes(typed.flagName)) return undefined;
+  return {
+    message: cmd.name === "endpoint" ? `${word.split("=", 1)[0]} starts with a typographic dash, so it is not an option` : typed.message,
+    remedy: `omit this option; \`cotal ${cmd.name}${scope === cmd ? "" : ` ${scope.name}`}\` does not take --${typed.flagName}`,
+  };
+}
+
+function endpointOptionScope(cmd: Command, [verb, action]: ReturnType<typeof metadataPositionals>["positionals"]) {
+  if (!verb) return cmd;
+  const sub = findSubcommand(cmd, verb.value);
+  if (!sub) return undefined;
+  const nested = findSubcommand(sub, action?.value);
+  return nested ? { name: `${sub.name} ${nested.name}`, flagNames: nested.flagNames } : sub;
 }
 
 function parserOptions(cmd: Command) {
@@ -562,14 +575,12 @@ function parserOptions(cmd: Command) {
  *  for well-formed options, but parser errors must not ask for a value the verb cannot take. */
 function endpointOptionRefusal(cmd: Command, words: readonly string[], invalidValue?: string) {
   if (cmd.name !== "endpoint") return undefined;
-  const [verb, action] = metadataPositionals(cmd, words).positionals;
-  const sub = findSubcommand(cmd, verb?.value);
-  if (!sub) return undefined;
-  const authoring = sub.name === "init" || sub.name === "check";
+  const scope = endpointOptionScope(cmd, metadataPositionals(cmd, words).positionals);
+  if (!scope?.flagNames) return undefined;
+  const authoring = scope.name === "init" || scope.name === "check";
   if (!authoring && invalidValue === undefined) return undefined;
-  const nested = findSubcommand(sub, action?.value);
-  const accepted = (nested ?? sub).flagNames;
-  if (!accepted || (invalidValue !== undefined && accepted.includes(invalidValue))) return undefined;
+  const accepted = scope.flagNames;
+  if (invalidValue !== undefined && accepted.includes(invalidValue)) return undefined;
 
   // A loose parse can consume a bare -- as a string value. Do not scan the literal tail.
   const end = words.indexOf("--");
@@ -578,11 +589,11 @@ function endpointOptionRefusal(cmd: Command, words: readonly string[], invalidVa
   for (const token of tokens) {
     if (token.kind !== "option" || accepted.includes(token.name) || !Object.hasOwn(options, token.name)
       || (invalidValue !== undefined && token.name !== invalidValue)) continue;
-    const path = nested ? `${sub.name} ${nested.name}` : sub.name;
-    const operand = sub.name === "check" ? "contract path" : "endpoint name";
+    const path = scope === cmd ? cmd.name : `${cmd.name} ${scope.name}`;
+    const operand = scope.name === "check" ? "contract path" : "endpoint name";
     const remove = `remove ${token.rawName} and any value supplied for it`;
     return {
-      message: `endpoint ${path} does not take ${token.rawName}`,
+      message: `${path} does not take ${token.rawName}`,
       remedy: authoring ? `${remove}. Pass the ${operand} as a positional argument` : remove,
     };
   }
@@ -830,7 +841,8 @@ function canonicalSubcommand(cmd: Command, parsed: ParsedArgs, json: boolean, pl
 /** The subcommand path and its operands for help, and the first word where a subcommand belongs
  *  that names none. Read from the declared specs, so a stub's help never imports its package. */
 function helpPath(cmd: Command, rest: readonly string[]): { path: string[]; unknown?: string } {
-  const words = metadataPositionals(cmd, rest).positionals.map((item) => item.value);
+  const recognize = cmd.name === "endpoint" ? typographicOptions(cmd) : undefined;
+  const words = metadataPositionals(cmd, rest, recognize && { optionSpelling: (word) => recognize(word)?.spelling }).positionals.map((item) => item.value);
   let surface: Pick<Command, "subcommands"> = cmd;
   const path: string[] = [];
   for (const word of words) {
