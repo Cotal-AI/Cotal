@@ -270,8 +270,9 @@ check("no refused definition was saved", run(["service", "show", "badready", "--
 const member = run(["service", "add", "stack-manager", "--preset", "manager", "--root", root, "--runtime", "pty", "--space", "b1"]);
 check("rig: a definition under a stack member's name is saved", member.status === 0, shown(member));
 const keptMember = run(["service", "remove", "stack-manager", "--space", "b1", "--yes"]);
-check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming down and space forget, and keeps it",
-  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED" && keptMember.envelope.error.remedy === "it goes with the stack: `cotal down --yes`, then `cotal space forget b1`"
+check("service remove of a stack member's definition refuses UNSUPPORTED, exit 2, naming the rooted stop and keeping the definition",
+  keptMember.status === 2 && keptMember.envelope?.error?.code === "UNSUPPORTED"
+    && keptMember.envelope.error.remedy === `from the project folder ${realpathSync(root)}, run \`cotal down --space b1 --yes\`, then run \`cotal space forget b1\``
     && run(["service", "show", "stack-manager", "--space", "b1"]).status === 0, shown(keptMember));
 
 // A bare executable name, looked up once on add's PATH. The pinned script and a decoy of the same

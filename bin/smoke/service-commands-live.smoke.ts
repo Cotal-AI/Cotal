@@ -14,6 +14,8 @@
  * space `space create` prepared, stops when its log file was moved away while it ran.
  * A controller stack refuses manager overrides with a broker-only alternative. When both the stack
  * manager and a stopped standalone manager are saved, an unpinned stop follows the live manager.
+ * Outside a controller's project, both forms of `service remove` refuse and name the project and
+ * space in the command that stops the stack.
  *
  * Linux only: the native manager child is Linux-only. Every directory is a sandbox this suite
  * removes; teardown stops what still runs, then `cotal down` stops the stack it started.
@@ -129,6 +131,31 @@ function checkControllerBrokerRestart(controller: (args: string[]) => ReturnType
     apply.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED" && refusal.error.remedy?.includes("`cotal down`")
     && refusal.error.remedy.includes(`\`cotal up --root '${root}' --space ${space}\``)
     && after?.observedProcess === "running" && after.instanceId === before?.instanceId && after.pid === before?.pid, out(apply));
+}
+
+function stopControllerAfterRefusedRemoval(controller: (args: string[]) => ReturnType<typeof cotal>, project: string, space: string): void {
+  const status = () => cotal(["service", "status", "stack-broker", "--space", space, "--json"]);
+  const before = JSON.parse(status().stdout).result;
+  const remove = ["service", "remove", "stack-broker", "--space", space, "--yes"];
+  const definition = cotal(remove);
+  const instance = cotal([...remove, "--instance", before.instanceId, "--json"]);
+  const { outcome, error, target } = JSON.parse(instance.stdout);
+  const stop = ["down", "--space", space, "--yes"];
+  const remedy = `from the project folder ${project}, run \`cotal ${stop.join(" ")}\`, then run \`cotal space forget ${space}\``;
+  check("removing a controller definition from another project refuses and names the rooted stop",
+    definition.status === 2 && out(definition).includes("UNSUPPORTED") && out(definition).includes(remedy), out(definition));
+  check("removing a controller instance from another project refuses with the same remedy",
+    instance.status === 2 && outcome === "refused" && error?.code === "UNSUPPORTED" && target?.instanceId === before.instanceId
+    && error.remedy === remedy, out(instance));
+  const after = JSON.parse(status().stdout).result;
+  check("the refusals keep the same broker instance running",
+    before.observedProcess === "running" && after?.observedProcess === "running"
+    && after.instanceId === before.instanceId && after.pid === before.pid, { before, after });
+  const down = controller(stop);
+  const stopped = JSON.parse(status().stdout).result;
+  check("following the rooted stop leaves the same broker instance stopped",
+    down.status === 0 && stopped?.instanceId === before.instanceId && stopped.recordedState === "stopped"
+    && stopped.observedProcess === "gone", { down: out(down), stopped });
 }
 
 /** A plain `logs --follow` in `at`, read until it exits. */
@@ -541,8 +568,7 @@ try {
     const controllerUp = controller(["up", "--open", "--space", controllerSpace, "--server", controllerServer, "--seat-cap", "2", "--max-sessions", "3"]);
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
     checkControllerBrokerRestart(controller, controllerRoot, controllerSpace);
-    const controllerDown = controller(["down", "--yes"]);
-    check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
+    stopControllerAfterRefusedRemoval(controller, controllerRoot, controllerSpace);
     const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);
     check("the prepared stack's broker shutdown log is available through service logs",
       brokerLog.status === 0 && brokerLog.stdout.includes("Initiating JetStream Shutdown") &&

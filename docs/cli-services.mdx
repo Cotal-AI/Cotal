@@ -347,8 +347,10 @@ The process driver verifies that every owned direct incarnation is gone and that
 is installed before removal.
 `service remove <name> --instance <id> --yes` removes only that instance's record and sidecar receipts
 and retains its logs, the definition and other instances.
-No process or OS unit is removed by either operation. The presets are described below. A preset is not installed under an OS
-supervisor.
+Neither operation removes a process or OS unit. Both forms refuse to remove a controller stack
+member. In the stack's project folder, run `cotal down --space <space> --yes`, then run
+`cotal space forget <space>` to release the records with the stack.
+A preset is not installed under an OS supervisor.
 On Windows, local records use the access-list model described under `up`. There, `cotal ext add`
 and the setup seed record a service receipt for an extension that declares service adapters or
 presets, and its process services run under a custodian as
