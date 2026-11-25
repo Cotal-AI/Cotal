@@ -686,9 +686,12 @@ try {
       { listed, answer });
     const personRaw = watchRefusals("agent-caller", await connect({ servers: SERVERS, inboxPrefix: `_INBOX_${callerId.id}`, maxReconnectAttempts: 0, authenticator: credsAuthenticator(enc(callerCreds)) }));
     const personCaller = { owner: "local", actor: callerId.id, uid: callerUid };
+    const statReply = epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: stat.at, caller: personCaller, nonce: nonce() });
+    check("cell 18: the broker refuses a static agent's reply under another static agent's head",
+      await publishRefused(peer.raw, statReply), statReply);
     const personRefused = await Promise.all([
       subscribeRefused(personRaw, `${P}.ep.prin.agent.local.stat.${stat.w.uid}.*.*.*.*.*.*.*`),
-      publishRefused(personRaw, epPrincipalReplySubject(space, { endpoint: AGENT_ENDPOINT, principal: stat.at, caller: personCaller, nonce: nonce() })),
+      publishRefused(personRaw, statReply),
       publishRefused(personRaw, epPrincipalRequestSubject(space, { endpoint: AGENT_ENDPOINT, principal: stat.at, command: "prompts", authority: "grant", caller: personCaller, nonce: nonce() })),
       publishRefused(personRaw, presenceKeySubject(space, "local", callerId.id)),
     ]);
