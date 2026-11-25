@@ -52,14 +52,11 @@ import {
   saveServiceKeys,
 } from "../src/store.js";
 import { exportSigningKey, generateSigningKey } from "../src/issuer.js";
-import { runAuthService } from "../src/service.js";
+import { runAuthService } from "../src/service-host.js";
 import { cotalAuthProvider } from "../src/provider.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const rejects = async (name: string, fn: () => Promise<unknown>, msgPart: string) => {
   try {
     await fn();
@@ -337,5 +334,5 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\nAUTH-STORE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`\nAUTH-STORE SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+finish();

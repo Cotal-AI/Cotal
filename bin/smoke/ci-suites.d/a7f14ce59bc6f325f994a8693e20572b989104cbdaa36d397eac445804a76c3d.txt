@@ -1,0 +1,3 @@
+# A restart refused for a busy broker port keeps the completed stop on record, so the
+# stop preview before and after the refusal reports the same no-op.
+smoke:down-refused-restart:live

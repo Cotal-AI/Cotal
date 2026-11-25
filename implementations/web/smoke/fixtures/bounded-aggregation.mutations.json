@@ -3,28 +3,28 @@
   "mutations": [
     {
       "name": "B1 the per-source deadline is dropped: every source is read to completion, so the request is unbounded again and the caller waits for the slowest read however long that takes - the 34-second success half of the measured defect",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "        if (i >= sources.length || expired) return;\n        try {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;",
       "replace": "        if (i >= sources.length) return;\n        try {\n          const r = await sources[i].read(clock.signal);\n          settled[i] = r;",
       "expectRed": "4.13 cancellation keeps the deadline response partial and named"
     },
     {
       "name": "B2 the page stops saying it is short, so a partial read is indistinguishable from a complete one and the dashboard draws a space that looks emptier than it is",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "      partial: missing.length > 0,\n",
       "replace": "      partial: false,\n",
       "expectRed": "4.3 the page is marked partial because of it"
     },
     {
       "name": "B3 the missing sources stop being NAMED, leaving a count that tells a reader something is gone and not what, which on this dashboard is the difference between one half of the feed being late and an empty space",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "      if (r === LATE) {\n        missing.push(sources[i].name);\n",
       "replace": "      if (r === LATE) {\n        missing.push(\"a source\");\n",
       "expectRed": "4.2 the failed source is named missing"
     },
     {
       "name": "B5 a failing source takes the whole page with it again, which is the `Promise.all` shape that turned one channel's rejection into the route's 500 while every channel that had already answered was discarded",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "        try {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;\n        } catch (e) {",
       "replace": "        {\n          const r = await within(sources[i].read(clock.signal), clock.until);\n          if (r !== LATE) settled[i] = r;\n        }\n        if (false) { const e = undefined as unknown;",
       "expectRed": "4.0 one failing source does not make the whole aggregation throw"

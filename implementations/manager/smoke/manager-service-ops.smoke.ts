@@ -136,7 +136,6 @@ const M = mgr as unknown as {
   managerInstanceId: string;
   userMode: boolean;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string }; issued?: { generation: string; acceptedToken: string } }>;
-  goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } };
   withLifecycleExecutor: <T>(
     pin: { owner: string; actor: string; lifecycleUid: string; alias: string },
     fn: (transport: import("@cotal-ai/core").LifecycleStateTransport) => Promise<T>,
@@ -144,6 +143,7 @@ const M = mgr as unknown as {
   // The real signature takes the spawn hooks as a third parameter; this hand-written view had
   // only two, so the mock below could pass `hooks` that the type said would never arrive.
   startAgent: (opts: Record<string, unknown>, spawner?: string, hooks?: SpawnHooks) => Promise<ControlReply>;
+  goalWriterComponent: { goalWriter?: { ctx: { kv: { get: (key: string) => Promise<unknown> } } }; };
 };
 
 /** Plant the authentic stranded-retirement pair after manager boot, so startup reconcile cannot
@@ -506,7 +506,7 @@ try {
       strandedRow);
 
     {
-      const kvForSlots = M.goalWriter?.ctx.kv;
+      const kvForSlots = M.goalWriterComponent.goalWriter?.ctx.kv;
       if (!kvForSlots) throw new Error("manager goal-writer KV is not standing");
       const originalSlotsGet = kvForSlots.get;
       kvForSlots.get = async (): Promise<unknown> => { throw new Error("simulated store outage"); };
@@ -535,7 +535,7 @@ try {
     }
 
     const torn = await plantStrandedSlot("torn-inspect");
-    const kv = M.goalWriter?.ctx.kv;
+    const kv = M.goalWriterComponent.goalWriter?.ctx.kv;
     if (!kv) throw new Error("manager goal-writer KV is not standing");
     const originalGet = kv.get;
     let advancedBetweenReads = false;
@@ -614,7 +614,7 @@ try {
     const psE = await A.call("ps");
     check("a whitespace-only persona model is refused at load, not launched without a pin",
       parserRefusal.includes('"model" must not be empty')
-      && rE.reply.ok === false && refusal.includes(`persona file ${emodelPath} has invalid native frontmatter`) && refusal.includes("selectors")
+      && rE.reply.ok === false && refusal.includes(`invalid persona definition ${emodelPath}: "model" must not be empty`)
       && psE.reply.ok === true && !((psE.reply.data as Array<{ name: string }>) ?? []).some((x) => x.name === "emodel"),
       { parserRefusal, reply: rE.reply });
   }
@@ -878,16 +878,12 @@ try {
     check("remove-persona deletes an owned 69-character legacy entry that cannot be spawned",
       rRemoveInvalid.reply.ok === true && !existsSync(invalidPath), rRemoveInvalid.reply);
 
-    // Showing is a read: a file an earlier release created under a name that begins with `-` can
-    // still be shown and removed by its owner, while a spawn of it is refused.
+    // A legacy filename remains readable and removable under the catalog's ownership rules.
     const dashPath = join(workspaceRoot, ".cotal", "agents", "-legacydash.md");
     writeFileSync(dashPath, `---\nname: -legacydash\nowner: ${A.principal}\nsubscribe: []\n---\nkept from an earlier release\n`);
     const rShowDash = await A.call("show-persona", { name: "-legacydash" });
     check("show-persona reads an owned stored file whose name begins with \"-\"",
       rShowDash.reply.ok === true && (rShowDash.reply.data as { persona?: string }).persona?.includes("kept from an earlier release") === true, rShowDash.reply);
-    const rSpawnDash = await A.call("spawn", { name: "-legacydash", agent: "e2e-stub", events: false });
-    check("…while a spawn of it is refused, naming the leading \"-\"",
-      rSpawnDash.reply.ok === false && String(rSpawnDash.reply.error?.message ?? "").includes('may not start with "-"'), rSpawnDash.reply);
     const rRemoveDash = await A.call("remove-persona", { name: "-legacydash" });
     check("…and remove-persona deletes it",
       rRemoveDash.reply.ok === true && !existsSync(dashPath), rRemoveDash.reply);
@@ -990,9 +986,6 @@ try {
     const rTravId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "../evil", events: false });
     check("a traversal identity override refuses at the FINAL allocation-site grammar",
       rTravId.reply.ok === false && String(rTravId.reply.error?.message ?? "").includes("unsafe name"), rTravId.reply);
-    const rDashId = await A.call("spawn", { name: "w1", agent: "e2e-stub", identity: "--session", events: false });
-    check("an identity starting with \"-\" refuses on a static mesh before any runtime receives it",
-      rDashId.reply.ok === false && String(rDashId.reply.error?.message ?? "").includes('may not start with "-"'), rDashId.reply);
     const rTravDef = await A.call("define-persona", { name: "../evil", persona: "x" });
     check("a traversal define-persona name refuses before any file write",
       rTravDef.reply.ok === false && String(rTravDef.reply.error?.message ?? "").includes("unsafe name"), rTravDef.reply);

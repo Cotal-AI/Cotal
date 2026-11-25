@@ -2,7 +2,8 @@
  * The protected-path rule in `protected-records.ts`. Group write is accepted only when the account
  * database proves the group is the caller's user private group, as Debian's OpenSSH does for
  * StrictModes, the account list comes only from local name services, and the entry has no
- * extended ACL. World write, a foreign owner and a symlink always refuse, a root-owned sticky
+ * extended ACL, or when a Linux ancestor blocks other accounts from reaching a directory.
+ * World write, a foreign owner and a symlink always refuse, a root-owned sticky
  * ancestor is accepted, and a credential file keeps its owner-only rule. A declared adapter path in
  * Cotal's own install, as the launcher runs it, names `cotal update` as the fix. The account database and
  * the ACL read are injected, so no case reads this machine's accounts or ACLs. A record this account
@@ -20,6 +21,7 @@ import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync as nodeStat, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isConnectRefusal, readCredsFile } from "../src/connect.js";
 import { CommandFailure } from "../src/output.js";
 import {
   assertProtectedEntry, localRecordAccess, privateGroupGap, protectedCredentialReference, protectedFileAccessAvailable,
@@ -186,8 +188,10 @@ refused(() => assertProtectedEntry("the path", "/home/dev/Projects", stat(FILE |
 //    ancestors must themselves be protected. These paths belong to the real caller, and no group on
 //    them is proven.
 const local: ProtectedPathPolicy = { uid: process.getuid!(), privateGroupGap: unproven.privateGroupGap, extendedAcl: noAcl };
-const dir = mkdtempSync(join(tmpdir(), "cotal-protected-paths-"));
+// The reachability controls must not inherit the runner's private TMPDIR.
+const dir = mkdtempSync(join(realpathSync(process.platform === "linux" ? "/tmp" : tmpdir()), "cotal-protected-paths-"));
 try {
+  chmodSync(dir, 0o755);
   const open = join(dir, "open");
   mkdirSync(open);
   chmodSync(open, 0o777);
@@ -225,6 +229,20 @@ try {
   refused(() => protectedLocalEntries(artifact, ["manifest.json", "safe.snap"], "the backup artifact", local),
     `the backup artifact is not protected against other local writers: ${artifact}, ${join(artifact, "manifest.json")}, ${inner} and ${grouped} are group-writable and the private-group proof is unavailable: getent is not installed`,
     `chmod g-w ${shellPath(artifact)} ${shellPath(join(artifact, "manifest.json"))} ${shellPath(inner)} ${shellPath(grouped)}`, "a group-writable directory and entry in group-writable folders");
+  if (process.platform === "linux") {
+    const uid = process.getuid!();
+    const shared: ProtectedPathPolicy = { ...local, privateGroupGap: () => "its group has other members" };
+    const sss = protectedPathPolicy(accounts({ nameServices: () => "passwd: files systemd sss\ngroup: files systemd sss\n" }), noAcl, uid);
+    refused(() => protectedLocalDirectory(inner, undefined, shared), /are group-writable and its group has other members$/,
+      `chmod g-w ${shellPath(inner)} ${shellPath(grouped)}`, "a 0755 parent does not protect a directory with a shared group");
+    chmodSync(dir, 0o700);
+    assert.equal(protectedLocalDirectory(inner, undefined, sss), true, "a 0700 ancestor protects both group-writable directories despite SSSD");
+    accepts(() => protectedLocalEntry(inner, undefined, shared), "a group-writable directory entry below a private ancestor");
+    accepts(() => protectedLocalEntries(artifact, ["safe.snap"], undefined, sss), "an artifact directory below a private ancestor");
+    refused(() => protectedLocalEntry(binary, undefined, shared), /is group-writable and its group has other members$/,
+      `chmod g-w ${shellPath(binary)}`, "the directory exception does not trust group-writable files");
+    chmodSync(dir, 0o755);
+  }
   const mixed = join(open, "inner");
   mkdirSync(mixed);
   chmodSync(mixed, 0o770);
@@ -243,6 +261,26 @@ try {
   symlinkSync(clean, above);
   refused(() => protectedLocalDirectory(join(above, "sub"), "the project root", local), /: .*\/above is a symbolic link$/,
     `use the physical path ${shellPath(realpathSync.native(join(clean, "sub")))}`, "a link above the folder names the folder's physical path");
+
+  const filename = "operator's sample.txt";
+  const physicalFile = join(realpathSync.native(clean), "sub", filename);
+  writeFileSync(physicalFile, "not a credential", { mode: 0o600 });
+  assert.throws(() => readCredsFile(join(above, "sub", filename)), (e) => isConnectRefusal(e) && e.code === "PERMISSION_DENIED"
+    && e.parts?.remedy === `use the physical path ${shellPath(physicalFile)}`, "a linked credential directory refuses and its hint keeps the quoted filename");
+  assert.throws(() => readCredsFile(physicalFile), (e) => isConnectRefusal(e) && e.code === "SCHEMA_INVALID"
+    && e.message.includes("NATS user JWT"), "the suggested file reaches credential validation");
+  const spacedCreds = join(realpathSync.native(clean), "sub", "guest copy.creds");
+  writeFileSync(spacedCreds, [
+    "-----BEGIN NATS USER JWT-----",
+    "not-a-real-jwt",
+    "------END NATS USER JWT------",
+    "-----BEGIN USER NKEY SEED-----",
+    "SUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "------END USER NKEY SEED-----",
+    "",
+  ].join("\r\n"), { mode: 0o600 });
+  assert.throws(() => readCredsFile(spacedCreds), (e) => isConnectRefusal(e) && e.code === "SCHEMA_INVALID"
+    && e.parts?.remedy === `save it with LF line endings, for example with \`dos2unix ${shellPath(spacedCreds)}\``, "a CRLF credential in a spaced path gets a quoted dos2unix remedy");
 
   // A credential keeps its owner-only rule: group write refuses before any group is considered.
   const creds = join(dir, "creds");

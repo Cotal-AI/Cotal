@@ -76,7 +76,7 @@ export class CmuxRuntime implements Runtime {
     // `name` becomes a temp-script key and a `cotal-<name>` tab id — keep it a bare token
     // so it can't traverse paths or break the workspace label.
     if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/.test(name))
-      throw new SpawnRefused(`cmux runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -, not starting with -)`);
+      throw new SpawnRefused(`cmux runtime: unsafe agent name ${JSON.stringify(name)} (use letters, digits, _ . - and choose a name not starting with -)`);
     if (!cmux.available())
       throw new SpawnRefused(
         `the cmux CLI (${process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux"}) couldn't reach the app — ` +

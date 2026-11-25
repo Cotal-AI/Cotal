@@ -153,23 +153,28 @@ check("numbering past the bound without the cap still yields the numbered name (
 // there — an existing `my-agent` persona has to keep spawning across an upgrade.
 check("static/open mode still ACCEPTS a hyphenated name", spawnNameError("my-agent", { userMode: false }) === undefined);
 
+// #7613: MAX_NAME_LENGTH (128) and leading-hyphen names are refused in static/open mode as well as user mode.
+check("a 128-character name is accepted in static/open mode",
+  spawnNameError("d".repeat(128), { userMode: false }) === undefined);
+for (const over of ["d".repeat(129), "d".repeat(260)]) {
+  const staticErr = spawnNameError(over, { userMode: false });
+  const userErr = spawnNameError(over, { userMode: true });
+  check(`overlength ${over.length}-character name is refused in static/open and user modes (#7613)`,
+    staticErr !== undefined && /exceeds the 128-character limit/.test(staticErr) && userErr !== undefined,
+    { staticErr, userErr });
+}
+for (const leadingDash of ["-dash1", "-a", "--flag"]) {
+  check(`leading-hyphen name ${JSON.stringify(leadingDash)} is refused in BOTH modes (#7613)`,
+    spawnNameError(leadingDash, { userMode: true }) !== undefined &&
+      spawnNameError(leadingDash, { userMode: false }) !== undefined &&
+      /cannot start with "-"/.test(spawnNameError(leadingDash, { userMode: false }) ?? ""));
+}
+
 // The traversal guard is unconditional and survives the narrowing.
 for (const bad of ["../escape", "a/b", "a\\b", "with space", "dot.name", ""]) {
   check(`path-hostile name ${JSON.stringify(bad)} is refused in BOTH modes`,
     spawnNameError(bad, { userMode: true }) !== undefined && spawnNameError(bad, { userMode: false }) !== undefined);
 }
-
-// Terminal runtimes pass the name to another program as an argument (herdr's `tab rename <id>
-// <name>`), where a leading `-` is read as an option. The door refuses it in static mode too, where
-// the alphabet alone allows it, and says why.
-for (const dashed of ["--session", "-h", "-", "-x_1"]) {
-  const refusal = spawnNameError(dashed, { userMode: false });
-  check(`a name starting with "-" (${JSON.stringify(dashed)}) is refused in static/open mode, naming the leading "-"`,
-    refusal !== undefined && refusal.includes('may not start with "-"'), { refusal });
-  check(`…and in user mode (${JSON.stringify(dashed)})`, spawnNameError(dashed, { userMode: true }) !== undefined);
-}
-check("a name with a hyphen after its first character is still accepted in static/open mode",
-  spawnNameError("a-", { userMode: false }) === undefined && spawnNameError("_-x", { userMode: false }) === undefined);
 
 // THE DELEGATION, asserted structurally because it cannot be asserted behaviourally. The narrow
 // half must CALL the validator the exchange's permission rows are built through, rather than restate
@@ -231,16 +236,17 @@ check("the same hyphenated --name on a STATIC-mode target is accepted",
 // the only moment the difference shows is after the next grammar change. The source is parsed, so
 // the #867 comments, the door's declaration or a string that spells a call cannot pass for one, and
 // requoting an argument changes nothing.
-const CLI_RAW = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands", "spawn.ts"),
-  "utf8",
-);
+const CLI_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands");
+const CLI_RAW = readFileSync(join(CLI_DIR, "spawn.ts"), "utf8");
+const CLI_LAUNCH_RAW = readFileSync(join(CLI_DIR, "spawn-managed-launch.ts"), "utf8");
 check("instrument control: the CLI's spawn source was located",
-  CLI_RAW.includes("async function launchManagedPersona") && CLI_RAW.includes("export async function spawn"),
-  { len: CLI_RAW.length });
+  CLI_LAUNCH_RAW.includes("async function launchManagedPersona") && CLI_RAW.includes("export async function spawn"),
+  { len: CLI_RAW.length, launchLen: CLI_LAUNCH_RAW.length });
 const CLI_AST = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest);
+const CLI_LAUNCH_AST = ts.createSourceFile("spawn-managed-launch.ts", CLI_LAUNCH_RAW, ts.ScriptTarget.Latest);
+const CLI_FLAGS_AST = ts.createSourceFile("spawn-flags.ts", readFileSync(join(CLI_DIR, "spawn-flags.ts"), "utf8"), ts.ScriptTarget.Latest);
 // Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
-const CORE_IMPORTS = CLI_AST.statements
+const importsCoreNameRule = (source: ts.SourceFile): boolean => source.statements
   .filter(ts.isImportDeclaration)
   .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
   .flatMap((d) => {
@@ -248,19 +254,27 @@ const CORE_IMPORTS = CLI_AST.statements
     return named && ts.isNamedImports(named) ? named.elements : [];
   })
   .filter((e) => !e.isTypeOnly && (e.propertyName ?? e.name).text === e.name.text)
-  .map((e) => e.name.text);
-check("the CLI calls the shared name door (import present)",
-  CORE_IMPORTS.includes("spawnNameError"));
-const DOOR_CALLS: ts.CallExpression[] = [];
-const collectDoorCalls = (node: ts.Node): void => {
-  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableNameOrExit")
-    DOOR_CALLS.push(node);
-  ts.forEachChild(node, collectDoorCalls);
-};
-collectDoorCalls(CLI_AST);
+  .some((e) => e.name.text === "spawnNameError");
+function callsNamed(node: ts.Node, name: string): ts.CallExpression[] {
+  const calls: ts.CallExpression[] = [];
+  const visit = (child: ts.Node): void => {
+    if (ts.isCallExpression(child) && ts.isIdentifier(child.expression) && child.expression.text === name) calls.push(child);
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return calls;
+}
+check("both CLI name wrappers call the shared core predicate",
+  ([[CLI_LAUNCH_AST, "refuseUnmintableName"], [CLI_FLAGS_AST, "refuseDirectSpawnName"]] as const).every(([source, name]) => {
+    const wrapper = source.statements.find((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
+    return importsCoreNameRule(source) && wrapper !== undefined && callsNamed(wrapper, "spawnNameError").length > 0;
+  }));
+const detachedCalls = callsNamed(CLI_LAUNCH_AST, "refuseUnmintableName");
+const foregroundCalls = callsNamed(CLI_AST, "refuseDirectSpawnName");
+const DOOR_CALLS = [...detachedCalls, ...foregroundCalls];
 check("the CLI calls the shared name door (call sites: detached + foreground)",
-  DOOR_CALLS.length === 2,
-  { sites: DOOR_CALLS.length });
+  detachedCalls.length === 1 && foregroundCalls.length === 1,
+  { detached: detachedCalls.length, foreground: foregroundCalls.length });
 // Parentheses change no behaviour, so they must not change the verdict.
 const unparen = (node: ts.Expression): ts.Expression =>
   ts.isParenthesizedExpression(node) ? unparen(node.expression) : node;

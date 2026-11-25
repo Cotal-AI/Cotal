@@ -10,18 +10,9 @@
 import { progressSignal, PROGRESS_STALL_MS } from "../src/progress.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-function check(name: string, cond: boolean, extra?: unknown): void {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 const now = 1_700_000_000_000;
 
@@ -79,7 +70,8 @@ const orientation = readFileSync(join(root, "extensions/connector-core/src/orien
 const toolSpecs = readFileSync(join(root, "extensions/connector-core/src/tool-specs.ts"), "utf8");
 const cliUi = readFileSync(join(root, "implementations/cli/src/ui.ts"), "utf8");
 const cliJoin = readFileSync(join(root, "implementations/cli/src/commands/join.ts"), "utf8");
-const cliStatus = readFileSync(join(root, "implementations/cli/src/commands/status.ts"), "utf8");
+const cliStatus = ["status.ts", "status-model.ts", "status-render.ts", "status-health.ts", "status-meshes.ts"]
+  .map((file) => readFileSync(join(root, "implementations/cli/src/commands", file), "utf8")).join("\n");
 const cliPlain = readFileSync(join(root, "implementations/cli/src/render.ts"), "utf8");
 const cliEndpoints = readFileSync(join(root, "implementations/cli/src/commands/endpoints.ts"), "utf8");
 const cliAgents = readFileSync(join(root, "implementations/cli/src/commands/agents.ts"), "utf8");
@@ -129,7 +121,8 @@ check(
 );
 
 const EXPECTED = 24;
-check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
+check(`every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 
-console.log(`PRESENCE-PROGRESS SMOKE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`PRESENCE-PROGRESS SMOKE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

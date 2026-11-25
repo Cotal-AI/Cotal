@@ -16,7 +16,7 @@
 //
 // A pass proves the bundle carries the pages. It does not prove the pages agree with the code: a
 // page that quotes a line the binary no longer prints bundles as faithfully as a correct one.
-// `check-docs-literals.mjs` binds the quoted operator strings to the source that emits them.
+// `tools/docs-checks/check-docs-literals.mjs` binds the quoted operator strings to the source that emits them.
 //
 // Exit 0 clean, 1 the bundle is hollow, 2 the generator could not run.
 import { execFileSync } from "node:child_process";

@@ -1,7 +1,7 @@
-/** The longest connector diagnostic kept: one line, enough for an error and the path it names. */
-const DIAGNOSTIC_MAX = 240;
-/** How much of the start of an unfinished output line is held while waiting for its end. */
-const LINE_HEAD_MAX = 4096;
+/** Allow a full filesystem path plus the message that names it. */
+const DIAGNOSTIC_MAX = 4352;
+/** Hold enough UTF-16 units for the diagnostic and the code point that signals truncation. */
+const LINE_HEAD_MAX = (DIAGNOSTIC_MAX + 1) * 2;
 
 /** The last line in `text` that starts with a `[cotal-<name>]` or `[cotal-<name>/<part>]` prefix,
  *  with terminal escapes and control bytes removed. Connectors print their own diagnostics under

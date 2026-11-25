@@ -22,7 +22,7 @@
   "mutations": [
     {
       "name": "the liveness match drops the incarnation: any row under the name reads as this agent",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "    if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {",
       "replace": "    if (!rows.some((p) => p.card.name === name)) {",
       "expectRed": "a live successor under the name reads as superseded: this incarnation is dead",
@@ -31,7 +31,7 @@
     },
     {
       "name": "the death check is dropped: nothing is ever down",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "    if (!rows.some((p) => p.card.name === name && p.lifecycleUid === uid)) {\n      const reason = rows.some((p) => p.card.name === name) ? \"superseded\" : \"lapsed\";",
       "replace": "    if (false) {\n      const reason = rows.some((p) => p.card.name === name) ? \"superseded\" : \"lapsed\";",
       "expectRed": "an already-dead incarnation resolves without waiting for anything",
@@ -40,7 +40,7 @@
     },
     {
       "name": "the reason collapses to lapsed whatever the name shows",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "      const reason = rows.some((p) => p.card.name === name) ? \"superseded\" : \"lapsed\";",
       "replace": "      const reason = \"lapsed\" as \"superseded\" | \"lapsed\";",
       "expectRed": "a live successor under the name reads as superseded: this incarnation is dead",

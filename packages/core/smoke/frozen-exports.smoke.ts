@@ -101,6 +101,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // session rail and frame codec re-export for the console bundle. "./launch-material" is the
 // launch-material reader the lifecycle hook relay imports without loading the barrel, and
 // "./peer-label" is the peer label its frame rendering prints, for the same reason.
+// "./control-exchange" is the control exchange the same relay runs, again without the barrel.
 // "./secret-fs" is the secret-file writers the Claude native binding hook imports, again without
 // the barrel; it maps to an entry naming the barrel's writers, never the module and its test seam.
 // "./command", "./loopback" and "./subjects" are the argument parser, the loopback-literal check and
@@ -119,6 +120,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
   const ALLOWED_SUBPATHS = new Map<string, { module: string; additions: readonly string[] }>([
     ["./session-browser", { module: "session-browser", additions: [] }],
     ["./launch-material", { module: "launch-material", additions: [] }],
+    ["./control-exchange", { module: "control-exchange", additions: [] }],
     ["./peer-label", { module: "peer-label", additions: [] }],
     ["./secret-fs", { module: "secret-fs-entry", additions: [] }],
     ["./command", { module: "command", additions: [] }],

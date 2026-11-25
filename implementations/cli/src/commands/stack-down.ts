@@ -6,13 +6,16 @@
  *  recorded as such under its definition's lock and is not stopped again, so a repeated stop is a
  *  no-op. Shared registry and credential cleanup follow only a complete confirmed stop. Nothing
  *  outside the recorded members is touched. The whole apply holds the root's maintenance lock. */
-import { accessSync, constants } from "node:fs";
-import { dirname } from "node:path";
+import { displayCmd } from "../lib/self-exec.js";
+import { accessSync, constants, lstatSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import * as prompts from "../lib/prompts.js";
-import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
+import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, MANAGER_START_PAYLOAD_FLOOR, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, commandFailureReport, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
+  hasUserAuthState, localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, retainedLegacyBroker, stopReservationPath,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
@@ -26,11 +29,12 @@ import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
 import { instanceProjection, observeServiceProcess, serviceInstances, serviceInstanceStore, serviceRecordsWriteProblem, type ServiceInstanceSnapshot } from "../lib/service-instances.js";
 import { abandonableSignalStop, assertNoServiceUnitAttempts, prepareKernelServiceStop, prepareNativeServiceStop, readinessAddressSurvivors, resumableSignalStop, retainedStopRequest, settleExitedInstance, PROCESS_STOP_GRACE_MS, stopProcessService } from "../lib/service-process.js";
-import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackScopeRefusals, stackSettlementNotice, staleRecordNotice, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
+import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUnresolvedStackLaunch, acquireStackOperationLock, interruptedUpLeftManagerOut, newStackOperation, localRecords, previewStackSettlement, processGone, readStackJournal, recordedProcessesUnder, recordedProcessLine, refuseControllerCut, refuseUnretainedStackStop, removeStaleLocalRecords, RESUME_REMEDY, runningStackRoles, settleRetainedStackStops, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, settleStackOperation, stackJournalPath, stackMaintenanceFence, stackNeverStarted, stackOperationUnsettled, stackRootGone, stackScopeRefusals, stackSettlementNotice, stackStartedWithoutManager, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
 import { lostRecordsStackDown, stackRecordsLost } from "./stack-lost-records.js";
+import { goneRootStackDown, refuseInaccessibleDownRoot } from "./stack-gone.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -56,7 +60,7 @@ export function stackRootElsewhere(space: string, root: string): string | undefi
 
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
-  ["cotal down", ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+  [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
 
 /** A stop records each member's stop under the space's service instance records, so a folder there this
  *  account cannot write refuses before the plan, naming it, rather than leaving every member running
@@ -65,7 +69,7 @@ function assertServiceRecordsWritable(root: string, space: string, values: Parse
   const dir = serviceRecordsWriteProblem(space, ["instances"]);
   if (dir) throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dir}, where down records each member's stop; no member was stopped`, {
     target: { root, space, path: dir },
-    remedy: `make it writable with chmod u+w ${dir}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
+    remedy: `make it writable with chmod u+w ${shellWord(dir)}, then run \`${sameDown({ ...values, "dry-run": undefined, yes: true })}\``,
   });
 }
 
@@ -167,6 +171,31 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
   }
 }
 
+/** A stop queued during startup waits for native launch work and cleanup, not other stop blockers. */
+async function waitForLaunchImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
+  const deadline = performance.now() + 40_000;
+  let waiting = false;
+  for (;;) {
+    try { return await managerImpact(journal, members, manager, withAgents); }
+    catch (error) {
+      if (!isCommandFailure(error) || error.outcome !== "refused" || error.code !== "LIFECYCLE_BLOCKED") throw error;
+      const detail = error.native?.detail as { phase?: string; blockers?: unknown } | undefined;
+      const blockers = detail?.blockers;
+      if (detail?.phase !== "manager-stop-preflight" || !Array.isArray(blockers) || !blockers.length ||
+        !blockers.every((name) => name === "lifecycleInFlight" || name === "reservedLaunches" || name === "retirementsPending" || name === "deprovisioningInFlight")) throw error;
+      if (!waiting) process.stderr.write("Waiting for pending agent launches before stopping the stack\n");
+      waiting = true;
+      if (performance.now() + 1_000 >= deadline) {
+        throw new CommandFailure("refused", error.code, `${error.message}. The stack is still running`, {
+          target: { root: journal.root, space: journal.space }, native: error.native,
+          remedy: `run ${codeSpan(`${displayCmd()} down --yes`)} in ${journal.root} once the pending launches settle`,
+        });
+      }
+      await delay(1_000);
+    }
+  }
+}
+
 /** The full-store refusal of a stack's manager stop, before any member is stopped. Making room
  *  purges the space's channel history; a plain SIGTERM to the manager's own process needs no
  *  credential, so it stops the stack without that loss. */
@@ -203,6 +232,31 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
   return !running;
 }
 
+/** A manager omitted by the last `up` may still have run earlier, either as a stack member or
+ *  outside the stack. A retained record is enough to keep the retirement guard. */
+function stoppedStackNeedsManager(journal: StackJournal): boolean {
+  if (journal.operation.withAgents) return false;
+  const manager = journal.members.find((row) => row.role === "manager")!;
+  const paths = (template: string) => localProcessPathCandidates(template, journal);
+  const retained = (path: string) => {
+    try { return lstatSync(path, { throwIfNoEntry: false }) !== undefined; }
+    catch { return true; } // An unreadable path does not prove the record absent.
+  };
+  return manager.state !== "not-attempted" || manager.instanceId !== null || manager.replacement !== undefined
+    || serviceDefinitionStore(journal.space).read(STACK_DEFINITION.manager) !== undefined
+    || serviceInstances(journal.space).some(({ record: { value } }) => value.definition === STACK_DEFINITION.manager || value.adapter?.name === STACK_ADAPTER.manager)
+    || Boolean(stackMaintenanceFence(journal.root, journal).admittedRestore)
+    || retained(join(journal.root, ".cotal", "seat-records"))
+    || [MANAGER_PIDFILE, MANAGER_LOGFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY].flatMap(paths)
+      .concat(paths(MANAGER_PIDFILE).map(stopReservationPath)).some(retained);
+}
+
+/** The same local manager requirement applies before a stop and in its read-only preview. */
+function missingStopManager(journal: StackJournal, target: { root: string; space: string; server: string }): CommandFailure {
+  if (stackStartedWithoutManager(journal)) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "this stack was started without a manager, so --with-agents cannot stop it. No member was stopped", { target, remedy: "run `cotal down --yes` to stop the stack without requesting agent retirement" });
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+}
+
 /** A bare down of a stack that is not running stops nothing. It answers with a no-op and writes
  *  nothing, so it needs no --yes, and its preview shows the same. Before it says so it reads the
  *  root's process records: every descriptor's for this stack's space, and a `{space}` descriptor's
@@ -210,14 +264,11 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  record and its pid in the message and the remedy, because no command shows another space's
  *  records; nothing is stopped, adopted or removed. A real --with-agents refuses too, because no
  *  running manager can stop the agents, unless the caller knows none can remain: the last down took
- *  --with-agents, or the root never started a stack. Its `preview` shows the no-op and warns with that
+ *  --with-agents, or the recorded stack never ran a manager. Its `preview` shows the no-op and warns with that
  *  refusal. The legacy route answers the same way. `warnings` report what this command changed before
  *  it found nothing running. */
-export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = [], preview = false): void {
+export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = [], preview = false, journal?: StackJournal): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
-  // A killed foreground holder leaves its record, and a stopped stack has no holder. A preview
-  // removes nothing.
-  if (!preview) releaseDeadForegroundHold(target.root);
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
   if (remaining.length) {
     const lines = remaining.map(recordedProcessLine);
@@ -227,13 +278,35 @@ export function nothingRunning(presentation: Presentation, target: { root: strin
       remedy: `check ${checks.join(", ")}; stop each process where it was started, or remove a record whose process is gone, then run \`cotal down\` again`,
     });
   }
-  const agents = withAgents ? new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; nothing was stopped", { target, remedy: "start it with `cotal up`, then run `cotal down --with-agents`" }) : undefined;
+  const needsManager = withAgents && (!journal || stoppedStackNeedsManager(journal));
+  let payload: number | undefined;
+  let restart = true;
+  // Broker policy is not needed to confirm the stop. If it cannot be read, don't suggest a restart.
+  if (journal) {
+    try { payload = readBrokerPolicy(journal.root)?.maxPayload; }
+    catch { restart = false; }
+  }
+  const brokerOnly = payload !== undefined && payload < MANAGER_START_PAYLOAD_FLOOR;
+  const restartWithoutManager = brokerOnly || (journal?.operation.kind === "down" && journal.operation.phase === "completed" && journal.members.some((row) => row.role === "manager" && row.state === "not-attempted"));
+  const agents = needsManager ? new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's running manager, and this folder's stack is not running; agents from an earlier manager may still be running. Nothing was stopped", { target, remedy: journal
+    ? `check for agents left by the earlier manager before restarting the stack${brokerOnly ? `. The recorded broker payload limit is ${payload} bytes. Starting the manager needs at least ${MANAGER_START_PAYLOAD_FLOOR} bytes` : ""}`
+    : "start it with `cotal up`, then run `cotal down --with-agents`" }) : undefined;
   if (agents && !preview) throw agents;
+  // A killed foreground holder leaves its record. A refusal or preview removes nothing.
+  if (!preview) releaseDeadForegroundHold(target.root);
   const shown = agents ? [...warnings, { code: agents.code, target, message: `the real stop would refuse: ${agents.message}; ${agents.remedy}` }] : warnings;
   writeResult(presentation, { command: "down", target, result: { kind: "stack-not-running", ...target }, noOp: true, ...(shown.length ? { warnings: shown } : {}) }, () => ({ sections: [
     { title: `The stack in ${target.root} is not running`, blocks: [{ kind: "lines", lines: ["Nothing was stopped."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal up", description: "Start it" }] }] },
+    ...(restart && !agents ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [stoppedRestart(target, restartWithoutManager, journal)] }] }] : []),
   ] }));
+}
+
+function stoppedRestart(target: { root: string; space?: string }, noManager: boolean, journal?: StackJournal) {
+  const { root, space } = target, up = `${displayCmd()} up`;
+  const retained = !journal && space && hasUserAuthState(root, space, { readOnly: true }) ? retainedLegacyBroker(root) : undefined;
+  if (retained && !retained.open && space)
+    return { command: `${up} --foreground --no-manager --user-auth --space ${shellWord(space)} --server ${shellWord(retained.server)}`, description: "Start it with user auth" };
+  return { command: `${up}${noManager ? " --no-manager" : ""}`, description: noManager ? "Start the stack without a manager" : "Start it" };
 }
 
 /** The registration `cotal up` wrote for this stack is how its members' stops reach it. An older
@@ -259,11 +332,6 @@ function strandedRegistration(journal: StackJournal, members: readonly Member[])
     ...(tlsRequired ? { tlsRequired: true } : {}),
     ...(journal.broker ? { storeDir: journal.broker.storeDir, ...(journal.broker.maxFileStore !== undefined ? { maxFileStore: journal.broker.maxFileStore } : {}), ...(journal.broker.host !== undefined ? { attachHost: journal.broker.host } : {}) } : {}),
   } };
-}
-
-/** A stale process record a complete stop removed, or for a preview, one it would remove. */
-function staleWarning(root: string, row: LocalRecord, preview = false): OutputWarning {
-  return { code: "STALE_PROCESS_RECORD", target: { root, path: row.path, pid: row.pid, state: row.state }, message: staleRecordNotice(row, preview) };
 }
 
 /** What a stop that rebuilt the registration says it did, or for a preview, what it would do. */
@@ -320,7 +388,7 @@ function recordedReplacementSupersedesLostRecords(snapshot: StackJournalSnapshot
   return !stackRecordsLost({ ...snapshot, journal: adopted });
 }
 
-export async function stackDown(rootInput: string, values: ParsedArgs["values"]): Promise<void> {
+export async function stackDown(rootInput: string, values: ParsedArgs["values"], waitForLaunch = false): Promise<void> {
   // It refuses --preserve-state on a controller root, so only a bare stop continues.
   validateStackDownArguments(rootInput, values);
   const presentation = presentationOf(values), interactive = canPrompt() && presentation !== "json";
@@ -339,9 +407,24 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"])
     const recorded = readStackJournal(root)?.journal.space;
     if (recorded !== undefined) recordOperationSpace(recorded);
     const lock = acquireStackOperationLock(root);
-    try { await applyStackStop(root, values, presentation, interactive, withAgents, lock); }
+    try { await applyStackStop(root, values, presentation, interactive, withAgents, lock, waitForLaunch); }
     finally { releaseMaintenanceLock(lock); }
   } finally { release(); }
+}
+
+/** A foreground signal runs the guarded whole-stack stop and supplies the terminal exit code. */
+export async function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM", duringStartup = false, space?: string): Promise<void> {
+  const gone = space !== undefined && stackRootGone(space, root);
+  try {
+    if (gone) await goneRootStackDown(space, root, { yes: true });
+    else await stackDown(root, { yes: true }, duringStartup);
+  } catch (error) {
+    const retry = gone ? `run \`cotal down --space ${shellWord(space)} --yes\` from another folder to finish the stop` : undefined;
+    const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", "the foreground stack stop did not confirm its outcome", { target: { space, root }, cause: error, remedy: retry });
+    const report = commandFailureReport(failure);
+    const sections = retry && !failure.remedy ? [...report.sections, { title: "Next", blocks: [{ kind: "lines" as const, lines: [retry] }] }] : report.sections;
+    process.stderr.write(`${renderReport({ ...report, sections }, "rich", process.stderr)}\n`);
+  } finally { process.exitCode = signal === "SIGINT" ? 130 : 143; }
 }
 
 /** What an interrupted bare down left: the members still running, and the down that finishes it. A
@@ -375,6 +458,7 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
   if (values.space !== undefined && values.space !== journal0.space) {
     const space = String(values.space), elsewhere = stackRootElsewhere(space, root);
     recordOperationSpace(space);
+    if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere, space);
     throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
       target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
       remedy: elsewhere ? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
@@ -393,18 +477,23 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
 
 async function previewStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, withAgents: boolean): Promise<void> {
   const { journal0, settlement, members, target } = stopTarget(root, values);
-  // As the real stop does, a stack its own down stopped refuses --with-agents unless that down took it.
   const stopped = alreadyStopped(journal0, members);
   if (stopped || stackNeverStarted(journal0)) {
     await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
-    return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, stackStoreWarnings(journal0), true);
+    return nothingRunning(presentation, target, stopped && withAgents, stackStoreWarnings(journal0), true, journal0);
   }
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
-  try { restore = scopeRefusals(journal0); stranded = strandedRegistration(journal0, members); assertJournalWritable(root, values); assertServiceRecordsWritable(root, journal0.space, values); }
+  const manager = members.find((member) => member.role === "manager" && member.live);
+  try {
+    restore = scopeRefusals(journal0);
+    assertJournalWritable(root, values);
+    assertServiceRecordsWritable(root, journal0.space, values);
+    if (withAgents && !manager) throw missingStopManager(journal0, target);
+    stranded = strandedRegistration(journal0, members);
+  }
   catch (error) { if (!isCommandFailure(error)) throw error; blocked = error; }
   // A live manager's stop needs room in the store, so the preview reads how much the space holds.
-  const manager = members.find((member) => member.role === "manager" && member.live);
   const brokerPid = members.find((member) => member.role === "broker" && member.live)?.instance.record.value.process?.pid;
   if (!blocked && manager && brokerPid !== undefined && !processStopped(brokerPid)) {
     // A broker that disabled JetStream answers no read of the store, so its own log decides first.
@@ -416,7 +505,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
     else if (full) blocked = fullStoreStop(journal0, manager, full);
   }
   const warnings = [...stackStoreWarnings(journal0), ...(blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
-    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
+    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleRecordWarning(root, row, true))])];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
@@ -450,7 +539,7 @@ export async function deliveryLeaseAfterStop(root: string, space: string, server
   }
 }
 
-async function applyStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, interactive: boolean, withAgents: boolean, lock: MaintenanceLock): Promise<void> {
+async function applyStackStop(root: string, values: ParsedArgs["values"], presentation: ReturnType<typeof presentationOf>, interactive: boolean, withAgents: boolean, lock: MaintenanceLock, waitForLaunch: boolean): Promise<void> {
   // A member stop an earlier down could not confirm in time is settled from its own receipt first.
   const recorded = readStackJournal(root)?.journal;
   const ours = recorded && (values.space === undefined || values.space === recorded.space) ? recorded : undefined;
@@ -465,21 +554,26 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   ];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
   const storeWarnings = stackStoreWarnings(journal0);
-  // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
-  // a repeat has nothing left to stop. A stack that never started has no agents either.
-  if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) {
+  const stopped = alreadyStopped(journal0, members);
+  if (stopped || stackNeverStarted(journal0)) {
     // A controller stack with no recorded member can still have a manager or delivery daemon whose
     // pidfile was moved. Its lease is the evidence, read before this stop reports nothing running.
     await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
-    if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...storeWarnings, ...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
-    return nothingRunning(presentation, target, false, [...storeWarnings, ...abandonWarnings]);
+    return nothingRunning(presentation, target, stopped && withAgents, [...storeWarnings, ...abandonWarnings, ...(stopped ? await readinessAddressSurvivors(journal0.space) : [])], false, journal0);
   }
   const broker = members.find((member) => member.role === "broker" && member.live);
   const brokerPid = broker?.instance.record.value.process?.pid;
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
-  if (!values.yes && !interactive) throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows what it stops" });
+  const manager = members.find((member) => member.role === "manager" && member.live);
+  if (withAgents && !manager) throw missingStopManager(journal0, target);
+  if (!values.yes && !interactive) {
+    const space = typeof values.space === "string" ? ` --space ${shellWord(values.space)}` : "";
+    const format = presentation === "rich" ? "" : ` --${presentation}`;
+    const command = `${displayCmd()} down${space}${withAgents ? " --with-agents" : ""}${format}`;
+    throw new ConfirmationRequired(yesRequired("stopping the whole controller stack", presentation === "json"), { target, remedy: `run ${codeSpan(`${command} --yes`)} to stop it. ${codeSpan(`${command} --dry-run`)} shows what it stops` });
+  }
   // A missing or hand-added registration is rebuilt from the journal before anything resolves the
   // members, and put back as it was when the stop ends before any member stops.
   const stranded = strandedRegistration(journal0, members);
@@ -491,9 +585,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   };
   // Complete native impact before confirmation. The broker's own kernel scope cannot be prepared
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
-  const manager = members.find((member) => member.role === "manager" && member.live);
   try {
-    if (!manager && withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
     // Resume the exact owned broker before reads through it. This is not its stop: manager impact
     // and the broker's final dependant scope still pass their normal guards, and SIGTERM stays last.
     if (broker && brokerPid !== undefined && processStopped(brokerPid)) {
@@ -513,7 +605,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the suspended broker could not be resumed; no member was stopped", { target: instanceProjection(broker.instance) }); }
     }
     if (manager) {
-      manager.native = await managerImpact(journal0, members, manager, withAgents);
+      manager.native = await (waitForLaunch ? waitForLaunchImpact : managerImpact)(journal0, members, manager, withAgents);
       if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
     }
     if (!values.yes) {
@@ -632,7 +724,7 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
       ...abandonWarnings,
       ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []),
       ...(stranded ? [strandedNotice(journal0, stranded.previous)] : []),
-      ...cleared.map((row) => staleWarning(root, row)),
+      ...cleared.map((row) => staleRecordWarning(root, row)),
     ] : []),
     ...killed.map(({ role, instanceId, pid }) => ({ code: "STOP_ESCALATED", target: { ...target, role, instanceId, pid }, message: `the ${role} member, pid ${pid}, did not exit within ${PROCESS_STOP_GRACE_MS / 1000} s of SIGTERM, so it was stopped with SIGKILL` })),
     ...(deliveryLease === "unread" ? [{ code: "DELIVERY_LEASE_UNREAD", target, message: "the delivery lease could not be read after the delivery member stopped, so its credential was kept; the next up waits out a lease row that still names it" }] : []),
@@ -640,5 +732,5 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   ];
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, operation: journal.operation, withAgents, members: journal.members, changed, managerImpact: manager?.native ?? null, atomic: false, cleanup: failure ? "not-confirmed" : journal.mode === "open" ? "registration-removed-no-delivery-credential" : deliveryCredentialKept ? "registration-removed-delivery-credential-kept" : "delivery-credential-and-registration-removed", admittedRestore: admittedRestore ?? null, settledOperation: settled ?? null }, ...(warnings.length ? { warnings } : {}), ...(failure ? { failure, completeness: "partial" as const } : changed.length ? {} : { noOp: true }) }, (result) => ({ sections: [...restoreNotice(admittedRestore), { title: failure ? "Controller stack stop incomplete" : changed.length ? "Controller stack stopped" : "Controller stack was not running; nothing was stopped", blocks: [
     { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "state", label: "Result" }], rows: result.members.filter((row) => row.instanceId !== null).sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role)).map((row) => ({ role: row.role, instance: row.instanceId ?? "none", state: { text: killed.some((k) => k.role === row.role) ? "stopped with SIGKILL" : row.state.replaceAll("-", " "), tone: ["stopped", "already-stopped"].includes(row.state) ? "ok" as const : ["refused", "failed"].includes(row.state) ? "failed" as const : "waiting" as const } })) },
-  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `cotal up${interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
+  ] }, ...(failure ? [] : [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: `${displayCmd()} up${stackStartedWithoutManager(previous.journal) || interruptedUpLeftManagerOut(previous.journal) ? " --no-manager" : ""}`, description: "Start the stack again from its journal and saved definitions" }] }] }])] }));
 }

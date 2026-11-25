@@ -39,7 +39,28 @@ try {
   assert.equal(pins.length, 3, "real up must persist broker, delivery and manager creation pins");
   assert.equal(started.recovery?.home, home);
   assert(pins.every((pin) => assertRecordIdentity(pin).kind === "match"));
-  assert.equal(cli(["down", "--yes"], other).exit, 2, "another home must not stop this stack");
+  const foreignDown = cli(["down", "--yes"], other);
+  const foreignProject = join(base, "other-project");
+  mkdirSync(foreignProject, { mode: 0o700 });
+  const foreignEnv = { ...env, COTAL_HOME: other };
+  for (const args of [["space", "create", "losthome"], ["up", "--server", `nats://127.0.0.1:${await freePort()}`]]) {
+    const run = spawnSync(process.execPath, [binary, ...args, "--json"], { cwd: foreignProject, env: foreignEnv, encoding: "utf8", timeout: 150_000 });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+  }
+  try {
+    const status = cli(["status"], other);
+    assert.equal(status.exit, 0, JSON.stringify(status.data));
+    assert(!status.data.warnings?.some((warning) => warning.code === "FOLDER_BROKER_UNAVAILABLE"));
+  } finally {
+    const foreignAnchor = recordSmokeSandbox({ root: foreignProject, cotalHome: other, xdgConfigHome: env.XDG_CONFIG_HOME });
+    const args = ["down", "--yes", "--json"];
+    assertSmokeSandboxDown(foreignAnchor, args, { cwd: foreignProject, env: foreignEnv });
+    const cleanup = spawnSync(process.execPath, [binary, ...args], { cwd: foreignProject, env: foreignEnv, encoding: "utf8", timeout: 150_000 });
+    assert.equal(cleanup.status, 0, cleanup.stdout + cleanup.stderr);
+  }
+  assert.equal(foreignDown.exit, 2, "another home must not stop this stack");
+  assert(foreignDown.data.error?.remedy?.includes(`COTAL_HOME=${home}`));
+  assert(!foreignDown.data.error?.remedy?.includes("down --dry-run"));
   assert(pins.every((pin) => assertRecordIdentity(pin).kind === "match"));
   renameSync(home, `${home}-retained`); hidden = true;
   mkdirSync(home, { mode: 0o700 });

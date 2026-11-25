@@ -153,7 +153,7 @@ function managerWith(
     resumeAttemptId: opts.resumeAttemptId,
     resumeDurableCommitToken: opts.resumeDurableCommitToken,
   });
-  const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; userOwner?: string; lifecycleUid?: string }> }).agents;
+  const agents = (manager as unknown as { agents: Map<string, { id: string; name: string; displayName?: string; userOwner?: string; lifecycleUid?: string }> }).agents;
   (manager as unknown as { runtime: unknown }).runtime = { kind: "fake", spawn: runtimeSpawn };
   (manager as unknown as { probeStaticCredential: () => Promise<{ ok: true }> }).probeStaticCredential = async () => ({ ok: true });
   (manager as unknown as { ep: unknown }).ep = {
@@ -161,8 +161,9 @@ function managerWith(
     // The real endpoint publishes the incarnation's lifecycleUid in presence whenever it has one
     // (endpoint.ts publishPresence); the readiness lifecycle fence matches on it, so the fake roster
     // must carry it too or a resumed agent (which now recovers its uid) never reports STARTED.
+    // A seat shows the display name its launch restored (COTAL_DISPLAY_NAME), as a real connector does.
     getRoster: () => [...agents.values()].map((a) => ({
-      card: { id: a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key, name: a.name },
+      card: { id: a.userOwner ? a.id : principalKey(DEV_OWNER, a.id).key, name: a.displayName ?? a.name },
       lifecycleUid: a.lifecycleUid,
       status: "idle",
     })),
@@ -318,7 +319,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("worker", managed("worker", "open_principal_1", handle));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   (manager as unknown as { watchExit: (a: unknown) => void }).watchExit(map.get("worker"));
 
   const accepted = control(manager, "admin", "models", { agent: "preserve-slow-models" });
@@ -448,7 +453,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   let deprovisionStarted!: () => void;
   const started = new Promise<void>((resolve) => { deprovisionStarted = resolve; });
   const blocked = new Promise<void>((resolve) => { releaseDeprovision = resolve; });
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => {
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => {
     deprovisionStarted();
     await blocked;
   };
@@ -475,7 +484,11 @@ registry.register(preserveAuth as unknown as AuthProvider);
   map.set("good", managed("good", "open_good", good, "persona"));
   map.set("bad", managed("bad", "open_bad", bad, "persona"));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   const result = await manager.preserveState({ attemptId: "partial", persistInventory: async () => {} });
   check("partial stop reports failure and no preserved state", !result.ok && result.state === "preserving", result);
   check("partial stop attempts every child", good.stops === 1 && bad.stops === 1, `${good.stops}/${bad.stops}`);
@@ -664,7 +677,11 @@ let openInventory: ManagerResumeAgent;
   const principal = principalKey(DEV_OWNER, openInventory.identity.mode === "open" ? openInventory.identity.id : "").key;
   const predecessorUid = openInventory.identity.lifecycleUid;
   const retire = (target: Manager): void => {
-    (target as unknown as { retiring: Map<string, unknown> }).retiring.set(openInventory.name, {
+    (target as unknown as {
+      retirement: {
+        retiring: Map<string, unknown>;
+      };
+    }).retirement.retiring.set(openInventory.name, {
       opId: "retire_worker",
       owner: DEV_OWNER,
       actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
@@ -733,8 +750,16 @@ let openInventory: ManagerResumeAgent;
   let spawns = 0;
   const redriven: Array<{ id: string; name: string; lifecycleUid: string }> = [];
   const manager = managerWith((name) => { spawns++; return fakeHandle(name); });
-  (manager as unknown as { deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void> }).deprovision = async (a) => { redriven.push(a); };
-  (manager as unknown as { retiring: Map<string, unknown> }).retiring.set("worker", {
+  (manager as unknown as {
+    retirement: {
+      deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void>;
+    };
+  }).retirement.deprovision = async (a) => { redriven.push(a); };
+  (manager as unknown as {
+    retirement: {
+      retiring: Map<string, unknown>;
+    };
+  }).retirement.retiring.set("worker", {
     opId: "retire_worker",
     owner: DEV_OWNER,
     actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
@@ -825,7 +850,11 @@ let openInventory: ManagerResumeAgent;
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "signal_gap" });
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await control(manager, "admin", "resumePreserved", { attemptId: "signal_gap", inventory: inventoryOf(openInventory) });
   const committed = await control(manager, "admin", "commitResume", { attemptId: "signal_gap" });
   await manager.stop();
@@ -837,16 +866,20 @@ let openInventory: ManagerResumeAgent;
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "lease_gap" });
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await control(manager, "admin", "resumePreserved", { attemptId: "lease_gap", inventory: inventoryOf(openInventory) });
   const committed = await control(manager, "admin", "commitResume", { attemptId: "lease_gap" });
   const ep = (manager as unknown as { ep: Record<string, unknown> }).ep;
   ep.renewManagerLease = async () => { throw new Error("simulated lease loss"); };
   ep.readOwnManagerLease = async () => { throw new Error("simulated broker silence"); };
-  (manager as unknown as { leaseInfo: unknown; leaseRevision: number }).leaseInfo = {
+  (manager as unknown as { lease: { leaseInfo: unknown } }).lease.leaseInfo = {
     holder: "local.manager", runtime: "fake", root, pid: process.pid,
   };
-  (manager as unknown as { leaseRevision: number }).leaseRevision = 1;
+  (manager as unknown as { lease: { leaseRevision: number } }).lease.leaseRevision = 1;
   const originalExit = process.exit;
   let exitCode: number | undefined;
   (process as unknown as { exit: (code?: number) => never }).exit = ((code?: number) => {
@@ -854,7 +887,7 @@ let openInventory: ManagerResumeAgent;
     return undefined as never;
   });
   try {
-    await (manager as unknown as { renewLease: () => Promise<void> }).renewLease();
+    await (manager as unknown as { lease: { renewLease: () => Promise<void> } }).lease.renewLease();
   } finally {
     (process as unknown as { exit: typeof process.exit }).exit = originalExit;
   }
@@ -928,7 +961,11 @@ let openInventory: ManagerResumeAgent;
     return fakeHandle(name);
   }, { resumeAttemptId: "partial_resume" });
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   const second: ManagerResumeAgent = {
     ...openInventory,
     name: "worker-two",
@@ -950,7 +987,7 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle, { resumeAttemptId: "late_presence" });
-  (manager as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 5;
+  (manager as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 5;
   let roster: Array<{ card: { id: string; name: string }; status: string }> = [];
   const presenceListeners = new Set<() => void>();
   (manager as unknown as { ep: unknown }).ep = {
@@ -964,7 +1001,11 @@ let openInventory: ManagerResumeAgent;
     stop: async () => {},
   };
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   const result = await control(manager, "admin", "resumePreserved", {
     attemptId: "late_presence",
     inventory: inventoryOf(openInventory),
@@ -983,7 +1024,7 @@ let openInventory: ManagerResumeAgent;
 {
   const handle = fakeHandle("worker");
   const manager = managerWith(() => handle);
-  (manager as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 5;
+  (manager as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 5;
   let roster: Array<{ card: { id: string; name: string }; lifecycleUid?: string; status: string }> = [];
   const presenceListeners = new Set<() => void>();
   (manager as unknown as { ep: unknown }).ep = {
@@ -1253,6 +1294,66 @@ let openInventory: ManagerResumeAgent;
   const cannotFinalize = await control(userCommitDriftManager, "admin", "finalizeResume", { attemptId: "user_commit_drift", durableCommitToken: "0".repeat(64) });
   check("a failed user authority commit cannot be finalized", !cannotFinalize.ok && /no successful commit/.test(cannotFinalize.error ?? ""), cannotFinalize.error);
   retainedAuthority = { ...retainedAuthority, allowSubscribe: ["general"] };
+
+  // SPEC 13.22 `set-name`: the seat keeps the display name it shows in its own presence, the cut
+  // carries it beside the alias, and the relaunch starts with it under the same alias and actor.
+  {
+    type Seat = { id: string; name: string; displayName?: string; lifecycleUid: string };
+    const named: ManagerResumeAgent = { ...entry, displayName: "Ada Reviewer" };
+    const first = managerWith((name) => fakeHandle(name), { resumeAttemptId: "named_resume" });
+    (first as unknown as { userMode: boolean }).userMode = true;
+    resetCapturedLaunch();
+    const resumed = await control(first, "admin", "resumePreserved", { attemptId: "named_resume", inventory: inventoryOf(named) });
+    check("a resume whose inventory carries a display name launches under the alias and actor with that display name",
+      resumed.ok && capturedLaunch?.name === "worker" && capturedLaunch?.displayName === "Ada Reviewer" && capturedLaunch?.userAuth?.actor === "worker",
+      { name: capturedLaunch?.name, displayName: capturedLaunch?.displayName, actor: capturedLaunch?.userAuth?.actor });
+    const committed = await control(first, "admin", "commitResume", { attemptId: "named_resume" });
+    check("commit accepts the resumed incarnation while its presence shows the display name", committed.ok, committed.error);
+    const seat = (first as unknown as { agents: Map<string, Seat> }).agents.get("worker")!;
+    const ep = (first as unknown as { ep: { getRoster: () => unknown[] } }).ep;
+    const shows = (name: string): void => {
+      ep.getRoster = () => [{ card: { id: seat.id, name }, lifecycleUid: seat.lifecycleUid, status: "idle" }];
+      (first as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
+    };
+    shows("Grace Hopper");
+    check("the seat keeps the name its own presence shows after a rename", seat.displayName === "Grace Hopper", seat.displayName);
+    shows("x".repeat(200));
+    shows("a/b");
+    check("a name the shared rule refuses is not kept: the last good one stays", seat.displayName === "Grace Hopper", seat.displayName);
+    ep.getRoster = () => [
+      { card: { id: "u_bbbbbbbbbbbbbbbbbbbbbbbbbb.worker", name: "worker" }, lifecycleUid: uidFor("foreign"), status: "idle" },
+      { card: { id: seat.id, name: "Grace Hopper" }, lifecycleUid: seat.lifecycleUid, status: "working" },
+    ];
+    // `ps` answers this list; the resume fence holds the door itself until the attempt finalizes.
+    const rows = (first as unknown as { list: () => { name: string; mesh: string; presenceIdentityVerified: boolean }[] }).list();
+    const row = rows.find((r) => r.name === "worker");
+    check("ps finds the renamed seat by its own record, not a same-named peer: mesh working, identity verified",
+      row?.mesh === "working" && row.presenceIdentityVerified === true, JSON.stringify(row ?? rows));
+    const names = (first as unknown as { namesCapacity: { liveRosterNames(): Set<string>; uniqueName(base: string): string } }).namesCapacity;
+    ep.getRoster = () => [{ card: { id: seat.id, name: "Grace Hopper" }, lifecycleUid: seat.lifecycleUid, status: "idle" }];
+    (first as unknown as { agents: Map<string, Seat> }).agents.delete("worker");
+    const live = names.liveRosterNames();
+    check("in user mode a live renamed agent holds both its display name and its actor against new spawns",
+      live.has("Grace Hopper") && live.has("worker") && names.uniqueName("worker") === "worker_2", [...live]);
+    (first as unknown as { agents: Map<string, Seat> }).agents.set("worker", seat);
+    shows("Grace Hopper");
+    const cut = await first.preserveState({ attemptId: "named_cut", persistInventory: async () => {} });
+    const carried = cut.inventory?.agents.find((a) => a.name === "worker");
+    check("the preservation cut carries the display name beside the alias and the actor",
+      cut.ok && carried?.displayName === "Grace Hopper" && carried.identity.mode === "user" && carried.identity.actor === "worker", { ok: cut.ok, carried: carried && { name: carried.name, displayName: carried.displayName } });
+    const second = managerWith((name) => fakeHandle(name));
+    (second as unknown as { userMode: boolean }).userMode = true;
+    resetCapturedLaunch();
+    const relaunched = cut.inventory ? await second.resumePreserved(cut.inventory) : { ok: false, error: "no inventory" };
+    check("a manager that resumes the cut relaunches the seat with the last name, the same alias and the same actor",
+      relaunched.ok && capturedLaunch?.displayName === "Grace Hopper" && capturedLaunch?.name === "worker" && capturedLaunch?.userAuth?.actor === "worker"
+      && (second as unknown as { agents: Map<string, Seat> }).agents.get("worker")?.displayName === "Grace Hopper",
+      { error: relaunched.error, displayName: capturedLaunch?.displayName, name: capturedLaunch?.name });
+    const back = (second as unknown as { agents: Map<string, Seat> }).agents.get("worker")!;
+    (second as unknown as { ep: { getRoster: () => unknown[] } }).ep.getRoster = () => [{ card: { id: back.id, name: "worker" }, lifecycleUid: back.lifecycleUid, status: "idle" }];
+    (second as unknown as { logSeatMeshTransitions: () => void }).logSeatMeshTransitions();
+    check("renamed back to its alias, the seat keeps no display name", back.displayName === undefined, back.displayName);
+  }
 }
 
 // #964: active-mode stop spares by default; explicit withAgents retains the old teardown.
@@ -1262,7 +1363,11 @@ let openInventory: ManagerResumeAgent;
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("spared", managed("spared", "spared_id", handle, "persona"));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await manager.stop();
   check("normal stop leaves managed agents running", handle.stops === 0, handle.stops);
   check("normal stop releases detachable local custody", handle.releases === 1, handle.releases);
@@ -1276,7 +1381,11 @@ let openInventory: ManagerResumeAgent;
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("reaped", managed("reaped", "reaped_id", handle, "persona"));
   let deprovisions = 0;
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => { deprovisions++; };
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => { deprovisions++; };
   await manager.stop({ withAgents: true });
   check("stop withAgents hard-stops managed agents", handle.stops === 1, handle.stops);
   check("stop withAgents deprovisions managed agents", deprovisions === 1, deprovisions);
@@ -1291,7 +1400,11 @@ let openInventory: ManagerResumeAgent;
   const handle = lingeringHandle("dying");
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
   map.set("dying", managed("dying", "dying_id", handle, "persona"));
-  (manager as unknown as { deprovision: () => Promise<void> }).deprovision = async () => {};
+  (manager as unknown as {
+    retirement: {
+      deprovision: () => Promise<void>;
+    };
+  }).retirement.deprovision = async () => {};
   const stopped = await control(manager, "admin", "stop", { name: "dying" });
   check("an accepted stop replies without waiting for the child to die", stopped.ok === true, stopped.error);
   const listed = await control(manager, "admin", "ps", {});

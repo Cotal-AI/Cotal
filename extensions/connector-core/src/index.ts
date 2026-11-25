@@ -2,11 +2,17 @@
 export * from "./config.js";
 export { controlFromEnv, hasIdentity } from "./session-env.js";
 export * from "./agent.js";
+export { SPAWN_TIMEOUT_MS } from "./agent-supervision.js";
+export { isLocalServer } from "./agent-channels.js";
+export { closeChannelNames, presenceReadCondition } from "./agent-messaging.js";
 export * from "./runtime.js";
 export * from "./launch.js";
 export * from "./agui.js";
 export * from "./agui-emitter.js";
 export * from "./durable-source.js";
+export * from "./delta-journal.js";
+export * from "./merged-source.js";
+export * from "./streamed-parts.js";
 export * from "./event-wal.js";
 export * from "./subject-frontier.js";
 export * from "./agui-holder.js";
@@ -16,6 +22,8 @@ export * from "./framing.js";
 export * from "./inline-delivery.js";
 export * from "./feedback.js";
 export * from "./tool-specs.js";
+export { aheadNote, connectionNotReadyWarning, INBOX_WINDOW_CHARS, READ_TAKE_ROUNDS, renderInbox, type InboxResponse } from "./tool-specs-inbox.js";
+export { shownSpawnName, spawnResult } from "./tool-specs-manager.js";
 export * from "./orientation.js";
 export * from "./briefing.js";
 export * from "./docs.js";
@@ -23,4 +31,17 @@ export * from "./tools.js";
 export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";
+export { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
+export type { AgentNaming, NameFromMessage, NameRequest } from "./agent-naming.js";
+export {
+  COMMAND_LIST_MS, CommandRefused, ENDED_COMMANDS_KEPT, MAX_QUEUED_COMMANDS,
+  type AgentCommand, type AgentTurn, type AgentUsage, type CommandDispatch, type CommandDispatcher, type CommandQueue,
+} from "./agent-commands.js";
+export { firstCommandEnv } from "./first-command.js";
+export {
+  PromptRefused, PROMPT_ANSWER_REPLY_MS, PROMPT_DESK_MIN_MAX_PAYLOAD, PROMPT_OPEN_MS, PROMPT_SETTLE_MS,
+  PROMPT_SUMMARY_MAX_BYTES,
+  type Delivery, type Evidence, type PromptDesk, type PromptHold, type PromptHooks, type PromptSpec, type PromptVerdict,
+} from "./prompt-desk.js";
 export { registerOnceExit } from "./once.js";
+export { isConfigPermissionError, isConfigProtected } from "./setup-permissions.js";

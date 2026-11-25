@@ -22,7 +22,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { MeshAgent, SPAWN_TIMEOUT_MS } from "../src/agent.js";
+import { MeshAgent } from "../src/agent.js";
+import { SPAWN_TIMEOUT_MS } from "../src/agent-supervision.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 import { registerCotalTools } from "../src/tools.js";
 import type { AgentConfig } from "../src/config.js";
@@ -296,7 +297,8 @@ const partial = await spawnWith(new Error("timeout"));
 check(
   "cotal_spawn reports it as a partial outcome naming the seat, its id, manager and runtime",
   partial.isError !== true && !/Couldn't spawn/.test(partial.text) && /it joined the mesh/.test(partial.text) && partial.text.includes("(id u_x.rev, manager " + MANAGER + ", runtime orca)")
-    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`) && /Do not spawn it again/.test(partial.text) && !partial.text.includes("cotal ps"),
+    && partial.text.includes(`model pin "${PIN}" could not be audited (timeout)`)
+    && partial.text.endsWith("It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint."),
   partial,
 );
 const st = partial.structured;
@@ -334,6 +336,7 @@ const booting = await spawnWith(new Error("timeout"), { id: "g", ok: false, erro
 check(
   "a launch still booting with its pin unaudited is the same partial, marked as not joined",
   booting.isError !== true && /has not joined the mesh within its readiness window/.test(booting.text) && booting.text.includes(`(id rev, manager ${MANAGER})`)
+    && booting.text.endsWith("An identical retry in this session while it is starting returns the same goal. To check on it, inspect it with cotal_invoke on the manager endpoint rather than spawning with different options.")
     && booting.structured?.joined === false && booting.structured.manager === MANAGER && !("runtime" in booting.structured),
   booting,
 );
@@ -442,6 +445,11 @@ const personaTool = cotalToolSpecs(cfg).find((s) => s.name === "cotal_persona") 
   | { schema: { shape: Record<string, unknown> }; run: (agent: MeshAgent, config: AgentConfig, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> }
   | undefined;
 check("cotal_persona schema exposes capabilities", personaTool !== undefined && "capabilities" in personaTool.schema.shape);
+const personaName = personaTool?.schema.shape.name as { safeParse: (name: string) => { success: boolean; error?: Error } } | undefined;
+const invalidPersonaName = personaName?.safeParse("-reviewer");
+check("cotal_persona refuses a leading hyphen and accepts a corrected name",
+  invalidPersonaName?.success === false && invalidPersonaName.error?.message.includes("starting with a letter, digit or _") === true &&
+  personaName?.safeParse("reviewer").success === true, invalidPersonaName);
 const definer = new MeshAgent(cfg);
 const callsDefine = record(definer);
 await personaTool?.run(definer, cfg, { name: "probe", prompt: "You probe.", capabilities: ["spawn"] });

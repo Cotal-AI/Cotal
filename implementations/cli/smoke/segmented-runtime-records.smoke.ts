@@ -26,6 +26,7 @@ import {
 } from "@cotal-ai/workspace";
 import { deliveryLiveness, deliveryUp, stopDelivery } from "../src/lib/delivery-proc.js";
 import { clearManagerArtifacts, managerHasDeliveryMarker, managerLiveness, managerUp, stopManager } from "../src/lib/manager-proc.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ALPHA = "segrec-alpha", BETA = "segrec-beta", GAMMA = "segrec-gamma";
 const root = mkdtempSync(join(tmpdir(), "cotal-segrec-"));
@@ -35,11 +36,7 @@ const cwd = process.cwd();
 // cwd. Restored in the finally below.
 process.chdir(root);
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const children: ChildProcess[] = [];
@@ -197,5 +194,6 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log(`\n${fail === 0 ? "✓" : "✗"} segmented-runtime-records: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "✓" : "✗"} segmented-runtime-records: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

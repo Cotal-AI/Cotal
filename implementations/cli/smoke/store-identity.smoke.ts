@@ -1,10 +1,10 @@
 /** Directory identity persists through journals, legacy upgrades and completed restores. */
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { readStackJournal, writeStackJournal, type StackJournal } from "../src/lib/stack-journal.js";
+import { adoptStackJournal, readStackJournal, writeStackJournal, type StackJournal } from "../src/lib/stack-journal.js";
 import { readStoreIdentity, stackStoreWarnings } from "../src/lib/store-identity.js";
 import { settleControllerResume } from "../src/lib/controller-resume.js";
 
@@ -50,5 +50,42 @@ for (const invalid of [{ ...resumed.broker!.storeIdentity, ino: 1 }, { ...resume
   suite.check("malformed persisted store identity is refused", refused);
 }
 writeFileSync(path, bytes, { mode: 0o600 });
+const previousHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(root, "private-home");
+try {
+  for (const kind of ["moved", "copied", "replaced", "retargeted", "missing", "external", "legacy"] as const) {
+    const oldRoot = join(root, `${kind}-old`), newRoot = join(root, `${kind}-new`);
+    const oldStore = kind === "external" ? join(root, "external-store") : join(oldRoot, "store");
+    mkdirSync(join(oldRoot, ".cotal"), { recursive: true, mode: 0o700 });
+    mkdirSync(oldStore, { mode: 0o700 });
+    const identity = readStoreIdentity(oldStore);
+    const original: StackJournal = { ...journal, root: oldRoot, broker: { storeDir: oldStore, ...(kind === "legacy" ? {} : { storeIdentity: identity }) } };
+    writeStackJournal(oldRoot, undefined, original);
+    if (kind === "copied") {
+      cpSync(oldRoot, newRoot, { recursive: true });
+      rmSync(oldRoot, { recursive: true, force: true });
+    } else {
+      renameSync(oldRoot, newRoot);
+    }
+    const newStore = kind === "external" ? oldStore : join(newRoot, "store");
+    if (kind === "missing" || kind === "retargeted") {
+      renameSync(newStore, `${newStore}.retained`);
+      if (kind === "retargeted") symlinkSync(`${newStore}.retained`, newStore, process.platform === "win32" ? "junction" : "dir");
+    }
+    suite.check(`${kind} store adoption returns the recorded root`, adoptStackJournal(newRoot, "identity") === oldRoot);
+    const adopted = readStackJournal(newRoot)!.journal;
+    suite.check(`${kind} store adoption keeps the rewritten store path`, adopted.broker?.storeDir === newStore);
+    const expectedIdentity = kind === "legacy" ? undefined : kind === "copied" ? readStoreIdentity(newStore) : { ...identity, path: newStore };
+    suite.check(`${kind} store adoption records the expected store identity`, JSON.stringify(adopted.broker?.storeIdentity) === JSON.stringify(expectedIdentity));
+    if (kind === "replaced") {
+      renameSync(newStore, `${newStore}.retained`);
+      mkdirSync(newStore, { mode: 0o700 });
+    }
+    const warnings = stackStoreWarnings(adopted);
+    suite.check(`${kind} store adoption diagnoses the retained identity`, kind === "replaced" || kind === "retargeted" ? warnings[0]?.code === "STORE_REPLACED" : kind === "missing" ? warnings[0]?.code === "STORE_MISSING" : warnings.length === 0, warnings);
+  }
+} finally {
+  if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+}
 console.log(`Retained filesystem fixture: ${root}`);
 suite.finish();

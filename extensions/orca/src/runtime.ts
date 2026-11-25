@@ -66,7 +66,7 @@ export class OrcaRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/.test(name))
-      throw new SpawnRefused(`orca runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -, not starting with -)`);
+      throw new SpawnRefused(`orca runtime: unsafe agent name ${JSON.stringify(name)} (use letters, digits, _ . - and choose a name not starting with -)`);
     if (!orca.available()) throw new SpawnRefused("orca runtime: Orca CLI/runtime is not reachable (run `orca status --json`)");
 
     // No terminal exists yet, so a failure here (a confirm prompt that cannot match, a lookup, a

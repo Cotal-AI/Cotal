@@ -1,10 +1,9 @@
-import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
-import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo, type OnceSeat } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
-import { parse as parseToml } from "smol-toml";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type OnceSeat } from "@cotal-ai/core";
+import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { discardOnceReceipt, retireOnceTree } from "./private-lifecycle.js";
 import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
@@ -15,86 +14,73 @@ const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-mai
 // after a 30 ms signal-acknowledgement window, interrupting the host's own shutdown.
 const HOST_ARGS = FROM_BUILD ? [HOST_ENTRY] : ["--import", import.meta.resolve("tsx"), HOST_ENTRY];
 
-type JcodeCatalogConfig = {
-  providers?: Record<string, {
-    model_catalog?: unknown;
-    models?: unknown;
-  }>;
-};
+const MODEL_LIST_ARGS = ["model", "list", "--json", "--no-update"];
+const MODEL_LIST_TIMEOUT_MS = 30_000;
 
-function stringList(value: unknown): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim()))
-    throw new Error("reasoning_efforts must be an array of non-empty strings");
-  return value.map((item) => item.trim());
+/** What `jcode model list --json` prints: the ids `-m` takes, and each provider route that can carry one. */
+interface JcodeModelList {
+  provider: string;
+  models: string[];
+  routes: { model: string; provider: string; available: boolean }[];
 }
 
-/** Read the same operator config Jcode copies into each private instance. This is a DECLARED local
- *  catalog, not a provider acceptance probe: live providers on the same host have rejected tiers
- *  declared here, so the metadata marks that distinction instead of presenting it as authority. */
-export function listJcodeModels(): ModelCatalog {
-  const path = join(userJcodeHome(), "config.toml");
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    throw new Error(`jcode model catalog could not read Jcode config: unreadable${code ? ` (${code})` : ""}`);
-  }
+function isJcodeModelList(value: unknown): value is JcodeModelList {
+  const list = value as Partial<JcodeModelList> | null;
+  return typeof list?.provider === "string" &&
+    Array.isArray(list.models) && list.models.every((id) => typeof id === "string" && id.length > 0) &&
+    Array.isArray(list.routes) && list.routes.every((route) =>
+      typeof route?.model === "string" && typeof route.provider === "string" && typeof route.available === "boolean");
+}
 
-  let raw: JcodeCatalogConfig;
+/** A model is listed when jcode reports an available route for it, and is attributed to the provider
+ *  of those routes: the one jcode selected when it has one, else the only one. jcode reports no
+ *  per-model reasoning efforts, so no model carries variants. */
+function catalogModels(stdout: string): ModelInfo[] {
+  let list: unknown;
   try {
-    raw = parseToml(text) as JcodeCatalogConfig;
+    list = JSON.parse(stdout);
   } catch {
-    throw new Error("jcode model catalog could not parse Jcode config: malformed TOML");
+    throw new Error("jcode model list --json did not print JSON");
   }
+  if (!isJcodeModelList(list)) throw new Error("jcode model list --json printed an unexpected shape");
+  const { provider: selected, models, routes } = list;
+  return models.flatMap((id) => {
+    const providers = new Set(routes.filter((route) => route.model === id && route.available).map((route) => route.provider));
+    if (!providers.size) return [];
+    const provider = providers.has(selected) ? selected : providers.size === 1 ? [...providers][0] : undefined;
+    return [{ id, ...(provider ? { provider } : {}) }];
+  });
+}
 
-  const providers = raw.providers;
-  if (!providers || typeof providers !== "object")
-    throw new Error("jcode model catalog has no [providers] table in Jcode config");
-
-  const models: ModelInfo[] = [];
-  const seen = new Set<string>();
-  let enabledProviders = 0;
-  for (const [provider, config] of Object.entries(providers)) {
-    if (!config || typeof config !== "object" || config.model_catalog !== true) continue;
-    enabledProviders++;
-    if (!Array.isArray(config.models))
-      throw new Error(`jcode model catalog provider ${provider} enables model_catalog but has no [[providers.${provider}.models]] entries`);
-    for (const [index, value] of config.models.entries()) {
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        throw new Error(`jcode model catalog provider ${provider} entry ${index + 1} is not a table`);
-      const entry = value as Record<string, unknown>;
-      const id = typeof entry.id === "string" ? entry.id.trim() : "";
-      if (!id) throw new Error(`jcode model catalog provider ${provider} entry ${index + 1} has no non-empty id`);
-      const key = `${provider}\0${id}`;
-      if (seen.has(key)) throw new Error(`jcode model catalog repeats ${provider}/${id}`);
-      seen.add(key);
-      const efforts = stringList(entry.reasoning_efforts);
-      models.push({
-        id,
-        provider,
-        ...(efforts?.length
-          ? {
-              variants: efforts.map((name) => ({
-                name,
-                options: {
-                  provenance: "declared-config",
-                  authoritative: false,
-                  warning: "declared by Jcode config; provider acceptance is validated only at launch",
-                },
-              })),
-            }
-          : {}),
-      });
-    }
-  }
-
-  if (!enabledProviders)
-    throw new Error("jcode model catalog has no provider with model_catalog = true in Jcode config");
-  if (!models.length)
-    throw new Error(`jcode model catalog enabled ${enabledProviders} provider(s) in Jcode config but declared no models`);
-  return { source: "declared Jcode config", models };
+/** Ask the jcode a seat would run which models it can use, in the environment a seat's host gets. */
+export function listJcodeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
+  const bin = opts.resolvedBinaries?.jcode ?? "jcode";
+  return new Promise((fulfill, reject) => {
+    const child = execFile(
+      bin,
+      MODEL_LIST_ARGS,
+      { encoding: "utf8", env: launchEnv(), timeout: MODEL_LIST_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          // jcode prints its error last, after any prompt it left unanswered on the same line.
+          const last = stderr.trim().split("\n").at(-1) ?? "";
+          const timedOut = error.killed && error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+          const reason = timedOut
+            ? `no answer within ${MODEL_LIST_TIMEOUT_MS / 1000} seconds`
+            : last.slice(Math.max(0, last.indexOf("Error: "))).trim() || error.message;
+          return reject(new Error(`jcode model list failed: ${reason}`));
+        }
+        try {
+          fulfill({ source: "jcode model list --json", models: catalogModels(stdout) });
+        } catch (parseError) {
+          reject(parseError);
+        }
+      },
+    );
+    // Without a login, jcode asks for one on stdin. Ending stdin answers it with a skip, so jcode
+    // exits and names `jcode login` instead of waiting out the timeout.
+    child.stdin?.end();
+  });
 }
 
 /**
@@ -134,6 +120,7 @@ export const jcodeConnector: Connector = {
   listModels: listJcodeModels,
   launchHint: "starting Jcode and joining the mesh (first boot can take several minutes)",
 
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (process.platform === "win32")
       throw new Error("jcode connector is not supported on Windows — Jcode's released Harness API bridge is a Unix-socket surface");
@@ -148,13 +135,14 @@ export const jcodeConnector: Connector = {
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("jcode connector: tool-sharing (connectors.jcode.mcpServers) is not implemented — the connector owns the private MCP configuration that carries cotal_*");
 
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
+    const artifacts: string[] = [];
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
-      COTAL_CONTROL_SOCKET: control.path,
+      ...nameEnv(opts),
       COTAL_JCODE_HOME: opts.workspaceRoot ?? process.cwd(),
     };
     if (opts.resolvedBinaries?.jcode) env.COTAL_JCODE_BIN = opts.resolvedBinaries.jcode;
@@ -213,9 +201,12 @@ export const jcodeConnector: Connector = {
       );
 
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
-    // Its directory is a launch artifact the launcher removes once the child has exited.
-    const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    // Its directory is a launch artifact the launcher removes once the child has exited. The control
+    // endpoint is minted here too, after every refusal, because minting makes its socket directory.
+    if (opts.validateOnly) return { command: "", args: [] };
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
+    env.COTAL_CONTROL_SOCKET = control.path;
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     // The fork's provenance is the seat's own record of it, written when the host forks.
     return {

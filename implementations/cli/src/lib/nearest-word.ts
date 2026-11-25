@@ -15,10 +15,9 @@ function editDistance(a: string, b: string): number {
   return d[a.length]![b.length]!;
 }
 
-/** `did you mean <candidate>?` for the candidates nearest to a mistyped `word`, or an empty string
- *  when none is near: one edit for a word of four characters or fewer, two for a longer one, leading
- *  dashes not counted. The word itself is never suggested, and a tie names each nearest candidate. */
-export function didYouMean(word: string, candidates: Iterable<string>): string {
+/** The closest spellings to a mistyped `word`: one edit for a word of four characters or fewer,
+ *  two for a longer one, leading dashes not counted. Excludes the word itself and keeps ties. */
+export function nearestWords(word: string, candidates: Iterable<string>): string[] {
   const bare = (text: string) => text.replace(/^-+/, "");
   const limit = bare(word).length <= 4 ? 1 : 2;
   let best = limit, nearest: string[] = [];
@@ -29,7 +28,13 @@ export function didYouMean(word: string, candidates: Iterable<string>): string {
     if (distance < best) { best = distance; nearest = [candidate]; }
     else if (distance === best) nearest.push(candidate);
   }
-  return nearest.length ? `did you mean ${nearest.sort().join(" or ")}?` : "";
+  return nearest.sort();
+}
+
+/** The spelling hint for `word`, or an empty string when none is near. */
+function didYouMean(word: string, candidates: Iterable<string>): string {
+  const nearest = nearestWords(word, candidates);
+  return nearest.length ? `did you mean ${nearest.join(" or ")}?` : "";
 }
 
 /** The tail of an unknown-word refusal: the suggestion for `word` if there is one, then `remedy`. */

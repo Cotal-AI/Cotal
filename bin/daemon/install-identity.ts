@@ -2,6 +2,12 @@ import { readFileSync, realpathSync } from "node:fs";
 import { CommandFailure } from "@cotal-ai/workspace/local-observation";
 import type { ServiceMechanism, UnitReceipt } from "./install.js";
 
+export function recordedSystemdArgv(source: string): string[] {
+  const lines = [...source.matchAll(/^ExecStart=(.*)$/gm)];
+  if (lines.length !== 1 || !lines[0]![1]) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon unit has no readable executable and entry");
+  return [...lines[0]![1]!.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
+}
+
 /** Whether the verified source carries the installer-owned native launch marker. */
 export function recordedSourceMarked(receipt: UnitReceipt, mechanism: ServiceMechanism): boolean {
   const source = readFileSync(receipt.unitPath).toString(mechanism === "scheduled-task" ? "utf16le" : "utf8");
@@ -16,9 +22,7 @@ export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceM
   const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
   let argv: string[];
   if (mechanism === "systemd-user") {
-    const line = /^ExecStart=(.*)$/m.exec(bytes.toString("utf8"))?.[1];
-    if (!line) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon unit has no readable executable and entry");
-    argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
+    argv = recordedSystemdArgv(bytes.toString("utf8"));
   } else if (mechanism === "launchd-agent") {
     const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(bytes.toString("utf8"))?.[1] ?? "";
     argv = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(match => decode(match[1]!));

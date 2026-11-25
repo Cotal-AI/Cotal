@@ -15,8 +15,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireLock } from "@cotal-ai/core";
 import { createSuite, listenOn, onFreePort } from "@cotal-ai/smoke-kit";
+import { CommandFailure } from "@cotal-ai/workspace";
+import { telemetryErrorText } from "../src/telemetry.js";
 import { clean, cotalPty, wait } from "./_console-pty.js";
+import { openTelemetryIntake } from "./_telemetry-intake.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -34,19 +38,8 @@ process.on("exit", () => {
 });
 
 type Body = Record<string, unknown>;
-const received: Body[] = [];
-const intake = createServer((req, res) => {
-  let text = "";
-  req.on("data", (chunk) => (text += chunk));
-  req.on("end", () => {
-    if (req.method === "POST" && req.headers["content-type"] === "application/json") received.push(JSON.parse(text) as Body);
-    res.statusCode = 204;
-    res.end();
-  });
-});
+const { server: intake, received, url } = await openTelemetryIntake();
 servers.push(intake);
-const port = await onFreePort((p) => listenOn(intake, p));
-const url = `http://127.0.0.1:${port}/v1/telemetry`;
 // A black hole: it accepts the connection and never answers, so the client's timeout is what ends the send.
 const blackHole = createServer(() => {});
 servers.push(blackHole);
@@ -117,6 +110,82 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   check("a stale lastInstallEventAt sends the install event again", nextDay.sent.length === 2 && nextDay.sent[0]!.event === "install", nextDay.sent.map((b) => b.event));
 }
 
+// The desktop metadata request waits for stdin after reading the settings. A second command
+// can finish first and claim today's install event without changing the desktop request's outcome.
+{
+  const s = sandbox();
+  const before = received.length;
+  const desktop = spawn(process.execPath, [BIN, "daemon", "desktop"], { cwd: s.project, env: s.env, stdio: ["pipe", "ignore", "ignore"], timeout: 30_000 });
+  const exited = new Promise<number | null>((resolve, reject) => { desktop.once("error", reject); desktop.once("close", resolve); });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(s.settingsPath) && desktop.exitCode === null && Date.now() < deadline) await wait(10);
+    check("the pending desktop request read a fresh telemetry identity", existsSync(s.settingsPath) && s.settings().lastInstallEventAt === undefined && desktop.exitCode === null);
+    const version = await s.run(["version"]);
+    check("version claims the daily report while desktop is waiting", version.status === 0 && version.sent.some((body) => body.event === "install"));
+  } finally { desktop.stdin.end('{"op":"about"}\n'); }
+  const code = await exited;
+  const rows = received.slice(before);
+  check("overlapping commands send one install and both command events for the same id", code === 0 && rows.length === 3 && rows.filter((body) => body.event === "install").length === 1 && rows.some((body) => body.command === "version") && rows.some((body) => body.command === "daemon" && body.subcommand === "desktop") && rows.every((body) => body.installId === s.settings().installId), rows.map((body) => body.event));
+}
+
+{
+  const s = sandbox();
+  const firstUse = acquireLock(`${s.settingsPath}.lock`);
+  try {
+    const busy = await s.run(["version"]);
+    check("a busy first-use identity does not fail the command or mint a second id", busy.status === 0 && busy.sent.length === 0 && !existsSync(s.settingsPath));
+  } finally { firstUse.release(); }
+  await s.run(["telemetry", "regular"]);
+  const held = acquireLock(`${s.settingsPath}.lock`);
+  try {
+    const busy = await s.run(["version"]);
+    check("a busy daily claim leaves the command event and exit unchanged", busy.status === 0 && busy.sent.length === 1 && busy.sent[0]?.command === "version" && s.settings().lastInstallEventAt === undefined);
+  } finally { held.release(); }
+  const next = await s.run(["version"]);
+  check("the next eligible command can claim the deferred day", next.status === 0 && next.sent.length === 2 && next.sent[0]?.event === "install");
+}
+
+{
+  const s = sandbox();
+  const docs = await s.run(["docs", "--json"]);
+  await settled();
+  check("bundled docs sends command telemetry without collecting the install inventory",
+    docs.status === 0 && docs.stderr === "" && docs.envelope?.outcome === "ok" && docs.sent.length === 1 &&
+    docs.sent[0]?.event === "command" && docs.sent[0]?.command === "docs" && s.settings().lastInstallEventAt === undefined,
+    { ...shown(docs), events: docs.sent.map((event) => event.event) });
+  const version = await s.run(["version"]);
+  await settled();
+  check("another command still sends the deferred install event",
+    version.status === 0 && version.sent.length === 2 && version.sent[0]?.event === "install" &&
+    version.sent[1]?.event === "command", version.sent.map((event) => event.event));
+}
+
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const replay = await s.run(["ext", "__update-add", "expected-package", "actual-package"], { COTAL_TELEMETRY: level });
+  check(`an internal extension replay at ${level} keeps its refusal local and creates no install id`,
+    replay.status === 1 && replay.stderr.includes("must be launched by its recorded parent") && replay.sent.length === 0 && !existsSync(s.settingsPath), shown(replay));
+}
+
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const r = await s.run(["ext", "remove", "not-installed"], {
+    COTAL_SKIP_CONNECTOR_SEED: undefined, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_TELEMETRY: level,
+    PATH: s.project, APPDATA: s.home, LOCALAPPDATA: s.home,
+  });
+  const commands = r.sent.filter((body) => body.event === "command");
+  check(`a seed child failed before removal at ${level}`, r.status === 1 && r.stderr.includes("failed to seed connector") && r.stderr.includes("npm install failed"), shown(r));
+  check(`only the operator's command reports at ${level}`, commands.length === 1 && commands[0]?.command === "ext" && commands[0]?.exitCode === 1 && commands[0]?.outcome === "error" && (level === "minimal" ? sameKeys(commands[0], MINIMAL) : commands[0]?.subcommand === "remove"), commands.map((body) => body.subcommand));
+  check(`the seed child sends no install event at ${level}`, r.sent.filter((body) => body.event === "install").length === (level === "regular" ? 1 : 0));
+}
+
+{
+  const r = await sandbox().run(["ext", "add", "./missing-extension"]);
+  const commands = r.sent.filter((body) => body.event === "command");
+  check("an explicit extension add still reports its own failure", r.status === 1 && commands.length === 1 && commands[0]?.subcommand === "add" && commands[0]?.outcome === "error");
+}
+
 // ---- no argument or flag value leaks, and a refusal carries its code ----
 {
   const s = sandbox();
@@ -138,9 +207,44 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
   await settled();
   check("a usage refusal is an event too: refused, USAGE_INVALID, exit 1", usage.status === 1 && usage.sent.length === 1 && usage.sent[0]?.outcome === "refused" && usage.sent[0]?.errorCode === "USAGE_INVALID" && usage.sent[0]?.subcommand === null, { ...shown(usage), sent: usage.sent });
   check("…whose message masks the unknown word the user typed", typeof usage.sent[0]?.errorMessage === "string" && !(usage.sent[0]!.errorMessage as string).includes("frobnicate") && (usage.sent[0]!.errorMessage as string).includes("<value>"), usage.sent[0]?.errorMessage);
+  for (const path of [[], ["ext"]]) {
+    const help = await s.run(["help", ...path, "frobnicate"]);
+    await settled();
+    const event = help.sent[0];
+    check(`unknown ${path.length ? "subcommand" : "command"} in help keeps the requested topic local`,
+      help.status === 1 && help.stderr.includes(path.length ? 'no subcommand "frobnicate"' : "unknown command: frobnicate") && help.sent.length === 1
+      && event?.command === "help" && event.outcome === "refused" && event.errorCode === "USAGE_INVALID" && event.errorMessage === null && event.errorStack === null
+      && !JSON.stringify(help.sent).includes("frobnicate"), shown(help));
+  }
+  const prompt = "private `prompt` text";
+  const spawn = await s.run(["spawn", "-d", "--on=", "--prompt", prompt]);
+  await settled();
+  check("a spawn pin refusal shows its retry locally but sends neither its message nor its stack",
+    spawn.status === 1 && spawn.stderr.includes(prompt) && spawn.sent.length === 1 && spawn.sent[0]?.errorCode === "USAGE_INVALID"
+    && spawn.sent[0]?.errorMessage === null && spawn.sent[0]?.errorStack === null, { ...shown(spawn), sent: spawn.sent });
   const unknown = await s.run(["frobnicate"]);
   await settled();
   check("an unknown command word names no command and sends nothing", unknown.status === 1 && unknown.sent.length === 0, shown(unknown));
+}
+
+for (const level of ["regular", "minimal"]) {
+  const s = sandbox();
+  const r = await s.run(["status", "--components", "--space", "missing-fixture-space"], { COTAL_TELEMETRY: level });
+  const events = r.sent.filter((body) => body.event === "command");
+  const event = events[0];
+  check(`a refused component target reports refused at ${level}`, r.status === 3 && /target\s+refused/.test(r.stdout) && events.length === 1 && event?.outcome === "refused" && event.exitCode === 3);
+  check(`component facts stay local at ${level}`, !JSON.stringify(events).includes("missing-fixture-space") && (level === "regular"
+    ? sameKeys(event, REGULAR) && event?.errorCode === null && event.errorMessage === null && event.errorStack === null : sameKeys(event, MINIMAL)));
+}
+
+// Native spawn diagnostics can contain arbitrary terminal output, even without quotes or paths.
+{
+  const message = "sample seat exited on launch: ordinary terminal output";
+  const failure = new CommandFailure("failed", "OPERATION_FAILED", message, { native: { code: "failed" } });
+  const text = telemetryErrorText("spawn", failure);
+  check("native spawn messages and stacks stay local", text.message === null && text.stack === null && failure.message === message);
+  const usage = telemetryErrorText("spawn", new CommandFailure("refused", "USAGE_INVALID", "expected a flag"));
+  check("local spawn usage errors still carry masked diagnostics", usage.message === "expected a flag" && typeof usage.stack === "string");
 }
 
 // ---- minimal ----
@@ -169,9 +273,10 @@ const INSTALL = [...COMMON, "account", "osRelease", "packageManager", "installMe
     check(`${Object.entries(extra).map(([k, v]) => `${k}=${v}`).join(" ")} sends nothing and creates no settings file`, r.status === 0 && r.sent.length === 0 && !existsSync(s.settingsPath), shown(r));
   }
   const status = await s.run(["telemetry", "--json"], { DO_NOT_TRACK: "1" });
+  const plainStatus = await s.run(["telemetry", "--plain"], { DO_NOT_TRACK: "1" });
   await settled();
   const result = status.envelope?.result as Body | undefined;
-  check("cotal telemetry under DO_NOT_TRACK reports off by that variable with no install id, and sends nothing", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === url, { ...shown(status), result });
+  check("cotal telemetry under DO_NOT_TRACK reports off and preserves the valid intake URL in JSON and plain text without sending", status.status === 0 && status.sent.length === 0 && result?.level === "off" && result?.source === "DO_NOT_TRACK" && result?.installId === null && result?.url === url && plainStatus.status === 0 && plainStatus.sent.length === 0 && /level:\s+off/.test(plainStatus.stdout) && plainStatus.stdout.includes(url), { json: shown(status), plain: shown(plainStatus), result });
 
   // Under an environment opt-out the file is neither read nor created, so a level saves nothing.
   for (const extra of [{ DO_NOT_TRACK: "1" }, { COTAL_TELEMETRY_DISABLED: "1" }, { COTAL_TELEMETRY: "off" }]) {
@@ -229,10 +334,8 @@ for (const { level, extra, name } of [
     const badUrl = await s.run(["version", "--json"], { COTAL_TELEMETRY_URL: intakeUrl });
     check(`COTAL_TELEMETRY_URL=${intakeUrl} refuses USAGE_INVALID before the command runs`, badUrl.status === 1 && badUrl.envelope?.outcome === "refused" && (badUrl.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && /COTAL_TELEMETRY_URL must be an http or https URL/.test(JSON.stringify(badUrl.envelope)), shown(badUrl));
   }
-  const badUrlOff = await s.run(["telemetry"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
-  check("…cotal telemetry refuses it even while the environment keeps telemetry off", badUrlOff.status === 1 && /COTAL_TELEMETRY_URL must be an http or https URL/.test(badUrlOff.stderr), shown(badUrlOff));
   const unusedUrl = await s.run(["version"], { COTAL_TELEMETRY_URL: "not-a-url", DO_NOT_TRACK: "1" });
-  check("…and another command runs, since nothing is sent to it", unusedUrl.status === 0, shown(unusedUrl));
+  check("a command runs with an invalid intake URL when nothing is sent to it", unusedUrl.status === 0, shown(unusedUrl));
   mkdirSync(join(s.home, ".cotal"), { recursive: true });
   writeFileSync(s.settingsPath, '{"v":1,"level":"loud"}');
   const malformed = await s.run(["version"]);
@@ -244,6 +347,28 @@ for (const { level, extra, name } of [
     await settled();
     check(`under ${Object.keys(extra)[0]} a malformed telemetry.json stops nothing, and is left as it was`, optedOut.status === 0 && optedOut.sent.length === 0 && readFileSync(s.settingsPath, "utf8") === '{"v":1,"level":"loud"}', shown(optedOut));
   }
+}
+
+// ---- an invalid intake cannot block off or a report of off ----
+{
+  const s = sandbox();
+  const bad = { COTAL_TELEMETRY_URL: "ftp://localhost/telemetry" };
+  const optedOut = { ...bad, DO_NOT_TRACK: "1" };
+  const status = await s.run(["telemetry", "--plain"], optedOut);
+  check("status under DO_NOT_TRACK reports off without displaying the invalid intake", status.status === 0 && /level:\s+off/.test(status.stdout) && !status.stdout.includes("sent to:") && !existsSync(s.settingsPath), shown(status));
+  const noop = await s.run(["telemetry", "off", "--json"], optedOut);
+  check("off under DO_NOT_TRACK is a no-op without creating a file even with an invalid intake", noop.status === 0 && noop.envelope?.outcome === "no-op" && (noop.envelope.warnings as Body[] | undefined)?.[0]?.code === "ENVIRONMENT_OPT_OUT" && !existsSync(s.settingsPath), shown(noop));
+
+  const active = await s.run(["telemetry", "--json"], bad);
+  check("status at the default active level refuses the invalid intake before creating settings", active.status === 1 && (active.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && !existsSync(s.settingsPath), shown(active));
+  const off = await s.run(["telemetry", "off", "--json"], { ...bad, COTAL_TELEMETRY: "minimal" });
+  const result = off.envelope?.result as Body | undefined;
+  check("off saves the file despite an invalid intake and still reports the environment's level", off.status === 0 && result?.level === "minimal" && result?.source === "COTAL_TELEMETRY" && result?.url === null && s.settings().level === "off", shown(off));
+  const savedOff = await s.run(["telemetry", "--json"], bad);
+  const saved = savedOff.envelope?.result as Body | undefined;
+  check("status also reports off from the file despite the invalid intake", savedOff.status === 0 && saved?.level === "off" && saved?.source === "file" && saved?.url === null, shown(savedOff));
+  const enable = await s.run(["telemetry", "regular", "--json"], bad);
+  check("enabling still refuses the invalid intake and leaves the file off", enable.status === 1 && (enable.envelope?.error as Body | undefined)?.code === "USAGE_INVALID" && s.settings().level === "off", shown(enable));
 }
 
 // ---- an intake that never answers, and one that is not there ----

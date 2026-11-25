@@ -1,6 +1,32 @@
 import type { ParsedArgs } from "@cotal-ai/core";
-import { isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, codeSpan, isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget, type ResolveFlags } from "@cotal-ai/workspace";
 import { canPrompt } from "../commands/meshes-wizard.js";
+import { shellWord } from "./endpoint-errors.js";
+import { displayCmd } from "./self-exec.js";
+
+/** Give the command again with each exact registered space, without confirming a removal. */
+export function spaceChoiceRemedy(error: unknown, command: string, args: ParsedArgs, rest: readonly string[]): string | undefined {
+  if (!isWorkspaceTargetError(error) || error.code !== "ambiguous-target" || !error.details.spaces?.length) return undefined;
+  const show = command === "space" && args.positionals[0] === "show";
+  const remove = command === "endpoint" && args.positionals[0] === "remove";
+  const describe = command === "describe" || command === "endpoint" && args.positionals[0] === "describe";
+  const endpointRead = command === "endpoint" && ["list", "show"].includes(args.positionals[0] ?? "list");
+  const brokerRead = error.details.server !== undefined && (command === "ps" ||
+    command === "history" && !["clear", "limit"].includes(args.positionals[0] ?? ""));
+  if (args.values.creds !== undefined && !endpointRead) return undefined;
+  if (!show && !endpointRead && !remove && !describe && !brokerRead && command !== "who") return undefined;
+  const server = args.values.server;
+  if (server !== undefined && (show || typeof server !== "string" || brokerAddressForDisplay(server) !== server)) return undefined;
+  const cli = displayCmd({ fromAnyFolder: true });
+  const end = rest.indexOf("--");
+  const flags = remove
+    ? ["remove", args.positionals[1]!, ...(args.values.json ? ["--json"] : args.values.plain ? ["--plain"] : [])].map(shellWord)
+    : (end === -1 ? rest : rest.slice(0, end)).map(shellWord);
+  const words = show ? [cli, "space", "show"] : [cli, command, ...flags, "--space"];
+  const suffix = show && args.values.json ? ["--json"] : show && args.values.plain ? ["--plain"]
+    : brokerRead && end !== -1 ? rest.slice(end).map(shellWord) : [];
+  return `run ${error.details.spaces.map((space) => codeSpan([...words, shellWord(space), ...suffix].join(" "))).join(" or ")}`;
+}
 
 /**
  * With no `--space`, `--server` or `--creds`, a command that several running meshes could serve
@@ -15,11 +41,12 @@ export async function chooseMeshTarget(args: ParsedArgs): Promise<void> {
   if (!canPrompt()) return;
   // The registry alone first, so a target that resolves costs no broker probe; only an ambiguous one
   // is checked against the brokers that answer, as the command itself would check it.
-  if (!runningChoices([])) return;
-  const spaces = runningChoices((await pruneStaleMeshes()).offline);
+  if (!targetChoices({})?.spaces) return;
+  const { target, spaces, uncheckedCandidates } = targetChoices(await pruneStaleMeshes(undefined, "targets")) ?? {};
+  if (target !== undefined) { values.space = target; return; }
   if (!spaces) return;
   const p = await import("./prompts.js");
-  const chosen = await p.select({ message: "Several spaces are running. Which one?", options: spaces.map((space) => ({ value: space, label: space })) });
+  const chosen = await p.select({ message: uncheckedCandidates ? "Several spaces are recorded. Which one?" : "Several spaces are running. Which one?", options: spaces.map((space) => ({ value: space, label: space })) });
   if (p.isCancel(chosen)) {
     p.cancel("nothing was done - no space was chosen");
     process.exit(0);
@@ -27,13 +54,12 @@ export async function chooseMeshTarget(args: ParsedArgs): Promise<void> {
   values.space = chosen;
 }
 
-/** The running spaces a resolution could not choose between, or undefined when it resolves or fails
- *  for another reason, which the command's own resolution reports. */
-function runningChoices(offline: string[]): string[] | undefined {
+/** Choices from the registry, including a sole candidate resolved by inventory. */
+function targetChoices(flags: ResolveFlags): { target?: string; spaces?: string[]; uncheckedCandidates?: boolean } | undefined {
   try {
-    resolveMeshTarget(process.cwd(), { offline });
-    return undefined;
+    const target = resolveMeshTarget(process.cwd(), { ...flags, readOnly: true });
+    return target.source === "registry" && flags.openInventory?.unserved.length ? { target: target.space } : undefined;
   } catch (e) {
-    return isWorkspaceTargetError(e) && e.code === "ambiguous-target" ? e.details.spaces : undefined;
+    return isWorkspaceTargetError(e) && e.code === "ambiguous-target" ? e.details : undefined;
   }
 }

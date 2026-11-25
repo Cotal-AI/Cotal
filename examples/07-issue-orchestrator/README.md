@@ -97,10 +97,13 @@ pnpm cotal run revoke <runId> --local --by <you> --reason "<why>"
 A revoke refuses every later answer and channel effect and keeps any manager from resuming or
 taking back the run, but it does not cancel it. These programs post nothing to a channel, so the
 run keeps dispatching turns, and each `ask` it can no longer have answered fails at its 30-minute
-deadline. To stop the drive itself, restart the manager (`cotal service restart stack-manager
---yes`, which stops every run it drives) or call the manager's `run-cancel` command
-([workflows](https://docs.cotal.ai/docs/workflow-operations/#operating-a-run)). A run stopped that way keeps the seats it
-spawned until you `cotal stop` them.
+deadline. After revoking, stop the drive on a default local `cotal up` stack with `cotal down
+--yes`. This stops every hosted run, the broker and the agents too. That stack has no manager-only
+stop or restart. On a prepared controller stack, use `cotal service stop stack-manager --yes`,
+then `cotal up` to start the manager again with its stack. For one hosted run, the manager's
+`run-cancel` command requires an issued credential pinned to that manager instance and has no CLI
+verb ([workflow operations](https://docs.cotal.ai/docs/workflow-operations/#run-admission)). A
+manager-only stop or run cancellation keeps spawned seats until you `cotal stop` them.
 
 ## How a lane runs
 

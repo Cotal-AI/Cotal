@@ -1,0 +1,2 @@
+# An unused read-only Claude configuration must not block update reconciliation or later startup.
+smoke:claude-refresh-readonly:live

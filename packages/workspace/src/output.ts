@@ -359,13 +359,20 @@ export function globalFlagDeclarationProblems(cmd: { name: string; flags?: reado
 }
 
 let inputDisabled = false;
+let noInputFlag = false;
 
-/** `--no-input`: no prompt, picker, editor or browser for the rest of this process. */
-export function disableInput(): void {
+/** `--no-input` or `--json`: no prompt, picker or browser for the rest of this process. */
+export function disableInput(byFlag = false): void {
   inputDisabled = true;
+  if (byFlag) noInputFlag = true;
 }
 
-/** Whether `--no-input` was given. A prompt site treats it as it treats a missing terminal. */
+/** Whether interactive prompts are disabled (`--no-input` or `--json`). */
 export function inputDisabledByFlag(): boolean {
   return inputDisabled;
+}
+
+/** Whether explicit `--no-input` was given. */
+export function explicitNoInputFlag(): boolean {
+  return noInputFlag;
 }

@@ -672,7 +672,7 @@ console.log("11. a detail returns the feed to the message and viewport it left")
     const reopened = await opened();
     check("help and the DM lens also leave the feed where it was", back === before && reopened === "m2", { back, reopened });
     await press("\x1b", "feed · ");
-    await press("]", "feed · general");
+    await press("]", "feed · #general");
     check("a channel change still jumps to the newest", (await opened()) === "m5");
     // Messages that arrive while a detail is open: at the bottom the feed follows them, scrolled up it stays.
     ep.say(6);

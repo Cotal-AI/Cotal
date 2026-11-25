@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, cpSync, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, readUpdateRecovery, resolveOnPath } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
@@ -10,6 +10,53 @@ export interface RetainedExecutionGeneration {
   root: string;
   version: string;
   inventorySha256: string;
+}
+
+export function unwritableInstallation(installedRoot: string, directory?: string): Error {
+  const tool = ["sudo", "doas"].find(name => resolveOnPath(name));
+  const prefix = dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''");
+  const install = `npm install -g --prefix '${prefix}' cotal-ai@latest`;
+  const administrator = tool ? `run: ${tool} ${install}` : `run as root: ${install}`;
+  const normalAccount = tool ? `as your normal account, without ${tool}` : "as your normal account";
+  return new Error(`installation is not writable${directory ? `: ${directory}` : ""}; have an administrator ${administrator}; then run \`cotal update\` ${normalAccount}`);
+}
+
+export function assertWritableExecutionDirectory(path: string, installed: string, setMode?: (mode: number) => void): boolean {
+  const stat = lstatSync(path);
+  const owned = stat.uid === process.getuid?.();
+  const restoreWrite = owned && stat.isDirectory() && (stat.mode & 0o200) === 0;
+  try {
+    if (restoreWrite) {
+      const mode = (stat.mode & 0o7777) | 0o200;
+      if (setMode) setMode(mode); else chmodSync(path, mode);
+    }
+    accessSync(path, constants.W_OK);
+    return restoreWrite;
+  } catch {
+    if (owned) throw new Error(`installation directory is not writable: ${path}; restore write access to this user-owned directory, then run \`cotal update --self\` again without sudo`);
+    throw unwritableInstallation(installed, setMode ? path : undefined);
+  }
+}
+
+export function writableExecutionStore(installed: string, shared: boolean): string {
+  const store = executionStore(installed);
+  const create = !lstatSync(store, { throwIfNoEntry: false });
+  if (create) mkdirSync(store, { mode: 0o700 });
+  const stat = lstatSync(store);
+  if (!stat.isDirectory()) throw new Error("unsafe execution generation store");
+  protectedExecutionEntry(store);
+  const setMode = (mode: number): void => {
+    const fd = openSync(store, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const current = fstatSync(fd);
+      if (current.uid !== process.getuid?.() || current.dev !== stat.dev || current.ino !== stat.ino || current.mode !== stat.mode)
+        throw new Error(`unprotected execution entry: ${store}`);
+      fchmodSync(fd, mode);
+    } finally { closeSync(fd); }
+  };
+  if (create && shared) setMode(0o755);
+  assertWritableExecutionDirectory(store, installed, setMode);
+  return store;
 }
 
 /** Remove group and other write from a tree this process just created. Node before 24.22 applies the
@@ -34,15 +81,14 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   }
   executionLocation(installedRoot);
   protectedExecutionEntry(verifiedSource);
-  try {
-    accessSync(installedRoot, constants.W_OK);
-    accessSync(dirname(dirname(installedRoot)), constants.W_OK);
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))]) {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
+    executionLocation(path);
   }
-  catch { throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installedRoot))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run cotal update as your normal account, without sudo`); }
-  const store = executionStore(installedRoot), shared = executionShared(installedRoot);
-  if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (shared) chmodSync(store, 0o755); }
-  if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
-  protectedExecutionEntry(store);
+  for (const path of [installedRoot, join(installedRoot, "dist"), dirname(installedRoot), dirname(dirname(installedRoot))])
+    assertWritableExecutionDirectory(path, installedRoot);
+  const shared = executionShared(installedRoot), store = writableExecutionStore(installedRoot, shared);
   const before = executionInventory(verifiedSource);
   const staging = mkdtempSync(join(store, ".preparing-"));
   try {
@@ -148,6 +194,8 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       try { release = claimGlobalNpmUpdateLock(modules); }
       catch (error) {
         if (inspectLock(join(modules, ".cotal-update.lock")).state === "active") return;
+        // Cleanup is optional. The update itself can wait for this child and owns any refusal.
+        if (error instanceof Error && /^global (?:install|reconcile) is still running \(pid \d+\) - retry once it finishes$/.test(error.message)) return;
         throw error;
       }
     }
@@ -162,17 +210,61 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     };
     const recovery = readUpdateRecovery();
     const protectedJournal = recovery?.execution;
-    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).map(name => {
-      const directory = join(store, name), stat = lstatSync(directory);
-      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+    const unreadableJournals: string[] = [];
+    const removedJournals: string[] = [];
+    const scannedTransactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).flatMap(name => {
+      const directory = join(store, name);
       const path = join(directory, "execution.json");
-      const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
-      if (record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
-      generation(record.target);
-      if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
-      if (record.previous.descriptor) generation(record.previous.descriptor.generation);
-      return { directory, path, record, finished: record.completed === true && path !== protectedJournal };
+      try {
+        const stat = lstatSync(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+        protectedExecutionEntry(directory);
+        const journal = lstatSync(path, { throwIfNoEntry: false });
+        if (!journal && path !== protectedJournal) {
+          const entries = readdirSync(directory);
+          // A crash before the initial rename can leave just the atomic writer's temporary file.
+          if (entries.length === 1 && /^execution\.json\.[a-f0-9]{32}$/.test(entries[0])) {
+            const temporary = join(directory, entries[0]);
+            const entry = lstatSync(temporary);
+            if (entry.isFile() && entry.uid === uid) {
+              protectedExecutionEntry(temporary);
+              rmSync(temporary);
+              entries.pop();
+            }
+          }
+          if (entries.length === 0) {
+            rmSync(directory, { recursive: true });
+            return [];
+          }
+        }
+        let record: { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
+        try { record = executionRecord(path) as typeof record; }
+        catch (error) {
+          // The initial writer returns the path to recovery only after writing the complete JSON.
+          // Do not infer abandonment from a read, ownership or validation failure.
+          if (!(error instanceof SyntaxError) || path === protectedJournal || journal?.uid !== uid || readdirSync(directory).length !== 1) throw error;
+          rmSync(directory, { recursive: true });
+          removedJournals.push(path);
+          return [];
+        }
+        if (!record || record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
+        generation(record.target);
+        if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
+        if (record.previous.descriptor) generation(record.previous.descriptor.generation);
+        return [{ directory, path, record, finished: record.completed === true && path !== protectedJournal }];
+      } catch {
+        unreadableJournals.push(path);
+        return [];
+      }
     });
+    // An incomplete scan cannot prove unique rollback ancestry. Keep the completion evidence for
+    // a later scan, but still remove abandoned staging under the same lock.
+    const journalWarnings = [
+      ...(removedJournals.length ? [`removed incomplete execution journals: ${removedJournals.join(", ")}`] : []),
+      ...(unreadableJournals.length ? [`retained unreadable or invalid execution journals: ${unreadableJournals.join(", ")}`] : []),
+    ];
+    if (journalWarnings.length) warn(new Error(journalWarnings.join(". ")));
+    const transactions = unreadableJournals.length ? [] : scannedTransactions;
     // A successful successor supersedes its uniquely identified rollback ancestry. Unlike the
     // absence of this home's recovery record, its explicit completion is installation-wide proof.
     for (const completed of transactions.filter(row => row.finished)) {
@@ -204,6 +296,14 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       try {
         const stat = lstatSync(path);
         if (stat.uid !== uid || stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`not an owned update directory: ${path}`);
+        const writable = (entry: string): void => {
+          const info = lstatSync(entry);
+          if (info.uid !== uid) throw new Error(`not an owned update entry: ${entry}`);
+          if (!info.isDirectory() || info.isSymbolicLink()) return;
+          chmodSync(entry, (info.mode & 0o777) | 0o700);
+          for (const name of readdirSync(entry)) writable(join(entry, name));
+        };
+        writable(path);
         rmSync(path, { recursive: true, force: true });
       } catch (error) { warn(error); }
     };

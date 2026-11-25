@@ -221,14 +221,22 @@ try {
     check("and the launch is explicitly unarmed", lastLaunchEvents === false, lastLaunchEvents);
   }
 
-  // 3 — the default + a connector that cannot emit: refuse and name the opt-out.
+  // 3 — explicit events on a connector that cannot emit still refuse before allocation.
   {
-    const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
-    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-silent" });
-    check("bare spawn on a non-emitting connector fails loud", reply.ok === false && /connector "smoke-silent".*--no-events/.test(reply.error ?? ""), reply);
+    const before = (mgr as unknown as {
+      namesCapacity: {
+        reserved: Set<string>;
+      };
+    }).namesCapacity.reserved.size;
+    const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-silent", events: true });
+    check("explicit events on a non-emitting connector fails loud", reply.ok === false && /connector "smoke-silent".*omit --events/.test(reply.error ?? ""), reply);
     // The refusal runs before the name is reserved, so it must leave none behind. A leaked reserve
     // is silent: it costs the next spawn its un-suffixed name and nothing reports why.
-    check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
+    check("the refusal releases the reserved name", (mgr as unknown as {
+      namesCapacity: {
+        reserved: Set<string>;
+      };
+    }).namesCapacity.reserved.size === before, before);
   }
   // 3b — registration policy makes the arm non-optional and names the space on every refusal.
   {
@@ -285,7 +293,11 @@ try {
     // grades a refusal this rule did not make.
 
     // (a) over the READ set, which is the form that matters: this is a read amplification.
-    const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
+    const before = (mgr as unknown as {
+      namesCapacity: {
+        reserved: Set<string>;
+      };
+    }).namesCapacity.reserved.size;
     const rowsBefore = (mgr as unknown as { agents: Map<string, unknown> }).agents.size;
     const r1 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: ["work", foreign] });
     remedyRefusal = r1.error ?? "";
@@ -294,7 +306,11 @@ try {
       r1.ok === false && /another agent's event channel/.test(r1.error ?? ""),
       r1,
     );
-    check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
+    check("the refusal releases the reserved name", (mgr as unknown as {
+      namesCapacity: {
+        reserved: Set<string>;
+      };
+    }).namesCapacity.reserved.size === before, before);
     // Nothing was minted. A refusal that returned an error but left a credential on disk would pass
     // the cell above and hand out the channel anyway, which is the failure the cell is about.
     // COUNTED, not name-guessed. The manager auto-numbers a collision, so naming the row a refused

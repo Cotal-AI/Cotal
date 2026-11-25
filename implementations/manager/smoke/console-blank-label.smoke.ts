@@ -38,6 +38,7 @@ const context: Record<string, unknown> = {
     createElement: element,
   },
   location: { hash: "", search: "" },
+  history: { state: null },
   fetch: async () => ({ ok: false, json: async () => [] }),
   setInterval: () => 0,
   console,

@@ -29,6 +29,7 @@ Run these commands from the supported mesh's project folder:
    ```
 
    A refused cut leaves the mesh running and unfenced. Follow the refusal's remedy, then retry preservation.
+   The cut needs a running stack, so a stack a plain `cotal down` stopped is started with `cotal up` first.
 
 2. Once the stack is preserved and stopped, create the artifact:
 
@@ -66,6 +67,9 @@ Restore before the normal broker listener opens:
 ```bash
 cotal up --restore ./space-backup --detach
 ```
+
+On a legacy root, restore keeps the JetStream file storage cap recorded in the preserved state.
+To use a different cap, pass `--max-file-store <bytes>` to `cotal up --restore`.
 
 A full restore requires the same space and the current local trust continuity.
 It validates the complete space trust bundle before staging or changing the preserved store.

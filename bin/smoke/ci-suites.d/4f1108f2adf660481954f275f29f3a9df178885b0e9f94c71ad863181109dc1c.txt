@@ -1,0 +1,4 @@
+# Agent commands on OpenCode 2.x through the agent endpoint: listed by id with nothing a harness keeps, one idle turn each,
+# the persona on a first-turn command, waiting messages before the next command, and each OpenCode answer mapped to its code;
+# the owner's turns with images as data URIs, and usage from the newest model step.
+smoke:opencode2-command:auth

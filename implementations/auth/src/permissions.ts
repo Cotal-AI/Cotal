@@ -187,7 +187,9 @@ export function calloutPermissions(
           "manager-caller",
           t.space,
           { ...principal, lifecycleUid: t.act.lifecycleUid },
-          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding },
+          // The row's kind, never a scope token, decides a person's control of their own agents
+          // (SPEC 13.21).
+          { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...binding, ...(acl.kind !== undefined ? { ledgerKind: acl.kind } : {}) },
         );
         // Interactive issuance is unchanged. A managed seat needs both its current persona scope
         // and the fresh direct-parent grant. The mint still uses only signed act.scope.
@@ -210,13 +212,16 @@ export function calloutPermissions(
     }
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
-    const { scope: _rowScope, kind: _kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
+    const { scope: _rowScope, kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
     // On a user mesh a `role:<r>` scope token is what the ledger walk lets this agent hand on. The
     // agent itself binds only its row's own role queue, so the token mints no task-queue row here.
     const minted = caps.filter((token) => capabilityRole(token) === undefined);
+    // The principal-route rows key on the row's kind, never a scope token (SPEC 13.21): a parent can
+    // hand its scope tokens to the agents it spawns, and it cannot hand them its row kind. A
+    // principal found in no ledger row space, such as a chat session, carries no kind and gets none.
     const mint = (endpointCapabilities: NonNullable<MintOpts["endpointCapabilities"]> = [], listing?: ListingBinding) => permissionsFor(
       "agent", t.space, { ...principal, lifecycleUid: acl.lifecycleUid },
-      { ...aclOpts, capabilities: minted, endpointCapabilities, ...(listing ? { listing } : {}) },
+      { ...aclOpts, capabilities: minted, endpointCapabilities, ...(listing ? { listing } : {}), ...(kind !== undefined ? { ledgerKind: kind } : {}) },
     );
     // The listing generation is decided on the complete set this connection is minted, endpoint
     // caller rights included, so its evidence is that set.

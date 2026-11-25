@@ -1,11 +1,12 @@
 import { basename, isAbsolute, join } from "node:path";
-import { readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
+import { accessSync, constants, readFileSync, readdirSync, rmSync, statSync, type Stats } from "node:fs";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceFromSegment, spaceSegment } from "./auth-paths.js";
-import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError } from "./mesh-registry.js";
+import { MeshRegistryError, canonicalRoot, homeCotalDir, isMeshRegistryError, registryRecordDirectory } from "./mesh-registry.js";
 import { recordOperationWarning, type OutputWarning } from "./output.js";
 import { prepareCotalHomeForWrite } from "./protected-records.js";
 import { localWriteFailure } from "./local-write.js";
+import { shellPath } from "./local-record-source.js";
 
 /**
  * A local space `cotal space create` prepared and no `cotal up` has started: its name and root.
@@ -21,6 +22,31 @@ export interface PreparedSpace {
   readonly root: string;
   /** ISO timestamp of when it was prepared. */
   readonly ts: string;
+}
+
+export type ProjectRootProblem = "missing" | "not-directory" | "inaccessible";
+
+/** Whether this account can reach and enter the recorded project directory. */
+export function projectRootProblem(path: string): ProjectRootProblem | undefined {
+  try {
+    if (!statSync(path).isDirectory()) return "not-directory";
+    accessSync(path, constants.X_OK);
+    return undefined;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" ? "missing" : code === "ENOTDIR" ? "not-directory" : "inaccessible";
+  }
+}
+
+/** An unavailable path that cannot contain the original project's journal. */
+export function projectRootDisplaced(problem: ProjectRootProblem | undefined): boolean {
+  return problem === "missing" || problem === "not-directory";
+}
+
+export function projectRootProblemText(problem: ProjectRootProblem): string {
+  if (problem === "missing") return "no longer exists";
+  if (problem === "not-directory") return "is not a directory";
+  return "could not be accessed";
 }
 
 export function preparedSpacesDir(): string {
@@ -51,7 +77,7 @@ export function readPreparedSpaces(): { spaces: PreparedSpace[]; unusable: MeshR
     try { stat = code === "ENOTDIR" ? statSync(dir) : undefined; } catch { stat = undefined; }
     if (stat) {
       const summary = stat.isFile() ? `${dir} is a file, not a folder` : `${dir} is not a folder`;
-      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv ${dir} ${dir}.old\`; Cotal makes the folder when it next prepares a space` });
+      throw new MeshRegistryError(dir, summary, { cause: e, summary, remedy: `move ${dir} aside, for example \`mv -- ${shellPath(dir)} ${shellPath(`${dir}.old`)}\`; Cotal makes the folder when it next prepares a space` });
     }
     throw new MeshRegistryError(dir, `the prepared spaces folder ${dir} could not be read: ${(e as Error).message}`, { cause: e });
   }
@@ -84,12 +110,13 @@ const removeStep = (file: string): string => {
 };
 
 /** The warning a prepared record that cannot be read is skipped with, naming its file and the step
- *  that removes it. */
+ *  that clears it. */
 export function preparedRecordSkipped(e: MeshRegistryError): OutputWarning {
+  const step = e.remedy ?? removeStep(e.file);
   return {
     code: "PREPARED_RECORD_SKIPPED",
     target: { file: e.file, space: preparedRecordSpace(e.file) ?? null },
-    message: `${e.message.slice(0, -` - ${removeStep(e.file)}`.length)}, so it is skipped; ${removeStep(e.file)}`,
+    message: `${e.message.slice(0, -` - ${step}`.length)}, so it is skipped; ${step}`,
   };
 }
 
@@ -102,15 +129,27 @@ function warnSkipped(e: MeshRegistryError): void {
 const unusableRecord = (file: string, problem: string, cause?: unknown): MeshRegistryError =>
   new MeshRegistryError(file, `${file} ${problem} - ${removeStep(file)}`, { cause, summary: `${file} is not a usable prepared space record`, remedy: removeStep(file) });
 
+/** A record this account may not read, as one left owned by root, says nothing about its content,
+ *  so its step gives the file back and keeps it, where a damaged record's step removes it. */
+const deniedRecord = (file: string, cause: unknown): MeshRegistryError => {
+  const remedy = process.platform === "win32"
+    ? "give this account read access to it again; the record is kept"
+    : `make it readable by this account again, for example with \`sudo chown "$(id -un)" ${shellPath(file)}\` and \`chmod 600 ${shellPath(file)}\`; the record is kept`;
+  return new MeshRegistryError(file, `${file} could not be read (${(cause as Error).message}) - ${remedy}`, { cause, summary: `${file} cannot be read by this account`, remedy, refusal: "PERMISSION_DENIED" });
+};
+
 function readPreparedFile(file: string): PreparedSpace | undefined {
-  let doc: Partial<PreparedSpace>;
+  let doc: Partial<PreparedSpace> | null;
   try {
-    doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace>;
+    doc = JSON.parse(readFileSync(file, "utf8")) as Partial<PreparedSpace> | null;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "EISDIR") throw registryRecordDirectory(file, e);
+    if (code === "EACCES" || code === "EPERM") throw deniedRecord(file, e);
     throw unusableRecord(file, `does not parse as a prepared space record (${(e as Error).message})`, e);
   }
-  if (typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || preparedRecordSpace(file) !== doc.space)
+  if (doc === null || typeof doc.space !== "string" || typeof doc.root !== "string" || !isAbsolute(doc.root) || typeof doc.ts !== "string" || preparedRecordSpace(file) !== doc.space)
     throw unusableRecord(file, "is not a usable prepared space record");
   return { space: doc.space, root: doc.root, ts: doc.ts };
 }

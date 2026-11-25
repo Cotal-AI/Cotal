@@ -1,5 +1,6 @@
 import * as prompts from "../lib/prompts.js";
-import { ConfirmationRequired, acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, oneLine, presentationOf, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, brokerAddressForDisplay, canonicalRoot, CommandFailure, oneLine, presentationOf, releaseMaintenanceLock, writeResult, type Report } from "@cotal-ai/workspace";
+import { teamRemovalConfirmation } from "../lib/confirmation-required.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { listAdditiveTeamAttempts, removalOriginal, type AdditiveAgentReceipt, type AdditiveStoppedReceipt } from "../lib/team-additive-attempt.js";
 import { agentOutcomeRows, agentSettlementRows, AGENT_RECONCILE_NOTE, prepareAgentReconcile, prepareAgentRetirement, withInterruptGuard, type AgentReconcileRun, type AgentRetirementRun } from "./team-agent-remove.js";
@@ -43,7 +44,7 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
   const agents = resume ? undefined : await prepareAgentRetirement({ root, space, deploymentId, original, receipt });
   // The preview reads cards without a writer. The one-shot writer is issued only after retirement,
   // by a fresh card preparation that repeats every check, so a slow retirement cannot outlive it.
-  const previewCards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: false });
+  const previewCards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: false, values });
   await previewCards.close();
   let lockFailure: CommandFailure | undefined, closeUnconfirmed = previewCards.closeUnconfirmed();
   const preview = { kind: "mixed-team-removal-preview" as const, deploymentId, managerInstanceId: original.managerInstanceId, server: brokerAddressForDisplay(original.server) ?? "not displayable", remainingPhases: resume ? ["card-removal"] : ["agent-retirement", "card-removal"], agents: agents?.agents ?? null, cards: previewCards.preview, readConsistency: "ordered-not-atomic" as const, dryRun: values["dry-run"] === true, effectAttempted: false };
@@ -55,7 +56,7 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
   ] });
   if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...previewReport(data).sections, { blocks: [{ kind: "lines", lines: ["Native slots and card revisions were read in order, not atomically. The membership feed is display-only. Nothing was stopped or deleted."] }] }] })); return; }
   if (!values.yes) {
-    if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted mixed team removal needs --yes after reviewing its retirements, policy fallback and impact", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
+    if (!canPrompt() || values.json) throw teamRemovalConfirmation("scripted mixed team removal needs --yes after reviewing its retirements, policy fallback and impact", target, values);
     const cardsText = `${receipt.createdChannels.length} recorded channel card(s) from ${oneLine(space)}`;
     const answer = await prompts.confirm({ message: `${resume ? `Remove ${cardsText}` : `Retire ${receipt.createdAgents.length} recorded agent incarnation(s), then remove ${cardsText}`}? The space defaults then apply to those channels (delivery ${previewCards.preview.defaults.deliveryClass}). History, grants and other readers are not changed.`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "mixed-team-removal", removed: false }, noOp: true }, () => ({ sections: [{ title: "Team kept", blocks: [{ kind: "lines", lines: ["No removal intent, stop or delete was submitted."] }] }] })); return; }
@@ -72,7 +73,7 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
         if (!agentRun.returned || abort.aborted) return { agentRun };
       }
       let cards: Awaited<ReturnType<typeof prepareCardRemoval>>;
-      try { cards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: true }); }
+      try { cards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: true, values }); }
       catch (error) { return { ...(agentRun ? { agentRun } : {}), cardRefusal: error instanceof CommandFailure ? error : new CommandFailure("refused", "TARGET_UNAVAILABLE", "the card phase could not establish an unchanged target; no card was deleted", { target }) }; }
       let cardRun: CardRemovalRun | undefined;
       try { cardRun = await cards.execute(); }
@@ -110,7 +111,7 @@ async function reconcileMixedTeam(input: { root: string; space: string; deployme
   const { root, space, deploymentId, original, receipt, agentIntent, cardIntent, values } = input, target = { root, space, deploymentId };
   if (cardIntent && !listAdditiveTeamAttempts(root).removal?.returned.some((row) => row.deploymentId === deploymentId)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a card removal intent exists without a complete retirement receipt; it was not reconciled", { target: { ...target, remainingPhase: "agent-retirement" } });
   const agents = agentIntent ? await prepareAgentReconcile({ root, space, deploymentId, original, receipt, intent: agentIntent }) : undefined;
-  let cards = cardIntent ? await prepareCardReconcile({ root, space, deploymentId, original, receipt, intent: cardIntent }) : undefined;
+  let cards = cardIntent ? await prepareCardReconcile({ root, space, deploymentId, original, receipt, intent: cardIntent, values }) : undefined;
   try {
     const preview = { kind: "mixed-team-removal-reconcile-preview" as const, deploymentId, managerInstanceId: original.managerInstanceId, agents: agents?.settlements ?? null, cards: cards?.settlements ?? null, remainingPhase: agentIntent ? "agent-retirement" as const : "card-removal" as const, effectAttempted: false as const, continuationOffered: false as const };
     const view = (data: typeof preview): Report => ({ sections: [
@@ -120,7 +121,7 @@ async function reconcileMixedTeam(input: { root: string; space: string; deployme
     ] });
     if (values["dry-run"]) { writeResult(presentationOf(values), { command: "team remove", target, result: preview, completeness: "partial" }, (data) => ({ sections: [...view(data).sections, { blocks: [{ kind: "lines", lines: ["Native slots and card revisions were read in order, not atomically. Nothing was recorded, stopped or deleted."] }] }] })); return; }
     if (!values.yes) {
-      if (!canPrompt() || values.json) throw new ConfirmationRequired("scripted reconciliation needs --yes after reviewing which observations it records", { target, remedy: `review it with \`cotal team remove ${deploymentId} --dry-run\`, then run \`cotal team remove ${deploymentId} --yes\`` });
+      if (!canPrompt() || values.json) throw teamRemovalConfirmation("scripted reconciliation needs --yes after reviewing which observations it records", target, values);
       const answer = await prompts.confirm({ message: "Record the observed outcomes for this unsettled mixed removal? Nothing is stopped, deleted or retried.", initialValue: false });
       if (prompts.isCancel(answer) || !answer) { writeResult(presentationOf(values), { command: "team remove", target, result: { kind: "mixed-team-removal-reconcile", recorded: false }, noOp: true }, () => ({ sections: [{ title: "Nothing recorded", blocks: [{ kind: "lines", lines: ["The unsettled intents are unchanged."] }] }] })); return; }
     }

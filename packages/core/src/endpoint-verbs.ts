@@ -19,7 +19,7 @@ import { EpEnvelopeError, registryReadFailed, parseEndpointEvent, type EndpointE
 import type { JetStreamManager } from "@nats-io/jetstream";
 import { freezeExpectedSet, registrationReconciler, serviceEpochReader, type FrozenInstance } from "./endpoint-service.js";
 import { type EpAttributedReply, type EpInstanceLiveness, type EpVerbOp, assertDeadline, buildRequest, epCall, parseAttributedReply, raceBounded, registryReadDetail, replySubjectFor } from "./endpoint-call.js";
-export { epCall, epCast, epProbeInstanceInterest } from "./endpoint-call.js";
+export { epCall, epCast, epProbeInstanceInterest, epPrincipalCall } from "./endpoint-call.js";
 export type { EpAttributedReply, EpInstanceLiveness, EpVerbOp, EpVerbTarget } from "./endpoint-call.js";
 
 // ---- watch: the LIVE-EVENT half (§13.5) --------------------------------------------------------

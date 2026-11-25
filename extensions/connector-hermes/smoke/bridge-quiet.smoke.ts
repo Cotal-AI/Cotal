@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { startBridgeServer } from "../src/bridge.js";
+import { bridgeKey, openBridge } from "./bridge-open.js";
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -92,7 +93,12 @@ const config = {
 
 const agent = new FakeAgent();
 const TOKEN = "quiet-bridge-token";
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, TOKEN);
+let subscriptions = 0;
+const clarifyFrames: Record<string, unknown>[] = [];
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN), {
+  onSubscribe: () => { subscriptions++; },
+  onClarify: (frame) => void clarifyFrames.push(frame),
+});
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -136,8 +142,10 @@ try {
     await once(raw, "close");
   }
 
-  client.write(JSON.stringify({ t: "subscribe", token: TOKEN }) + "\n");
+  assert.equal(subscriptions, 0, "unauthenticated sockets must not mark the gateway ready");
+  await openBridge(client, TOKEN);
   const incoming = await waitFrame((frame) => frame.t === "incoming");
+  assert.equal(subscriptions, 1, "authenticated gateway subscription marks readiness");
   assert.equal((incoming.msg as { id?: string }).id, "dm", "older quiet ambient must not block or join automatic Hermes delivery");
 
   client.write(JSON.stringify({ t: "tool", id: "pull", name: "cotal_inbox", args: {} }) + "\n");
@@ -148,8 +156,16 @@ try {
   client.write(JSON.stringify({ t: "delivered", recvKey: "dm" }) + "\n");
   for (let i = 0; i < 50 && agent.items.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(agent.items.length, 0, "Hermes completion must exact-ack the delivered DM");
+
+  client.write(JSON.stringify({ t: "clarify", id: "q1", session: "s", question: "Which?", choices: [], multiple: false, timeoutMs: 1000 }) + "\n");
+  client.write(JSON.stringify({ t: "clarify_end", id: "q1", resolved: false }) + "\n");
+  for (let i = 0; i < 50 && clarifyFrames.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(clarifyFrames.map((frame) => frame.t), ["clarify", "clarify_end"], "the adapter's clarify frames must reach the sidecar's question handler");
+  assert.equal(bridge.answerPrompt({ t: "clarify_answer", id: "q1", response: "soon" }), true, "an answer goes to the subscribed adapter");
+  assert.deepEqual(await waitFrame((frame) => frame.t === "clarify_answer"), { t: "clarify_answer", id: "q1", response: "soon" }, "the adapter must get the owner's answer as sent");
   client.destroy();
   console.log("✓ hermes quiet bridge: pull-only traffic is isolated from automatic delivery");
+  console.log("✓ hermes bridge: clarify frames reach the question handler and its answers reach the adapter");
 } finally {
   bridge.close();
   rmSync(dir, { recursive: true, force: true });

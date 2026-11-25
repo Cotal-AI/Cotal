@@ -35,7 +35,7 @@
     },
     {
       "name": "the creds pre-dial expiry guard is removed",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())\n      throw new Error(\n        opts.renewable\n          ? \"this endpoint's creds have expired and renewal is failing - not presenting the expired credential to the broker; retrying with backoff\"\n          : \"this endpoint's creds have expired and it holds no creds source to renew them - replace the credential and rebuild the endpoint (pass a creds FUNCTION for standing renewal)\",\n      );\n",
       "replace": "",
       "expectRed": "a rebuild presents cached expired creds to the broker ZERO times after renewal fails",

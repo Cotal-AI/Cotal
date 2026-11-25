@@ -1,0 +1,256 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/command-frames.smoke.ts"
+  ],
+  "guard": "the command socket's one parser accepts each valid mod frame and refuses each malformed one, one cell per rule",
+  "command": "pnpm smoke:claude-command-frames",
+  "completionMarker": "command-frames.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/command-frames.json",
+  "why": [
+    "Each mutation loosens one parser rule, so a frame the mod must not send is read as valid.",
+    "The suite runs src/command-frames.ts under tsx, so no mutation needs a build.",
+    "M2, M3 and M15 remove a guard whose absence still throws, but a TypeError or SyntaxError rather than the parser's refusal; the cells assert the refusal itself."
+  ],
+  "mutations": [
+    {
+      "name": "M1 a line over 1 MiB parses",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "if (Buffer.byteLength(line, \"utf8\") > MAX_LINE_BYTES) refuse",
+      "replace": "if (Buffer.byteLength(line, \"utf8\") > MAX_LINE_BYTES + 1) refuse",
+      "expectRed": "refuses a line one byte over 1 MiB",
+      "cell": "refuses a line one byte over 1 MiB"
+    },
+    {
+      "name": "M2 a line that is not JSON throws the JSON error",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "  try {\n    frame = JSON.parse(line);\n  } catch {\n    refuse(\"the line is not JSON\");\n  }\n",
+      "replace": "  frame = JSON.parse(line);\n",
+      "expectRed": "refuses a line that is not JSON",
+      "cell": "refuses a line that is not JSON"
+    },
+    {
+      "name": "M3 the parser reads a frame that is not an object",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "  if (!isFields(frame)) refuse(\"the line is not a JSON object\");\n",
+      "replace": "",
+      "expectRed": "refuses JSON null",
+      "cell": "refuses JSON null"
+    },
+    {
+      "name": "M4 an op that names a prototype member is looked up",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "!Object.hasOwn(FRAMES, op)",
+      "replace": "!(op in FRAMES)",
+      "expectRed": "refuses an op that names an Object prototype member",
+      "cell": "refuses an op that names an Object prototype member"
+    },
+    {
+      "name": "M5 unknown fields pass",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "  for (const k of Object.keys(f)) if (!allowed.includes(k)) refuse(`unknown field ${k}`);\n",
+      "replace": "",
+      "expectRed": "refuses a hello with an unknown field",
+      "cell": "refuses a hello with an unknown field"
+    },
+    {
+      "name": "M6 a version takes a space",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;",
+      "replace": "const VERSION = /^[0-9A-Za-z .+-]{1,64}$/;",
+      "expectRed": "refuses a hello whose mod has a space",
+      "cell": "refuses a hello whose mod has a space"
+    },
+    {
+      "name": "M7 a version takes 65 characters",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;",
+      "replace": "const VERSION = /^[0-9A-Za-z.+-]{1,65}$/;",
+      "expectRed": "refuses a hello whose claude version is 65 characters",
+      "cell": "refuses a hello whose claude version is 65 characters"
+    },
+    {
+      "name": "M8 a version need not be a string",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "if (typeof v !== \"string\" || !pattern.test(v)) refuse",
+      "replace": "if (!pattern.test(String(v))) refuse",
+      "expectRed": "refuses a hello whose claude version is a number",
+      "cell": "refuses a hello whose claude version is a number"
+    },
+    {
+      "name": "M9 an id takes 25 characters",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const ID = /^[a-z2-7]{26}$/;",
+      "replace": "const ID = /^[a-z2-7]{25,26}$/;",
+      "expectRed": "refuses an id of 25 characters",
+      "cell": "refuses an id of 25 characters"
+    },
+    {
+      "name": "M10 an id takes uppercase",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const ID = /^[a-z2-7]{26}$/;",
+      "replace": "const ID = /^[a-zA-Z2-7]{26}$/;",
+      "expectRed": "refuses an id with an uppercase letter",
+      "cell": "refuses an id with an uppercase letter"
+    },
+    {
+      "name": "M11 an id takes any digit",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const ID = /^[a-z2-7]{26}$/;",
+      "replace": "const ID = /^[a-z0-9]{26}$/;",
+      "expectRed": "refuses an id with a digit outside base32",
+      "cell": "refuses an id with a digit outside base32"
+    },
+    {
+      "name": "M12 a run answer's id is not checked",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "      text(f.reason, \"reason\", 1, MAX_REASON);\n    }\n    matches(f.id, ID, \"id\");\n",
+      "replace": "      text(f.reason, \"reason\", 1, MAX_REASON);\n    }\n",
+      "expectRed": "refuses an answer with no id",
+      "cell": "refuses an answer with no id"
+    },
+    {
+      "name": "M13 commands may be any value",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "  if (!Array.isArray(v)) refuse(\"commands is not an array\");\n",
+      "replace": "  if (!Array.isArray(v)) return;\n",
+      "expectRed": "refuses a list whose commands is an object",
+      "cell": "refuses a list whose commands is an object"
+    },
+    {
+      "name": "M14 a list takes 2049 commands",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const MAX_COMMANDS = 2048;",
+      "replace": "const MAX_COMMANDS = 2049;",
+      "expectRed": "refuses a list answer of 2049 commands",
+      "cell": "refuses a list answer of 2049 commands"
+    },
+    {
+      "name": "M15 a command need not be an object",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "    if (!isFields(c)) refuse(\"a command is not an object\");\n",
+      "replace": "",
+      "expectRed": "refuses a command that is null",
+      "cell": "refuses a command that is null"
+    },
+    {
+      "name": "M16 a name may be empty",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const NAME = /^\\S{1,128}$/u;",
+      "replace": "const NAME = /^\\S{0,128}$/u;",
+      "expectRed": "refuses an empty name",
+      "cell": "refuses an empty name"
+    },
+    {
+      "name": "M17 a name takes 129 characters",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const NAME = /^\\S{1,128}$/u;",
+      "replace": "const NAME = /^\\S{1,129}$/u;",
+      "expectRed": "refuses a name of 129 characters",
+      "cell": "refuses a name of 129 characters"
+    },
+    {
+      "name": "M18 a name takes whitespace",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const NAME = /^\\S{1,128}$/u;",
+      "replace": "const NAME = /^.{1,128}$/u;",
+      "expectRed": "refuses a name with whitespace",
+      "cell": "refuses a name with whitespace"
+    },
+    {
+      "name": "M19 a description takes 4097 characters",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const MAX_TEXT = 4096;",
+      "replace": "const MAX_TEXT = 4097;",
+      "expectRed": "refuses a description of 4097 characters",
+      "cell": "refuses a description of 4097 characters"
+    },
+    {
+      "name": "M20 an argument hint is not checked",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "    if (Object.hasOwn(c, \"argumentHint\")) text(c.argumentHint, \"argumentHint\", 0, MAX_TEXT);\n",
+      "replace": "",
+      "expectRed": "refuses an argument hint of 4097 characters",
+      "cell": "refuses an argument hint of 4097 characters"
+    },
+    {
+      "name": "M21 a description need not be a string",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "  if (typeof v !== \"string\") refuse(`${field} is not a string`);\n  const length = [...v].length;",
+      "replace": "  const length = [...String(v)].length;",
+      "expectRed": "refuses a description that is not a string",
+      "cell": "refuses a description that is not a string"
+    },
+    {
+      "name": "M22 text is counted in UTF-16 units",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const length = [...v].length;",
+      "replace": "const length = v.length;",
+      "expectRed": "accepts a description of 4096 characters outside the BMP",
+      "cell": "accepts a description of 4096 characters outside the BMP"
+    },
+    {
+      "name": "M23 a started run takes a reason",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "if (f.outcome === \"started\") only(f, [\"id\", \"op\", \"outcome\"]);",
+      "replace": "if (f.outcome === \"started\") only(f, [\"id\", \"op\", \"outcome\", \"reason\"]);",
+      "expectRed": "refuses a run started answer with a reason",
+      "cell": "refuses a run started answer with a reason"
+    },
+    {
+      "name": "M24 a run takes any outcome",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "oneOf(f.outcome, [\"refused\", \"not-found\"], \"outcome\");",
+      "replace": "oneOf(f.outcome, [\"refused\", \"not-found\", \"unknown\"], \"outcome\");",
+      "expectRed": "refuses a run answer with an unknown outcome",
+      "cell": "refuses a run answer with an unknown outcome"
+    },
+    {
+      "name": "M25 a refused run needs no reason",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "      oneOf(f.outcome, [\"refused\", \"not-found\"], \"outcome\");\n      text(f.reason, \"reason\", 1, MAX_REASON);\n",
+      "replace": "      oneOf(f.outcome, [\"refused\", \"not-found\"], \"outcome\");\n      if (Object.hasOwn(f, \"reason\")) text(f.reason, \"reason\", 1, MAX_REASON);\n",
+      "expectRed": "refuses a run refused answer with no reason",
+      "cell": "refuses a run refused answer with no reason"
+    },
+    {
+      "name": "M26 a reason may be empty",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "      text(f.reason, \"reason\", 1, MAX_REASON);\n    }",
+      "replace": "      text(f.reason, \"reason\", 0, MAX_REASON);\n    }",
+      "expectRed": "refuses an empty reason",
+      "cell": "refuses an empty reason"
+    },
+    {
+      "name": "M27 a reason takes 2001 characters",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "const MAX_REASON = 2000;",
+      "replace": "const MAX_REASON = 2001;",
+      "expectRed": "refuses a reason of 2001 characters",
+      "cell": "refuses a reason of 2001 characters"
+    },
+    {
+      "name": "M28 an interrupt takes a run outcome",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "oneOf(f.outcome, [\"interrupted\", \"idle\"], \"outcome\");",
+      "replace": "oneOf(f.outcome, [\"interrupted\", \"idle\", \"started\"], \"outcome\");",
+      "expectRed": "refuses an interrupt answer with a run outcome",
+      "cell": "refuses an interrupt answer with a run outcome"
+    },
+    {
+      "name": "M29 an interrupt's reason is not checked",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "    if (Object.hasOwn(f, \"reason\")) text(f.reason, \"reason\", 1, MAX_REASON);\n  },\n  error",
+      "replace": "  },\n  error",
+      "expectRed": "refuses an interrupt answer with an empty reason",
+      "cell": "refuses an interrupt answer with an empty reason"
+    },
+    {
+      "name": "M30 an error needs no reason",
+      "file": "extensions/connector-claude-code/src/command-frames.ts",
+      "find": "    matches(f.id, ID, \"id\");\n    text(f.reason, \"reason\", 1, MAX_REASON);\n  },\n};",
+      "replace": "    matches(f.id, ID, \"id\");\n  },\n};",
+      "expectRed": "refuses an error answer with no reason",
+      "cell": "refuses an error answer with no reason"
+    }
+  ]
+}

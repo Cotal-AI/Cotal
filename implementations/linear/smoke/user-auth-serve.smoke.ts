@@ -16,7 +16,7 @@ import { deriveOwnerForIdpSubject } from "../../auth/src/derive.js";
 import { grantActor } from "../../auth/src/ledger.js";
 import { saveIdpSession } from "../../auth/src/login.js";
 import { cotalAuthProvider } from "../../auth/src/provider.js";
-import { startAuthService, type AuthServiceHandle } from "../../auth/src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../../auth/src/service-host.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../../auth/src/store.js";
 import { mintServiceCallerPayloadObserverCreds } from "../../auth/src/service-caller-payload-bootstrap.js";
 import { serviceEndpointHostCall } from "../../auth/src/service-host-client.js";

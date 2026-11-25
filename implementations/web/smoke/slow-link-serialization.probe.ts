@@ -1,11 +1,7 @@
 import { throttledWriter } from "./slow-link-throttle.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const callbacks: (() => void)[] = [];
 const writes: string[] = [];
@@ -21,5 +17,6 @@ while (callbacks.length) callbacks.shift()!();
 check("slow-link serialization writes same-deadline chunks in FIFO order", writes.join("") === "ab", writes);
 writer.close();
 
-console.log(`SLOW LINK SERIALIZATION: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`SLOW LINK SERIALIZATION: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

@@ -3,14 +3,15 @@
  * A role equal to the name is still printed, because a bare name is how a peer with no role reads
  * and the role is what an anycast addresses.
  *
- * Control characters, Unicode line and paragraph separators, and brackets become a space. A peer
- * writes its own presence record, so its name and role arrive checked only as strings, and every
- * surface prints the label on one line beside bracketed fields of its own (message attribution sits
- * inside brackets): a `]` or a newline would end that syntax early and forge what follows, and an ESC
- * or BEL would reach the operator's terminal as a control sequence.
+ * Control characters, Unicode line and paragraph separators, brackets and double quotes become a
+ * space. A peer writes its own presence record, so its name and role arrive checked only as strings,
+ * and every surface prints the label on one line beside bracketed and quoted fields of its own
+ * (message attribution sits inside brackets, beside a quoted `sender_id`): a `]`, a `"` or a newline
+ * would end that syntax early and forge what follows, and an ESC or BEL would reach the operator's
+ * terminal as a control sequence.
  */
 export function peerLabel(card: { name: string; role?: string }): string {
-  return (card.role ? `${card.name}/${card.role}` : card.name).replace(/[\p{Cc}\p{Zl}\p{Zp}[\]]+/gu, " ");
+  return (card.role ? `${card.name}/${card.role}` : card.name).replace(/[\p{Cc}\p{Zl}\p{Zp}[\]"]+/gu, " ");
 }
 
 /** A participant name safe for one line of an error. A blank name is not one, so the line uses the id. */

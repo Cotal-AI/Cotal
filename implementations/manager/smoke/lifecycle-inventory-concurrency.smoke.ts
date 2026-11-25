@@ -60,9 +60,9 @@ try {
   });
   // Count inventory requests as the daemon's rail hands them to its handler.
   let arrived = 0;
-  const d = daemon.ep as unknown as { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply>; membersRegistry(): Promise<KV> };
-  const handle = d.handleDeliveryAdmin.bind(d);
-  d.handleDeliveryAdmin = (req) => { if (req.op === "lifecycleMemberships") arrived++; return handle(req); };
+  const d = daemon.ep as unknown as { deliveryPlane: { handleDeliveryAdmin(req: ControlRequest): Promise<ControlReply> }; membersRegistry(): Promise<KV> };
+  const handle = d.deliveryPlane.handleDeliveryAdmin.bind(d.deliveryPlane);
+  d.deliveryPlane.handleDeliveryAdmin = (req) => { if (req.op === "lifecycleMemberships") arrived++; return handle(req); };
   // Count the inventory's passes over the bucket on the daemon's own members handle, and let the suite
   // hold a pass at its start or fail it.
   const consumers = (await d.membersRegistry() as unknown as { js: { consumers: { getPushConsumer: (...a: unknown[]) => Promise<unknown> } } }).js.consumers;
@@ -179,7 +179,7 @@ try {
   const rowsOf = async (s: Seat) => (await listMembers(kv, { owner: s.principal })).filter((r) => r.lifecycleUid === s.uid);
   const outcome = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
   // Hold the daemon's next durable join at its start, after the ACL authorized it.
-  const dj = daemon.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown>; deliveryServeSub: { getReceived(): number }; retiringLifecycles: Map<string, Set<string>> };
+  const dj = daemon.ep as unknown as { durableJoinFor(...args: unknown[]): Promise<unknown>; deliveryPlane: { deliveryServeSub: { getReceived(): number }; retiringLifecycles: Map<string, Set<string>> } };
   const joinFor = dj.durableJoinFor.bind(dj);
   let joinHeld: { entered: () => void; release: Promise<void> } | undefined;
   dj.durableJoinFor = async (...args) => {
@@ -221,10 +221,10 @@ try {
   await blocking.entered;
   // The daemon reads each request as it arrives and holds an in-order one on its own chain, so the
   // subscription buffers nothing: count what the rail received while the held join runs.
-  const received = dj.deliveryServeSub.getReceived();
+  const received = dj.deliveryPlane.deliveryServeSub.getReceived();
   const cJoin = outcome(c.ep.durableJoinChannel("lane.a"));
-  for (let i = 0; i < 100 && dj.deliveryServeSub.getReceived() - received < 1; i++) await wait(50);
-  const queued = dj.deliveryServeSub.getReceived() - received;
+  for (let i = 0; i < 100 && dj.deliveryPlane.deliveryServeSub.getReceived() - received < 1; i++) await wait(50);
+  const queued = dj.deliveryPlane.deliveryServeSub.getReceived() - received;
   const cListing = await inventory({ principal: c.principal, uid: c.uid });
   blocking.release();
   const [bOutcome, cOutcome] = await Promise.all([bJoin, cJoin]);
@@ -243,7 +243,7 @@ try {
   const a2 = await seat("seat-a", a.id);
   await a2.ep.durableJoinChannel("lane.a");
   const a2Listing = await inventory({ principal: a2.principal, uid: a2.uid });
-  const marks = [...(dj.retiringLifecycles.get(a.principal) ?? [])];
+  const marks = [...(dj.deliveryPlane.retiringLifecycles.get(a.principal) ?? [])];
   check("the next lifecycle's inventory lists its row and keeps only its own mark for the alias",
     exact(a2Listing, ["lane.a"]) && marks.length === 1 && marks[0] === a2.uid, { a2Listing, marks });
 } catch (e) {

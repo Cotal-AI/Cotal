@@ -78,7 +78,7 @@ try {
   rmSync(envRoot, { recursive: true, force: true });
 }
 
-const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: SECRET }, cwd: "/tmp" }).command;
+const cmd = paneCommand({ command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_KEY: SECRET }, cwd: "/tmp" }).command;
 
 ok("paneCommand returns a `bash <path>` invocation", /^bash '\/.*\/launch\.sh'$/.test(cmd));
 const scriptPath = cmd.replace(/^bash\s+'|'$/g, "");
@@ -182,9 +182,8 @@ process.stdout.write("OK");
   }
 }
 
-// A name that begins with `-` would reach cmux's argument list as an option. The runtime checks the
-// name before it asks whether cmux is reachable, so this holds where cmux is not installed.
-for (const dashed of ["--workspace", "-x"]) {
+// Name validation runs before the runtime checks whether cmux is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
   let refusal = "";
   try { new CmuxRuntime().spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
   catch (error) { refusal = (error as Error).message; }

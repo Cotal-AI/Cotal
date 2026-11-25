@@ -88,7 +88,7 @@ export class HerdrRuntime implements Runtime {
 
   spawn(name: string, spec: LaunchSpec, cwd: string): AgentHandle {
     if (!/^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/.test(name))
-      throw new SpawnRefused(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -, not starting with -)`);
+      throw new SpawnRefused(`herdr runtime: unsafe agent name ${JSON.stringify(name)} (use letters, digits, _ . - and choose a name not starting with -)`);
     if (!herdr.available()) {
       const found = herdr.versionText();
       throw new SpawnRefused(

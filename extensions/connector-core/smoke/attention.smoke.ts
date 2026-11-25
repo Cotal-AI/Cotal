@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, seedChannelRegistry, isReachable, mintLifecycleUid } from "@cotal-ai/core";
+import { CotalEndpoint, seedChannelRegistry, isReachable, mintLifecycleUid } from "../../../packages/core/dist/index.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";

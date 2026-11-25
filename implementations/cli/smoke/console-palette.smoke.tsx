@@ -18,7 +18,7 @@ const snapshot = {
 } as unknown as MeshSnapshot;
 const readManaged = async (): Promise<PsReply> => ({ ok: true,
   rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" }],
-  silent: [], failed: [], answered: [],
+  silent: [], gone: [], failed: [], answered: [],
 });
 const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
 stdin.isTTY = true;
@@ -121,7 +121,7 @@ await scenario("status ", async () => {
   const row = frame.split("\n").find((line) => line.includes("busy_seat")) ?? "";
   assert.ok(row.includes("mesh working · progress unknown") && !/mesh working(?! · progress unknown)/.test(row), `A working managed seat's suggestion says progress unknown; saw: ${row}`);
   assert.ok(frame.split("\n").some((line) => line.includes("managed_only") && line.includes("mesh offline") && !line.includes("progress unknown")), "Every other presence word passes through unqualified");
-}, async () => ({ ok: true, silent: [], failed: [], answered: [], rows: [
+}, async () => ({ ok: true, silent: [], gone: [], failed: [], answered: [], rows: [
   { name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" },
   { name: "busy_seat", id: "busy-id", agent: "claude", mode: "pty", status: "running", mesh: "working", uptimeMs: 0, lifecycleUid: "uid-busy" },
 ] }));
@@ -179,4 +179,17 @@ await scenario("dm", async () => {
   await key("\r");
   assert.equal(query, "dm @local.blank ", query);
 }, undefined, {}, blankSnap);
+// The label is scrubbed for display, so a name it changes completes to the peer's id rather than to
+// a label that addresses someone else.
+const quoteSnap = {
+  agents: [{ card: { id: "local.quoted", name: 'Ada"x', role: "worker" }, status: "idle" }],
+  endpoints: [],
+  channels: [],
+} as unknown as MeshSnapshot;
+await scenario("dm", async () => {
+  await key("\r");
+  await screen("@Ada x");
+  await key("\r");
+  assert.equal(query, "dm @local.quoted ", query);
+}, undefined, {}, quoteSnap);
 console.log("✓ Command selection, recipient/seat/channel/role pickers, message entry, manager failure and blocked-action feedback");

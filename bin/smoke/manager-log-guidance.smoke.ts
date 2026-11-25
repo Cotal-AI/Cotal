@@ -43,7 +43,8 @@ check(
   /const fd = openPrivateAppend\(logPath\);/.test(managerProc),
 );
 
-const up = readFileSync(join(REPO, "implementations/cli/src/commands/up.ts"), "utf8");
+const up = ["up.ts", "up-manifest.ts"]
+  .map((file) => readFileSync(join(REPO, "implementations/cli/src/commands", file), "utf8")).join("\n");
 check(
   "the up success line derives its logfile guidance",
   /a failed launch and its reason: \$\{managerLogDisplayPath\(m\.space\)\}/.test(up),

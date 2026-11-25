@@ -12,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { validator } from '@exodus/schemasafe';
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from '@cotal-ai/smoke-kit';
-import { createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } from '@cotal-ai/core';
+import { createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, singleDocumentClosure, VOID_SCHEMA_DIGEST } from '@cotal-ai/core';
 import { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } from '@cotal-ai/workspace';
 import { cotalAuthProvider, deriveOwnerForIdpSubject, fetchIdpJwt, grantActor, loadAuthServiceInfo, loadOwnerSecret } from '@cotal-ai/auth';
 import { betterAuth } from 'better-auth';
@@ -236,6 +236,31 @@ try {
   rejects(spec.components.schemas.ServiceResult, missingReason);
   const absent = await request(base, '/service-endpoint-authority', 'POST', 403, { request: nativeRequest, proof: { kind: 'idp', token: idpToken } });
   assert.equal(absent.reason, 'not-found');
+  const document = { urn: 'org.example.contract', revision: 1, attributes: [], events: [], commands: [
+    { name: 'read', class: 'ephemeral', targeted: false, capability: 'read', inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST },
+  ] };
+  const closure = singleDocumentClosure(document);
+  const proposed = await request(base, '/service-endpoint-authority', 'POST', 202, {
+    request: { v: 1, kind: 'service-endpoint-authority', space, accountPublicKey: auth.account.pub,
+      endpoint: nativeRequest.endpoint, instanceId: nativeRequest.instanceId, operation: 'register', requestId: 'e'.repeat(32),
+      registration: { clusterDigests: [closure.closureDigest], contractArtifacts: [closure.manifest, document] },
+      expected: { state: 'unregistered' } },
+    proof: { kind: 'idp', token: idpToken },
+  });
+  assert.equal(proposed.state, 'approval-required');
+  assert.equal(proposed.operation, 'register');
+  assert.match(String(proposed.proposalId), /^[0-9a-f]{64}$/);
+  assert.match(String(proposed.proposalDigest), /^sha256:[0-9a-f]{64}$/);
+  const proposalStatus = await request(base, '/service-endpoint-authority', 'POST', 200, {
+    request: { ...nativeRequest, requestId: 'f'.repeat(32),
+      target: { kind: 'operation', operation: 'register', requestId: 'e'.repeat(32) } },
+    proof: { kind: 'idp', token: idpToken },
+  });
+  assert.equal(proposalStatus.state, 'status');
+  const status = proposalStatus.status as Record<string, unknown>;
+  assert.equal(status.state, 'proposed');
+  assert.equal(status.proposalId, proposed.proposalId);
+  assert.equal(status.proposalDigest, proposed.proposalDigest);
   await request(base, '/service-endpoint-host', 'GET', 405);
   await request(base, '/service-endpoint-host', 'POST', 403, '{}', { origin: 'https://other.invalid' }, true);
   await request(base, '/service-endpoint-host', 'POST', 415, '{}', { 'content-type': 'text/plain' }, true);
@@ -264,8 +289,9 @@ try {
   assert(nativeThrottles > 0, 'Native dispatch failures after a valid proof must consume the public refusal budget');
   await request(base, '/exchange', 'POST', 200, { idpToken, actor: 'cli' });
   assert.equal(coverage.size, 13, 'Every documented operation must receive an actual HTTP request');
+  assert.equal(success.size, 13, 'Every documented operation must produce a schema-valid HTTP 200 response');
   console.log(`auth openapi smoke: ${checks} schema checks; ${coverage.size}/13 operations exercised; ${success.size}/13 success shapes exercised`);
-  console.log('Not exercised: complete chat retirement; service authority successful registration/activation/renewal/ready and their native effect states; manager phases after prepare; admission saturation; deadline cutoff. Dedicated native suites own those paths.');
+  console.log('Not exercised: complete chat retirement; service authority approved registration/activation/renewal/ready and their native effect states; manager phases after prepare; admission saturation; deadline cutoff. Dedicated native suites own those paths.');
 } finally {
   if (daemon) await killAndAwaitExit(daemon, 'SIGTERM');
   releaseDaemon?.();

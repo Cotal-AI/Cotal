@@ -37,8 +37,8 @@ const secret = "leak-canary-orca-DO-NOT-LEAK";
 const launcher = privateLauncher(
   {
     command: process.execPath,
-    args: ["-e", "process.stdout.write(process.env.COTAL_CONTROL_TOKEN ?? '')"],
-    env: { COTAL_CONTROL_TOKEN: secret },
+    args: ["-e", "process.stdout.write(process.env.COTAL_CONTROL_KEY ?? '')"],
+    env: { COTAL_CONTROL_KEY: secret },
   },
   process.cwd(),
 );
@@ -525,9 +525,8 @@ ok("orcaRuntimeProvider registered as 'runtime/orca'", resolved === orcaRuntimeP
 // seat and stops there instead of failing on an attach that cannot open. Graded above the live
 // gate, because what a backend declares does not depend on whether its CLI is installed here.
 ok("the runtime declares that it streams no terminal", new OrcaRuntime().streamsTerminal === false);
-// A name that begins with `-` would reach Orca's argument list as an option. The runtime checks the
-// name before it asks whether Orca is reachable, so this holds where Orca is not installed.
-for (const dashed of ["--json", "-x"]) {
+// Name validation runs before the runtime checks whether Orca is reachable.
+for (const dashed of ["-reviewer", "--reviewer"]) {
   let refusal = "";
   try { new OrcaRuntime().spawn(dashed, { command: "true", args: [], env: {} }, "/tmp"); }
   catch (error) { refusal = (error as Error).message; }

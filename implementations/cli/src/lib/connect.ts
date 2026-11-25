@@ -28,8 +28,8 @@ export {
  *  `credential EXPIRED` or `credentials rejected`. Undefined while the broker cannot be reached or
  *  the credential still connects, because the endpoint's own re-establishing recovers both. A
  *  user-auth bearer and an open mesh present no fixed credential, so they keep re-establishing. A
- *  credential the command minted from the space's trust says to run the command again when it is
- *  rejected, because a new run mints one from the trust the space has now. */
+ *  credential the command minted from the space's trust says to run the command again when it
+ *  expires or is rejected, because a new run mints one from the trust the space has now. */
 export async function credentialEnded(conn: Connection): Promise<ConnectRefusal | undefined> {
   if (conn.creds === undefined) return undefined;
   try {
@@ -37,9 +37,11 @@ export async function credentialEnded(conn: Connection): Promise<ConnectRefusal 
   } catch (e) {
     if (!isConnectRefusal(e)) throw e;
     if (e.kind !== "permanent") return undefined;
-    if (conn.auth === undefined || e.code !== "PERMISSION_DENIED") return e;
+    if (conn.auth === undefined || (e.code !== "PERMISSION_DENIED" && e.code !== "AUTH_REQUIRED")) return e;
     const message = e.parts?.message ?? e.rendered.replace(/^✗ /, "");
-    const remedy = "the space's trust changed after this command started; run it again to connect with its current trust";
+    const remedy = e.code === "AUTH_REQUIRED"
+      ? "run the command again to start a new session"
+      : "the space's trust changed after this command started; run it again to connect with its current trust";
     return new ConnectRefusal(`✗ ${message} - ${remedy}`, undefined, { cause: e, code: e.code, parts: { message, remedy }, ...(e.target ? { target: e.target } : {}) });
   }
   return undefined;

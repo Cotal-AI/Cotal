@@ -89,7 +89,7 @@ at spawn. A spent restart budget, changed persona or expired credential prevents
 
 `events: false` is the workflow form of
 `cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
-publishes none, such as Hermes, needs it, because an omitted `events` arms the plane and the
+publishes none needs it, because an omitted `events` arms the plane and the
 manager refuses that connector at the spawn. A value that is not a boolean is refused at the
 spawn. `runtime` names the terminal runtime of this one seat (`pty`, or an installed extension such
 as `tmux`). Omitted, the seat uses the serving manager's own runtime. A name that manager cannot
@@ -245,6 +245,22 @@ or cancelled turn is never a reply, so an unanswered wait rides its own mediated
 `null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
 are observable. A turn the run itself ended without an accepted yield (its deadline, a
 cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
+
+
+## Message waits [#message-waits]
+
+`wait(message(channel, { from, matches }))` resolves with the first message posted on the channel
+after the wait opens that passes its filters. A message whose `from.id` differs from the sender its
+subject names never matches, whether or not the wait sets `from`
+([SPEC §5](../SPEC.md#5-envelopes)). `from` matches only messages whose subject sender is the
+principal this run recorded for the handle when it spawned the seat or bound the participant. The
+payload's `from.name` is not compared, so a peer that gives itself the agent's name does not match.
+A `from` handle outside the run's roster refuses the wait.
+
+A wait with no `from` is satisfied by a message from any principal that can post on the channel.
+`matches` tests the message's text and identifies no sender, so a wait that must hear from one
+participant sets `from`. `from` names a principal, not one seat: a seat the same owner respawns
+under the same name has the same principal, so its messages still match.
 
 
 ## Cancellation [#cancellation]

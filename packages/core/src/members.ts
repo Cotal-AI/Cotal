@@ -13,9 +13,10 @@
  * **sequence** (`joinCursor`/`leaveCursor`), never wall-clock.
  */
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
-import { membersBucket, memberKey, parseMemberKey, isConcreteChannel, isChannelFamily, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
+import { membersBucket, memberKey, parseMemberKey, familiesCovering, isConcreteChannel, isChannelFamily, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
+import { KvReadView } from "./kv-read-view.js";
 
 /** Thrown when a write would regress membership generation — a stale/late control reply. Callers
  *  treat this as "a newer membership change already won", not an error to retry. */
@@ -194,17 +195,11 @@ export async function deleteMember(kv: KV, channel: string, owner: string, lifec
 }
 
 /**
- * Scan the registry, yielding every live (non-deleted) record matching the filter. `channel` →
+ * Read every live (non-deleted) record matching the filter. `channel` →
  * the rows on exactly that channel or family; `covering` → the rows that cover a concrete channel,
  * its own and every family above it (fan-out's per-post list); `owner` → that owner's memberships.
  * With no filter, every record. Tombstones (with `leaveCursor`) ARE yielded — a caller that wants only
  * currently-open memberships filters on `leaveCursor === undefined`.
- *
- * ONE pass. This was a `keys()` scan plus a sequential per-key `get()`, which cost one round trip
- * per surviving key; a filtered caller paid for the keys that matched, an unfiltered one paid for
- * all of them. The filtering is still done in code (the registry stays the single canonical source;
- * a derived channel→members index remains a separate, deferred decision), but the READ is now
- * independent of record count.
  */
 export async function listMembers(
   kv: KV,
@@ -230,6 +225,23 @@ export async function listMembers(
     }
   }
   return out;
+}
+
+const fanoutViews = new WeakMap<KV, KvReadView>();
+
+/** Fresh channel and family rows for fan-out. The channel suffix and owner
+ *  prefix share a NATS token in a member key, so a broker subject filter cannot select them. */
+export async function membersForFanout(kv: KV, channel: string): Promise<MembershipRecord[]> {
+  let view = fanoutViews.get(kv);
+  if (!view) fanoutViews.set(kv, view = new KvReadView(kv, (key) => parseMemberKey(key)?.channel));
+  const current = await view.refresh();
+  const members: MembershipRecord[] = [];
+  for (const group of [channel, ...familiesCovering(channel)]) {
+    for (const entry of current.entries(group)) {
+      try { members.push(entry.json<MembershipRecord>()); } catch { /* skip undecodable */ }
+    }
+  }
+  return members;
 }
 
 /** True if a record makes the owner an **eligible durable recipient** for a CHAT message at `seq`:

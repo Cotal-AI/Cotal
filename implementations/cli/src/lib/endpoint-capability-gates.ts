@@ -1,5 +1,6 @@
 import { assertCommandToken, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, presentationOf } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, codeSpan, CommandFailure, oneLine, presentationOf } from "@cotal-ai/workspace";
+import { targetWords } from "./confirmation-required.js";
 import { onInstanceId } from "./control.js";
 import { validateEndpointSelector } from "./endpoint-selection.js";
 
@@ -36,13 +37,21 @@ export function validateEndpointCapabilityArguments(args: ParsedArgs): void {
   }
 }
 
+function contractReadHint(args: ParsedArgs): string {
+  const { creds, server, space, on } = args.values;
+  if (creds !== undefined || typeof server === "string" && brokerAddressForDisplay(server) !== server || typeof space === "string" && oneLine(space) !== space)
+    return "use endpoint describe with the original target and the same --space, --server, --creds and --on options";
+  const target = args.positionals.at(-2)!;
+  return `read ${codeSpan(`cotal endpoint describe ${target}${targetWords({ space, server })}${on === undefined ? "" : ` --on ${on}`}${args.values.plain ? " --plain" : " --json"}`)}`;
+}
+
 /** The current native resolver exposes command contracts, not a verified mapping for these
  *  application capabilities. Declare the grammar, but never guess subjects or spend authority. */
 export function endpointCapabilityGate(args: ParsedArgs): never {
   validateEndpointCapabilityArguments(args);
   throw new CommandFailure("refused", "UNSUPPORTED", "this author CLI has no verified native declaration adapter for the requested endpoint watch, interactive-session or work-pool capability; no subscription, cursor, session, lease or commit was created", {
     target: { capability: args.positionals[0], ...(args.positionals[0] === "work" ? { operation: args.positionals[1] } : {}) },
-    remedy: "read `cotal endpoint describe <target> --json` for its current command surface; this refusal does not claim that the endpoint itself lacks the capability, and no generic subject or remote-execution fallback was used",
+    remedy: `${contractReadHint(args)} for its current command surface; this refusal does not claim that the endpoint itself lacks the capability, and no generic subject or remote-execution fallback was used`,
   });
 }
 

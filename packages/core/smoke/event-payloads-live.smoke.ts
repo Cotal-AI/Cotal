@@ -71,6 +71,14 @@ try {
     assert.ok(rows.some(row => row.id === "history-probe"), "owner observer reads retained payload using scoped consumer create");
     console.log("PASS real observer retained payload history");
   } finally { await observer.stop(); }
+  const participantUid = mintLifecycleUid();
+  const participant = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "agent", { principal: { owner, actor: "reader" }, lifecycleUid: participantUid, allowSubscribe: [] }), lifecycleUid: participantUid, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "reader", kind: "endpoint" } });
+  try {
+    await participant.start();
+    const rows = await participant.eventPayloadHistory(owner, "seat", { limit: 10, signal: AbortSignal.timeout(5000) });
+    assert.ok(rows.some(row => row.id === "history-probe"), "a participant reads its own owner's retained payload history");
+    console.log("PASS participant retained payload history");
+  } finally { await participant.stop(); }
   const foreignObserver = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, newIdentity(), "observer", { principal: { owner: foreign, actor: "observer" } }), channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "foreign-observer", kind: "endpoint" } });
   try {
     await foreignObserver.start();

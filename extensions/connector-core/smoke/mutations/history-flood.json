@@ -14,24 +14,27 @@
   "mutations": [
     {
       "name": "M1 historical traffic no longer forces pull-only",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === \"quiet\"))",
       "replace": "!item.mentionsMe && (remembered?.pullOnly ?? cm === \"quiet\")",
-      "expectRed": "automatic delivery after a 119-message backfill is EXACTLY the live work order"
+      "expectRed": "automatic delivery after a 119-message backfill is EXACTLY the live work order",
+      "cell": "automatic delivery after a 119-message backfill is EXACTLY the live work order"
     },
     {
       "name": "M2 historical mentions become automatic again",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === \"quiet\"))",
       "replace": "!item.mentionsMe && (item.historical || (remembered?.pullOnly ?? cm === \"quiet\"))",
-      "expectRed": "historical mentions and ambient both stay pull-only"
+      "expectRed": "historical mentions and ambient both stay pull-only",
+      "cell": "historical mentions and ambient both stay pull-only"
     },
     {
       "name": "M3 all channel ambient becomes pull-only",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "item.historical || (!item.mentionsMe && (remembered?.pullOnly ?? cm === \"quiet\"))",
       "replace": "item.historical || !item.mentionsMe",
-      "expectRed": "live channel ambient remains automatic under open attention"
+      "expectRed": "live channel ambient remains automatic under open attention",
+      "cell": "live channel ambient remains automatic under open attention"
     }
   ]
 }
