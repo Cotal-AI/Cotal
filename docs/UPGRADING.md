@@ -25,6 +25,15 @@ storage reads your client initiated, such as a roster lookup.
 If resuming a Lang run refuses a recorded wait match with these headers, start a new run with
 `cotal run start --file <program>` and have the sender post a fresh message once the wait is ready.
 
+## Labelling an agent from its thread title
+
+The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
+an agent shows in place of its name. The auth callout grants it, so update and restart every member
+of the callout queue, then reconnect each person's clients. A connect that an old member answers
+gets no `set-label` permission. An agent whose connector predates `set-label` answers it
+`unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
+shows.
+
 ## Switching a running agent's model
 
 The `agent` cluster advances to revision 6 with `set-model`, which the owner

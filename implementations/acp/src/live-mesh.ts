@@ -5,9 +5,11 @@
  * agent under their owner, so no admin grant is needed.
  */
 import {
+  AGENT_CMD_SET_LABEL,
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
   AGENT_ENDPOINT,
+  AGENT_LABEL_META_KEY,
   AGUI_FRAME_KIND,
   chatSubject,
   DEV_OWNER,
@@ -30,6 +32,7 @@ import {
   type PresenceCondition,
   type PresenceEvent,
   type Profile,
+  type SetLabelIO,
   type SetNameIO,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, managerMachineId, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
@@ -221,6 +224,13 @@ export function frameOf(msg: CotalMessage, plane: SeatFrame["plane"] = "events")
     events: (part.events as unknown[]).filter((e): e is AguiEventLike => typeof e === "object" && e !== null && typeof (e as { type?: unknown }).type === "string"),
     ts: msg.ts,
   };
+}
+
+/** The name a presence card shows: the label the agent took from its first message, else its name
+ *  (SPEC 13.22). */
+function shownOf(card: Presence["card"]): string {
+  const label = card.meta?.[AGENT_LABEL_META_KEY];
+  return typeof label === "string" && label.trim() ? label : card.name;
 }
 
 /** A workspace failure as one plain error, or {@link SignInRequired} when the client's sign-in fixes
@@ -531,7 +541,7 @@ function agentCalls(c: Connected): Pick<Mesh, "agentCall" | "promptCounter" | "s
 }
 
 /** The agent list and the commands sent to one agent. */
-function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "relabel" | "spawnNameError"> {
   const { started, observer, target } = c;
   const { ctx, client, ask, seatCommand, yourManagers } = p;
   return {
@@ -570,8 +580,9 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
         rows.map((row): SeatRow => {
           const r = row as unknown as { name: string; id: string; lifecycleUid: string; agent: string; model?: string; cwd?: string; status: string; uptimeMs?: number };
           const principal = principalOf(r.id);
-          // `set-name` changes the name the agent shows, never the name its manager lists.
-          const shown = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card.name;
+          // A label and `set-name` change the name the agent shows, never the name its manager lists.
+          const card = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card;
+          const shown = card && shownOf(card);
           return {
             name: r.name,
             ...(shown && shown !== r.name ? { display: shown } : {}),
@@ -608,6 +619,10 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
       return ((await agent.agentCall(seat, AGENT_CMD_SET_NAME, { name })) as SetNameIO).name;
     },
 
+    async relabel(seat: SeatRef, label: string) {
+      return ((await agent.agentCall(seat, AGENT_CMD_SET_LABEL, { label })) as SetLabelIO).label;
+    },
+
     spawnNameError(name: string) {
       return spawnNameError(name, { userMode: target.mode === "user" });
     },
@@ -618,7 +633,7 @@ const sameCondition = (a: PresenceCondition, b: PresenceCondition): boolean =>
   a.code === b.code && a.source === b.source && a.message === b.message && a.since === b.since;
 
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
-function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "condition" | "roster" | "channels" | "close"> {
+function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "condition" | "shownName" | "followRoster" | "roster" | "channels" | "close"> {
   const { observer, caller, events, payloads, started } = c;
   // Each seat's current condition with when it arrived here, so a failed turn takes only one that
   // arrived during it. A condition shown before the space opened counts as older than any turn.
@@ -668,6 +683,17 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
       const id = principalKey(seat.owner, seat.actor).key;
       const status = observer.getRoster().find((p) => p.card.id === id)?.status;
       return status === "offline" ? undefined : status;
+    },
+
+    shownName(seat: SeatRef) {
+      const id = principalKey(seat.owner, seat.actor).key;
+      const card = observer.getRoster().find((p) => p.card.id === id && p.lifecycleUid === seat.lifecycleUid && p.status !== "offline")?.card;
+      return card && shownOf(card);
+    },
+
+    followRoster(onChange) {
+      observer.on("roster", onChange);
+      return () => void observer.off("roster", onChange);
     },
 
     condition(seat: SeatRef, since: number): SeatCondition | undefined {

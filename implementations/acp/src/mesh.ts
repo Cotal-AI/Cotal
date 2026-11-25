@@ -83,7 +83,7 @@ export interface SeatRef {
 
 /** A managed seat as a manager's `ps` lists it. */
 export interface SeatRow extends SeatRef {
-  /** The name the agent shows, when `set-name` made it differ from {@link SeatRef.name}. */
+  /** The name the agent shows, when its label or `set-name` made it differ from {@link SeatRef.name}. */
   readonly display?: string;
   readonly agent: string;
   readonly model?: string;
@@ -251,6 +251,10 @@ export interface Mesh {
   /** Change the name the seat shows with its agent endpoint's `set-name`, as the seat's owner. Resolves
    *  with the name its card now carries; rejects, naming why, when the space or the agent refuses. */
   rename(seat: SeatRef, name: string): Promise<string>;
+  /** Set the label the seat shows in place of its name with its agent endpoint's `set-label`, as the
+   *  seat's owner. Its name stays. Resolves with the label its card now carries; rejects, naming why,
+   *  when the space or the agent refuses. */
+  relabel(seat: SeatRef, label: string): Promise<string>;
   /** Why the manager would refuse `name` for a new seat on this space, or undefined when it would not. */
   spawnNameError(name: string): string | undefined;
   /** Type `text` into the seat's terminal and press Enter, through its manager's `input` command, so
@@ -264,6 +268,11 @@ export interface Mesh {
   /** A seat's presence status (`idle`, `working`, `waiting`), or undefined when it is not on the
    *  roster. */
   presence(seat: SeatRef): string | undefined;
+  /** The name this run of the seat shows in its presence: the label it took from its first message,
+   *  else its card name (SPEC 13.22). Undefined when the roster does not show the run. */
+  shownName(seat: SeatRef): string | undefined;
+  /** Call `onChange` each time the roster changes. Returns a function that stops following. */
+  followRoster(onChange: () => void): () => void;
   /** The condition the seat's presence carries now, when this process saw it arrive at or after
    *  `since`, its own clock in epoch ms; undefined otherwise. A failed turn's text is here: the run's
    *  `RUN_ERROR` carries only a fixed message. */

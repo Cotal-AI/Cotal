@@ -111,6 +111,19 @@ let specBody = "";
 }
 
 {
+  const docs = run(["docs", "cli-agent-control", "--json"]);
+  const body = docs.envelope?.result?.body;
+  const input = typeof body === "string" ? body.split(/^## input(?: \[#input\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
+  const flags = input.split("\n").filter((line) => line.startsWith("|"));
+  const raw = run(["input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--space", "docs-input-ref",
+    "--server", "nats://127.0.0.1:38324", "--creds", "./does-not-exist.creds", "--json"]);
+  check("the bundled input flag table lists space and server but not raw credentials, which input refuses",
+    docs.status === 0 && flags.some((line) => line.includes("`--space <s>`") && line.includes("`--server <url>`")) &&
+    flags.every((line) => !line.includes("--creds")) && raw.status === 2 && raw.envelope?.outcome === "refused" &&
+    raw.envelope.error?.code === "UNSUPPORTED", { flags, raw: shown(raw) });
+}
+
+{
   const docs = run(["docs", "cli-messaging", "--json"]);
   const body = docs.envelope?.result?.body;
   const pending = typeof body === "string" ? body.split(/^## pending(?: \[#pending\])?$/m)[1]?.split(/^## /m)[0] ?? "" : "";
