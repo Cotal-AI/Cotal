@@ -79,7 +79,7 @@ import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
-import { goneRootDown, goneRootStackDown, refuseInaccessibleDownRoot, validateGoneRootDownArguments } from "./stack-gone.js";
+import { blockedDownRootRemedy, goneRootDown, goneRootStackDown, refuseInaccessibleDownRoot, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine, recordedProcessesUnder } from "../lib/stack-journal.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -214,7 +214,7 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
   } catch { return; }
   if (root === undefined || space === undefined) return;
   refuseInaccessibleDownRoot(root, space);
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: blockedDownRootRemedy(root, sameDown(values)) ?? `run \`${sameDown(values)}\` from ${root}` });
 }
 
 /** The one route that stops the stack `up` starts from the machine home. */
@@ -564,7 +564,7 @@ function refuseSpaceElsewhere(root: string, space: string, values: ParsedArgs["v
   const stop = values["dry-run"] ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the stack of space "${space}" is recorded at ${at}, not at this folder's root, and \`cotal down\` stops only the stack recorded where it runs`, {
     target: { root, space, spaceRoot: at },
-    remedy: `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
+    remedy: blockedDownRootRemedy(at, stop) ?? `run \`${stop}\` in ${at}; to stop one saved service, run \`cotal service stop <service-name> --space ${space}\``,
   });
 }
 
