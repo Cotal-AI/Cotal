@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { acquireLock, credsClaims, resolveAuthProvider, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, userAuthStateDir, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
-import { accountMissing, assertAccountName, loadAccount, saveAccount, storedTokenPath } from "./account.js";
+import { AccountRecordError, accountMissing, assertAccountName, assertAccountWritable, loadAccount, saveAccount, storedTokenPath, type LinearAccount } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
@@ -80,12 +80,17 @@ export function accountForRead(name: string) {
   try { return loadAccount(name); }
   catch (error) {
     if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with \`cotal linear account add ${name} --mode <write|readonly> --token-file <path>\`, or \`cotal linear account login ${name} --mode <write|readonly>\`` });
+    if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the selected Linear account metadata could not be read; no token or account-file contents were printed", { target: { account: name } });
   }
 }
 
+function accountRecordRefusal(name: string, error: AccountRecordError): CommandFailure {
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error.message, { target: { account: name, path: error.path }, remedy: error.remedy });
+}
+
 function emitAccount(args: ParsedArgs, account: ReturnType<typeof loadAccount>, saved: boolean): void {
-  writeResult(presentationOf(args.values), { command: "linear", target: { account: account.name }, result: { kind: saved ? "linear-account-saved" : "linear-account-metadata", name: account.name, mode: account.mode, auth: account.auth, credentialReference: account.auth === "token" ? account.tokenFile : null, nativeSave: saved ? "acknowledged" : "not-requested", credentialContentsReadForReport: false, upstreamChecked: false } }, (row): Report => ({ sections: [{ title: saved ? "Linear account save acknowledged" : "Recorded Linear account", blocks: [{ kind: "fields", rows: [["Account", row.name], ["Mode", row.mode], ["Authentication", row.auth], ["Credential reference", row.credentialReference ?? "private native OAuth state"], ["Upstream", "not checked"]] }, { kind: "lines", lines: ["This is recorded configuration, not proof of current upstream access. Credential contents are not printed. Native OAuth or token persistence retains its own authority and lifetime rules."] }] }] }));
+  writeResult(presentationOf(args.values), { command: "linear", target: { account: account.name }, result: { kind: saved ? "linear-account-saved" : "linear-account-metadata", name: account.name, mode: account.mode, auth: account.auth, allowedTools: account.allowedTools ?? null, credentialReference: account.auth === "token" ? account.tokenFile : null, nativeSave: saved ? "acknowledged" : "not-requested", credentialContentsReadForReport: false, upstreamChecked: false } }, (row): Report => ({ sections: [{ title: saved ? "Linear account save acknowledged" : "Recorded Linear account", blocks: [{ kind: "fields", rows: [["Account", row.name], ["Mode", row.mode], ["Authentication", row.auth], ["Allowed tools", row.allowedTools === null ? "all upstream tools" : row.allowedTools.join(", ") || "none"], ["Credential reference", row.credentialReference ?? "private native OAuth state"], ["Upstream", "not checked"]] }, { kind: "lines", lines: ["This is recorded configuration, not proof of current upstream access. Credential contents are not printed. Native OAuth or token persistence retains its own authority and lifetime rules."] }] }] }));
 }
 
 function fail(msg: string): never {
@@ -293,12 +298,24 @@ export async function linear(args: ParsedArgs): Promise<void> {
         emitAccount(args, accountForRead(name), false);
         return;
       }
+      if (action === "login" || action === "add") {
+        try { assertAccountWritable(name); }
+        catch (error) {
+          if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
+          throw error;
+        }
+      }
       if (action === "login") {
         const mode = v.mode;
         if (!isLinearMode(mode)) fail("--mode must be write or readonly");
-        try { await loginAccount(name, mode); }
-        catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native Linear OAuth did not confirm its final local save; authorization or private state may have changed. Login was not retried", { target: { account: name } }); }
-        emitAccount(args, { name, mode, auth: "oauth" }, true);
+        let saved: LinearAccount;
+        try { saved = await loginAccount(name, mode); }
+        catch (error) {
+          if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
+          const recordError = error instanceof Error && error.cause instanceof AccountRecordError ? error.cause : undefined;
+          throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native Linear OAuth did not confirm its final local save; authorization or private state may have changed. Login was not retried", { target: { account: name }, ...(recordError && { remedy: recordError.remedy }) });
+        }
+        emitAccount(args, saved, true);
         return;
       }
       if (action !== "add") fail(USAGE);
@@ -307,9 +324,13 @@ export async function linear(args: ParsedArgs): Promise<void> {
       if (Boolean(v["token-stdin"]) === (v["token-file"] !== undefined)) fail("give exactly one of --token-stdin or --token-file");
       const account = { name, mode, auth: "token" as const, tokenFile: v["token-stdin"] ? storedTokenPath(name) : resolve(String(v["token-file"])) };
       const token = v["token-stdin"] ? await readStdin() : undefined;
-      try { saveAccount(account, token); }
-      catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native Linear account save did not confirm completion; a private token or record may have changed. The save was not retried", { target: { account: name } }); }
-      emitAccount(args, account, true);
+      let saved: LinearAccount;
+      try { saved = saveAccount(account, token); }
+      catch (error) {
+        if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native Linear account save did not confirm completion; a private token or record may have changed. The save was not retried", { target: { account: name } });
+      }
+      emitAccount(args, saved, true);
       return;
     }
     case "inventory": {
