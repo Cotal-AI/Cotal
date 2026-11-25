@@ -50,7 +50,7 @@ export function nativeStub(scenario) {
         state.installed = true; return ok({ installed: true });
       }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
       if (request.op === "status-watch") {
@@ -359,11 +359,10 @@ export const scenarios = [
               ? { v: 1, event: 'result', ok: true, result: { started: true } }
               : { v: 1, event: 'result', ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'The selected local agent is no longer running.' } }); });
           }
-          const reply = await invoke(command, args);
-          if (command === 'daemon_request' && args.request.op === 'status' && reply.ok) reply.result.agentTerminal = true;
-          return reply;
+          return invoke(command, args);
         };
-        document.dispatchEvent(new Event('visibilitychange'));
+        window.__renderState.agentTerminal = true;
+        window.__pushStatus();
       }, outcome);
       await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).click();
     },
@@ -409,7 +408,7 @@ export const scenarios = [
           window.__renderState.agents[0].agents.shift();
           const remaining = window.__renderState.agents[0].agents[0];
           remaining.model = 'updated-model';
-          document.dispatchEvent(new Event('visibilitychange'));
+          window.__pushStatus();
         });
         await page.getByText('Codex · updated-model').waitFor();
         assert.equal(await page.getByRole('button', { name: 'Stopping… writer-1' }).isDisabled(), true);

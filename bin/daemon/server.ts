@@ -34,6 +34,14 @@ import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
 import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 
+type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
+function agentActionError(error: unknown) {
+  const failure = isConnectRefusal(error) ? error.failure() : error;
+  if (!isCommandFailure(failure)) return;
+  const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
+  return { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) };
+}
+
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
 const MAX_REQUESTS_PER_CONNECTION = 64;
 
@@ -321,7 +329,6 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         })().catch(error => log(`daemon: shutdown failed: ${String(error)}`));
         return;
       }
-      type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
       const managerResult = (run: () => ManagerResult | Promise<ManagerResult>) => {
         replyTask(Promise.resolve().then(run).then((result) => {
           if (req.op !== "status") notifyStatusWatchers();
@@ -331,13 +338,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
           if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
-          if (req.op === "agent-stop" || req.op === "agent-terminal") {
-            const failure = isConnectRefusal(error) ? error.failure() : error;
-            if (isCommandFailure(failure)) {
-              const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
-              return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) } });
-            }
-          }
+          const actionError = (req.op === "agent-stop" || req.op === "agent-terminal") && agentActionError(error);
+          if (actionError) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: actionError });
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: `the daemon could not complete ${req.op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" } });
         }));
       };
@@ -409,12 +411,8 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
         return;
       }
-      if (req.op === "agent-stop") {
-        managerResult(async () => { await managers.stopAgent(req.space, req.lifecycleUid); return status(); });
-        return;
-      }
-      if (req.op === "agent-terminal") {
-        managerResult(() => managers.terminalAgent(req.space, req.lifecycleUid));
+      if (req.op === "agent-stop" || req.op === "agent-terminal") {
+        managerResult(() => req.op === "agent-terminal" ? managers.terminalAgent(req.space, req.lifecycleUid) : managers.stopAgent(req.space, req.lifecycleUid).then(() => status()));
         return;
       }
       if (req.op === "connect-check") {

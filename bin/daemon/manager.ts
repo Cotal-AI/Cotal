@@ -71,6 +71,41 @@ export interface Live {
   healthFailures?: number;
 }
 
+async function selectRunningAgent(local: Live | undefined, lifecycleUid: string) {
+  const child = local?.child;
+  const instanceId = local?.view.instanceId;
+  if (!local || !child || !instanceId || local.stopping || local.view.state !== "answering")
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The Manager for this local agent is not answering.");
+  const selected = (await readHostedAgents(child)).find(agent => agent.lifecycleUid === lifecycleUid);
+  if (!selected?.id || selected.state !== "running")
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "The selected local agent is no longer running.");
+  if (local.child !== child || local.stopping || local.view.instanceId !== instanceId)
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The local Manager changed before the action could start.");
+  return { local, child, instanceId, name: selected.name, expectedTarget: { id: selected.id, lifecycleUid } };
+}
+
+function hostedAgentActions(home: string, live: ReadonlyMap<string, Live>) {
+  return {
+    async terminalAgent(space: string, lifecycleUid: string): Promise<{ argv: string[] }> {
+      const { name, instanceId } = await selectRunningAgent(live.get(space), lifecycleUid);
+      const argv = daemonArgv();
+      return { argv: [argv[0]!, argv.at(-1)!, "attach", name, "--on", instanceId, "--space", space] };
+    },
+    async stopAgent(space: string, lifecycleUid: string): Promise<void> {
+      const { local, child, instanceId, name, expectedTarget } = await selectRunningAgent(live.get(space), lifecycleUid);
+      await withIdpSessionDir(home, async () => {
+        const target = await resolveControlTarget({ space }, "control-caller-admin", instanceId, { onRefusal: "throw" });
+        if (local.child !== child || local.stopping || local.view.instanceId !== instanceId)
+          throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The local Manager changed before Stop was sent.");
+        const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, space, target.server, "stop", { name, graceful: true }, target.auth, target.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedTarget });
+        if (!reply.ok) throw managerFailure(reply, "agent stop", { space, managerInstanceId: instanceId, agent: name });
+        if ((reply.data as { stopped?: boolean } | undefined)?.stopped !== true)
+          throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "The Manager did not confirm that it stopped the agent. Check the agent list before trying again.");
+      });
+    },
+  };
+}
+
 export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, onChange?: () => void) {
   const notify = () => { try { onChange?.(); } catch {} };
   const { generationCall, isRateLimited, closeProbeSession, stopChild, spaces } = hostedManagerChildren({ home, notify });
@@ -644,38 +679,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     current.starting = launch(current).catch((error) => refuse(current, (error as Error).message, `correct the cause and run \`cotal daemon setup --space ${space}\``)).finally(() => { current.starting = undefined; });
     return current.starting;
   };
-  const selectRunningAgent = async (space: string, lifecycleUid: string) => {
-      const local = live.get(space);
-      const child = local?.child;
-      const instanceId = local?.view.instanceId;
-      if (!local || !child || !instanceId || local.stopping || local.view.state !== "answering")
-        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The Manager for this local agent is not answering.");
-      const selected = (await readHostedAgents(child)).find(agent => agent.lifecycleUid === lifecycleUid);
-      if (!selected?.id || selected.state !== "running")
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", "The selected local agent is no longer running.");
-      if (local.child !== child || local.stopping || local.view.instanceId !== instanceId)
-        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The local Manager changed before the action could start.");
-      return { local, child, instanceId, name: selected.name, expectedTarget: { id: selected.id, lifecycleUid } };
-  };
   return {
     start, status, refresh,
-    async terminalAgent(space: string, lifecycleUid: string): Promise<{ argv: string[] }> {
-      const { name, instanceId } = await selectRunningAgent(space, lifecycleUid);
-      const argv = daemonArgv();
-      return { argv: [argv[0]!, argv.at(-1)!, "attach", name, "--on", instanceId, "--space", space] };
-    },
-    async stopAgent(space: string, lifecycleUid: string): Promise<void> {
-      const { local, child, instanceId, name, expectedTarget } = await selectRunningAgent(space, lifecycleUid);
-      await withIdpSessionDir(home, async () => {
-        const target = await resolveControlTarget({ space }, "control-caller-admin", instanceId, { onRefusal: "throw" });
-        if (local.child !== child || local.stopping || local.view.instanceId !== instanceId)
-          throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "The local Manager changed before Stop was sent.");
-        const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, space, target.server, "stop", { name, graceful: true }, target.auth, target.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedTarget });
-        if (!reply.ok) throw managerFailure(reply, "agent stop", { space, managerInstanceId: instanceId, agent: name });
-        if ((reply.data as { stopped?: boolean } | undefined)?.stopped !== true)
-          throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "The Manager did not confirm that it stopped the agent. Check the agent list before trying again.");
-      });
-    },
+    ...hostedAgentActions(home, live),
     async agents(cachedOnly = false): Promise<HostedAgents[]> {
       const observations = await Promise.all([...live.values()].filter(l => l.view.state !== "stopped").map(async l => {
         if (cachedOnly && l.agents && l.child && !l.stopping) return l.agents;
