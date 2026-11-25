@@ -385,6 +385,15 @@ if (process.platform !== "win32") {
   check("endpoint init advises removing an unsupported option before creating files", initRefused.status === 1
     && initError?.message === "endpoint init does not take --space"
     && initError.remedy?.startsWith("remove --space") === true && !existsSync(join(cwd, "not-created")), shown(initRefused));
+  const separatorArgs = ["endpoint", "init", "not-created"];
+  const missingDir = run([...separatorArgs, "--json", "--dir", "--", "--file"], {}, cwd);
+  const missingDirError = parsed(missingDir)?.error;
+  const plainDir = run([...separatorArgs, "--plain", "--dir", "--", "-y"], {}, cwd);
+  check("endpoint init diagnoses the missing --dir value without reading literal options after --", missingDir.status === 1
+    && missingDir.stderr === "" && missingDirError?.message === "--dir needs a value"
+    && missingDirError.remedy === "write --dir <directory> before --" && plainDir.status === 1 && plainDir.stdout === ""
+    && /--dir needs a value/.test(plainDir.stderr) && /write --dir <directory> before --/.test(plainDir.stderr)
+    && !existsSync(join(cwd, "not-created")), [missingDir, plainDir].map(shown));
   const pastedFile = "\u2013\u2013file=example.json";
   const pastedCheck = run([...checkArgs, pastedFile], {}, cwd);
   const checkRetry = run(checkArgs, {}, cwd);
@@ -595,6 +604,26 @@ writeFileSync(join(referenceProject, "reference.json"), JSON.stringify(reference
 const added = addReference("reference.json");
 check("endpoint add saves the reference after retrying with a file path", prepared.status === 0 && added.status === 0
   && JSON.parse(added.stdout).result?.reference?.endpoint === reference.endpoint, { prepared: shown(prepared), added: shown(added) });
+
+for (const [verb, flag, args] of [
+  ["remove", "--file", ["rm", "example", "--file"]],
+  ["show", "--dir", ["show", "example", "--dir", "--", "--file"]],
+  ["describe", "--dir", ["describe", "example", "--no-input", "--dir", "--no-input"]],
+  ["invoke", "--file", ["invoke", "example", "echo", "--file"]],
+  ["invoke", "-f", ["invoke", "example", "echo", "-f=private-placeholder"]],
+  ["work lease", "--result", ["work", "lease", "example", "jobs", "--result"]],
+] as const) {
+  const refused = run(["endpoint", "--json", ...args], {}, referenceProject);
+  const receipt = parsed(refused);
+  check(`endpoint ${verb} does not ask for a value for ${flag}`, refused.status === 1 && refused.stderr === ""
+    && receipt?.command === "endpoint" && receipt.outcome === "refused" && receipt.error?.code === "USAGE_INVALID"
+    && receipt.error.message === `endpoint ${verb} does not take ${flag}`
+    && receipt.error.remedy === `remove ${flag} and any value supplied for it`
+    && !refused.stdout.includes("private-placeholder"), shown(refused));
+}
+const commitMissing = run(["endpoint", "work", "commit", "example", "jobs", "--json", "--result"], {}, referenceProject);
+check("endpoint work commit still asks for its own missing --result value", commitMissing.status === 1
+  && commitMissing.stderr === "" && parsed(commitMissing)?.error?.remedy === "write --result <JSON>", shown(commitMissing));
 
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));

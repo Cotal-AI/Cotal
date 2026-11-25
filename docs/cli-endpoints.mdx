@@ -511,6 +511,8 @@ complete endpoint namespace.
 `endpoint` (`ep`) reads local references only and labels live state Not checked. `show <name>`
 shows the saved space, native class, full instance pin and storage revision. These commands do
 not connect to a broker or infer registrations from participant presence.
+Use `cotal endpoint <subcommand> --help` to see that subcommand's options. If a refusal names an
+unsupported option, remove it and any value supplied for it.
 If `show <name>` cannot find the reference in the resolved space, Next shows how to list the saved
 references with `cotal endpoint --space <space>` and keeps `--json` or `--plain` if you passed it.
 If the inventory cannot find the named space, it refuses with `TARGET_NOT_FOUND` and keeps the

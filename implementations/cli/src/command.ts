@@ -139,7 +139,7 @@ async function repeatedGlobalFlag(word: string, cmd: Command | undefined, words:
   const tokens = found && parseArgs({ args: options, options: parserOptions(found), strict: false, allowPositionals: true, tokens: true }).tokens;
   const missing = tokens?.find((token) => token.kind === "option" && token.inlineValue === false && token.value === word);
   const flag = missing?.kind === "option" ? found?.flags?.find(({ name }) => name === missing.name) : undefined;
-  const unsupported = found && flag ? endpointAuthoringOptionRefusal(found, rest) : undefined;
+  const unsupported = found && flag ? endpointOptionRefusal(found, rest, flag.name) : undefined;
   const refusal: { message: string; remedy?: string } = unsupported ?? (found && flag && missing
     ? !flag.multiple && tokens?.some((token) => token.kind === "option" && token.name === flag.name && token.index < missing.index)
       ? { message: `--${flag.name} cannot be repeated`, remedy: `use --${flag.name} once` }
@@ -533,6 +533,8 @@ function misspelledOption(cmd: Command, rest: readonly string[], flagNames: read
     const short = /^-([^-=])=(.*)$/su.exec(word);
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) {
+      const unsupported = endpointOptionRefusal(cmd, rest, flag.name);
+      if (unsupported) return unsupported;
       const value = short[2]!;
       const quoted = shellWord(value);
       const long = `--${flag.name}=${quoted}`;
@@ -556,19 +558,32 @@ function parserOptions(cmd: Command) {
   return Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
 }
 
-/** An offline authoring verb cannot use a sibling's option, even when its value is missing. */
-function endpointAuthoringOptionRefusal(cmd: Command, words: readonly string[]) {
+/** Authoring refuses foreign options directly. Other endpoint verbs keep their own validation
+ *  for well-formed options, but parser errors must not ask for a value the verb cannot take. */
+function endpointOptionRefusal(cmd: Command, words: readonly string[], invalidValue?: string) {
   if (cmd.name !== "endpoint") return undefined;
-  const sub = findSubcommand(cmd, metadataPositionals(cmd, words).positionals[0]?.value);
-  if ((sub?.name !== "init" && sub?.name !== "check") || !sub.flagNames) return undefined;
+  const [verb, action] = metadataPositionals(cmd, words).positionals;
+  const sub = findSubcommand(cmd, verb?.value);
+  if (!sub) return undefined;
+  const authoring = sub.name === "init" || sub.name === "check";
+  if (!authoring && invalidValue === undefined) return undefined;
+  const nested = findSubcommand(sub, action?.value);
+  const accepted = (nested ?? sub).flagNames;
+  if (!accepted || (invalidValue !== undefined && accepted.includes(invalidValue))) return undefined;
+
+  // A loose parse can consume a bare -- as a string value. Do not scan the literal tail.
+  const end = words.indexOf("--");
   const options = parserOptions(cmd);
-  const { tokens } = parseArgs({ args: [...words], options, strict: false, allowPositionals: true, tokens: true });
+  const { tokens } = parseArgs({ args: words.slice(0, end === -1 ? words.length : end), options, strict: false, allowPositionals: true, tokens: true });
   for (const token of tokens) {
-    if (token.kind !== "option" || sub.flagNames.includes(token.name) || !Object.hasOwn(options, token.name)) continue;
+    if (token.kind !== "option" || accepted.includes(token.name) || !Object.hasOwn(options, token.name)
+      || (invalidValue !== undefined && token.name !== invalidValue)) continue;
+    const path = nested ? `${sub.name} ${nested.name}` : sub.name;
     const operand = sub.name === "check" ? "contract path" : "endpoint name";
+    const remove = `remove ${token.rawName} and any value supplied for it`;
     return {
-      message: `endpoint ${sub.name} does not take ${token.rawName}`,
-      remedy: `remove ${token.rawName} and any value supplied for it. Pass the ${operand} as a positional argument`,
+      message: `endpoint ${path} does not take ${token.rawName}`,
+      remedy: authoring ? `${remove}. Pass the ${operand} as a positional argument` : remove,
     };
   }
   return undefined;
@@ -625,12 +640,16 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {
     return { message: error.message.replace(/\. This command does not take positional arguments\.?$/u, "") };
   }
+  if (error.code !== "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") return { message: error.message };
   const bare = /^Option '(?:-[^,']+, )?--([^ ']+) <value>' argument missing/.exec(error.message)?.[1];
   const last = bare === undefined ? undefined : cmd.flags?.find((item) => item.name === bare);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && last) return missingValue(cmd, rest, last);
   const long = /use '--([^=']+)=-XYZ'/.exec(error.message)?.[1];
   const flag = long === undefined ? undefined : cmd.flags?.find((item) => item.name === long);
-  if (error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" && flag) {
+  const invalid = last ?? flag;
+  const unsupported = invalid && endpointOptionRefusal(cmd, rest, invalid.name);
+  if (unsupported) return unsupported;
+  if (last) return missingValue(cmd, rest, last);
+  if (flag) {
     const options = parserOptions(cmd);
     const { tokens } = parseArgs({ args: [...rest], options, strict: false, allowPositionals: true, tokens: true });
     let seen = false;
@@ -660,7 +679,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
   const plain = !seed && rest.includes("--plain");
-  const unsupported = endpointAuthoringOptionRefusal(cmd, rest);
+  const unsupported = endpointOptionRefusal(cmd, rest);
   if (unsupported) usageExit(unsupported.message, cmd, json, plain, unsupported.remedy, rest);
   const flagNames = seed?.flagNames ?? (cmd.name === "spawn" ? cmd.flagNames : undefined);
   const misspelled = cmd.rawArgs ? undefined : misspelledOption(cmd, rest, flagNames);
