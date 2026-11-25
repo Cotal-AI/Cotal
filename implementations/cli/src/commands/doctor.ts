@@ -435,7 +435,11 @@ function exportedCredentials(root: string, auth: SpaceAuth): ExportedRow[] {
     let bytes: Buffer | undefined;
     try { bytes = readLocalRecordSource(entry.path, 1024 * 1024, true); }
     catch {
-      try { const stat = lstatSync(entry.path); row.repair = stat.isFile() ? credentialFileExposure(entry.path, stat)?.remedy ?? null : null; } catch { /* reported unreadable */ }
+      try {
+        const stat = lstatSync(entry.path);
+        if (stat.isSymbolicLink()) row.repair = "The recorded export is a symbolic link. Restore the original private regular file at the recorded path in place of the link.";
+        else if (stat.isFile()) row.repair = credentialFileExposure(entry.path, stat)?.remedy ?? null;
+      } catch { /* reported unreadable */ }
       rows.push(row);
       continue;
     }
