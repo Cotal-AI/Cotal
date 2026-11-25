@@ -783,6 +783,8 @@ with `cotal backup restore <dir> --accept-missing-source` instead of offering to
 
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
+If the catalog contains `suffix.md` (`.cotal/agents/suffix.md.md`), both commands select that entry
+even if the space's project root has a file named `suffix.md`. Use `./suffix.md` to select the project file explicitly.
 If that persona cannot be read or validated, status reports the application as unresolved
 and includes a warning instead of presenting a harness preference as the launch choice.
 Non-regular persona paths, including named pipes, are refused without reading them.
