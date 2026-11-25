@@ -23,8 +23,11 @@ The Manager cluster advances to revision 57. A Manager's `status` and its presen
 `machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
 own machine by this value. The host name cannot decide it, because macOS changes it when the
 network changes. The closed status schema of revision 56 rejects the field, so update Managers and
-their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
-recognise it as running here.
+their callers together. A Manager service that an older release started on this machine keeps
+running after `cotal update --self` and names no machine. `cotal acp` still recognises it as
+running here, by the native instance that `cotal manager status` shows for the space, and starts no
+second Manager. Any other Manager that names no machine counts as another computer's until it runs
+the new version.
 
 ## The agent endpoint on every space
 
