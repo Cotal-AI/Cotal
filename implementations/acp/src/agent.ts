@@ -41,7 +41,7 @@ import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegiste
 import { launchManagers } from "./manager-start.js";
 import type { ClientTitle } from "./thread-title.js";
 import { Titles } from "./titles.js";
-import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
+import { awaitTaken, promptParts, takeTurn, turnFailure, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, spawnModel, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -82,6 +82,10 @@ const SERVE_MS = 20_000;
 /** How long a prompt's answer waits for the seat's usage after its turn. A client such as T3 Code
  *  files a turn's usage only when it arrives before the prompt answers; a later one still goes. */
 const USAGE_MS = 3_000;
+/** How long a failed run waits for the seat's presence condition, which carries the harness's text
+ *  and travels apart from the run's `RUN_ERROR`. */
+const CONDITION_MS = 2_000;
+const CONDITION_POLL_MS = 50;
 /** Frames from a seat no session holds are kept this long, in case a spawn reply names it next. */
 const UNCLAIMED_MS = 120_000;
 const UNCLAIMED_FRAMES = 500;
@@ -125,7 +129,14 @@ export interface CotalAgentOptions {
 
 interface Turn {
   readonly stop: (reason: StopReason) => void;
+  /** Fail the prompt. A {@link RequestError} is its answer as it is; any other error is an internal
+   *  error with that message. */
   readonly fail: (error: Error) => void;
+  /** When the prompt was sent, this process's clock. A condition the seat showed before then is not
+   *  this turn's. */
+  readonly sent: number;
+  /** A run of the turn failed, and the turn waits for the seat's condition before it fails. */
+  failing?: boolean;
   /** `run`: the first run that starts at or after `after` answers the prompt. `idle`: the prompt
    *  answers once the seat started working and stopped again. */
   readonly until: "run" | "idle";
@@ -278,6 +289,18 @@ interface Bridge {
   readonly close: () => Promise<void>;
 }
 
+/** Why a run of the turn failed: the harness's text and kind from the seat's presence condition, which
+ *  a connector writes apart from the run's `RUN_ERROR` and may write after it. */
+async function runFailure(opened: Promise<Mesh> | undefined, session: Session, turn: Turn, said: string | undefined): Promise<RequestError> {
+  const seat = session.seat;
+  const m = seat ? await opened?.catch(() => undefined) : undefined;
+  const read = () => (seat && m ? m.condition(seat, turn.sent) : undefined);
+  let condition = read();
+  for (const end = Date.now() + CONDITION_MS; !condition && m && session.turn === turn && Date.now() < end; condition = read())
+    await new Promise((r) => setTimeout(r, CONDITION_POLL_MS));
+  return turnFailure(seat?.name ?? session.id, condition, said);
+}
+
 function bridge(options: CotalAgentOptions): Bridge {
   const sessions = new Map<string, Session>();
   const byPrincipal = new Map<string, Session>();
@@ -328,11 +351,16 @@ function bridge(options: CotalAgentOptions): Bridge {
     }
     if (!turn.runs.has(run.runId)) return;
     if (run.outcome === "error") {
-      const failed = new Error(`${session.seat?.name ?? session.id}'s turn failed${run.message ? `: ${run.message}` : ""}`);
-      if (turn.waiting) turn.waiting.set(run.runId, failed);
-      else turn.fail(failed);
+      turn.failing = true;
+      void runFailure(opened, session, turn, run.message).then((failed) => {
+        turn.failing = false;
+        if (session.turn !== turn || !turn.runs.has(run.runId)) return;
+        if (turn.waiting) turn.waiting.set(run.runId, failed);
+        else turn.fail(failed);
+      });
     } else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
   };
+
 
   const mesh = (): Promise<Mesh> => {
     opened ??= options.mesh().then((m) => {
@@ -583,12 +611,13 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         until,
         // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
         after: until === "run" ? 0 : Date.now(),
+        sent: Date.now(),
         runs: new Map(),
         ...(until === "idle" ? { waiting: new Map() } : {}),
         started: false,
         lastSeen: Date.now(),
         stop: (reason) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("completed", () => resolve(reason)),
-        fail: (error) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("failed", () => reject(RequestError.internalError(undefined, error.message))),
+        fail: (error) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("failed", () => reject(error instanceof RequestError ? error : RequestError.internalError(undefined, error.message))),
         cancel: () => {
           if (turn.cancelled !== undefined) return;
           turn.cancelled = "requested";
@@ -609,7 +638,7 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
           if (!running || now - turn.cancelled >= settleMs) turn.stop("cancelled");
           return;
         }
-        if (turn.cancelled === "requested") return;
+        if (turn.cancelled === "requested" || turn.failing) return;
         const status = m.presence(seat);
         if (status === undefined) {
           if (now - turn.lastSeen > ABSENT_MS) turn.fail(new Error(`${seat.name} left the mesh during its turn`));

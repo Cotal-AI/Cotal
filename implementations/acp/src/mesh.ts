@@ -147,6 +147,14 @@ export interface PromptCounter {
   readonly seq: number;
 }
 
+/** A seat's presence condition (SPEC §6), as its connector relays the harness's own report: the code,
+ *  the harness's native kind as `source`, and its text. */
+export interface SeatCondition {
+  readonly code: string;
+  readonly source?: string;
+  readonly message?: string;
+}
+
 export interface RosterEntry {
   readonly name: string;
   readonly status: string;
@@ -263,6 +271,10 @@ export interface Mesh {
   shownName(seat: SeatRef): string | undefined;
   /** Call `onChange` each time the roster changes. Returns a function that stops following. */
   followRoster(onChange: () => void): () => void;
+  /** The condition the seat's presence carries now, when this process saw it arrive at or after
+   *  `since`, its own clock in epoch ms; undefined otherwise. A failed turn's text is here: the run's
+   *  `RUN_ERROR` carries only a fixed message. */
+  condition(seat: SeatRef, since: number): SeatCondition | undefined;
   roster(): Promise<RosterEntry[]>;
   /** The space's channels, by name, without the agents' event channels. */
   channels(): Promise<ChannelRow[]>;
