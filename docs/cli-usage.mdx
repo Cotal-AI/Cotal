@@ -313,8 +313,8 @@ This also applies when `-j` comes before a short option that is unknown or needs
 A word that names none of a command's subcommands and is near none of them is a usage error that
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
-When a recognized leading flag uses a typographic dash, the refusal keeps the dash diagnostic
-and uses the requested output of the command that follows. With `--json`, a finite command
+A refusal for a malformed leading flag keeps the first such diagnostic and uses the requested
+output of the command that follows the recognized leading flags. With `--json`, a finite command
 writes a `USAGE_INVALID` envelope, while `watch`, `history --follow` and `channel members --follow`
 write `error` and `end` records with the end reason `setup-failed`.
 

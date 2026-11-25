@@ -218,15 +218,30 @@ const configJson = ["config", "get", "harness", "--json"];
 const asciiConfig = run(["--no-color", ...configJson]);
 check("control: an ASCII leading global runs config get", asciiConfig.status === 0 && asciiConfig.stderr === "" &&
   asciiConfig.envelope?.command === "config" && asciiConfig.envelope.outcome === "ok", shown(asciiConfig));
-for (const args of [[...configJson, dashFlag], [dashFlag, ...configJson], ["-j", dashFlag, "cfg", "get", "harness"]]) {
+for (const args of [
+  [...configJson, dashFlag], [dashFlag, ...configJson], ["-j", dashFlag, "cfg", "get", "harness"],
+  [dashFlag, "--no-input=0", ...configJson],
+]) {
   const r = run(args);
   check(`${args.join(" ")} writes one JSON dash refusal`, r.status === 1 && r.stderr === "" && r.envelope?.schemaVersion === 1 && r.envelope.command === "config" &&
     r.envelope.outcome === "refused" && r.envelope.error?.code === dashRefusal.code && r.envelope.error.message === dashRefusal.message &&
     r.envelope.error.remedy === dashRefusal.remedy, shown(r));
 }
-for (const args of [[dashFlag, "config", "get", "harness", "--", "--json"], [dashFlag, "__complete", "--json"], ["--", dashFlag, ...configJson]]) {
-  const r = run(args);
-  check(`${args.join(" ")} keeps the dash diagnostic on stderr`, r.status === 1 && r.stdout === "" && r.stderr.includes(dashRefusal.message), shown(r));
+const mixedPrefix = ["--no-input=0", "\u2212no-color", "-j", "\u2014no-input", "--"];
+const mixed = run([...mixedPrefix, "cfg", "get", "harness"]);
+check("multiple malformed flags keep the first diagnostic and a JSON flag between them", mixed.status === 1 && mixed.stderr === "" &&
+  mixed.envelope?.schemaVersion === 1 && mixed.envelope.command === "config" && mixed.envelope.outcome === "refused" &&
+  mixed.envelope.error?.code === "USAGE_INVALID" && mixed.envelope.error.message === "--no-input takes no value" &&
+  mixed.envelope.error.remedy === "omit --no-input or pass it without a value", shown(mixed));
+for (const [args, message] of [
+  [[dashFlag, "config", "get", "harness", "--", "--json"], dashRefusal.message],
+  [[dashFlag, "__complete", "--json"], dashRefusal.message],
+  [["--", dashFlag, ...configJson], dashRefusal.message],
+  [[...mixedPrefix, dashFlag, ...configJson], "--no-input takes no value"],
+  [[dashFlag, "--unknown", ...configJson], dashRefusal.message],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} keeps the diagnostic on stderr`, r.status === 1 && r.stdout === "" && r.stderr.includes(message), shown(r));
 }
 
 function refusalRecords(stdout: string): StreamRecord<Record<string, unknown>>[] {
@@ -239,13 +254,19 @@ for (const { words, stream } of [
   { words: ["history", "general", "--follow"], stream: "history" },
   { words: ["channel", "members", "general", "--follow"], stream: "membership" },
 ]) {
-  for (const args of [[...words, "--json", dashFlag], [dashFlag, ...words, "--json"]]) {
+  const first = "\u2212no-input";
+  const stacked = { ...dashRefusal, message: `${first} starts with a typographic dash, so it is not an option`, remedy: "type the option with hyphens: --no-input" };
+  for (const { args, expected } of [
+    { args: [...words, "--json", dashFlag], expected: dashRefusal },
+    { args: [dashFlag, ...words, "--json"], expected: dashRefusal },
+    { args: [first, "\u2014no-color", ...words, "-j"], expected: stacked },
+  ]) {
     const r = run(args);
     const records = refusalRecords(r.stdout);
     const [error, end] = records;
     check(`${args.join(" ")} writes only ${stream} error and end records`, r.status === 1 && r.stderr === "" && records.length === 2 &&
-      error?.schemaVersion === 1 && error.stream === stream && error.type === "error" && error.data?.code === dashRefusal.code &&
-      error.data.message === dashRefusal.message && error.data.remedy === dashRefusal.remedy && end?.schemaVersion === 1 &&
+      error?.schemaVersion === 1 && error.stream === stream && error.type === "error" && error.data?.code === expected.code &&
+      error.data.message === expected.message && error.data.remedy === expected.remedy && end?.schemaVersion === 1 &&
       end.stream === stream && end.type === "end" && end.data?.reason === "setup-failed", shown(r));
   }
 }
@@ -261,11 +282,13 @@ for (const args of [[...broker, "--no-color=false"], ["--no-color=false", ...bro
   check(`${args.join(" ")} refuses with the same broker preset help`, r.status === 1 && r.stdout === "" &&
     r.stderr === brokerRefusal + brokerHelp.stdout, shown(r));
 }
-const brokerPlain = run([...broker, "--no-color=false", "--plain"]);
-const leadingBrokerPlain = run(["--no-color=false", ...broker, "--plain"]);
-check("a malformed leading global preserves broker preset help in plain output", brokerPlain.status === 1 && leadingBrokerPlain.status === 1 &&
-  brokerPlain.stdout === "" && leadingBrokerPlain.stdout === "" && brokerPlain.stderr.includes("USAGE_INVALID") &&
-  leadingBrokerPlain.stderr === brokerPlain.stderr, { before: shown(leadingBrokerPlain), after: shown(brokerPlain) });
+for (const prefix of [["--no-color=false"], ["--no-input=0", "--no-color=false"]]) {
+  const brokerPlain = run([...broker, ...prefix, "--plain"]);
+  const leadingBrokerPlain = run([...prefix, "svc", "start", "broker", "--plain"]);
+  check(`${prefix.join(" ")} preserves broker preset help in plain output`, brokerPlain.status === 1 && leadingBrokerPlain.status === 1 &&
+    brokerPlain.stdout === "" && leadingBrokerPlain.stdout === "" && brokerPlain.stderr.includes("USAGE_INVALID") &&
+    leadingBrokerPlain.stderr === brokerPlain.stderr, { before: shown(leadingBrokerPlain), after: shown(brokerPlain) });
+}
 
 for (const { words, command } of [
   { words: [dashFlag, "inspect", "./not-there"], command: "backup inspect" },

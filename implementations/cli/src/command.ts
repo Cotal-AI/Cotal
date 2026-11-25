@@ -828,19 +828,27 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
   }
 }
 
-/** Recover the command and output mode for a malformed leading flag without dispatching it. */
-async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, warnings: OutputWarning[]): Promise<never> {
-  const typed = typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))), [
-    jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
-  ]);
+const leadingFlagNames = new Set(LEADING_FLAGS.map((flag) => flag.slice(2)));
+const leadingShortFlags: readonly FlagSpec[] = [
+  jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
+];
+
+function malformedLeadingFlag(word: string, beforeSeparator = true) {
+  const typed = typographicOption(word, leadingFlagNames, leadingShortFlags);
+  if (typed || !beforeSeparator) return typed;
   const equals = word.indexOf("=");
   const flag = equals < 0 ? undefined : word.slice(0, equals);
-  const refusal = typed ?? (flag && GLOBAL_FLAG_WORDS.has(flag) ? globalFlagValueRefusal(flag) : undefined);
+  return flag && GLOBAL_FLAG_WORDS.has(flag) ? globalFlagValueRefusal(flag) : undefined;
+}
+
+/** Recover the command and output mode for a malformed leading flag without dispatching it. */
+async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean, warnings: OutputWarning[]): Promise<never> {
+  const refusal = malformedLeadingFlag(word, beforeSeparator);
   if (!refusal || !beforeSeparator) {
     routeCollisionWarnings(warnings, undefined, [], false);
-    usageExit(typed?.message ?? unknownCommandMessage(commands, word), undefined, false, false, typed?.remedy);
+    usageExit(refusal?.message ?? unknownCommandMessage(commands, word), undefined, false, false, refusal?.remedy);
   }
-  const retry = leadingInvocation(args);
+  const retry = leadingInvocation(args, (item) => malformedLeadingFlag(item) !== undefined);
   const found = findCommand(commands, retry.word);
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
   const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);

@@ -10,9 +10,13 @@ import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
 export const OUTPUT_FLAG_WORDS: ReadonlySet<string> = new Set(["--json", "-j", "--plain"]);
 export const GLOBAL_FLAG_WORDS: ReadonlySet<string> = new Set(GLOBAL_FLAGS.map((name) => `--${name}`));
 
-function leadingFlagCount(argv: readonly string[]): number {
+function leadingFlagCount(argv: readonly string[], isRefusedFlag?: (word: string) => boolean): number {
   let lead = 0;
-  while (lead < argv.length && (OUTPUT_FLAG_WORDS.has(argv[lead]!) || GLOBAL_FLAG_WORDS.has(argv[lead]!))) lead++;
+  while (lead < argv.length) {
+    const word = argv[lead]!;
+    if (word === "--" || !(OUTPUT_FLAG_WORDS.has(word) || GLOBAL_FLAG_WORDS.has(word) || isRefusedFlag?.(word))) break;
+    lead++;
+  }
   return lead;
 }
 
@@ -20,8 +24,9 @@ function commandIndex(argv: readonly string[], lead: number): number {
   return argv[lead] === "--" ? lead + 1 : lead;
 }
 
-export function leadingInvocation(argv: readonly string[]) {
-  const lead = leadingFlagCount(argv);
+/** A refusal can skip recognized bad flags to recover context, without accepting them for dispatch. */
+export function leadingInvocation(argv: readonly string[], isRefusedFlag?: (word: string) => boolean) {
+  const lead = leadingFlagCount(argv, isRefusedFlag);
   const command = commandIndex(argv, lead);
   const original = argv[command];
   const word = original === "--version" || original === "-V" ? "version"
