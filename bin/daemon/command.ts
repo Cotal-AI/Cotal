@@ -504,7 +504,20 @@ async function setupCommand(args: ParsedArgs): Promise<void> {
   ] }));
 }
 
+/** launchd writes the service's log itself, readable by others; systemd sends the output to the journal instead. */
+async function privateServiceLog(args: ParsedArgs): Promise<void> {
+  let paths: DaemonPaths;
+  // serve resolves the same target again and refuses an unusable one with its full diagnosis.
+  try { ({ paths } = resolveTarget(args)); } catch { return; }
+  const log = await import("./native-log.js");
+  ensureStateDir(paths);
+  if (process.platform === "darwin") log.privateLaunchdLog(paths.state);
+  else log.captureNativeDaemonOutput(paths.state);
+}
+
 async function serve(args: ParsedArgs): Promise<void> {
+  // The app's Background service log reads a private daemon.log; set it up before anything below can fail.
+  if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.platform !== "win32") await privateServiceLog(args);
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");
@@ -522,14 +535,6 @@ async function serve(args: ParsedArgs): Promise<void> {
   if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
   const { paths, home } = resolveTarget(args);
-  // The app's Background service log reads a private daemon.log in the state directory.
-  if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.platform !== "win32") {
-    const log = await import("./native-log.js");
-    ensureStateDir(paths);
-    // launchd writes the file itself, readable by others; systemd sends the output to the journal instead.
-    if (process.platform === "darwin") log.privateLaunchdLog(paths.state);
-    else log.captureNativeDaemonOutput(paths.state);
-  }
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
   let owned = false;
