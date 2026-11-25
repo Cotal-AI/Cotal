@@ -22,7 +22,8 @@
  *    space's own, by the host it reports, so a new thread there defaults to it on this host;
  *  - the model select and model state list `<agent>/default` once when the catalog names a model
  *    `default`, with that model's name and reasoning variants;
- *  - `agentCatalogs` carries a failed models read, so the application is refused with its reason.
+ *  - `agentCatalogs` carries a failed models read, so the application is refused with its reason, and
+ *    a Jcode whose catalog lists models is offered with them.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -332,6 +333,19 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   const alone = offerOf([{ id: "default", variants: [{ name: "high" }] }]);
   const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "variant") as unknown as { options: { value: string }[] } | undefined;
   check("where it is the only model, the Reasoning select holds its variants", JSON.stringify(reasoning?.options.map((o) => o.value)) === JSON.stringify(["default", "high"]), reasoning);
+}
+
+// A Jcode whose `jcode model list` lists models, as its catalog reads them on an install with no
+// config.toml: the manager's row carries those ids, and the application is offered with them.
+{
+  const catalogs = agentCatalogs([{ agent: "jcode", state: "available", eventPlane: true }], [
+    { agent: "jcode", supported: true, source: "jcode model list --json", models: [{ id: "gpt-5.4", provider: "fakeprov" }, { id: "glm-4.7" }] },
+  ] as never);
+  const offer: Offer = { personas: [], channels: [], managers: [], catalogs };
+  const select = configOptions(offer, initialSelection(offer)).find((o) => o.id === "model") as unknown as { options: { options: { value: string }[] }[] };
+  const values = select.options.flatMap((g) => g.options.map((o) => o.value));
+  check("a Jcode whose catalog lists models is offered with them",
+    refusal(catalogs, "jcode") === undefined && JSON.stringify(values) === JSON.stringify(["jcode/default", "jcode/gpt-5.4", "jcode/glm-4.7"]), { catalogs, values });
 }
 
 // A manager whose read of an application's models failed, as OpenCode 1.19.6 refusing its database:
