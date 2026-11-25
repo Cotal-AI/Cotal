@@ -8,7 +8,8 @@
  * The suite runs the shipped callout and permission builder with two admin-view principals. It reads
  * history through a user-mode endpoint and checks reader-deletion isolation both for a second
  * connection sharing the same principal and inbox name, and for a different principal on its own
- * legacy inbox. After reconnecting, the endpoint reads again using the new connection's reader names.
+ * legacy inbox. A bound name that does not match the bearer is refused at connect. After
+ * reconnecting, the endpoint reads again using the new connection's reader names.
  *
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -25,7 +26,7 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, type CotalMessage,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, userInboxConnId, type CotalMessage,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
@@ -160,12 +161,16 @@ try {
   check("positive control: the endpoint's reader name and bound inbox name were seen on the wire",
     victim !== undefined && new RegExp(`^${OWNER}-dashboard-[a-z0-9]{25}$`).test(victim.nonce), seen.slice(0, 1));
   await jsm.consumers.add(CHAT, { name: victim.name, ack_policy: AckPolicy.None, mem_storage: true, inactive_threshold: 60_000_000_000 });
-  const checkReaderIsolation = async (bearer: string, name: string, label: string) => {
+  const dialAdmin = async (bearer: string, name: string) => {
     const nc = await connect({
-      servers: SERVERS, name, inboxPrefix: `_INBOX_${name}`, maxReconnectAttempts: 0,
+      servers: SERVERS, name, inboxPrefix: `_INBOX_${name}`, reconnect: false, maxReconnectAttempts: 0,
       authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearer)],
     });
     raws.push(nc);
+    return nc;
+  };
+  const checkReaderIsolation = async (bearer: string, name: string, label: string) => {
+    const nc = await dialAdmin(bearer, name);
     const otherJsm = await jetstreamManager(nc);
     const admitted = await otherJsm.streams.info(CHAT).then(() => true, () => false);
     check(`positive control: ${label} can read stream info`, admitted);
@@ -176,7 +181,13 @@ try {
     return { outcome, survives };
   };
   const { outcome, survives } = await checkReaderIsolation(dashBearer, victim.nonce, "same principal on a shared bound inbox");
-  await checkReaderIsolation(await adminBearer("intruder"), `ibx${randomUUID().replaceAll("-", "")}`, "different principal on its own legacy inbox");
+  const otherBearer = await adminBearer("intruder");
+  const mismatched = await dialAdmin(otherBearer, userInboxConnId(OWNER, "dashboard")).then(
+    () => "admitted", (e: Error) => e.message,
+  );
+  check("user mode: a different principal is refused a bound name outside its principal",
+    /authorization violation/i.test(mismatched), mismatched);
+  await checkReaderIsolation(otherBearer, `ibx${randomUUID().replaceAll("-", "")}`, "different principal on its own legacy inbox");
   await jsm.consumers.delete(CHAT, victim.name).catch(() => {});
 
   // 3. A reconnect is a new connection, so its reader names are new, and reads go on.
