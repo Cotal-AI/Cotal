@@ -532,6 +532,8 @@ export class MeshAgent extends EventEmitter {
       const served = await openAgentEndpoint(this.ep, {
         warn: (msg) => this.log(msg),
         onNamed: () => this.naming?.end(),
+        showModel: ({ model, variant }) => this.presence.switchModel(model, variant),
+        policed: this.config.modelPolicy,
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
         first: takeFirstCommand(),

@@ -3,8 +3,9 @@
  * process serves an endpoint once for its lifecycle, and the served table is exactly the cluster's
  * commands, so this module is the one owner of that serve.
  */
-import type { CotalEndpoint, FirstCommand } from "@cotal-ai/core";
+import type { CotalEndpoint, FirstCommand, SetModelOutput } from "@cotal-ai/core";
 import { createCommandLane, servedCommands, type CommandDispatcher, type CommandQueue } from "./agent-commands.js";
+import { createModelLane } from "./agent-model.js";
 import { createNameLane } from "./agent-name.js";
 import { PROMPT_DESK_MIN_MAX_PAYLOAD, createPromptDesk, type PromptDesk } from "./prompt-desk.js";
 
@@ -14,8 +15,8 @@ export interface AgentEndpoint {
   /** The commands waiting for an idle turn, which the connector runs one per turn. */
   readonly commands: CommandQueue;
   /** Close every prompt and reply to every caller still waiting, refuse every queued command and
-   *  every later `set-name`, then stop serving and wait for the handlers in flight. Does not wait for
-   *  a `deliver` call that has not ended. */
+   *  every later `set-name` and `set-model`, then stop serving and wait for the handlers in flight.
+   *  Does not wait for a `deliver` call that has not ended. */
   close(): Promise<void>;
 }
 
@@ -26,7 +27,10 @@ export interface AgentEndpoint {
  * `commands` answers `supported: false`, `command` is refused, and `agentEndpoint` shows nothing
  * served. Each time the dispatcher's `watch` reports a change, `agentEndpoint` is derived again.
  * `first` is the command its launch handed the agent, queued before any other. `onNamed` is told
- * when an owner's `set-name` is about to change the name.
+ * when an owner's `set-name` is about to change the name. `showModel` puts the model and variant an
+ * owner's `set-model` switched the harness to on the agent's card; without it the card takes them
+ * as they are. `policed` names the role whose `modelPolicy` the agent launched under, and then every
+ * `set-model` is refused.
  *
  * Rejects on an open mesh, under a static credential and without a lifecycle UID, when the broker
  * refuses the subscription (a credential minted before the rows existed), and when the connection's
@@ -37,7 +41,7 @@ export interface AgentEndpoint {
  */
 export async function openAgentEndpoint(
   ep: CotalEndpoint,
-  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void; first?: FirstCommand; onNamed?(): void },
+  opts: { warn(msg: string): void; dispatcher?: CommandDispatcher; onQueued?(): void; first?: FirstCommand; onNamed?(): void; showModel?(switched: SetModelOutput): Promise<void>; policed?: string },
 ): Promise<AgentEndpoint> {
   if (typeof opts?.warn !== "function") throw new TypeError("openAgentEndpoint needs opts.warn");
   const max = ep.maxPayload;
@@ -51,7 +55,8 @@ export async function openAgentEndpoint(
   const desk = createPromptDesk(ep, warn);
   const lane = createCommandLane(opts.dispatcher, opts.onQueued ?? (() => {}), opts.first);
   const naming = createNameLane(ep, warn, opts.onNamed);
-  const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler] });
+  const model = createModelLane(opts.dispatcher, { show: opts.showModel ?? ((s) => ep.setCardModel(s.model, s.variant)), warn, policed: opts.policed });
+  const serve = ep.servePrincipal({ handlers: [...desk.handlers(), ...lane.handlers, naming.handler, model.handler] });
   desk.served(serve.ready);
 
   let closing: Promise<void> | undefined;
@@ -66,6 +71,7 @@ export async function openAgentEndpoint(
     desk.close();
     lane.close();
     naming.close();
+    model.close();
     return serve.stop();
   })());
   const onTransport = (t: { connected: boolean }): void => {
