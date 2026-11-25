@@ -75,12 +75,13 @@ Declare only the features your connector implements:
 - List external executables in `requires` so preflight can report a missing command before launch.
 - Implement `listModels` if the application provides a model catalog.
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
-  List on each model only the `variants` and `modes` the application runs for the logged-in account.
+  List on each model only the `variants` and `modes` the application offers for the logged-in account.
   Set `defaultVariant` to the variant it runs when a launch names none, and `isDefault` on the one model it runs when a launch names no model.
   A mode is a `toggle` with a boolean `default`, or a `choice` with `options` and the default option's id.
-  The manager refuses a variant or mode a launch names that the model's row does not list.
+  When the model offers a mode that the account cannot use, list it with `unavailable` set to the application's own reason, so a launcher can show it disabled.
+  The manager refuses a variant or mode a launch names that the model's row does not list, and an unavailable mode with its reason.
   It keeps the last catalog it read, from a `models` read or an earlier launch, and checks each launch against it, so only a launch that finds none kept waits on `listModels`.
-  A catalog with two default models, or a default that is not among its own values, is reported as unreadable.
+  A catalog with two default models, a default that is not among its own values, or an empty `unavailable` reason is reported as unreadable.
 - Use `setup` and `pluginRoot` for connector-owned installation support when needed.
   Use `launchHint` to describe what an operator sees after a direct foreground launch.
 - Set a positive safe-integer `readinessTimeoutMs` if bootstrap needs a different bound from the manager's default.

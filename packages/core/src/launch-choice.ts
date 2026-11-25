@@ -12,8 +12,9 @@ const quoted = (values: readonly string[]): string => values.map((v) => JSON.str
 
 /** Read the connector's catalog and refuse one that contradicts itself: two default models, a default
  *  variant that is not one of the model's variants, or a mode whose kind, options or default do not
- *  fit. Every catalog a launch is checked against is read through this, so a connector's mistake
- *  surfaces as an unreadable catalog rather than as a default no launch can choose. */
+ *  fit or that is unavailable without a reason. Every catalog a launch is checked against is read
+ *  through this, so a connector's mistake surfaces as an unreadable catalog rather than as a default
+ *  no launch can choose. */
 export async function readModelCatalog(connector: Pick<Connector, "name" | "listModels">, opts: ModelCatalogOpts): Promise<ModelCatalog> {
   if (!connector.listModels) throw new Error(`${connector.name} connector lists no model catalog`);
   const catalog = await connector.listModels(opts);
@@ -46,10 +47,12 @@ function checkModelCatalog(catalog: ModelCatalog): void {
     const ids = new Set<string>();
     for (const mode of model.modes ?? []) {
       // A connector may be plain JavaScript, so the kind and default are read as the values they are.
-      const { id, kind, default: fallback } = mode as { id: string; kind: unknown; default: unknown };
+      const { id, kind, default: fallback, unavailable } = mode as { id: string; kind: unknown; default: unknown; unavailable: unknown };
       const named = `${at} mode ${JSON.stringify(id)}`;
       if (ids.has(id)) throw new Error(`${at} lists mode ${JSON.stringify(id)} twice`);
       ids.add(id);
+      if (unavailable !== undefined && (typeof unavailable !== "string" || !unavailable.trim()))
+        throw new Error(`${named} is marked unavailable with no reason`);
       if (kind === "toggle" && typeof fallback !== "boolean") throw new Error(`${named} is a toggle whose default is not true or false`);
       if (kind === "choice") {
         const options = (mode as { options: { id: string }[] }).options.map((o) => o.id);
@@ -87,6 +90,8 @@ function modesRefusal(agent: string, model: ModelInfo, modes: LaunchModes | unde
       const listed = model.modes?.map((m) => m.id) ?? [];
       return `${agent} lists ${listed.length ? `modes ${quoted(listed)}` : "no modes"} for model ${JSON.stringify(model.id)}, not ${JSON.stringify(id)} (modes)`;
     }
+    if (mode.unavailable !== undefined)
+      return `mode ${JSON.stringify(id)} of model ${JSON.stringify(model.id)} is unavailable: ${mode.unavailable} (modes)`;
     if (mode.kind === "toggle" && typeof value !== "boolean")
       return `mode ${JSON.stringify(id)} of model ${JSON.stringify(model.id)} is a toggle, so it takes true or false, not ${JSON.stringify(value)} (modes)`;
     if (mode.kind === "choice" && !mode.options.some((o) => o.id === value))
