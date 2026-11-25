@@ -56,9 +56,9 @@ import {
   type RefusalCode,
   type Report,
   type UserBundle,
-  trustProject,
 } from "@cotal-ai/workspace";
 import { forgetChatSessions } from "@cotal-ai/workspace/chat";
+import { recordNewProjectTrust } from "./up-project-trust.js";
 import { liveMeshOwner, unsettledStackMembers } from "./clean.js";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { shellWord } from "../lib/endpoint-errors.js";
@@ -606,18 +606,17 @@ export function recordLocalSpace(name: string, root: string, flag: "--root" | "-
     throw refuse("PERMISSION_DENIED", `${root} is not writable by this account, so its .cotal could not be made; nothing was written`, target, `create the space in a folder you own, or pass ${flag} <dir>`);
   }
   protectedLocalDirectory(dir, "the project's .cotal directory");
-  // A folder whose `.cotal` this run made is trusted to declare MCP servers, `spawn.env` names and
-  // persona launch options. A `.cotal` that was already there, such as one a cloned repository
-  // brought, is trusted only by `cotal trust`.
-  if (made !== undefined) trustProject(root);
   const preparedAt = new Date().toISOString();
-  try { return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt }; }
+  let file: string;
+  try { file = recordPreparedSpace({ space: name, root, ts: preparedAt }); }
   catch (error) {
     if (!unwritable(error)) throw error;
     // The empty `.cotal` this call made goes too, so the refusal leaves the root as it was.
     if (made !== undefined) rmdirSync(dir);
     throw refuse("PERMISSION_DENIED", `this account cannot write this machine's Cotal home ${homeCotalDir()}, so the space could not be recorded; nothing was written`, target, "make that folder writable by you, or set COTAL_HOME to a folder you own");
   }
+  if (made !== undefined) recordNewProjectTrust(root);
+  return { file, preparedAt };
 }
 
 const unwritable = (error: unknown): boolean => ["EACCES", "EPERM", "EROFS"].includes((error as NodeJS.ErrnoException).code ?? "");

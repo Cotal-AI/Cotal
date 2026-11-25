@@ -225,7 +225,11 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     process.exit(1);
   }
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
-  const report = () => renderReport(commandFailureReport(failure), plain ? "plain" : "rich", process.stderr);
+  const report = () => {
+    const message = failure.message.includes("If you trust this folder, run `cotal trust ") ? displayRemedy(failure.message) : failure.message;
+    const shown = message === failure.message ? failure : new CommandFailure(failure.outcome, failure.code, message, failure);
+    return renderReport(commandFailureReport(shown), plain ? "plain" : "rich", process.stderr);
+  };
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
 `);
   // Under --json the envelope alone reports the failure. Its text report goes to stderr only when the
@@ -1115,7 +1119,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     // read or written again. When it cannot finish, such as in a config folder another account could
     // write or with a damaged record, the command still runs: the seed adds no folder, and a folder
     // already in the trusted projects file stays trusted.
-    if (!["version", "docs"].includes(cmd.name)) {
+    if (!["version", "docs", "completion", "__complete"].includes(cmd.name) && parsed.values["dry-run"] !== true) {
       try {
         seedTrustedProjects();
       } catch (e) {

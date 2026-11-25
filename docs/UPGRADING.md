@@ -26,9 +26,13 @@ terminal and for one a manager runs.
   manifest's own `launchOptions` on an agent are not checked: a manifest you run is trusted as you
   run it. Its launch options are refused when the path you give, any symbolic link or folder on the
   way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted.
-- A project config in a `.cotal` that another account owns is refused. Move the project to a
-  folder your own account owns.
+- A project config is refused if its file or `.cotal` belongs to another account. Copy the settings
+  into a project folder and config file your account owns, then review the folder and run
+  `cotal trust <path>` if the settings require trust.
 - Restart a running manager at this version so its spawns apply the rule.
+
+If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
+for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
 
 ## The agent endpoint on every space
 

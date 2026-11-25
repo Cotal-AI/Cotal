@@ -226,6 +226,8 @@ export function projectTrustProblem(declared: readonly string[], root: string): 
   return `declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`${trustProjectCommand(root)}\``;
 }
 
+export class ProjectConfigTrustError extends Error {}
+
 /** Whether a file or folder with owner `uid` belongs to another account. Windows has no owner ids here. */
 const foreignOwner = (uid: number): boolean => typeof process.getuid === "function" && uid !== process.getuid();
 
@@ -251,7 +253,7 @@ export function loadCotalConfig(root: string, trusted: ProjectTrust): CotalConfi
   const control = join(root, ".cotal");
   const owned = (stat: { uid: number } | undefined): boolean => stat === undefined || !foreignOwner(stat.uid);
   const refuseOwner = (what: string): never => {
-    throw configError(path, `${what} belongs to another user, so this project config is refused and nothing was launched. Use a project folder your own account owns`);
+    throw new ProjectConfigTrustError(`cotal config ${path}: ${what} belongs to another user, so this project config is refused and nothing was launched. Copy the settings into a project folder and config file your own account owns`);
   };
   if (!owned(lstatSync(path, { throwIfNoEntry: false }))) refuseOwner(path);
   // The file is read through the handle its owner is checked on, so it cannot be swapped between the
@@ -274,7 +276,7 @@ export function loadCotalConfig(root: string, trusted: ProjectTrust): CotalConfi
   const project = parseCotalConfig(path, text);
   const declared = trustedOnlyEntries(project);
   if (declared.length && !trusted(root))
-    throw configError(path, projectTrustProblem(declared, root));
+    throw new ProjectConfigTrustError(`cotal config ${path}: ${projectTrustProblem(declared, root)}`);
   return mergeConfig(operator, project);
 }
 

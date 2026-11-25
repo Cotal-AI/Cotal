@@ -17,7 +17,7 @@
 import { spawn as spawnProcess, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") skipSuite("the stand-in harness is a POSIX script");
@@ -33,6 +33,9 @@ for (const dir of [process.env.HOME, process.env.COTAL_HOME, join(process.env.XD
 // The stand-in host: record the environment name under test, then start each declared stdio server.
 const bin = join(box, "bin");
 mkdirSync(bin);
+const cliEntry = resolve("bin/dist/cotal.js");
+const launcher = join(bin, "cotal");
+writeFileSync(launcher, `#!${process.execPath}\nrequire('node:child_process').spawnSync(process.execPath, [${JSON.stringify(cliEntry)}, ...process.argv.slice(2)], { stdio: 'inherit' }).status === 0 || process.exit(1);\n`, { mode: 0o755 });
 const report = join(box, "report.txt");
 writeFileSync(join(bin, "claude"), [
   `#!${process.execPath}`,
@@ -90,9 +93,9 @@ for (let i = 0; i < 75; i++) {
  *  appends `RAN <marker>` to the report. Recorded as an open space by hand, the way `cotal meshes
  *  add` records one, so no command trusts it as a side effect. */
 let spaces = 0;
-function project(config: ((marker: string) => unknown) | undefined): { root: string; space: string; marker: string } {
+function project(config: ((marker: string) => unknown) | undefined, prefix = ""): { root: string; space: string; marker: string } {
   const space = `trust${++spaces}`;
-  const root = mkdtempSync(join(box, `${space}-`));
+  const root = mkdtempSync(join(box, `${prefix}${space}-`));
   const marker = `server-${space}`;
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true, mode: 0o700 });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\n---\nbody\n");
@@ -135,6 +138,15 @@ const spawnIn = (p: { root: string; space: string }) =>
   cli(p.root, ["spawn", "--foreground", "--file", join(p.root, ".cotal", "agents", "probe.md"), "--space", p.space, "--agent", "claude"]);
 const reportText = (): string => (existsSync(report) ? readFileSync(report, "utf8") : "");
 const fresh = (): void => writeFileSync(report, "");
+
+function runTrustRemedy(output: string, root: string): boolean {
+  const printed = /`((?:pnpm )?cotal trust [^`]+)`/.exec(output)?.[1];
+  const literal = `${root.includes(" ") ? `-- "${root}"` : root}`;
+  const encoded = `--hex ${Buffer.from(root).toString("hex")}`;
+  if (!printed || ![literal, encoded].some((arg) => printed === `cotal trust ${arg}` || printed === `pnpm cotal trust ${arg}`)) return false;
+  const result = spawnSync("/bin/sh", ["-c", printed], { cwd: process.cwd(), stdio: "ignore" });
+  return result.status === 0 && trustedRoots().includes(root);
+}
 
 console.log("cotal spawn: a project declares servers, spawn.env and persona launch options only in a trusted folder");
 try {
@@ -237,21 +249,25 @@ try {
 
   // THE FIX: the same config in a folder nobody trusted launches nothing and names the remedy.
   {
-    const p = project(declares);
+    const p = project(declares, "project with spaces ");
     fresh();
     const r = await spawnIn(p);
     check("an untrusted folder's declared server does not start", !reportText().includes(`RAN ${p.marker}`), reportText());
     check("an untrusted folder's spawn launches no host", !reportText().includes("ENV "), reportText());
     check("the refusal exits non-zero", r.exited === 1, r.exited);
-    check("the refusal names the entries, the folder and `cotal trust`", r.out.includes("connectors.claude.mcpServers.planted") && r.out.includes("spawn.env") && r.out.includes(`cotal trust ${p.root}`), r.out.slice(-500));
+    check("the refusal names the entries, the folder and `cotal trust`", r.out.includes("connectors.claude.mcpServers.planted") && r.out.includes("spawn.env") && r.out.includes(p.root) && r.out.includes(`cotal trust -- "${p.root}"`), r.out.slice(-500));
+    const fixed = runTrustRemedy(r.out, p.root) && (await spawnIn(p)).exited === undefined;
+    check("the printed command handles a path with spaces and the same launch then succeeds", fixed && reportText().includes(`RAN ${p.marker}`) && reportText().includes("ENV forwarded-1118"), reportText());
   }
 
   // Only `spawn.env` declared: still refused, and the host never sees the name.
   {
-    const p = project(() => ({ spawn: { env: ["TRUST_SMOKE_NAME"] } }));
+    const p = project(() => ({ spawn: { env: ["TRUST_SMOKE_NAME"] } }), "project %PATH% $HOME & ' ");
     fresh();
     const r = await spawnIn(p);
     check("an untrusted folder's spawn.env alone is refused", r.exited === 1 && !reportText().includes("forwarded-1118"), r.out.slice(-300));
+    const fixed = runTrustRemedy(r.out, p.root) && (await spawnIn(p)).exited === undefined;
+    check("the printed command handles shell metacharacters and the same launch then succeeds", fixed && reportText().includes("ENV forwarded-1118"), r.out.slice(-500));
   }
 
   // A config with neither still applies its other fields untrusted: a model policy refuses a
@@ -275,7 +291,7 @@ try {
     const r = await spawnIn(p);
     check("an untrusted project's persona launch options do not reach the host", !reportText().includes(`RAN persona-${p.marker}`) && !reportText().includes("ENV "), reportText());
     check("the persona refusal names the file, the key, the folder and `cotal trust`", r.exited === 1 && r.out.includes("probe.md") && r.out.includes("launchOptions.mcp-config") && r.out.includes(`cotal trust ${p.root}`), r.out.slice(-400));
-    await cli(p.root, ["trust", p.root]);
+    check("the persona refusal's printed command records trust", runTrustRemedy(r.out, p.root), r.out.slice(-400));
     fresh();
     await spawnIn(p);
     check("CONTROL: a trusted project's persona launch options reach the host", reportText().includes(`RAN persona-${p.marker}`), reportText());
@@ -317,7 +333,7 @@ try {
     writeFileSync(join(p.root, "own.yaml"), manifest("  probe:\n    persona: ./.cotal/agents/probe.md\n    launchOptions: { mcp-config: /tmp/manifest.json }"));
     const own = await cli(p.root, ["team", "check", join(p.root, "own.yaml"), "--json"]);
     check("a manifest's own launch options are not gated", own.exited === undefined, own.out.slice(-300));
-    await cli(p.root, ["trust", p.root]);
+    check("the manifest refusal's printed command records trust", runTrustRemedy(reason, p.root), reason);
     const trusted = await cli(p.root, ["team", "check", join(p.root, "nested.yaml"), "--json"]);
     check("CONTROL: the same manifest resolves once the folder is trusted", trusted.exited === undefined, trusted.out.slice(-300));
     // `foo.cotal/agents` is not a project's `.cotal/agents`: matched by whole path segments.
@@ -548,7 +564,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.getuid?.() === 0 ? 51 : 53;
+const EXPECTED = process.getuid?.() === 0 ? 55 : 57;
 if (passed + failed !== EXPECTED) { failed++; console.log(`  ✗ FAIL: ${passed + failed - 1} cells reported, ${EXPECTED} expected`); }
 emitSentinel({ passed, failed });
 process.exit(failed === 0 ? 0 : 1);

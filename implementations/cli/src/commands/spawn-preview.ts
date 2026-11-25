@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { connectorServers, loadCotalConfig, parseAgentFileSource, parseShareSelection, ProjectConfigTrustError, spawnEnvAllow, token, type AgentDef, type Connector, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, findMesh, isCommandFailure, recordOperationSpace, brokerAddressForDisplay, cachedPreferences, isTrustedProject, isWorkspaceTargetError, loadTrustCheckedPersona, personaDir, PersonaSourceError, presentationOf, pruneStaleMeshes, resolveAgentType, resolveMeshTarget, resolvePreference, resolveReadsLiveness, targetErrorCode, workspaceErrorParts, writeResult, type MeshTarget, type OutputWarning, type Report } from "@cotal-ai/workspace";
 import { mergeLaunchOptions, parseLaunchOptions } from "@cotal-ai/workspace";
 import { extensionNames, materializeExtension, preflightRuntime } from "../ext-loader.js";
@@ -13,6 +13,14 @@ import { checkHarness, invalidEnvironmentValues } from "./config.js";
 import { DEFAULT_AGENT } from "../lib/default-persona.js";
 import { refuseUnmintableName } from "./spawn-managed-launch.js";
 import type { spawnFlags } from "./spawn.js";
+
+function readPreviewConfig(root: string, target: { space: string; path: string }) {
+  try { return loadCotalConfig(root, isTrustedProject); }
+  catch (error) {
+    if (!(error instanceof ProjectConfigTrustError)) throw error;
+    throw new CommandFailure("refused", "PERMISSION_DENIED", error.message, { target });
+  }
+}
 
 type Values = FlagValues<typeof spawnFlags>;
 
@@ -126,7 +134,7 @@ export async function spawnLaunchPreview(args: Pick<ParsedArgs, "positionals"> &
     }
   }
   if (personaRefusal) throw new CommandFailure("refused", "PERMISSION_DENIED", personaRefusal, { target: { ...target, path } });
-  const config = loadCotalConfig(root, isTrustedProject);
+  const config = readPreviewConfig(root, { ...target, path });
   let cwd: string;
   let requestedCwd = values.cwd || ".";
   try {

@@ -1344,7 +1344,7 @@ moved away. Under the environment opt-outs above nothing reads it, so it stops n
 ## trust [#trust]
 
 ```bash
-cotal trust <path> [--json|--plain]
+cotal trust <path> [--hex] [--json|--plain]
 ```
 
 Trusts one project folder, so its `.cotal/config.json` may declare MCP servers and `spawn.env`
@@ -1352,6 +1352,8 @@ names, and its persona files may declare `launchOptions`, for agents spawned the
 canonical path is recorded in `trusted-projects.json` in the operator config folder. Trusting a
 folder that is already trusted is a `no-op`. A path that is not a folder refuses `TARGET_NOT_FOUND`.
 A folder whose `.cotal` another account owns refuses `PERMISSION_DENIED`.
+The refusal for an untrusted project prints a command you can copy into your shell. The command
+uses `--hex` when a path contains characters that a shell might interpret.
 [Trusted project folders](config.mdx#trusted-project-folders) describes the rule.
 
 

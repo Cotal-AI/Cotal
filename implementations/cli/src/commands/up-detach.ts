@@ -1,5 +1,5 @@
 import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js";
-import { trustFreshUpProject } from "./up-project-trust.js";
+import { noteUpProjectCreated, trustFreshUpProject } from "./up-project-trust.js";
 import { type ChildProcess } from "node:child_process";
 import { openBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
@@ -694,7 +694,7 @@ export function ensureRootForSpace(space: string, separateRootNeedsPreparation =
   if (existing.length === 0 || existing.includes(space)) return;
   const names = existing.map((s) => `"${s}"`).join(", ");
   if (root !== cwd) {
-    mkdirSync(join(cwd, ".cotal"), { recursive: true, mode: 0o700 });
+    if (mkdirSync(join(cwd, ".cotal"), { recursive: true, mode: 0o700 }) !== undefined) noteUpProjectCreated(cwd);
     console.log(c.dim(`nearest mesh root ${root} hosts ${names} - making this folder its own root for "${space}"`));
     return;
   }
