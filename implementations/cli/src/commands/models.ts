@@ -141,8 +141,10 @@ function modelName(m: ModelInfo): string | { text: string; tone: "hint" } {
   return text ? { text, tone: "hint" } : "";
 }
 
-/** A mode as `--mode` takes it, with its default: `fast=true|false (default false)`. */
+/** A mode as `--mode` takes it, with its default: `fast=true|false (default false)`, or the reason
+ *  the account cannot run it: `fast (unavailable: <reason>)`. */
 function modeChoices(mode: ModeInfo): string {
+  if (mode.unavailable !== undefined) return `${mode.id} (unavailable: ${mode.unavailable})`;
   const values = mode.kind === "toggle" ? ["true", "false"] : mode.options.map((o) => o.id);
   return `${mode.id}=${values.join("|")} (default ${String(mode.default)})`;
 }

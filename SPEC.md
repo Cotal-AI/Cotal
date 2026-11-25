@@ -1097,13 +1097,15 @@ Revision 55 adds the `spawn` input field `modes`, a map of 1 to 32 mode ids to a
 non-empty option id. A model row in a `models` catalog MAY carry `isDefault`, `defaultVariant` and
 `modes`, where a mode is `{ id, label, kind: "toggle", default: boolean }` or
 `{ id, label, kind: "choice", options: [{ id, label }], default }`. At most one row is the default,
-and each default MUST name one of its own variants or options. Before anything is minted, the
-Manager MUST refuse a `spawn` whose `variant` or `modes` the connector's catalog does not list for
-the launched model, or for the default row when the spawn names no model. It MUST also refuse
-`modes` for a connector that does not render them, and for a runtime that starts seats outside its
-host. It checks against the last catalog it read and reads one only when it holds none for the
-harness files it would launch. A resumed seat replays its recorded modes, and a connector that no
-longer renders them refuses the resume.
+and each default MUST name one of its own variants or options. A mode MAY carry `unavailable`, a
+non-empty reason the logged-in account cannot run it; a catalog with an empty reason is unreadable.
+Before anything is minted, the Manager MUST refuse a `spawn` whose `variant` or `modes` the
+connector's catalog does not list for the launched model, or for the default row when the spawn
+names no model. It MUST refuse a `spawn` that names an unavailable mode, with any value, and the
+refusal MUST carry the reason. It MUST also refuse `modes` for a connector that does not render
+them, and for a runtime that starts seats outside its host. It checks against the last catalog it
+read and reads one only when it holds none for the harness files it would launch. A resumed seat
+replays its recorded modes, and a connector that no longer renders them refuses the resume.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the

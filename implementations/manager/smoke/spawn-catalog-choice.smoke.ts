@@ -1,7 +1,8 @@
 /**
  * A spawn's variant and modes against the connector's model catalog (Manager revision 55). The
  * served `spawn` input takes `modes`. The Manager refuses a variant or mode the catalog does not list
- * for the launched model before anything is minted or launched, and reads each catalog once.
+ * for the launched model, and a mode it marks unavailable, before anything is minted or launched, and
+ * reads each catalog once.
  * Offline: an open-mesh Manager with a fake endpoint and runtime; no broker or harness runs.
  *
  * Run: pnpm smoke:manager-spawn-catalog-choice
@@ -41,6 +42,8 @@ const deep = {
   modes: [
     { id: "fast", label: "Fast", kind: "toggle" as const, default: false },
     { id: "agent", label: "Agent", kind: "choice" as const, options: [{ id: "build", label: "Build" }, { id: "plan", label: "Plan" }], default: "build" },
+    { id: "turbo", label: "Turbo", kind: "toggle" as const, default: false, unavailable: "Turbo has been disabled by your organization" },
+    { id: "lane", label: "Lane", kind: "choice" as const, options: [{ id: "left", label: "Left" }], default: "left", unavailable: "Lanes need a paid plan" },
   ],
 };
 const reads: Record<string, number> = {};
@@ -59,6 +62,8 @@ fixture("cat-nomodes", () => ({ models: [deep] }), { supportsModes: undefined })
 fixture("cat-nodefault", () => ({ models: [{ ...deep, isDefault: undefined }] }));
 fixture("cat-unavailable", () => ({ models: [], unavailable: "not logged in" }));
 fixture("cat-malformed", () => ({ models: [{ id: "deep", variants: [{ name: "low" }], defaultVariant: "max" }] }));
+fixture("cat-noreason", () => ({ models: [{ id: "deep", modes: [{ id: "fast", label: "Fast", kind: "toggle", default: false, unavailable: "" }] }] }));
+fixture("cat-blankreason", () => ({ models: [{ id: "deep", modes: [{ id: "fast", label: "Fast", kind: "toggle", default: false, unavailable: "  " }] }] }));
 fixture("cat-blind", undefined);
 
 const manager = new Manager({ space: "catalog-smoke", runtime: "pty", workspaceRoot: root });
@@ -88,8 +93,17 @@ const refused = (reply: Reply, pattern: RegExp) => !reply.ok && pattern.test(rep
 const unlistedVariant = await spawn("cat", { model: "deep", variant: "turbo" });
 check("an unlisted variant is refused with the listed ones, and nothing launches",
   refused(unlistedVariant, /cat lists variants "low", "high" for model "deep", not "turbo" \(variant\)/), unlistedVariant);
-const unlistedMode = await spawn("cat", { model: "deep", modes: { turbo: true } });
-check("an unlisted mode is refused with the listed ones", refused(unlistedMode, /lists modes "fast", "agent" for model "deep", not "turbo" \(modes\)/), unlistedMode);
+const unlistedMode = await spawn("cat", { model: "deep", modes: { warp: true } });
+check("an unlisted mode is refused with the listed ones", refused(unlistedMode, /lists modes "fast", "agent", "turbo", "lane" for model "deep", not "warp" \(modes\)/), unlistedMode);
+const unavailableOn = await spawn("cat", { model: "deep", modes: { turbo: true } });
+check("an unavailable toggle named on is refused with its reason",
+  refused(unavailableOn, /mode "turbo" of model "deep" is unavailable: Turbo has been disabled by your organization \(modes\)/), unavailableOn);
+const unavailableOff = await spawn("cat", { model: "deep", modes: { fast: true, turbo: false } });
+check("an unavailable toggle named off is refused too, beside a mode the model runs",
+  refused(unavailableOff, /mode "turbo" of model "deep" is unavailable: Turbo has been disabled/), unavailableOff);
+const unavailableChoice = await spawn("cat", { modes: { lane: "left" } });
+check("an unavailable choice is refused with its reason on the default row",
+  refused(unavailableChoice, /mode "lane" of model "deep" is unavailable: Lanes need a paid plan \(modes\)/), unavailableChoice);
 const toggleKind = await spawn("cat", { model: "deep", modes: { fast: "yes" } });
 check("a toggle given an option id is refused", refused(toggleKind, /mode "fast" of model "deep" is a toggle, so it takes true or false, not "yes" \(modes\)/), toggleKind);
 const choiceKind = await spawn("cat", { model: "deep", modes: { agent: true } });
@@ -121,8 +135,10 @@ agents.clear();
 
 const models = await (manager as unknown as { opModels: (a: Record<string, unknown>) => Promise<Reply> }).opModels({ agent: "cat" });
 const row = (models.data as { models?: { id: string; isDefault?: boolean; defaultVariant?: string; modes?: unknown[] }[] } | undefined)?.models?.[0];
-check("models reads the harness again and returns the new fields as the connector gave them",
-  models.ok && reads.cat === 2 && row?.isDefault === true && row.defaultVariant === "low" && row.modes?.length === 2, { models, reads });
+const turbo = (row?.modes as { id: string; unavailable?: string }[] | undefined)?.find((m) => m.id === "turbo");
+check("models reads the harness again and returns the new fields as the connector gave them, an unavailable mode with its reason",
+  models.ok && reads.cat === 2 && row?.isDefault === true && row.defaultVariant === "low" && row.modes?.length === 4
+    && turbo?.unavailable === "Turbo has been disabled by your organization", { models, reads });
 await spawn("cat", { model: "deep", variant: "high" });
 check("a spawn after models checks against that read", reads.cat === 2, reads);
 
@@ -135,6 +151,13 @@ const malformedSpawn = await spawn("cat-malformed", { model: "deep", variant: "l
 check("a catalog whose default variant is not one of its variants is unreadable, and its spawn is refused",
   !malformedModels.ok && /names default variant "max", which is not one of its variants/.test(malformedModels.error ?? "")
     && refused(malformedSpawn, /cat-malformed model catalog could not be read/), { malformedModels, malformedSpawn });
+for (const agent of ["cat-noreason", "cat-blankreason"]) {
+  const noReason = await (manager as unknown as { opModels: (a: Record<string, unknown>) => Promise<Reply> }).opModels({ agent });
+  const noReasonSpawn = await spawn(agent, { model: "deep", modes: { fast: false } });
+  check(`${agent}: a mode marked unavailable with an empty reason makes the catalog unreadable, and its spawn is refused`,
+    !noReason.ok && /model "deep" mode "fast" is marked unavailable with no reason/.test(noReason.error ?? "")
+      && refused(noReasonSpawn, new RegExp(`${agent} model catalog could not be read`)), { noReason, noReasonSpawn });
+}
 const blind = await spawn("cat-blind", { variant: "high" });
 check("a variant on a connector that lists no catalog is refused", refused(blind, /cat-blind connector lists no model catalog/), blind);
 const blindBare = await spawn("cat-blind", {});
