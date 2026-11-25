@@ -143,6 +143,16 @@ function checkConfigScope(live: string): void {
     intact.status === 0 && ["cotal", "pnpm cotal"].some((launcher) => intact.stdout.includes(startup(launcher))) && intactTarget.status === 2 &&
       intactTarget.env?.error?.code === "TARGET_UNAVAILABLE" && intactTarget.env.error.remedy === startup("cotal"),
     [intact, intactTarget].map(shown));
+  if (process.platform !== "win32") {
+    const alias = join(home, "healthy-parent-alias"), missingChannels = join(home, "missing-channels.json");
+    symlinkSync(home, alias, "dir");
+    try {
+      const valid = json(["up", ...startupFlags, "--root", join(alias, basename(project)), "--channels", missingChannels]);
+      check("a healthy explicit root through a parent alias reaches channel validation without starting",
+        valid.status === 1 && valid.env?.error?.code === "USAGE_INVALID" &&
+        valid.env.error.message.includes(missingChannels) && readFileSync(record).equals(preparedBefore), shown(valid));
+    } finally { rmSync(alias); }
+  }
 
   if (process.platform !== "win32") {
     chmodSync(project, 0);
@@ -207,7 +217,38 @@ function checkConfigScope(live: string): void {
         dangling.env.error.remedy.includes("move the obstructing entry aside") && recovery(dangling.env.error.remedy) &&
         readlinkSync(project) === freshPath && readFileSync(record).equals(preparedBefore), shown(dangling));
     } finally { rmSync(project); }
+    for (const linkTarget of [project, `${project}.peer`]) {
+      if (linkTarget !== project) symlinkSync(project, linkTarget);
+      symlinkSync(linkTarget, project);
+      try {
+        const loop = explicitUp();
+        check(`explicit up diagnoses a ${linkTarget === project ? "self-referencing" : "two-hop"} link instead of advising access repair`,
+          loop.status === 2 && loop.env?.error?.code === "TARGET_UNAVAILABLE" &&
+          loop.env.error.message.includes(`${project} is a symbolic link that leads to a loop`) &&
+          loop.env.error.remedy.includes("move the obstructing entry aside") && recovery(loop.env.error.remedy) &&
+          readlinkSync(project) === linkTarget && readFileSync(record).equals(preparedBefore), shown(loop));
+        if (linkTarget === project) {
+          const nested = explicitUp(join(project, "child"));
+          check("explicit up distinguishes a link loop above the requested path from a final link",
+            nested.status === 2 && nested.env?.error?.code === "TARGET_UNAVAILABLE" &&
+            nested.env.error.message.includes("passes through a symbolic link loop") &&
+            nested.env.error.remedy.includes("above the requested path") && !nested.env.error.remedy.includes("space forget"), shown(nested));
+        }
+      } finally {
+        rmSync(project);
+        if (linkTarget !== project) rmSync(linkTarget);
+      }
+    }
   }
+  writeFileSync(record, "{broken");
+  try {
+    const incomplete = explicitUp();
+    check("explicit up reports an unreadable preparation instead of advising creation at a missing root",
+      incomplete.status === 2 && incomplete.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      incomplete.env.error.cause?.code === "SCHEMA_INVALID" &&
+      incomplete.env.error.cause.detail.includes(`preparation lookup is incomplete: could not use ${record}`) &&
+      !incomplete.env.error.remedy.includes("space create") && readFileSync(record, "utf8") === "{broken", shown(incomplete));
+  } finally { writeFileSync(record, preparedBefore); }
   const bareProject = mkdtempSync(join(home, "bare-up-"));
   mkdirSync(join(bareProject, ".cotal"), { mode: 0o700 });
   // If target resolution admits startup, runtime preflight still prevents a launch.
@@ -272,6 +313,27 @@ function checkConfigScope(live: string): void {
     rmSync(parentAlias);
   }
   const preparedDir = preparedSpacesDir(), heldRecords = `${preparedDir}.held`;
+  const damagedSibling = join(preparedDir, `${spaceSegment("damaged-sibling")}.json`);
+  writeFileSync(damagedSibling, "{broken", { mode: 0o600 });
+  try {
+    const incomplete = run(["up", ...startupFlags, "--root", project]);
+    check("explicit up reports a skipped preparation even when the recorded root is readable",
+      incomplete.status === 2 && incomplete.stderr.includes(`${project} is not a directory`) &&
+      incomplete.stderr.includes(`preparation lookup is incomplete: could not use ${damagedSibling}`) &&
+      !incomplete.stderr.includes("space forget") && readFileSync(record).equals(preparedBefore), shown(incomplete));
+  } finally { rmSync(damagedSibling); }
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(preparedDir, 0);
+    try {
+      const denied = explicitUp();
+      const human = run(["up", ...startupFlags, "--root", project]);
+      check("explicit up keeps an unreadable preparation directory as a secondary permission denial",
+        denied.status === 2 && denied.env?.error?.code === "TARGET_UNAVAILABLE" &&
+        denied.env.error.cause?.code === "PERMISSION_DENIED" && denied.env.error.cause.detail.includes(`${preparedDir} cannot be read`) &&
+        human.status === 2 && human.stderr.includes(`${project} is not a directory`) &&
+        human.stderr.includes("restore this account's access") && !human.stderr.includes("remove it"), [shown(denied), shown(human)]);
+    } finally { chmodSync(preparedDir, 0o700); }
+  }
   renameSync(preparedDir, heldRecords);
   writeFileSync(preparedDir, replacement);
   try {
@@ -333,6 +395,18 @@ function checkConfigScope(live: string): void {
   if (created.status !== 0) throw new Error(`could not prepare the nested fixture: ${JSON.stringify(shown(created))}`);
   const record = join(preparedSpacesDir(), `${spaceSegment(space)}.json`), before = readFileSync(record);
   renameSync(parent, `${parent}-moved`);
+  if (process.platform !== "win32") {
+    const alias = join(home, "higher-parent-alias");
+    symlinkSync(home, alias, "dir");
+    try {
+      const viaAlias = join(alias, basename(parent), "child");
+      const unavailable = json(["up", "--open", "--no-manager", "--server", DEAD, "--root", viaAlias]);
+      check("explicit up finds the preparation through a surviving alias above a missing parent",
+        unavailable.status === 2 && unavailable.env?.error?.code === "TARGET_UNAVAILABLE" && unavailable.env.target.root === viaAlias &&
+        unavailable.env.error.message.includes(`${viaAlias} no longer exists`) && unavailable.env.error.remedy.includes(`cotal space forget ${space}`) &&
+        readFileSync(record).equals(before), shown(unavailable));
+    } finally { rmSync(alias); }
+  }
   writeFileSync(parent, "ancestor file\n");
   const add = json(["space", "add", space, "--server", DEAD, "--root", hintProject, "--force"]);
   check("space add diagnoses an ancestor file without suggesting local startup",

@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, isMeshRegistryError, listSpaceAccounts, loadPreparedSpaces, oneLine, preparedRootRemedy, projectRootProblem, projectRootProblemText, type NativeCause, type ProjectRootProblem } from "@cotal-ai/workspace";
+import { authDir, canonicalRoot, CommandFailure, findMesh, findPreparedSpace, homeCotalDir, isMeshRegistryError, listSpaceAccounts, oneLine, preparedRootRemedy, projectRootProblem, projectRootProblemText, readPreparedSpaces, type NativeCause, type ProjectRootProblem } from "@cotal-ai/workspace";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { retainedOpenSpace } from "../lib/legacy-start.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -24,11 +24,12 @@ export function checkPublicExchangePort(raw: string | undefined): void {
 export function preparedUpRoot(value: string): string {
   if (!value) throw new CommandFailure("refused", "USAGE_INVALID", "--root needs an existing prepared project directory; an empty value is not the current folder");
   const requested = resolve(value);
-  const problem = explicitRootProblem(requested);
-  if (problem !== undefined) throw unusableUpRoot(requested, problem);
   let root: string;
+  try { root = realpathSync.native(requested); }
+  catch (error) { throw unusableUpRoot(requested, unresolvedRootProblem(requested, error)); }
+  const problem = projectRootProblem(root);
+  if (problem !== undefined) throw unusableUpRoot(requested, problem);
   try {
-    root = realpathSync(requested);
     const cotal = lstatSync(join(root, ".cotal"));
     if (!cotal.isDirectory() || cotal.isSymbolicLink()) throw new Error("not a private project directory");
   } catch {
@@ -43,30 +44,50 @@ function unavailableUpRoot(root: string, message: string, remedy: string, native
   return new CommandFailure("refused", "TARGET_UNAVAILABLE", `${message}; no ancestor or other space was selected`, { target: { root }, remedy, native });
 }
 
-function explicitRootProblem(root: string): ProjectRootProblem | "dangling-link" | undefined {
-  const problem = projectRootProblem(root);
-  if (problem !== "missing") return problem;
-  try { return lstatSync(root, { throwIfNoEntry: false })?.isSymbolicLink() ? "dangling-link" : problem; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOTDIR" ? "not-directory" : "inaccessible"; }
+type ExplicitRootProblem = ProjectRootProblem | "dangling-link" | "looping-link" | "parent-link-loop";
+
+function unresolvedRootProblem(root: string, error: unknown): ExplicitRootProblem {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "ENOTDIR") return "not-directory";
+  if (code !== "ENOENT" && code !== "ELOOP") return "inaccessible";
+  try {
+    const link = lstatSync(root, { throwIfNoEntry: false })?.isSymbolicLink();
+    if (code === "ELOOP") return link ? "looping-link" : "parent-link-loop";
+    return link ? "dangling-link" : "missing";
+  } catch (entryError) {
+    const entryCode = (entryError as NodeJS.ErrnoException).code;
+    if (entryCode === "ELOOP") return "parent-link-loop";
+    return entryCode === "ENOTDIR" ? "not-directory" : "inaccessible";
+  }
 }
 
-// Resolve parent aliases without following a replacement link at the recorded entry itself.
-const rootEntry = (root: string) => join(canonicalRoot(dirname(root)), basename(root));
+/** Match the requested entry through its nearest resolvable parent, without following the final link. */
+function rootEntry(root: string): string | undefined {
+  let parent = dirname(root), suffix = basename(root);
+  for (;;) {
+    try { return join(realpathSync.native(parent), suffix); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code, above = dirname(parent);
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || above === parent) return undefined;
+      suffix = join(basename(parent), suffix);
+      parent = above;
+    }
+  }
+}
 
-function unusableUpRoot(root: string, problem: ProjectRootProblem | "dangling-link"): CommandFailure {
+function unusableUpRoot(root: string, problem: ExplicitRootProblem): CommandFailure {
   const shown = `--root ${oneLine(root)}`;
   if (problem === "inaccessible")
     return unavailableUpRoot(root, `${shown} ${projectRootProblemText(problem)}`, "restore access to the directory, then try again");
-  const reported = problem === "dangling-link" ? "is a dangling symbolic link" : projectRootProblemText(problem);
+  if (problem === "parent-link-loop")
+    return unavailableUpRoot(root, `${shown} passes through a symbolic link loop`, "repair the symbolic link loop above the requested path, then try again");
+  const reported = problem === "dangling-link" ? "is a dangling symbolic link" : problem === "looping-link"
+    ? "is a symbolic link that leads to a loop" : projectRootProblemText(problem);
   const message = `${shown} ${problem === "missing" ? "does not exist" : reported}`;
-  const entry = rootEntry(root);
-  let matches;
-  try { matches = loadPreparedSpaces().filter((space) => rootEntry(resolve(space.root)) === entry); }
-  catch (error) {
-    if (!isMeshRegistryError(error)) throw error;
-    const registry = registryFailure(error);
+  const { matches, cause } = upRootPreparations(root);
+  if (cause) {
     const step = problem === "missing" ? "restore the folder if this is its recorded path" : "if this is the recorded project path, move the obstructing entry aside and restore the original project folder";
-    return unavailableUpRoot(root, message, step, { code: registry.code, detail: oneLine([registry.message, registry.remedy].filter(Boolean).join(". ")) });
+    return unavailableUpRoot(root, message, step, cause);
   }
   if (matches.length === 0)
     return unavailableUpRoot(root, message, problem === "missing" ? prepareRoot : "pass the path to an existing prepared project directory");
@@ -75,6 +96,30 @@ function unusableUpRoot(root: string, problem: ProjectRootProblem | "dangling-li
   const restore = problem === "missing" ? "restore the original project folder at its recorded path, or " : "move the obstructing entry aside and ";
   const remedy = preparedRootRemedy(matches[0]!.space, problem === "missing" ? "missing" : "not-directory");
   return unavailableUpRoot(root, `${shown} ${reported}`, `${restore}${remedy}, using a different directory for <dir>`);
+}
+
+function upRootPreparations(root: string) {
+  try {
+    const { spaces, unusable } = readPreparedSpaces();
+    const first = unusable[0];
+    if (first !== undefined) {
+      const more = unusable.length > 1 ? ` and ${unusable.length - 1} more` : "";
+      const code = unusable.every((error) => error.refusal === "PERMISSION_DENIED") ? "PERMISSION_DENIED" : "SCHEMA_INVALID";
+      const cause: NativeCause = { code, detail: `preparation lookup is incomplete: could not use ${oneLine(first.file)}${more}. Check \`cotal space\` for details before preparing again` };
+      return { matches: [], cause };
+    }
+    const entry = rootEntry(root);
+    const matches = spaces.filter((space) => {
+      const recorded = resolve(space.root);
+      return recorded === root || (entry !== undefined && rootEntry(recorded) === entry);
+    });
+    return { matches };
+  } catch (error) {
+    if (!isMeshRegistryError(error)) throw error;
+    const registry = registryFailure(error);
+    const cause: NativeCause = { code: registry.code, detail: oneLine([registry.message, registry.remedy].filter(Boolean).join(". ")) };
+    return { matches: [], cause };
+  }
 }
 
 /** An invoking folder that vanished during up cannot be restored. Keep the operation's outcome. */

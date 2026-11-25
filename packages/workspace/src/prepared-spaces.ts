@@ -71,6 +71,11 @@ export function readPreparedSpaces(): { spaces: PreparedSpace[]; unusable: MeshR
   } catch (e) {
     const dir = preparedSpacesDir(), code = (e as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { spaces: [], unusable: [] };
+    if (code === "EACCES" || code === "EPERM") {
+      const summary = `the prepared spaces folder ${dir} cannot be read by this account`;
+      const remedy = "restore this account's access to the prepared spaces folder and its parent directories";
+      throw new MeshRegistryError(dir, `${summary} - ${remedy}`, { cause: e, summary, remedy, refusal: "PERMISSION_DENIED" });
+    }
     // Something other than a folder at its path holds no records: moving it aside loses none. A
     // folder above it that is not one fails the stat too, and is the read failure below.
     let stat: Stats | undefined;
