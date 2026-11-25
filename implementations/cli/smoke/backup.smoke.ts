@@ -86,6 +86,42 @@ async function checkUnreadableManifest(root: string, directory: string): Promise
   }
 }
 
+async function checkMissingBackupParents(root: string, store: string): Promise<void> {
+  const auth = authDir(root);
+  const attempts = join(root, ".cotal", "maintenance", "attempts");
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal);
+  assert.equal(existsSync(auth), false);
+  assert.equal(existsSync(attempts), false);
+  const storeAlias = join(root, "store-link");
+  symlinkSync(store, storeAlias, "junction");
+  for (const [destination, protectedPath, reason] of [
+    [join(auth, "new"), auth, "which `cotal clean all` removes"],
+    [join(storeAlias, "missing", "nested", "new"), store, "inside the preserved store"],
+    [join(attempts, "nested", "new"), attempts, "overlaps the maintenance attempt directory"],
+  ]) {
+    await assert.rejects(backup({ positionals: ["create", destination], values: {}, raw: [] }), (error: unknown) =>
+      isCommandFailure(error) && error.outcome === "refused" && error.code === "USAGE_INVALID"
+        && error.message.includes(reason) && error.remedy === `name a destination outside ${protectedPath}`,
+    `create rejects ${destination} without asking to make its parent`);
+    assert.equal(existsSync(destination), false);
+  }
+  const ordinary = join(root, ".cotal", "auth-archive");
+  await assert.rejects(backup({ positionals: ["create", join(ordinary, "new")], values: {}, raw: [] }), {
+    outcome: "refused", code: "TARGET_NOT_FOUND",
+    remedy: "create that folder first; backup create makes only the artifact's own folder",
+  });
+  const dangling = join(root, "dangling-parent");
+  symlinkSync(auth, dangling, "junction");
+  await assert.rejects(backup({ positionals: ["create", join(dangling, "nested", "new")], values: {}, raw: [] }), {
+    outcome: "refused", code: "USAGE_INVALID", remedy: "fix the symbolic link or name another destination",
+  });
+  assert.deepEqual(readFileSync(journal), before);
+  assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
+  assert.equal(existsSync(attempts), false);
+  assert.equal(existsSync(auth), false);
+}
+
 function checkLinkedInterruptedBackup(root: string): void {
   const parent = join(root, "backups"), alias = join(root, "backup-link");
   mkdirSync(parent);
@@ -626,6 +662,7 @@ try {
             && / or resume with bare .*up`; once the root holds no maintenance state and its mesh is stopped, run .*clean (store|all) --force` again$/.test(error.remedy ?? ""),
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
+      await checkMissingBackupParents(realpathSync.native(cleanRoot), realpathSync.native(cleanStore));
       if (process.geteuid && process.geteuid() !== 0) {
         await checkUnreadableRestore(realpathSync(cleanRoot), realpathSync(destination), snapshot.path);
         await checkUnreadableManifest(realpathSync(cleanRoot), realpathSync(destination));
