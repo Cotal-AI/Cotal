@@ -362,7 +362,11 @@ function assertNewStorePath(target: string, source: string): void {
 function assertRestoreTargetPath(source: string, artifact: string, attempts: string, target: string, explicit: boolean): void {
   const canonicalTarget = explicit ? checkStorePath(target, "restore", () => canonicalFuturePath(target)) : canonicalFuturePath(target);
   if (canonicalTarget !== source && (contains(source, canonicalTarget) || contains(canonicalTarget, source)))
-    throw new Error("restore target must not overlap the preserved source store");
+    throw new CommandFailure("refused", "USAGE_INVALID", "restore target must not overlap the preserved source store. No restore started.", {
+      target: { storeDir: target },
+      remedy: "choose an absent `--store-dir` path outside the preserved source store, under an existing writable directory",
+      selfContained: true,
+    });
   if (contains(attempts, canonicalTarget) || contains(canonicalTarget, attempts))
     throw new Error("restore target must not overlap the maintenance attempt directory");
   if (contains(artifact, canonicalTarget) || contains(canonicalTarget, artifact))
@@ -495,16 +499,17 @@ export function restoreComposition(space: string, restored: readonly string[], m
 const USER_MODE_NO_RUNS = "A user-mode backup holds no workflow runs, because the records store's lifecycle heads name credential rows in the auth store, which a backup does not carry; the workflow run stores were recreated empty.";
 const OLDER_FORMAT_NO_RUNS = "This backup was made before full backups held workflow runs, so it holds none; the workflow run stores were recreated empty.";
 
-/** The step that moves a full restore attempt on from `state`, for a refusal to name. A committed or
- *  degraded attempt goes forward through bare `up`, which continues it. `leftOut` is what the restore
- *  left only in its previous store ({@link restoreLeftOut}). `cleanupRoot` is the project to enter
- *  when an active restore was started from another root. */
-export function restoreNextStep(state: string, attemptId: string, leftOut?: string, cleanupRoot?: string, cmd = "cotal"): string {
+/** The step that moves a restore attempt on from `state`. A committed or degraded attempt goes
+ *  forward through bare `up`. Cleanup needs history consent only for data held in a retained store.
+ *  `cleanupRoot` is the project to enter when an active restore was started from another root. */
+export function restoreNextStep(state: string, attemptId: string, journal?: Parameters<typeof restoreLeftOut>[0], cleanupRoot?: string, cmd = "cotal"): string {
   if (state === "restore-ready") return `roll the pre-commit attempt back with ${codeSpan(`${cmd} backup recover ${attemptId} --yes`)}; preview it first with --dry-run`;
   if (state === "active") {
+    const leftOut = journal?.restore.previousSource ? restoreLeftOut(journal) : undefined;
     const cleanup = codeSpan(`${cleanupRoot ? `cd ${shellPath(cleanupRoot)} && ` : ""}${cmd} backup cleanup-fallback ${attemptId} --yes${leftOut ? " --discard-history" : ""}`);
     if (leftOut) return `the restore completed: ${cleanup} retires its journal and deletes the previous store, the only copy of the ${leftOut} it left out; preview it first with --dry-run`;
-    return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run`;
+    const note = journal?.restore.selection === "registry" ? ". Chat and DM history and workflow runs start empty after a registry-only restore." : "";
+    return `the restore completed: retire its journal with ${cleanup}; preview it first with --dry-run${note}`;
   }
   return `recover forward with bare ${codeSpan(`${cmd} up`)} from this root, which continues attempt ${attemptId}; fallback cleanup follows once it is active`;
 }
@@ -534,7 +539,7 @@ export function maintenanceNextStep(root: string, journal: NonNullable<ReturnTyp
     const source = preservedSourceState(root, journal.source);
     return { attemptId, next: readyNextStep(journal.source, source), ...(source.state === "missing" ? { sourceMissing: true } : {}) };
   }
-  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, restoreLeftOut(journal))
+  const next = "restore" in journal ? restoreNextStep(journal.state, attemptId, journal)
     : journal.state === "claimed" ? claimedNextStep(root, journal.claim) : null;
   return { attemptId, next };
 }
@@ -613,7 +618,7 @@ export function heldRestoreAttempt(root: string): { attemptId: string; journalSt
   let journal: ReturnType<typeof readMaintenanceJournal>;
   try { journal = readMaintenanceJournal(root); } catch { return undefined; }
   if (!journal || !("restore" in journal)) return undefined;
-  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal)) };
+  return { attemptId: journal.restore.attemptId, journalState: journal.state, remedy: restoreNextStep(journal.state, journal.restore.attemptId, journal) };
 }
 
 /** A root with no stopped preserved cut to restore into. Nothing was staged, moved or claimed. */
@@ -621,7 +626,7 @@ function notRestorable(root: string, journal: ReturnType<typeof readMaintenanceJ
   // `down --preserve-state` only cuts a running stack, so a stack a plain `cotal down` stopped is
   // started first (#7330).
   const remedy = !journal ? "restore needs the stopped preserved cut from `cotal down --preserve-state` on this root, and a plain `cotal down` records none: start a stopped stack with `cotal up` first, then stop it with `cotal down --preserve-state` and run the restore again"
-    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, restoreLeftOut(journal))
+    : "restore" in journal ? restoreNextStep(journal.state, journal.restore.attemptId, journal)
     : "this root's maintenance attempt must finish first; check it with `cotal status`";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `restore requires stable ready maintenance state, found ${journal?.state ?? "none"}`, { target: { root, ...(journal ? { state: journal.state } : {}) }, remedy });
 }

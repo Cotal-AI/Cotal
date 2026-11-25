@@ -27,9 +27,9 @@
  *  I. `team boot --dry-run` of another space's manifest in this prepared folder says the folder
  *     belongs to the running space and that the apply needs a folder of its own. In folder `c`,
  *     prepared for no space, it says the folder is not prepared and names `--root .`.
- *  J. after a clean `down` of folder `s`, `team remove <id>` refuses CONFLICT naming `cotal up` in
- *     its root and the remove again, a bare `up` starts the stack again with the deployment's records
- *     as they were, and a removal after one of its cards was edited names that card.
+ *  J. after a clean `down` of folder `s`, a removal preview names `cotal up` in its root and a scoped
+ *     preview retry. After restart that retry leaves the cards present, and a removal after one of
+ *     its cards was edited names that card.
  *  K. after `team remove --yes` of an 11-card deployment, `team show` lists each card's delete
  *     submission before its outcome, and the cards in manifest order, in text and JSON.
  *  L. on an open mesh, apply and preview recommend live delivery and name the requirement for
@@ -426,13 +426,30 @@ try {
   const supportedPreview = cotal(s, "team", "boot", "live.yaml", "--dry-run", "--json");
   check("the suggested team boot preview still works on the stopped controller root",
     answered(supportedPreview) && envelope(supportedPreview.stdout)?.result?.effectAttempted === false, supportedPreview.out);
-  const removeStopped = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;
-  check("team remove on the stopped stack refuses CONFLICT, naming cotal up in its root and then the remove again",
-    stoppedS.status === 0 && removeStopped?.code === "CONFLICT" && removeStopped.remedy === `no registration names ${SPACE}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${realpathSync(s)}, which registers it, then run \`cotal team remove ${deployment}\` again`, { down: stoppedS.out.slice(-400), removeStopped });
+  const removeStopped = cotal(s, "team", "remove", deployment, "--space", SPACE, "--dry-run", "--json");
+  const removeStoppedError = envelope(removeStopped.stdout)?.error;
+  const retry = removeStoppedError?.remedy?.match(/then run `([^`]+)` again$/)?.[1];
+  const expectedRetry = `cotal team remove ${deployment} --space ${SPACE} --dry-run --json`;
+  check("the stopped JSON removal preview names the restart and preserves the scoped preview",
+    stoppedS.status === 0 && removeStopped.status === 2 && removeStoppedError?.code === "CONFLICT" &&
+    removeStoppedError.remedy === `no registration names ${SPACE}, as after \`cotal down\`; start the stack again with \`cotal up\` in ${realpathSync(s)}, which registers it, then run \`${expectedRetry}\` again`, removeStopped.out);
+  const removeStoppedPlain = cotal(s, "team", "remove", deployment, "-s", SPACE, "--dry-run", "--plain");
+  check("the stopped plain removal preview keeps the scope, dry run and plain output",
+    removeStoppedPlain.status === 2 && ["cotal", "pnpm cotal"].some((cli) =>
+      removeStoppedPlain.stderr.includes(`\`${cli} team remove ${deployment} --space ${SPACE} --dry-run --plain\``)), removeStoppedPlain.out);
   const restartedS = cotal(s, "up");
   const kept = cotal(s, "team", "show", deployment);
   check("a bare up starts that stack again and keeps the deployment's records as they are",
     restartedS.status === 0 && /Controller stack started/.test(restartedS.stdout) && /Recorded state:\s+channels created\n/.test(kept.stdout), { up: restartedS.out.slice(-800), kept: kept.out.slice(-800) });
+  if (retry === expectedRetry) {
+    const resumed = cotal(s, ...retry.split(" ").slice(1));
+    const result = envelope(resumed.stdout)?.result;
+    const card = cotal(s, "channel", "show", "live1", "--space", SPACE, "--json");
+    const registry = envelope(card.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined;
+    check("replaying the retry completes a read-only JSON preview and leaves the card present",
+      answered(resumed) && result?.kind === "channel-team-removal-preview" && result.effectAttempted === false &&
+      result.historyPurged === false && card.status === 0 && Object.hasOwn(registry?.channels ?? {}, "live1"), { retry: resumed.out, card: card.out });
+  }
   check("team deploy succeeds after restarting the recorded stack", cotal(s, "team", "deploy", "extra.yaml", "--json").status === 0);
   const edited = cotal(s, "channel", "set", "live1", "--desc", "Edited by hand.");
   const removeEdited = envelope(cotal(s, "team", "remove", deployment, "--dry-run", "--json").stdout)?.error;

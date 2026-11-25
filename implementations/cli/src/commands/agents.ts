@@ -752,7 +752,8 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
 /** Read one named seat from its presence-selected owner. User-auth keeps its authorized census. */
 async function readNamedSeat(values: FlagValues<typeof psFlags>, name: string): Promise<SeatCensus> {
   refuseControlCreds(values.creds, values.space);
-  const on = await managerPin(values, onRemedyVerb("cotal status", { ...values, name }));
+  const output = values.json === true ? ["--json"] : values.plain === true ? ["--plain"] : [];
+  const on = await managerPin(values, onRemedyVerb("cotal status", { ...values, name }, output));
   if (name === "manager") return readSeats(values, "ps", on);
   const { mode } = await connectOrThrow(values, "observer", { readOnly: true });
   if (mode === "user") return readSeats(values, "ps", on);

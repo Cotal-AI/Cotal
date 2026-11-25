@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import { listSpaces, deleteSpace, type SpaceAuth, type SpaceInfo } from "@cotal-ai/core";
 import { findMesh, getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { displayRemedy } from "../../lib/self-exec.js";
 import { agentColor } from "./theme.js";
 import { Confirm } from "./Confirm.js";
 import { useListCursor } from "./useListCursor.js";
@@ -118,7 +119,7 @@ export function SpacePicker({
         ) : error ? (
           <Text color="red">{"! " + error}</Text>
         ) : list.length === 0 ? (
-          <Text dimColor>no spaces found - run `cotal up` then `cotal demo`</Text>
+          <Text dimColor>{displayRemedy("no spaces found on this server. For a local mesh, run `cotal up` and connect to the address it reports.")}</Text>
         ) : (
           visible.map((s, i) => <Row key={s.space} s={s} selected={start + i === selClamped} />)
         )}

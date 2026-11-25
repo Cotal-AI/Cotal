@@ -380,6 +380,9 @@ stack's manager, and `cotal manager start` reports it running and starts no seco
 If the requested space was prepared but never started, `manager status` suggests running `cotal up`
 in that project's folder. When `status` or `stop` suggests a manager-only start, that command names
 the requested space even when another one is selected.
+When there is no saved or running manager, `cotal manager restart --dry-run` refuses with
+`TARGET_NOT_FOUND` (exit 2) and suggests `cotal manager start --space <space> --dry-run`.
+The suggested command keeps `--json` or `--plain` if you passed it.
 Without `--instance`, `cotal manager status` and `cotal manager stop` select the running stack
 manager even if an older saved `manager` service is stopped. Stopping the stack manager this way
 leaves the broker running. `--instance` still selects the named saved service instance.

@@ -9,6 +9,7 @@ import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import { SHOWN_VALUE_MAX } from "./output.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
+import { projectRootProblem, projectRootProblemText, type ProjectRootProblem } from "./prepared-spaces.js";
 
 /**
  * The single home for the toolchain's `cotal …` wording — optional and presentation-only.
@@ -35,6 +36,14 @@ export interface WorkspaceErrorParts {
 }
 
 const parts = (message: string, remedy?: string): WorkspaceErrorParts => (remedy === undefined ? { message } : { message, remedy });
+
+/** The choices when a prepared space's recorded path cannot be used. */
+export function preparedRootRemedy(space: string, problem: ProjectRootProblem): string {
+  if (problem === "inaccessible") return "restore access to the original project folder, then try again";
+  const name = shellPath(space);
+  const reprepare = `forget it with ${codeSpan(`cotal space forget ${space.startsWith("-") ? "-- " : ""}${name}`)}, then prepare it again with ${codeSpan(`cotal space create ${space.startsWith("-") ? "<name>" : name} --root <dir>`)}`;
+  return problem === "missing" ? reprepare : `restore the original project folder at its recorded path, or ${reprepare}`;
+}
 
 /** A workspace failure as its message and remedy, for a caller that reports them apart, such as a
  *  structured command's `error.message` and `error.remedy`. */
@@ -117,14 +126,17 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       // broker names that broker, and `up` there starts it again.
       // A folder moved from a prepared space's missing root, or holding a journal another folder
       // recorded, names the next step `up` and `down` name there.
-      if (d.space !== undefined) return d.rootMissing
-        ? d.stackRemedy !== undefined
-          ? parts(`"${d.space}" is prepared in ${d.root}, which no longer exists, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
-          : parts(`"${d.space}" is prepared in ${d.root}, which no longer exists`, `forget it with ${codeSpan(`cotal space forget ${shellPath(d.space)}`)}, then prepare it again with ${codeSpan(`cotal space create ${shellPath(d.space)} --root <dir>`)}`)
-        : d.unsettled !== undefined
-          ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
-          : d.stopped !== undefined
-            ? { message: `"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, remedy: `start it again with ${codeSpan(d.stopped.noManager ? "cotal up --no-manager" : "cotal up")} in ${d.root}`, restartRoot: d.root }
+      if (d.space !== undefined && d.rootMissing) {
+        const problem = d.rootProblem ?? "missing";
+        const message = `"${d.space}" is prepared in ${d.root}, which ${projectRootProblemText(problem)}`;
+        return d.stackRemedy !== undefined
+          ? parts(`${message}, and this folder's stack journal was recorded there, so this folder was moved from there`, d.stackRemedy)
+          : parts(message, preparedRootRemedy(d.space, problem));
+      }
+      if (d.space !== undefined) return d.unsettled !== undefined
+        ? parts(`"${d.space}" is prepared, and the last ${d.unsettled} of its stack in ${d.root} has no recorded outcome`, `run \`cotal status\` in ${d.root}, which names the step that finishes or settles it`)
+        : d.stopped !== undefined
+          ? { message: `"${d.space}" is stopped; its last operation, ${d.stopped.operation}, ${d.stopped.outcome}`, remedy: `start it again with ${codeSpan(d.stopped.noManager ? "cotal up --no-manager" : "cotal up")} in ${d.root}`, restartRoot: d.root }
           : { message: `"${d.space}" is prepared but not started`, remedy: `start it with \`cotal up\` in ${d.root}`, restartRoot: d.root };
       const broker = d.server === undefined ? "a broker" : `the broker ${brokerAddressForDisplay(d.server) ?? "at an invalid address"}`;
       // A legacy root whose space is registered for another folder, as a copy, a folder the name was
@@ -188,6 +200,8 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
         return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, t.origin === "catalog"
           ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
           : `start it where it runs, or ${codeSpan(`cotal space forget ${shellPath(t.space)}`)} to unregister it`);
+      if (projectRootProblem(t.root) === "not-directory")
+        return parts(`no mesh running at ${server}; mesh "${t.space}" is recorded at ${t.root}, which is not a directory`, preparedRootRemedy(t.space, "not-directory"));
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.

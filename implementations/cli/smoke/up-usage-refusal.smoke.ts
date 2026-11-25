@@ -234,7 +234,10 @@ for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
   }
 }
 
-const servers: { server: string; message: RegExp; example: string }[] = [
+const servers: { server: string; host?: string; message: RegExp; example: string }[] = [
+  { server: "127.0.0.2:43131", host: "127.0.0.2", message: /--server is not a URL/, example: "--server nats://127.0.0.2:43131" },
+  { server: "tls://broker.example:4443", host: "127.0.0.2", message: /--server names the host/, example: "--server tls://127.0.0.2:4443" },
+  { server: "nats://localhost:43131", host: "0.0.0.0", message: /--server names the host/, example: "--server nats://127.0.0.1:43131" },
   { server: "http://127.0.0.1:43131", message: /--server must be a nats:\/\/ or tls:\/\/ URL/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://localhost:43131", message: /--server names the host localhost/, example: "--server nats://127.0.0.1:43131" },
   { server: "tls://broker.example:4443", message: /--server names the host broker\.example/, example: "--server tls://127.0.0.1:4443" },
@@ -243,8 +246,8 @@ const servers: { server: string; message: RegExp; example: string }[] = [
   { server: "nats://127.0.0.1:43131?a=1", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://127.0.0.1:43131#a", message: /--server must be one broker URL without a path, query or fragment/, example: "--server nats://127.0.0.1:43131" },
 ];
-for (const { server, message, example } of servers) {
-  const text = run(["up", "--server", server]);
+for (const { server, host, message, example } of servers) {
+  const text = run(["up", "--server", server, ...(host ? ["--host", host] : [])]);
   check(`up --server ${server} is the classified USAGE_INVALID report with no help, exit 1, giving ${example}`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Code:\s+USAGE_INVALID/.test(text.stderr) && text.stderr.includes(example) && !/Usage|Options/.test(text.stderr), shown(text));
 }
 
