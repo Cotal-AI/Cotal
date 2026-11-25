@@ -226,6 +226,16 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     # The disconnected welcome cannot enable startup. Seed the real plugin's exact Run entry to test uninstaller cleanup separately.
     $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     New-ItemProperty -Path $run -Name Cotal -PropertyType String -Value "`"$path`" --background" -Force | Out-Null
+    # A person uninstalls with the app open and its service running: the window's status reader and the daemon both run from the program files.
+    $owned = Start-Process -FilePath $path -PassThru
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+      Start-Sleep -Milliseconds 500
+      $mine = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$directory\", [StringComparison]::OrdinalIgnoreCase) })
+      $reader = @($mine | Where-Object { $_.Name -eq 'node.exe' -and $_.ParentProcessId -eq $owned.Id })
+      $daemon = @($mine | Where-Object { $_.Name -eq 'node.exe' -and $_.ParentProcessId -ne $owned.Id })
+    } while (($reader.Count -lt 1 -or $daemon.Count -lt 1) -and (Get-Date) -lt $deadline)
+    if ($reader.Count -lt 1 -or $daemon.Count -lt 1) { throw "$kind app and service were not both running before uninstall: $($reader.Count) window reader(s), $($daemon.Count) other node process(es)" }
     if ($kind -eq 'nsis') {
       $uninstaller = Get-ChildItem $directory -Filter '*uninstall*.exe' | Select-Object -First 1
       $p = Start-Process $uninstaller.FullName -ArgumentList @('/S', "_?=$directory") -Wait -PassThru
@@ -237,10 +247,16 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     if (Get-ItemProperty -Path $run -Name Cotal -ErrorAction SilentlyContinue) { throw 'App login entry remains after uninstall.' }
     if (@(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -ceq $serviceTask }).Count -ne 0) { throw "$kind uninstall left the background service task $serviceTask registered" }
     if (Test-Path -LiteralPath $receiptPath) { throw "$kind uninstall left the background service receipt" }
+    $left = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$directory\", [StringComparison]::OrdinalIgnoreCase) })
+    if ($left.Count -ne 0) { throw "$kind uninstall left $($left.Count) process(es) of this installation running: $(($left | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" }
+    # A process still running from the program files keeps these locked, so the uninstaller cannot delete them.
+    $kept = @(@('cotal-desktop.exe', 'node.exe') | Where-Object { Test-Path -LiteralPath (Join-Path $directory $_) }) + @(Get-ChildItem -LiteralPath (Join-Path $directory 'runtime') -Recurse -Filter '*.node' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($directory.Length + 1) })
+    if ($kept.Count -ne 0) { throw "$kind uninstall left program files behind: $($kept -join ', ')" }
+    $owned = $null
     $installed = $false
     $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
-    $checks += 'uninstall-service'
+    $checks += 'uninstall-service', 'uninstall-while-open'
     $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {
