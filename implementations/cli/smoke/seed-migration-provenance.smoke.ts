@@ -8,22 +8,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(REPO, "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) throw new Error(`built binary missing at ${BIN} - run \`pnpm --filter cotal-ai... build\` first`);
 
-let pass = 0;
-let fail = 0;
-function check(name: string, condition: boolean, extra?: unknown): void {
-  if (condition) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-}
+const { check, finish, passed, failed } = createSuite();
 
 function cotal(cfg: string, home: string, args: string[]): { status: number; stdout: string; stderr: string } {
   // The child is the compiled CLI, which DOES read connection material. Clearing one name by hand
@@ -93,5 +84,6 @@ try {
   rmSync(home, { recursive: true, force: true });
 }
 
-console.log(`seed-migration-provenance smoke: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`seed-migration-provenance smoke: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

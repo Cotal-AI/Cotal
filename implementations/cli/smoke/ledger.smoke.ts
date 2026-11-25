@@ -37,6 +37,15 @@ function throws(label: string, fn: () => unknown): void {
     check(label, true);
   }
 }
+/** The message and remedy `fn` refuses with. */
+function refusalOf(fn: () => unknown): { message: string; remedy?: string } {
+  try {
+    fn();
+    return { message: "did not throw" };
+  } catch (e) {
+    return { message: (e as Error).message, remedy: (e as { remedy?: string }).remedy };
+  }
+}
 
 const ledgerOf = (over: Partial<MeshLedger> = {}): MeshLedger => ({
   apiVersion: LEDGER_VERSION,
@@ -108,6 +117,21 @@ function writeRaw(name: string, body: unknown): string {
   writeLedger(r2, ledgerOf({ runId: "aaa", manifestHash: "h1" }));
   check("findLedgerByHash single match", findLedgerByHash(r2, "h1").ledger.runId === "aaa");
   throws("findLedgerByHash no match throws (edited file)", () => findLedgerByHash(r2, "nomatch"));
+  const other = refusalOf(() => findLedgerByHash(r2, "nomatch"));
+  check("no match among recorded ledgers lists their run ids and offers a --run preview",
+    other.message.includes("recorded runs: aaa") && other.remedy?.includes("`cotal down -f <file> --run <id> --dry-run`") === true, other);
+  const empty = mkdtempSync(join(tmpdir(), "cotal-ledger-empty-"));
+  const none = refusalOf(() => findLedgerByHash(empty, "h1"));
+  check("a root with no ledger says so and names team remove and the stack preview, not a run id",
+    none.message.includes("holds no ledger") && none.remedy?.includes("`cotal team remove <id>`") === true && none.remedy.includes("`cotal down --dry-run`") && !`${none.message} ${none.remedy}`.includes("--run"), none);
+  mkdirSync(join(empty, ".cotal", "manifests"), { recursive: true });
+  check("so does a root whose ledger folder is empty", refusalOf(() => findLedgerByHash(empty, "h1")).message.includes("holds no ledger"));
+  const notDir = mkdtempSync(join(tmpdir(), "cotal-ledger-notdir-"));
+  mkdirSync(join(notDir, ".cotal"));
+  writeFileSync(join(notDir, ".cotal", "manifests"), "");
+  const unread = refusalOf(() => findLedgerByHash(notDir, "h1"));
+  check("a ledger path that is not a folder is refused as such, not reported as holding no ledger",
+    unread.message !== "did not throw" && !unread.message.includes("holds no ledger"), unread);
   writeLedger(r2, ledgerOf({ runId: "bbb", manifestHash: "h1" })); // second run, same hash ⇒ ambiguous
   throws("findLedgerByHash ambiguous throws (>1 run)", () => findLedgerByHash(r2, "h1"));
   check("findLedgerByRun resolves a known run", findLedgerByRun(r2, "aaa").ledger.runId === "aaa");

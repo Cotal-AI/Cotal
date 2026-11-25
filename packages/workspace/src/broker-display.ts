@@ -32,7 +32,7 @@ export { brokerUrlHasUserinfo } from "@cotal-ai/core";
  *  silence. `what` names where the URL came from, such as `--server`, `COTAL_SERVER` or a bundle's
  *  server; the value is never repeated. Every command's refusal of one takes its words from here. */
 export function brokerUrlCredentialProblem(what: string): { message: string; remedy: string } {
-  return { message: `${what} must not embed credentials`, remedy: "name the broker URL without user:password@, and pass the credential with --creds, a login or the space's own trust" };
+  return { message: `${what} must not embed credentials`, remedy: "name the broker URL without user:password@ and retry; if the space requires authentication, see the command's help for supported options" };
 }
 
 /** {@link brokerUrlCredentialProblem} as the refusal of a command before it runs. */

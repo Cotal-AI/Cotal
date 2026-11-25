@@ -42,14 +42,16 @@ const hash = (text: string): string => createHash("sha256").update(text).digest(
 const identityRoot = (): string => join(homeCotalDir(), "app-identities");
 const trust = (t: MeshTarget): string => hash(JSON.stringify({ space: t.space, root: t.root, server: t.server, tlsRequired: t.tlsRequired, userAuth: t.userAuth }));
 
-function syncFile(path: string): void {
-  const fd = openSync(path, "r");
+function syncFile(path: string, flags: "r" | "r+" = "r"): void {
+  const fd = openSync(path, flags);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
 
 function save(dir: string, record: SavedIdentity): void {
-  writeSecretFileAtomic(join(dir, RECORD), JSON.stringify(record));
-  syncFile(join(dir, RECORD));
+  const file = join(dir, RECORD);
+  writeSecretFileAtomic(file, JSON.stringify(record));
+  // Windows requires write access to flush a file. Directory handles stay read-only on POSIX.
+  syncFile(file, "r+");
   if (process.platform !== "win32") syncFile(dir);
 }
 

@@ -21,12 +21,15 @@ const env = {
 };
 const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
 const { check, finish } = createSuite();
-function cli(args: string[], extra: NodeJS.ProcessEnv = {}, warnings = ["SNAPSHOT_UNAVAILABLE"], timeout = 30_000) {
+function invoke(args: string[], extra: NodeJS.ProcessEnv = {}, timeout = 30_000) {
   const result = spawnSync(process.execPath, [bin, ...args], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout });
   assert.equal(result.error, undefined);
-  const brokerOnlyStatus = args[0] === "status" && result.status === 4;
-  assert.ok(result.status === 0 || brokerOnlyStatus, `${args.join(" ")}: ${result.stderr}\n${result.stdout}`);
-  if (brokerOnlyStatus && args.includes("--json")) {
+  return result;
+}
+function cli(args: string[], extra: NodeJS.ProcessEnv = {}, warnings: string[] = [], timeout = 30_000) {
+  const result = invoke(args, extra, timeout);
+  assert.equal(result.status, warnings.length ? 4 : 0, `${args.join(" ")}: ${result.stderr}\n${result.stdout}`);
+  if (args[0] === "status" && args.includes("--json")) {
     assert.deepEqual(JSON.parse(result.stdout).warnings.map((warning: { code: string }) => warning.code).sort(), [...warnings].sort());
   }
   return result.stdout;
@@ -35,6 +38,18 @@ function selection(extra: NodeJS.ProcessEnv = {}) {
   const status = JSON.parse(cli(["status", "--json"], extra));
   const preview = JSON.parse(cli(["spawn", "--dry-run", "--json"], extra));
   return { defaults: status.result.machine.defaults, harness: preview.result.harness };
+}
+
+function checkPersonaReference(label: string, ref: string, path: string, harness: string) {
+  cli(["config", "set", "persona", ref, "--space", "defaults", "--plain"]);
+  const preview = JSON.parse(cli(["spawn", "--dry-run", "--space", "defaults", "--json"])).result;
+  const result = invoke(["status", "--space", "defaults", "--json"]);
+  const status = JSON.parse(result.stdout);
+  const defaults = status.result.machine.defaults;
+  check(`${label}: status and spawn agree on the saved persona and its harness`,
+    preview.persona.path === path && preview.harness === harness && result.status === 0 && status.completeness === "complete" &&
+    status.warnings.length === 0 && defaults.persona === ref && defaults.harness === harness,
+    { statusExit: result.status, completeness: status.completeness, warnings: status.warnings, defaults, previewPath: preview.persona.path, previewHarness: preview.harness });
 }
 
 const port = await freePort();
@@ -50,7 +65,8 @@ try {
   mkdirSync(manifest, { recursive: true, mode: 0o700 });
   writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@rig/app", version: "0.0.0", spec: "@rig/app@0.0.0", provides: [{ kind: "connector", name: "app" }], commands: [], connectors: [{ name: "app", requires: [], eventPlane: false, setup: null }] }] }));
   const guidance = cli(["status", "--plain"], { XDG_CONFIG_HOME: guidanceConfig });
-  check("missing implicit default points at spawn rather than manual persona creation", guidance.includes("creates the shipped default persona") && !guidance.includes("persona create default"), guidance);
+  check("a broker without JetStream gets a recovery hint instead of a spawn or persona creation command",
+    guidance.includes("enable JetStream on this space's broker") && !guidance.includes("cotal spawn") && !guidance.includes("persona create default"), guidance);
   cli(["persona", "create", "pinned", "--prompt", "x", "--subscribe", "", "--harness", "opencode"]);
   cli(["persona", "create", "unpinned", "--prompt", "x", "--subscribe", ""]);
   cli(["config", "set", "harness", "jcode"]);
@@ -71,6 +87,13 @@ try {
   cli(["config", "set", "persona", "pinned", "--space", "defaults"]);
   const scoped = selection();
   check("the space's persona preference supplies its pin", scoped.defaults.harness === "opencode" && scoped.harness === "opencode", scoped);
+  const catalogSuffix = join(project, ".cotal", "agents", "suffix.md.md");
+  const projectSuffix = join(project, "suffix.md");
+  writeFileSync(catalogSuffix, "---\nname: catalog-suffix\nagent: opencode\n---\nCatalog persona.\n");
+  checkPersonaReference("catalog name ending in .md", "suffix.md", catalogSuffix, "opencode");
+  writeFileSync(projectSuffix, "---\nname: root-suffix\nagent: jcode\n---\nProject persona.\n");
+  checkPersonaReference("same-named project file", "suffix.md", catalogSuffix, "opencode");
+  checkPersonaReference("explicit relative path", "./suffix.md", projectSuffix, "jcode");
   cli(["config", "unset", "persona", "--space", "defaults"]);
   cli(["config", "set", "persona", join(project, ".cotal", "agents", "pinned.md")]);
   const path = selection();
@@ -84,10 +107,11 @@ try {
   check("the product default persona's pin also wins", implicit.defaults.harness === "opencode" && implicit.harness === "opencode", implicit);
 
   cli(["config", "set", "persona", "missing"]);
-  const missing = JSON.parse(cli(["status", "--json"], {}, ["SNAPSHOT_UNAVAILABLE", "DEFAULT_PERSONA_UNREADABLE"]));
+  const missing = JSON.parse(cli(["status", "--json"], {}, ["DEFAULT_PERSONA_UNREADABLE"]));
+  check("a broker without JetStream skips the channel snapshot", missing.result.selected.connection === "jetstream-unsupported" && missing.result.selected.snapshot.state === "skipped", missing.result.selected);
   check("a missing explicit default persona reports an unknown harness instead of the preference", missing.result.machine.defaults.harness === null && missing.completeness === "partial", missing.result.machine.defaults);
   writeFileSync(join(project, ".cotal", "agents", "missing.md"), "---\nagent: opencode\n---\ninvalid: no name\n");
-  const invalid = JSON.parse(cli(["status", "--json"], {}, ["SNAPSHOT_UNAVAILABLE", "DEFAULT_PERSONA_UNREADABLE"]));
+  const invalid = JSON.parse(cli(["status", "--json"], {}, ["DEFAULT_PERSONA_UNREADABLE"]));
   check("an invalid persona never supplies an apparent harness pin", invalid.result.machine.defaults.harness === null, invalid.result.machine.defaults);
 
   if (process.platform !== "win32") {
@@ -97,7 +121,7 @@ try {
     symlinkSync(pipe, join(project, ".cotal", "agents", "pipe-link.md"));
     for (const persona of ["pipe", "pipe-link"]) {
       const extra = { COTAL_DEFAULT_PERSONA: persona };
-      const status = JSON.parse(cli(["status", "--json"], extra, ["SNAPSHOT_UNAVAILABLE", "DEFAULT_PERSONA_UNREADABLE"], 5_000));
+      const status = JSON.parse(cli(["status", "--json"], extra, ["DEFAULT_PERSONA_UNREADABLE"], 5_000));
       check(`${persona}: status returns bounded partial diagnostics without a writer`, status.result.machine.defaults.harness === null && status.completeness === "partial", status.result.machine.defaults);
       const preview = spawnSync(process.execPath, [bin, "spawn", "--dry-run", "--json"], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 5_000 });
       assert.equal(preview.error, undefined);

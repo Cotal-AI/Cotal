@@ -27,9 +27,8 @@ export function resolveEndpointSelection(selector: string, values: { space?: str
   let space: string;
   try { space = resolveMeshTarget(process.cwd(), { ...values, readOnly: true }).space; }
   catch (error) {
-    if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && error.details.space) space = error.details.space;
-    else throw new CommandFailure("refused", targetErrorCode(error.code), "the endpoint's selected space could not be resolved; no other space was substituted");
+    if (!isWorkspaceTargetError(error) || ["not-started", "ambiguous-target", "unknown-space"].includes(error.code)) throw error;
+    throw new CommandFailure("refused", targetErrorCode(error.code), "the endpoint's selected space could not be resolved; no other space was substituted");
   }
   const native = (endpoint: string): EndpointSelection => {
     try { endpointToken(endpoint); } catch { throw new CommandFailure("refused", "USAGE_INVALID", "the selected native endpoint class does not match its routing grammar"); }

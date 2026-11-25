@@ -9,7 +9,8 @@
  *
  * Open mode: a bucket of 1,100 records reads complete (a single `multi_last` request refuses more
  * than 1,024), a mis-keyed record is dropped and counted as the watch drops it, and a record whose
- * `ts` is past the liveness window reads offline.
+ * `ts` is past the liveness window reads offline. A read whose connection closes while its page is
+ * unanswered fails at the close instead of waiting forever.
  *
  * Needs nats-server on PATH.
  * Run: pnpm smoke:presence-read
@@ -118,7 +119,7 @@ try {
 
     // The bucket's max_age drops bob's key; a peer an earlier read saw stays on the roster as offline.
     await wait(6_000 + 1_500);
-    const keys = (await lastKvEntries((ada as unknown as { kv: KV }).kv)).map((e) => e.key);
+    const keys = (await lastKvEntries((ada as unknown as { conn: { kv: KV } }).conn.kv)).map((e) => e.key);
     check("control: bob's key has left the bucket", !keys.includes(bob.card.id) && keys.includes(ada.card.id), keys);
     const gone = await ada.readPresence();
     check("a peer whose key left the bucket stays in the roster as offline", byName(gone, "bob")?.status === "offline" && byName(gone, "ada")?.status === "idle", gone.map((p) => [p.card.name, p.status]));
@@ -191,6 +192,23 @@ try {
       const latest = await lastKvEntries(empty);
       check("Direct Get keeps the latest rewrite and deletion marker", latest.length === 2 && latest.find((e) => e.key === "alive")?.string() === "new" && latest.find((e) => e.key === "gone")?.operation === "DEL");
       await empty.destroy();
+      // A page still waiting when its connection closes fails at the close (#7370): the close cancels
+      // the page's five-second timeout and closes its reply subscription without calling back. The
+      // bucket has no Direct Get responder, and a subscriber that never answers keeps the broker from
+      // replying no-responders, so the page waits.
+      const mutedName = `muted-${randomUUID().slice(0, 8)}`;
+      await new Kvm(nc).create(mutedName, { history: 1, allow_direct: false });
+      nc.subscribe(`$JS.API.DIRECT.GET.KV_${mutedName}`, { callback: () => {} });
+      await nc.flush();
+      const closing = await connect({ servers });
+      let settledBeforeClose = false;
+      const waiting = lastKvEntries(await new Kvm(closing).open(mutedName)).then(() => "answered", (e: Error) => e.message);
+      void waiting.then(() => { settledBeforeClose = !closing.isClosed(); });
+      await wait(300);
+      check("control: the unanswered page is still waiting before the close", !settledBeforeClose);
+      await closing.close();
+      const outcome = await Promise.race([waiting, wait(2_000).then(() => "still waiting 2 s after the close")]);
+      check("a Direct Get still waiting when its connection closes fails at the close", outcome === "connection closed before the Direct Get was answered", outcome);
       const N = 1_100;
       const record = (id: string, name: string, ts: number) => JSON.stringify({ card: { id, name, kind: "agent" }, status: "idle", ts });
       await Promise.all(Array.from({ length: N }, (_, i) => kv.put(`u_load.seat${i}`, record(`u_load.seat${i}`, `seat${i}`, Date.now()))));

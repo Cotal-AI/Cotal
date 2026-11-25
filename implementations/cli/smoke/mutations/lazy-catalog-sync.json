@@ -36,7 +36,7 @@
     },
     {
       "name": "drop the manual-remedy locality branch",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-detach.ts",
       "find": "  if (!loopback)\n    return `\\`cotal supervise --space ${space} --server ${server}\\` to run its control plane from here (and \\`cotal deliver --space ${space} --server ${server}\\` for the daemon)`;",
       "replace": "  if (false)\n    return `\\`cotal supervise --space ${space} --server ${server}\\` to run its control plane from here (and \\`cotal deliver --space ${space} --server ${server}\\` for the daemon)`;",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
@@ -45,7 +45,7 @@
     },
     {
       "name": "the default status report drops the failed catalog account",
-      "file": "implementations/cli/src/commands/status.ts",
+      "file": "implementations/cli/src/commands/status-render.ts",
       "find": "stateCell(`Space catalog for ${account.account ?? account.idp} could not be refreshed: ${account.error}`",
       "replace": "stateCell(`Space catalog could not be refreshed: ${account.error}`",
       "expectRed": "status lists every catalog account including a dead sibling and exits zero",

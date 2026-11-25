@@ -1,16 +1,10 @@
 /**
- * Stored-message replays on the messaging receive paths, against a real JWT-auth broker with
+ * Reserved stored-message headers on messaging receive paths, against a real JWT-auth broker with
  * credentials minted by the shipped provisioner and a real delivery daemon.
  *
- * A message the broker serves from a stream carries the headers it writes on a stored message
- * (`Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, `Nats-Time-Stamp`), and a stream that captures
- * such a message on a messaging subject stores them with it. Every messaging receive path drops a
- * message carrying them (SPEC §5). Here an ordinary agent stores bytes that name another agent as
- * the sender under its own presence key and has the broker serve them onto that agent's chat, DM,
- * role and delivery subjects. Per receive path, three cells: a legitimate message is accepted, the
- * replayed one is dropped, and a message whose `from.id` disagrees with its subject is dropped.
- * The trusted reader and the delivery pull check no `from.id`, since only the daemon writes their
- * subjects, so their third cell is the broker refusing an agent's direct publish there.
+ * Authorized fixture writers add a reserved header to otherwise valid messages. Each receive
+ * path drops those messages and accepts fresh sends. Sender checks and broker permissions are
+ * checked separately.
  *
  * A replayed delivery copy also carries a stamped count of 1, which must not raise the full-store
  * notice, since the count is not the writer's.
@@ -25,15 +19,16 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, credsAuthenticator, headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, headers as natsHeaders, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
 import {
   CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig,
   newIdentity, setupSpaceStreams, DEV_OWNER, chatSubject, unicastSubject, anycastSubject, controlServiceSubject,
-  presenceBucket, presenceKeySubject, dlvSubject, dinboxSubject, openMembersRegistry, commitMemberRevision,
+  dlvSubject, dinboxSubject, openMembersRegistry, commitMemberRevision,
   type CotalMessage, type Delivery, type MessageMeta, type ControlRequest,
 } from "../src/index.js";
+import * as core from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -92,12 +87,13 @@ try {
     const creds = await provisionAgent(mgr, auth, id, { subscribe: o.subscribe ?? [], allowSubscribe: o.allowSubscribe, allowPublish: o.allowPublish, role: o.role, lifecycleUid: uid });
     return { id, uid, creds, principal: `${DEV_OWNER}.${id.id}`, name };
   };
-  const A = await mk("attacker", { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  const A = await mk("alice", { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] });
   const B = await mk("bob", { subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"] });
   const C = await mk("carol", { subscribe: ["general"], allowSubscribe: ["general"], role: "worker" });
   const D = await mk("dave", { allowSubscribe: ["general"] });
   const E = await mk("erin", { allowSubscribe: ["general"] });
   const F = await mk("frank", { subscribe: ["general"], allowSubscribe: ["general"] });
+  const G = await mk("grace", {});
   const acl = new Map([A, B, C, D, E, F].map((p) => [p.principal, ["general"]]));
 
   const dlvId = newIdentity();
@@ -133,6 +129,16 @@ try {
   const bob = await start(B, ["general"]);
   const carol = await start(C, ["general"], { role: "worker" });
   const dave = await start(D, []);
+  const dmOnlySeen: string[] = [];
+  const dmOnly = new CotalEndpoint({
+    space, servers: SERVERS, creds: G.creds, lifecycleUid: G.uid,
+    card: { id: G.id.id, name: G.name, kind: "agent" }, channels: [],
+    registerPresence: false, watchPresence: false, watchChannels: false,
+    dmOnly: { handler: (msg, delivery) => { dmOnlySeen.push(textOf(msg)); delivery.ack(); } },
+  });
+  dmOnly.on("error", () => { /* assertions observe handler effects */ });
+  await dmOnly.start();
+  stops.push(() => dmOnly.stop());
   const fullNotices: unknown[] = [];
   dave.on("stored-copies-full", (n: unknown) => fullNotices.push(n));
   await start(E, []);
@@ -154,35 +160,44 @@ try {
   await host.start();
   stops.push(() => host.stop());
   const probeOps: string[] = [];
-  host.serveControl("probe", (req) => { probeOps.push(req.op); return { ok: true }; });
+  const classifiedOps: string[] = [];
+  host.serveControl("probe", (req) => { probeOps.push(req.op); return { ok: true }; }, {
+    concurrent: (req) => { classifiedOps.push(req.op); return false; },
+  });
   const caller = new CotalEndpoint({ space, servers: SERVERS, creds: probeCaller.creds, card: { id: probeCaller.id, name: "probe-caller", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false });
   await caller.start();
   stops.push(() => caller.stop());
 
-  // The attacker: an ordinary agent credential, used raw.
-  const atk: NatsConnection = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(A.creds)), inboxPrefix: `_INBOX_${A.id.id}`, maxReconnectAttempts: 0 });
-  stops.push(() => atk.close());
+  const aliceNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(A.creds)), inboxPrefix: `_INBOX_${A.id.id}`, maxReconnectAttempts: 0 });
+  const bobNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(B.creds)), maxReconnectAttempts: 0 });
+  const writerNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(probeHost.creds)), maxReconnectAttempts: 0 });
+  stops.push(() => aliceNc.close(), () => bobNc.close(), () => writerNc.close());
   const denials: string[] = [];
-  void (async () => { for await (const s of atk.status()) if (s.type === "error") denials.push(String((s as { error?: Error }).error?.message ?? "")); })();
+  void (async () => { for await (const s of aliceNc.status()) if (s.type === "error") denials.push(String((s as { error?: Error }).error?.message ?? "")); })();
   const bobCard = { id: B.principal, name: "bob", kind: "agent" };
   const message = (text: string, extra: Partial<CotalMessage> = {}): CotalMessage =>
     ({ id: randomUUID(), ts: Date.now(), space, from: bobCard, parts: [{ kind: "text", text }], ...extra }) as CotalMessage;
-  const ownKey = presenceKeySubject(space, DEV_OWNER, A.id.id);
-  /** Store `body` under the attacker's own presence key and have the broker serve it onto `target`. */
-  const replay = async (target: string, body: unknown, hdrs?: Record<string, string>) => {
-    let h;
-    if (hdrs) { h = natsHeaders(); for (const [k, v] of Object.entries(hdrs)) h.set(k, v); }
-    atk.publish(ownKey, JSON.stringify(body), h ? { headers: h } : undefined);
-    await atk.flush();
-    atk.publish(`$JS.API.DIRECT.GET.KV_${presenceBucket(space)}`, JSON.stringify({ last_by_subj: ownKey }), { reply: target });
-    await atk.flush();
+  const marked = async (writer: NatsConnection, target: string, body: unknown, extra: Record<string, string> = {}) => {
+    const h = natsHeaders();
+    h.set("Nats-Sequence", "1");
+    for (const [name, value] of Object.entries(extra)) h.set(name, value);
+    writer.publish(target, JSON.stringify(body), { headers: h });
+    await writer.flush();
   };
-  const raw = async (subject: string, body: unknown) => { atk.publish(subject, JSON.stringify(body)); await atk.flush(); };
+  for (const name of ["nAtS-StReAm", "Nats-Subject", "Nats-Sequence", "Nats-Time-Stamp"]) {
+    const h = natsHeaders();
+    h.set(name, "");
+    check(`helper: a reserved header ${name} counts even when empty`, core.hasStoredOrigin?.(h) === true);
+  }
+  const ordinary = natsHeaders();
+  ordinary.set("Nats-Msg-Id", "fresh");
+  check("helper: a fresh message ID is not stored provenance", core.hasStoredOrigin?.(ordinary) === false && core.hasStoredOrigin?.(undefined) === false);
+  const raw = async (subject: string, body: unknown) => { aliceNc.publish(subject, JSON.stringify(body)); await aliceNc.flush(); };
   await sleep(500);
 
   // ── channel posts: replayed, mismatched, then the legitimate one ───────────────────────────
   const bobGeneral = chatSubject(space, DEV_OWNER, B.id.id, "general");
-  await replay(bobGeneral, message("chat-replayed", { channel: "general" }));
+  await marked(bobNc, bobGeneral, message("chat-replayed", { channel: "general" }));
   await raw(chatSubject(space, DEV_OWNER, A.id.id, "general"), message("chat-mismatched", { channel: "general" }));
   await bob.multicast("chat-legit", { channel: "general" });
 
@@ -231,16 +246,23 @@ try {
   check("catch-up: a post whose from.id is not its subject's sender is not copied", !has("erin", "chat-mismatched"));
 
   // ── DM to carol ───────────────────────────────────────────────────────────────────────────
-  await replay(unicastSubject(space, DEV_OWNER, C.id.id, DEV_OWNER, B.id.id), message("dm-replayed", { to: C.principal }));
+  await marked(bobNc, unicastSubject(space, DEV_OWNER, C.id.id, DEV_OWNER, B.id.id), message("dm-replayed", { to: C.principal }));
   await raw(unicastSubject(space, DEV_OWNER, C.id.id, DEV_OWNER, A.id.id), message("dm-mismatched", { to: C.principal }));
   await bob.unicast(C.principal, "dm-legit");
   check("DM pull: bob's DM is accepted", await until(() => has("carol", "dm-legit", (s) => s.kind === "dm" && s.from === B.principal)));
   await sleep(SETTLE_MS);
   check("DM pull: a stored replay naming bob is dropped", !has("carol", "dm-replayed"), seen.get("carol"));
   check("DM pull: a DM whose from.id is not its subject's sender is dropped", !has("carol", "dm-mismatched"));
+  const dmHistory = (await observer.dmHistory()).map(textOf);
+  check("DM history: bob's DM is listed", dmHistory.includes("dm-legit"), dmHistory);
+  check("DM history: a DM with reserved headers is not listed", !dmHistory.includes("dm-replayed"), dmHistory);
+  await marked(bobNc, unicastSubject(space, DEV_OWNER, G.id.id, DEV_OWNER, B.id.id), message("dm-only-marked", { to: G.principal }));
+  await bob.unicast(G.principal, "dm-only-fresh");
+  check("DM-only: fresh DM is accepted", await until(() => dmOnlySeen.includes("dm-only-fresh")), dmOnlySeen);
+  check("DM-only: a DM with reserved headers does not reach the handler", !dmOnlySeen.includes("dm-only-marked"), dmOnlySeen);
 
   // ── role request to worker ────────────────────────────────────────────────────────────────
-  await replay(anycastSubject(space, "worker", DEV_OWNER, B.id.id), message("task-replayed", { toService: "worker" }));
+  await marked(bobNc, anycastSubject(space, "worker", DEV_OWNER, B.id.id), message("task-replayed", { toService: "worker" }));
   await raw(anycastSubject(space, "worker", DEV_OWNER, A.id.id), message("task-mismatched", { toService: "worker" }));
   await bob.anycast("worker", "task-legit");
   check("task pull: bob's role request is accepted", await until(() => has("carol", "task-legit", (s) => s.kind === "anycast" && s.from === B.principal)));
@@ -251,8 +273,8 @@ try {
   // ── dave's delivery store and his mixed inbox, which only the daemon writes ────────────────
   const daveDlv = dlvSubject(space, DEV_OWNER, D.id.id, D.uid);
   const daveDinbox = dinboxSubject(space, DEV_OWNER, D.id.id, D.uid);
-  await replay(daveDlv, { version: 1, channel: "general", msg: message("dlv-replayed", { channel: "general" }) }, { "Cotal-Delivery-Frame": "1", "Cotal-Delivery-Limit": "1" });
-  await replay(daveDinbox, { msg: message("dinbox-replayed", { channel: "general" }), channel: "general", seq: 1_000_000, reason: "live-mention", generation: 1 });
+  await marked(writerNc, daveDlv, { version: 1, channel: "general", msg: message("dlv-replayed", { channel: "general" }) }, { "Cotal-Delivery-Frame": "1", "Cotal-Delivery-Limit": "1" });
+  await marked(writerNc, daveDinbox, { msg: message("dinbox-replayed", { channel: "general" }), channel: "general", seq: 1_000_000, reason: "live-mention", generation: 1 });
   const before = denials.length;
   await raw(daveDlv, { version: 1, channel: "general", msg: message("dlv-direct", { channel: "general" }) });
   await raw(daveDinbox, { msg: message("dinbox-direct", { channel: "general" }), channel: "general", seq: 1_000_000, reason: "live-mention", generation: 1 });
@@ -268,14 +290,20 @@ try {
   check("trusted reader: the broker refuses an agent's direct publish to a mixed inbox", refused.some((d) => d.includes(daveDinbox)) && !has("dave", "dinbox-direct"), refused);
 
   // ── control request ───────────────────────────────────────────────────────────────────────
-  await replay(controlServiceSubject(space, "probe", DEV_OWNER, B.id.id), { op: "replayed", from: bobCard } satisfies ControlRequest);
+  const ownProbe = controlServiceSubject(space, "probe", host.principal.owner, host.principal.actor);
+  const controlHeaders = natsHeaders();
+  controlHeaders.set("Nats-Sequence", "1");
+  const markedReply = await writerNc.request(ownProbe, JSON.stringify({ op: "replayed", from: host.ref() } satisfies ControlRequest), {
+    timeout: 1200, headers: controlHeaders,
+  }).then(() => "reply", (e: unknown) => e instanceof TimeoutError ? "no reply" : String(e));
+  check("control: a request with reserved headers gets no reply", markedReply === "no reply", markedReply);
   const fixtureProbe = controlServiceSubject(space, "probe", DEV_OWNER, fixture.id);
   fixtureNc.publish(fixtureProbe, JSON.stringify({ op: "mismatched", from: bobCard } satisfies ControlRequest));
   await fixtureNc.flush();
   const answer = await caller.requestControl("probe", { op: "legit" });
   check("control: a request from its subject's sender is served", answer.ok === true && probeOps.includes("legit"), { answer, probeOps });
   await sleep(SETTLE_MS);
-  check("control: a stored replay naming bob is not served", !probeOps.includes("replayed"), probeOps);
+  check("control: a request with reserved headers is neither classified nor served", !classifiedOps.includes("replayed") && !probeOps.includes("replayed"), { classifiedOps, probeOps });
   check("control: a request whose from.id is not its subject's sender is not served", !probeOps.includes("mismatched"), probeOps);
 
   // ── the agent's own Direct Get read still works ───────────────────────────────────────────

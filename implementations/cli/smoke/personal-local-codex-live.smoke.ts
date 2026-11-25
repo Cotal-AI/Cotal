@@ -148,13 +148,14 @@ const appServer = async (root: string) => {
   return { p, conversation };
 };
 
-/** The credential directories a static provision made for `space`, with their records. */
-const identities = (space: string) => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
+/** The credential directories a static provision made for `space`, with their records: under the
+ *  Cotal home, where provision makes them, or in the temp dir, where earlier versions did. */
+const identities = (space: string) => [join(cotalHome, "app-identities"), tmpdir()].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
   try {
-    const record = JSON.parse(readFileSync(join(tmpdir(), n, "identity.json"), "utf8")) as { space: string; id: string; lifecycleUid: string; owner: number; session?: string };
-    return record.space === space ? [{ dir: join(tmpdir(), n), ...record }] : [];
+    const record = JSON.parse(readFileSync(join(parent, n, "identity.json"), "utf8")) as { space: string; id: string; lifecycleUid: string; owner: number; session?: string };
+    return record.space === space ? [{ dir: join(parent, n), ...record }] : [];
   } catch { return []; }
-});
+}));
 const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const secretShaped = /BEGIN NATS|NKEY SEED|-----BEGIN|\bSU[A-Z2-7]{50,}|COTAL_CREDS|agent\.creds/;
 

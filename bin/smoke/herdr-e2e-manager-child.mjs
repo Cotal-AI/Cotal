@@ -32,7 +32,7 @@ const envFor = (o) => ({
   COTAL_ID: String(o.id),
   COTAL_NAME: o.name,
   PATH: e.PATH ?? "",
-  COTAL_CONTROL_TOKEN: CANARY,
+  COTAL_CONTROL_KEY: CANARY,
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 registry.register({

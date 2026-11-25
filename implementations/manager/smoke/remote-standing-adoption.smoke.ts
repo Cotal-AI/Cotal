@@ -69,12 +69,10 @@ type Internals = {
   dial(opts: object): Promise<NatsConnection>;
   dialServeConnection(state: { identity: Identity; creds?: string }, readCreds: () => string): Promise<{ nc: NatsConnection; handle: { stop(): Promise<void> } }>;
   renewRemoteStandingBundle(force?: boolean): Promise<void>;
-  remoteSupervisorCreds?: string; remoteExecutorCreds?: string; goalWriterCreds?: string; sessionLedgerCreds?: string;
-  serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string };
-  goalWriter?: { nc: NatsConnection; creds?: string };
-  sessionLedgerConn?: { nc: NatsConnection; creds?: string };
   ep: { refreshCredsRequestSafe(): Promise<void> };
-  remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] };
+  credentialRenewal: { remoteSupervisorCreds?: string; remoteExecutorCreds?: string; remoteRenewalDebt?: { processEpoch: number; reason: string; unadoptedSubjects: string[] }; };
+  servePlane: { sessionLedgerCreds?: string; sessionLedgerConn?: { nc: NatsConnection; creds?: string }; serviceServe?: { nc: NatsConnection; identity: Identity; grant: { epoch: number }; creds?: string }; };
+  goalWriterComponent: { goalWriterCreds?: string; goalWriter?: { nc: NatsConnection; creds?: string }; };
 };
 
 const conns: NatsConnection[] = [];
@@ -132,7 +130,7 @@ try {
         assert.equal(processEpoch, 7);
         if (mode === "fail") throw new Error("injected issuer outage");
         if (mode === "foreign") return family(foreign, 3600);
-        if (mode === "fenced") { const f = await family(auth, 3600); m.serviceServe!.grant.epoch = 8; return f; }
+        if (mode === "fenced") { const f = await family(auth, 3600); m.servePlane.serviceServe!.grant.epoch = 8; return f; }
         const candidate = await family(auth, 3600);
         if (mode === "slow") {
           holds.add(jwtFromCreds(candidate.supervisor)!);
@@ -161,30 +159,30 @@ try {
     conns.push(nc);
     return nc;
   };
-  const supNc = await live(() => m.remoteSupervisorCreds!, held.supervisor);
-  const execNc = await live(() => m.remoteExecutorCreds!, held.executor);
+  const supNc = await live(() => m.credentialRenewal.remoteSupervisorCreds!, held.supervisor);
+  const execNc = await live(() => m.credentialRenewal.remoteExecutorCreds!, held.executor);
   m.ep = { refreshCredsRequestSafe: async () => { await supNc.reconnect(); await execNc.reconnect(); } };
-  m.serviceServe = { nc: undefined as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
-  m.serviceServe.nc = await live(() => m.serviceServe!.creds!, held.serve);
-  Object.assign(m.serviceServe, { handle: { stop: async () => {} } });
+  m.servePlane.serviceServe = { nc: undefined as never, identity: held.serve, grant: { epoch: 7 }, creds: initial.serve };
+  m.servePlane.serviceServe.nc = await live(() => m.servePlane.serviceServe!.creds!, held.serve);
+  Object.assign(m.servePlane.serviceServe, { handle: { stop: async () => {} } });
   // This fixture tests family adoption, not branded endpoint authorization or dispatch.
   // Keep its transport-only seam explicit. The continuity smoke covers native serving.
   m.dialServeConnection = async (_state, readCreds) => {
     const nc = await live(readCreds, held.serve);
     await nc.flush();
-    conns[conns.indexOf(m.serviceServe!.nc)] = nc;
+    conns[conns.indexOf(m.servePlane.serviceServe!.nc)] = nc;
     conns.pop();
     return { nc, handle: { stop: async () => {} } };
   };
   // Manager.startServiceEndpoint seeds these two holders from the remote authority before dialing.
-  m.goalWriterCreds = initial.goalWriter;
-  m.sessionLedgerCreds = initial.sessionLedger;
-  m.goalWriter = { nc: undefined as never, creds: initial.goalWriter };
-  m.goalWriter.nc = await live(() => m.goalWriter!.creds!, held.goalWriter);
-  m.sessionLedgerConn = { nc: undefined as never, creds: initial.sessionLedger };
-  m.sessionLedgerConn.nc = await live(() => m.sessionLedgerConn!.creds!, held.sessionLedger);
-  const holders = () => ({ supervisor: m.remoteSupervisorCreds, executor: m.remoteExecutorCreds, serve: m.serviceServe!.creds,
-    goalWriter: m.goalWriter!.creds, sessionLedger: m.sessionLedgerConn!.creds });
+  m.goalWriterComponent.goalWriterCreds = initial.goalWriter;
+  m.servePlane.sessionLedgerCreds = initial.sessionLedger;
+  m.goalWriterComponent.goalWriter = { nc: undefined as never, creds: initial.goalWriter };
+  m.goalWriterComponent.goalWriter.nc = await live(() => m.goalWriterComponent.goalWriter!.creds!, held.goalWriter);
+  m.servePlane.sessionLedgerConn = { nc: undefined as never, creds: initial.sessionLedger };
+  m.servePlane.sessionLedgerConn.nc = await live(() => m.servePlane.sessionLedgerConn!.creds!, held.sessionLedger);
+  const holders = () => ({ supervisor: m.credentialRenewal.remoteSupervisorCreds, executor: m.credentialRenewal.remoteExecutorCreds, serve: m.servePlane.serviceServe!.creds,
+    goalWriter: m.goalWriterComponent.goalWriter!.creds, sessionLedger: m.servePlane.sessionLedgerConn!.creds });
   const flushAll = () => Promise.all(conns.map((nc) => Promise.race([nc.flush().then(() => true, () => false), wait(1500).then(() => false)])));
 
   await cell("five standing connections are live on the broker under the initial family", async () => {
@@ -203,22 +201,22 @@ try {
     await m.renewRemoteStandingBundle();
     assert.equal(calls, 1);
     assert.deepEqual(holders(), initial);
-    assert.equal(m.remoteRenewalDebt?.processEpoch, 7);
-    assert.match(m.remoteRenewalDebt!.reason, /injected issuer outage/);
+    assert.equal(m.credentialRenewal.remoteRenewalDebt?.processEpoch, 7);
+    assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /injected issuer outage/);
   });
   await cell("a foreign-account family is refused, keeps last-good and names the unadopted subjects", async () => {
     mode = "foreign";
     await m.renewRemoteStandingBundle();
     assert.deepEqual(holders(), initial);
-    assert.match(m.remoteRenewalDebt!.reason, /another account/);
-    assert.deepEqual(new Set(m.remoteRenewalDebt!.unadoptedSubjects), new Set(names.map((n) => held[n].id)));
+    assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /another account/);
+    assert.deepEqual(new Set(m.credentialRenewal.remoteRenewalDebt!.unadoptedSubjects), new Set(names.map((n) => held[n].id)));
   });
   await cell("a family returned after the serve epoch moved is fenced and never adopted", async () => {
     mode = "fenced";
     await m.renewRemoteStandingBundle();
     assert.deepEqual(holders(), initial);
-    assert.match(m.remoteRenewalDebt!.reason, /serve epoch/);
-    m.serviceServe!.grant.epoch = 7;
+    assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /serve epoch/);
+    m.servePlane.serviceServe!.grant.epoch = 7;
   });
   await cell("forced renewal surfaces a refused candidate to its caller", async () => {
     mode = "fail";
@@ -235,14 +233,14 @@ try {
     const elapsed = performance.now() - started;
     assert.ok(elapsed >= 9_500 && elapsed < 12_000, `renewal took ${elapsed}ms`);
     assert.deepEqual(holders(), initial);
-    assert.match(m.remoteRenewalDebt!.reason, /aggregate budget.*issuance outcome is unknown/);
-    assert.deepEqual(new Set(m.remoteRenewalDebt!.unadoptedSubjects), new Set(names.map((n) => held[n].id)));
+    assert.match(m.credentialRenewal.remoteRenewalDebt!.reason, /aggregate budget.*issuance outcome is unknown/);
+    assert.deepEqual(new Set(m.credentialRenewal.remoteRenewalDebt!.unadoptedSubjects), new Set(names.map((n) => held[n].id)));
   });
   await cell("the repaired family is adopted for all five duties and debt is cleared", async () => {
     mode = "good";
     await m.renewRemoteStandingBundle();
     assert.deepEqual(holders(), renewed.value);
-    assert.equal(m.remoteRenewalDebt, undefined);
+    assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
     for (const n of names) assert.equal(credsClaims(renewed.value![n]).sub, held[n].id, `${n} keeps its held nkey`);
   });
   await cell("the timed-out authority's late result cannot overwrite a newer adoption or its debt", async () => {
@@ -251,7 +249,7 @@ try {
     await lateAuthorityDone;
     await wait(100);
     assert.deepEqual(holders(), adopted);
-    assert.equal(m.remoteRenewalDebt, undefined);
+    assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
   });
   await cell("every standing connection is back on the broker under the renewed JWT", async () => {
     let ok: boolean[] = [];
@@ -282,7 +280,7 @@ try {
       await m.renewRemoteStandingBundle(true);
       assert.ok(performance.now() - started < 12_000, "adopted reconnect exceeded the shared budget");
       assert.deepEqual(holders(), renewed.value);
-      assert.equal(m.remoteRenewalDebt, undefined);
+      assert.equal(m.credentialRenewal.remoteRenewalDebt, undefined);
     } finally {
       finishReconnect();
       m.ep.refreshCredsRequestSafe = reconnect;

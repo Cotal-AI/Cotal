@@ -310,7 +310,7 @@ try {
       COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029",
       COTAL_JCODE_REQUEST_TIMEOUT_MS: String(softInterruptTimeoutMs),
       COTAL_CONTROL_SOCKET: join(controlDir, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-queue-fallback-control-token",
+      COTAL_CONTROL_KEY: "jcode-queue-fallback-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -713,7 +713,7 @@ try {
       text: `message ${id}`,
     });
     type Slot = { item: InboxItem; ack: () => void; pullOnly: boolean; receivedAt: number };
-    const slots = agent as unknown as { inbox: Slot[] };
+    const slots = (agent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: Slot[] };
     const heldSince = Date.now() - AUTOMATIC_QUEUE_STALL_MS - 60_000;
     slots.inbox = [{ item: item("stuck"), ack: () => {}, pullOnly: false, receivedAt: heldSince }];
     check(
@@ -758,7 +758,7 @@ try {
     const quietStage = quietAgent as unknown as { _connected: boolean; _transportConnected: boolean };
     quietStage._connected = true;
     quietStage._transportConnected = true;
-    const quietSlots = quietAgent as unknown as { inbox: Slot[] };
+    const quietSlots = (quietAgent as unknown as { inboxState: unknown }).inboxState as unknown as { inbox: Slot[] };
     quietSlots.inbox = [
       { item: item("ambient"), ack: () => {}, pullOnly: true, receivedAt: heldSince },
       { item: item("held"), ack: () => {}, pullOnly: false, receivedAt: heldSince },

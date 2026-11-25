@@ -31,6 +31,7 @@ import { authDir, BROKER_AUTH_KEY, brokerAuthPath, deleteSpaceAuth, getSpaceAuth
 import { workspaceSecretStore } from "../src/secret-store-fs.js";
 import { remintDaemonCreds } from "../src/renewal.js";
 import { DELIVERY_CREDS_KIND, segmentedKey } from "../src/space-segmentation.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 // P7: the cred is per-space, so the STORE is addressed by the segmented key while a RESULT still
 // reports the bare KIND (`RemintResult.file`). The two are deliberately different strings here — a
@@ -38,11 +39,7 @@ import { DELIVERY_CREDS_KIND, segmentedKey } from "../src/space-segmentation.js"
 // wrong one.
 const DELIVERY_KEY = segmentedKey(DELIVERY_CREDS_KIND, "seam-space");
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const rejects = async (name: string, fn: () => Promise<unknown> | unknown, mustInclude: string, mustNotInclude?: string) => {
   try {
     await fn();
@@ -250,8 +247,8 @@ try {
     check(`${rel} reads the signer only through the store (no loadSpaceAuth)`, !src.includes("loadSpaceAuth"));
   }
 
-  console.log(`\nSPACE-AUTH-STORE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-  if (fail) process.exitCode = 1;
+  console.log(`\nSPACE-AUTH-STORE SMOKE ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+  finish();
 } catch (e) {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;

@@ -40,7 +40,7 @@ import {
   type CotalMessage,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 /** A message's text lives in `parts`, not a `text` field. Asserting on `m.text` compares
  *  `undefined === undefined` for the empty case and silently passes a page that carries nothing. */
@@ -49,11 +49,7 @@ const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.te
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const space = `read-history-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -361,5 +357,6 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-console.log(fail === 0 ? `\nREAD-HISTORY SMOKE OK ✅  (${pass} passed, 0 failed)` : `\nREAD-HISTORY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(failed() === 0 ? `\nREAD-HISTORY SMOKE OK ✅  (${passed()} passed, 0 failed)` : `\nREAD-HISTORY SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

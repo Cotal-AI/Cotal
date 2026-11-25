@@ -49,6 +49,9 @@ _base.BasePlatformAdapter = BasePlatformAdapter
 _base.MessageEvent = MessageEvent
 _base.MessageType = MessageType
 _base.SendResult = SendResult
+_base.cache_image_from_bytes = lambda data, ext=".jpg": ""
+_session = types.ModuleType("gateway.session")
+_session.build_session_key = lambda source, **kw: ""
 
 _cfg = types.ModuleType("gateway.config")
 
@@ -71,13 +74,15 @@ sys.modules.update(
         "gateway.platforms": types.ModuleType("gateway.platforms"),
         "gateway.platforms.base": _base,
         "gateway.config": _cfg,
+        "gateway.session": _session,
     }
 )
 
 # The adapter's constructor builds the bridge client singleton, which reads this path and does not
 # dial it. The probe replaces the client before any reply.
 os.environ.setdefault("COTAL_BRIDGE_SOCKET", "/nonexistent/cotal-anycast-notice.sock")
-os.environ.setdefault("COTAL_CONTROL_TOKEN", "anycast-notice-probe-token")
+os.environ.setdefault("COTAL_CONTROL_KEY", "anycast-notice-probe-token")
+os.environ.setdefault("COTAL_CONTROL_VERSION", "1")
 sys.path.insert(0, PLUGIN_PARENT)
 
 from cotal.adapter import CotalAdapter  # noqa: E402
@@ -91,6 +96,9 @@ class Recorder:
 
     def reply(self, target, content, answered=None, context_id=None):
         self.replies.append({"target": target, "content": content})
+
+    def refusal(self):
+        return None  # a usable bridge: its socket's directory is private
 
     def close(self):
         pass

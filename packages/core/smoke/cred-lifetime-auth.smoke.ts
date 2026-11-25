@@ -64,7 +64,7 @@ if (process.argv[2] === "long-expiry-child") {
   });
   await ep.start();
   await wait(500);
-  const nc = (ep as unknown as { nc?: NatsConnection }).nc;
+  const nc = (ep as unknown as { conn: { nc?: NatsConnection } }).conn.nc;
   const reconnect = (nc as unknown as { protocol?: { options?: { reconnect?: boolean } } } | undefined)?.protocol?.options?.reconnect;
   await ep.stop();
   console.log(`LONG_EXPIRY_CHILD ${JSON.stringify({ reconnect })}`);
@@ -87,16 +87,16 @@ if (process.argv[2] === "expiry-child") {
     watchPresence: false,
     watchChannels: false,
   });
-  const endpointErrors: string[] = [];
-  ep.on("error", (err: Error) => endpointErrors.push(err.message));
+  const warnings: string[] = [];
+  ep.on("warning", (err: Error) => warnings.push(err.message));
   await ep.start();
-  const nc = (ep as unknown as { nc?: NatsConnection }).nc;
+  const nc = (ep as unknown as { conn: { nc?: NatsConnection } }).conn.nc;
   if (!nc) throw new Error("expiry child started without a NATS connection");
-  const binding = ep as unknown as { stopped: boolean; connectAndBind(): Promise<void> };
+  const binding = ep as unknown as { lifecycle: { stopped: boolean }; connectAndBind(): Promise<void> };
   const connectAndBind = binding.connectAndBind.bind(ep);
   let stoppedBindAttempts = 0;
   binding.connectAndBind = async () => {
-    if (binding.stopped) stoppedBindAttempts++;
+    if (binding.lifecycle.stopped) stoppedBindAttempts++;
     await connectAndBind();
   };
   // Broker expiry drives the real supervisor into rebuild. Hold its real old-connection close
@@ -133,7 +133,7 @@ if (process.argv[2] === "expiry-child") {
   releaseClose();
   const stopped = await stopping;
   if (!stopped.ok) throw stopped.error;
-  console.log(`EXPIRY_CHILD_CLOSED ${JSON.stringify({ name: reason?.name, message: reason?.message, reconnectDisabled, endpointErrors, stoppedBindAttempts, stopWaitedForClose })}`);
+  console.log(`EXPIRY_CHILD_CLOSED ${JSON.stringify({ name: reason?.name, message: reason?.message, reconnectDisabled, warnings, stoppedBindAttempts, stopWaitedForClose })}`);
   // Let the transport-close continuation and its microtasks settle before the explicit exit. With the
   // reconnect fence removed, nats-core's discarded continuation rejects during this window and Node
   // exits nonzero. No process-level rejection handler is installed.
@@ -314,7 +314,7 @@ try {
   check("fresh bounded cred connects", await tryConnect(freshCreds, fresh.id) === "ok");
 
   const live = newIdentity();
-  const liveCreds = await mintCreds(auth, live, "operator", { expiresInSeconds: 6 });
+  const liveCreds = await mintCreds(auth, live, "provisioner", { expiresInSeconds: 6 });
   const liveCredsPath = join(dir, "live.creds");
   writeFileSync(liveCredsPath, liveCreds, { mode: 0o600 });
   const expiryChild = spawn(process.execPath, ["--import", "tsx", SELF, "expiry-child", SERVERS, space, liveCredsPath, live.id], {
@@ -326,10 +326,12 @@ try {
   await awaitExit(expiryChild, 12_000);
   if (expiryChild.exitCode === null && expiryChild.signalCode === null) expiryChild.kill("SIGKILL");
   const closeLine = expiryOutput.split("\n").find((line) => line.startsWith("EXPIRY_CHILD_CLOSED "));
-  const closeReason = closeLine ? JSON.parse(closeLine.slice("EXPIRY_CHILD_CLOSED ".length)) as { name?: string; message?: string; reconnectDisabled?: boolean; endpointErrors?: string[]; stoppedBindAttempts?: number; stopWaitedForClose?: boolean } : undefined;
+  const closeReason = closeLine ? JSON.parse(closeLine.slice("EXPIRY_CHILD_CLOSED ".length)) as { name?: string; message?: string; reconnectDisabled?: boolean; warnings?: string[]; stoppedBindAttempts?: number; stopWaitedForClose?: boolean } : undefined;
   check(
     "CotalEndpoint fences credential expiry and stopped replacement binds while the process stays alive",
-    expiryChild.exitCode === 0 && closeReason?.reconnectDisabled === true && closeReason.name === "UserAuthenticationExpiredError" && closeReason.message === "User Authentication Expired" && closeReason.stoppedBindAttempts === 0 && closeReason.stopWaitedForClose === true,
+    expiryChild.exitCode === 0 && closeReason?.reconnectDisabled === true && closeReason.name === "UserAuthenticationExpiredError" && closeReason.message === "User Authentication Expired"
+      && closeReason.warnings?.includes("User Authentication Expired") === true && closeReason.warnings.some((warning) => warning.startsWith("mesh connection closed: User Authentication Expired"))
+      && closeReason.stoppedBindAttempts === 0 && closeReason.stopWaitedForClose === true,
     { exitCode: expiryChild.exitCode, signal: expiryChild.signalCode, closeReason, output: expiryOutput },
   );
 

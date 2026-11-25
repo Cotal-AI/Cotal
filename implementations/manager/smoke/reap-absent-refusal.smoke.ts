@@ -20,12 +20,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { requireRuntimeReap } from "../src/runtime/index.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const reference = { kind: "pty", id: "seat-1554-abcdef" };
 // Custodial by duck type (`reserve` + `reap` both functions), which is how isCustodialRuntime
@@ -84,10 +81,11 @@ check(
 // absent outcome, because absent cannot reach one. A sample would not have caught the second site.
 const here = dirname(fileURLToPath(import.meta.url));
 const managerFile = resolve(here, "..", "src", "manager.ts");
-const managerSrc = readFileSync(managerFile, "utf8");
+const managerFiles = ["manager.ts", "seat-custody.ts", "preservation.ts", "preserved-resume.ts"].map((name) => resolve(here, "..", "src", name));
+const managerSrc = managerFiles.map((file) => readFileSync(file, "utf8")).join("\n");
 const renderings = managerSrc.split('outcome === "absent"').length - 1;
 check(
-  "#1554: NO site in manager.ts renders an absent outcome as prose (expected 0)",
+  "#1554: NO site in manager or seat custody renders an absent outcome as prose (expected 0)",
   renderings === 0,
   { renderings },
 );
@@ -371,20 +369,26 @@ instrument.forEach(([name, , holds], i) => {
 //   spawnCustodied: carries it into the throw, saying the seat was not proved gone.
 // restartSupervisedSeat no longer calls requireRuntimeReap. It proves the previous seat's local work
 // ended through runtime.reapWork before the resume launches, and a refusal there stays with that proof.
-const REVIEWED_SITES = ["Manager.adoptReleasedSeat", "Manager.reapOrphanSeat", "Manager.reapOrphanedResumeSeat", "Manager.spawnCustodied"];
+const REVIEWED_SITES = ["Preservation.adoptReleasedSeat", "PreservedResume.reapOrphanedResumeSeat", "SeatCustody.reapOrphanSeat", "SeatCustody.spawnCustodied"];
 const managerConfig = ts.getParsedCommandLineOfConfigFile(resolve(here, "..", "tsconfig.json"), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: (d) => { throw new Error(ts.flattenDiagnosticMessageText(d.messageText, " ")); } })!;
-const managerProgram = ts.createProgram({ rootNames: [managerFile], options: { ...managerConfig.options, noEmit: true } });
-const managerSource = managerProgram.getSourceFile(managerFile)!;
-const managerErrors = managerProgram.getSemanticDiagnostics(managerSource).map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
-check("CONTROL: manager.ts typechecks, so the census read its types and not error types", managerErrors.length === 0, managerErrors);
-const census = censusReaps(managerProgram, managerSource);
+const managerProgram = ts.createProgram({ rootNames: managerFiles, options: { ...managerConfig.options, noEmit: true } });
+const managerSources = managerFiles.map((file) => managerProgram.getSourceFile(file)!);
+const managerErrors = managerSources.flatMap((source) => managerProgram.getSemanticDiagnostics(source)).map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
+check("CONTROL: manager and seat custody typecheck, so the census read their types and not error types", managerErrors.length === 0, managerErrors);
+const scans = managerSources.map((source) => censusReaps(managerProgram, source));
+const census = scans.reduce((all, scan) => ({
+  guarded: [...all.guarded, ...scan.guarded],
+  bypass: [...all.bypass, ...scan.bypass],
+  probes: [...all.probes, ...scan.probes],
+  elements: Object.fromEntries(Object.keys(all.elements).map((key) => [key, all.elements[key]! + scan.elements[key]!])),
+}));
 check(
-  `CONTROL: every requireRuntimeReap call in manager.ts sits in a reviewed callable (${REVIEWED_SITES.join(", ")})`,
+  `CONTROL: every requireRuntimeReap call in manager and seat custody sits in a reviewed callable (${REVIEWED_SITES.join(", ")})`,
   JSON.stringify([...census.guarded].sort()) === JSON.stringify(REVIEWED_SITES),
   { guarded: census.guarded },
 );
 check(
-  "#1554: no reap in manager.ts goes around requireRuntimeReap",
+  "#1554: no reap in manager or seat custody goes around requireRuntimeReap",
   census.bypass.length === 0,
   { bypass: census.bypass },
 );
@@ -394,15 +398,16 @@ const countElements = (node: ts.Node): void => { if (ts.isElementAccessExpressio
 countElements(ts.createSourceFile(managerFile, managerSrc, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS));
 const classified = Object.values(census.elements).reduce((a, b) => a + b, 0);
 check(
-  `CONTROL: the census classified all ${elementTotal} element accesses in manager.ts (${Object.entries(census.elements).map(([k, v]) => `${k}: ${v}`).join(", ")})`,
+  `CONTROL: the census classified all ${elementTotal} element accesses in manager and seat custody (${Object.entries(census.elements).map(([k, v]) => `${k}: ${v}`).join(", ")})`,
   elementTotal > 0 && classified === elementTotal,
   { elementTotal, elements: census.elements },
 );
 check(
-  "CONTROL: the bypass scan sees the one typeof feature probe of reap, in Manager.orphanedResumeSeat",
-  census.probes.length === 1 && census.probes[0]!.startsWith("Manager.orphanedResumeSeat "),
+  "CONTROL: the bypass scan sees the one typeof feature probe of reap, in PreservedResume.orphanedResumeSeat",
+  census.probes.length === 1 && census.probes[0]!.startsWith("PreservedResume.orphanedResumeSeat "),
   { probes: census.probes },
 );
 
-console.log(`\nREAP-ABSENT-REFUSAL ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\nREAP-ABSENT-REFUSAL ${failed() === 0 ? "OK ✅" : "FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

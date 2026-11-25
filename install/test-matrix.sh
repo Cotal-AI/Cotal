@@ -147,6 +147,49 @@ regression() {
 # shellcheck disable=SC2016  # bodies are single-quoted ON PURPOSE: they expand inside the
 # container, not here. Expanding them in the harness would substitute the host's values.
 regressions() {
+  regression path-block-comments node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester || exit 1
+    tester_home=$(su tester -c "printf \"%s\\n\" \"\$HOME\"") || exit 1
+    out=$(mktemp) || exit 1
+    su tester -c "cd \$HOME &&
+      printf \"%s\\n\" \"# cotal is not installed yet\" > .bashrc &&
+      printf \"%s\\n\" \"# cotal\" \"# PATH still needs setup\" > .profile &&
+      sh /install.sh --no-setup" >"$out" 2>&1 || { cat "$out"; exit 1; }
+    grep -qxF "# cotal is not installed yet" "$tester_home/.bashrc" || exit 1
+    grep -qxF "# PATH still needs setup" "$tester_home/.profile" || exit 1
+    for rc in .bashrc .profile; do
+      su tester -c ". \"\$HOME/$rc\" &&
+        test \"\$(command -v cotal)\" = \"\$HOME/.local/bin/cotal\" &&
+        cotal --version" || exit 1
+    done
+    echo VERDICT=ok
+  '
+
+  regression path-block-inert node:22-bookworm-slim '
+    useradd -m -s /bin/bash tester || exit 1
+    tester_home=$(su tester -c "printf \"%s\\n\" \"\$HOME\"") || exit 1
+    out=$(mktemp) || exit 1
+    expected=$(mktemp) || exit 1
+    q=$(printf "\047")
+    bin="$tester_home/.local/bin"
+    line="export PATH=$q$bin$q:\"\$PATH\""
+    cat >"$expected" <<EOF
+: <<\DOC
+# cotal
+case ":\$PATH:" in *:$q$bin$q:*) ;; *) $line ;; esac
+DOC
+EOF
+    su tester -c "cat > \"\$HOME/.bashrc\" && cp \"\$HOME/.bashrc\" \"\$HOME/.profile\"" <"$expected" || exit 1
+    su tester -c "SHELL=/bin/bash sh /install.sh --no-setup" >"$out" 2>&1 || { cat "$out"; exit 1; }
+    cmp -s "$expected" "$tester_home/.bashrc" && cmp -s "$expected" "$tester_home/.profile" || exit 1
+    if grep -qF "~/.local/bin is on your PATH" "$out"; then cat "$out"; exit 1; fi
+    grep -qF "Found matching Cotal PATH lines in ~/.bashrc, ~/.profile." "$out" || { cat "$out"; exit 1; }
+    grep -qxF "    $line" "$out" || { cat "$out"; exit 1; }
+    su tester -c ". \"\$HOME/.profile\" && ! command -v cotal && $line &&
+      test \"\$(command -v cotal)\" = \"\$HOME/.local/bin/cotal\" && cotal --version" || exit 1
+    echo VERDICT=ok
+  '
+
   # A $HOME containing a space used to word-split the bash rc candidate list, so the
   # fallback named a TRUNCATED path outside the home directory and the PATH block was
   # appended there. Containment is the claim; this is the case that broke it.

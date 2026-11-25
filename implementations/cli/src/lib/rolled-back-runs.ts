@@ -1,7 +1,12 @@
 import { join } from "node:path";
 import { jetstreamManager, type MsgRequest } from "@nats-io/jetstream";
-import { isStreamNotFound, parseRunJournalRecord, spacePrefix, wfjStreamName, type SpaceAuth } from "@cotal-ai/core";
+import {
+  CHANNEL_DEFAULTS_KEY, GOVERN_HEAD, RECORD_KINDS, channelBucket, historyLimitOf, historyLimitStreamOf, isStreamNotFound, parseRecordKey, parseRunJournalRecord,
+  recordsBucket, recordsKvStreamName, spacePrefix, validateBackupStreamState,
+  validateCanonicalBackupStreamConfig, validateSpaceBackupInventory, wfjStreamName, type SpaceAuth,
+} from "@cotal-ai/core";
 import type { AttemptOwnedPath, MaintenanceAuthMode, ProcessOwner, RolledBackRun } from "@cotal-ai/workspace";
+import type { BackupStreamRecord } from "./backup-artifact.js";
 import { connectIsolatedBroker, createAttemptClone, ensurePrivateAttemptsDir, startIsolatedBroker, type IsolatedBroker } from "./isolated-broker.js";
 
 /** The most runs a restore's launch lists; it counts the rest. */
@@ -65,20 +70,112 @@ export function rolledBackRuns(previous: ReadonlyMap<string, RunJournalView>, re
   return { runs: all.slice(0, MAX_LISTED_RUNS), more: Math.max(0, all.length - MAX_LISTED_RUNS) };
 }
 
-/** The step journals of the store a restore set aside, read from a private clone on its own
- *  isolated broker, never from the store itself: a broker start can purge by age or limits, and
- *  that store holds the only copy. `record` journals each path and process before it exists, so an
- *  interrupted restore leaves them to its recovery. The clone is removed once it was read. */
-export async function readPreviousRunJournals(options: {
+/** Read the stored value and headers of the one channel default key. */
+export async function readRegistryDefault(broker: IsolatedBroker, space: string): Promise<string | undefined> {
+  try {
+    const login = await broker.addLogin({ profile: "registry-read" });
+    const nc = await connectIsolatedBroker(broker, login);
+    try {
+      const bucket = channelBucket(space);
+      const subject = `$KV.${bucket}.${CHANNEL_DEFAULTS_KEY}`;
+      const reply = await nc.request(`$JS.API.DIRECT.GET.KV_${bucket}.${subject}`, new Uint8Array(0), { timeout: 2_000 });
+      const headers = reply.headers;
+      if (!headers || headers.code || headers.get("Nats-Stream") !== `KV_${bucket}` || headers.get("Nats-Subject") !== subject) return undefined;
+      // Direct get appends these four headers. A duplicate could be a stored header, so keep consent.
+      const entries = [...headers];
+      const metadata = /^Nats-(Stream|Subject|Sequence|Time-Stamp)$/i;
+      const added = entries.filter(([key]) => metadata.test(key));
+      if (new Set(added.map(([key]) => key.toLowerCase())).size !== 4 || added.length !== 4 ||
+          added.some(([, values]) => values.length !== 1)) return undefined;
+      return JSON.stringify([Buffer.from(reply.data).toString("base64"), entries.filter(([key]) => !metadata.test(key))]);
+    } finally {
+      await nc.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+async function previousStoreHasNoUniqueState(broker: IsolatedBroker, space: string, restoredDefault: string | undefined, recordedStreams: readonly BackupStreamRecord[]): Promise<boolean> {
+  try {
+    const login = await broker.addLogin({ profile: "backup", scope: { operation: "inspect", selection: "full" } });
+    const nc = await connectIsolatedBroker(broker, login);
+    let compareDefault = false;
+    try {
+      const jsm = await jetstreamManager(nc, { checkAPI: false });
+      const names: string[] = [];
+      const list = jsm.streams.names();
+      for (let page: string[]; (page = await list.next()).length;) names.push(...page);
+      const inventory = validateSpaceBackupInventory(space, names, { atRest: true });
+      const records = recordsKvStreamName(space);
+      for (const { name, class: kind } of inventory.backedUp) {
+        const info = await jsm.streams.info(name, name === records ? { subjects_filter: ">" } : undefined);
+        const config = info.config as unknown as Record<string, unknown>;
+        validateCanonicalBackupStreamConfig(space, name, config);
+        if (historyLimitStreamOf(space, name)) {
+          const recorded = recordedStreams.find((entry) => entry.stream === name)?.config;
+          if (typeof recorded?.max_age !== "number" || typeof recorded.max_msgs_per_subject !== "number" ||
+              typeof config.max_age !== "number" || typeof config.max_msgs_per_subject !== "number") return false;
+          const before = historyLimitOf(config), restored = historyLimitOf(recorded);
+          if (before.maxAgeMs !== restored.maxAgeMs || before.perSubject !== restored.perSubject) return false;
+        }
+        const state = validateBackupStreamState(info.state as unknown as Record<string, unknown>);
+        // Do not waive consent for a checkpoint without comparing its config and ACK floor.
+        if (state.lost !== undefined || state.consumer_count !== 0) return false;
+        switch (kind) {
+          case "registry":
+            if (state.last_seq === 0) break;
+            // A fresh space writes one default. Prove the target holds it rather than comparing
+            // counts, which can match for two unrelated stores with different settings.
+            if (state.messages !== 1 || state.last_seq !== 1 || restoredDefault === undefined) return false;
+            compareDefault = true;
+            break;
+          case "authorization":
+            if (state.last_seq !== 0) return false;
+            break;
+          case "messages":
+          case "workflow":
+            // Zero messages with an advanced sequence does not rule out expiry on the clone.
+            if (state.last_seq !== 0 && (name !== records || !hasOnlyManagerRegistration(state, space))) return false;
+            break;
+          default:
+            return false;
+        }
+      }
+    } finally {
+      await nc.close();
+    }
+    return !compareDefault || (await readRegistryDefault(broker, space)) === restoredDefault;
+  } catch {
+    // An unsuccessful inspection cannot authorize deletion.
+    return false;
+  }
+}
+
+function hasOnlyManagerRegistration(state: ReturnType<typeof validateBackupStreamState>, space: string): boolean {
+  const subjects = Object.entries(state.subjects ?? {});
+  const prefix = `$KV.${recordsBucket(space)}.`;
+  return state.messages > 0 && subjects.reduce((count, [, messages]) => count + messages, 0) === state.messages
+    && subjects.every(([subject]) => {
+      const key = subject.startsWith(prefix) ? parseRecordKey(subject.slice(prefix.length)) : null;
+      return key?.qualifiers[0] === "manager" && (key.def === RECORD_KINDS.svc || key.def === GOVERN_HEAD);
+    });
+}
+
+/** Read the set-aside state and journals from one private clone. A broker start can expire
+ *  messages, so it must never open the preserved store itself. */
+export async function inspectPreviousStore(options: {
   root: string;
   previousStore: string;
   attemptId: string;
   space: string;
   mode: MaintenanceAuthMode;
   auth?: SpaceAuth;
+  restoredDefault: string | undefined;
+  recordedStreams: readonly BackupStreamRecord[];
   deadline: Date;
   record: (input: { owners?: readonly ProcessOwner[]; ownedPaths?: readonly AttemptOwnedPath[] }) => void;
-}): Promise<Map<string, RunJournalView>> {
+}): Promise<{ noUniqueState: boolean; runs: Map<string, RunJournalView> }> {
   options.record({ ownedPaths: [{ label: "clone", path: join(ensurePrivateAttemptsDir(options.root).path, `${options.attemptId}-clone`) }] });
   const clone = createAttemptClone(options.root, options.previousStore, options.attemptId);
   options.record({ ownedPaths: [{ label: "clone", path: clone.path, dev: clone.identity.dev.toString(), ino: clone.identity.ino.toString() }] });
@@ -96,7 +193,8 @@ export async function readPreviousRunJournals(options: {
       attemptId: options.attemptId,
     });
     options.record({ owners: [broker.brokerOwner, broker.watchdogOwner], ownedPaths: broker.runFiles.map((file) => ({ label: "config" as const, ...file })) });
-    return await readRunJournals(broker, options.space);
+    const runs = await readRunJournals(broker, options.space);
+    return { noUniqueState: runs.size === 0 && await previousStoreHasNoUniqueState(broker, options.space, options.restoredDefault, options.recordedStreams), runs };
   } finally {
     if (broker) await broker.stop();
     clone.cleanup();

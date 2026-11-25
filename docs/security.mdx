@@ -43,7 +43,7 @@ The following guarantees combine broker enforcement with the required receiver c
 
 | Guarantee | Mechanism |
 | --- | --- |
-| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id`. The reference client also drops a message carrying the broker's stored-message headers (`Nats-Stream`, `Nats-Subject`, `Nats-Sequence`, `Nats-Time-Stamp`) on every messaging receive path. |
+| Sender authenticity | Sender tokens in subjects are pinned by publish permissions. Receivers reject mismatched `from.id` and messages with reserved stored-message headers. |
 | Space containment | NATS accounts isolate each space's subjects, streams, and KV buckets. |
 | Channel posting | The connection posts as itself and only to declared `allowPublish` channels. Posting is default-deny. |
 | Channel content reads | Live subscription grants follow `allowSubscribe`. History uses server-pinned single-channel consumers. |
@@ -54,6 +54,14 @@ The following guarantees combine broker enforcement with the required receiver c
 Channel content ACLs do not hide all stream metadata. An agent can enumerate retained CHAT subjects and counts, including channel names and sender IDs outside its read ACL. Channel names are also public in the registry. A role-bearing credential has equivalent TASK metadata access. Neither path grants message bodies or DM-stream metadata. [Stream metadata visibility](security-boundaries.mdx#metadata) gives the precise grants and deferred containment work.
 
 A carried Claude seat uses its own Claude home, so another seat's ordinary Claude listing does not expose the transcript. Same-uid filesystem access can still read that home by path. [Host filesystem access](security-boundaries.mdx#filesystem-access) explains the limit.
+
+## Stored-message headers [#stored-message-headers]
+
+The reference client drops deliveries and legacy control requests that carry `Nats-Stream`,
+`Nats-Subject`, `Nats-Sequence`, or `Nats-Time-Stamp`, even when the claimed sender matches the
+subject. This covers live subscriptions, delivery readers and writers, history, recall, join
+backfill, and the operator tap. Header matching ignores case and includes empty values. A storage
+read the client initiates, such as a roster lookup, can legitimately return these headers.
 
 ## Endpoint request origin [#endpoint-request-origin]
 
@@ -67,6 +75,7 @@ An authenticated peer can flood destinations it may write to. Cotal relies on co
 
 The deployment also has these limits.
 
+- An open mesh has no authentication and is outside these claims. Any process that reaches its broker can answer an agent's prompts, run its commands, give it a turn, stop its turn, or rename it through the agent's `agent` endpoint, naming any caller.
 - A copied static credential retains inline data-plane grants until expiry or signing-key rotation. Despawn retires its lifecycle and control authority but cannot add a static auth callout.
 - A host compromise can expose signing authority. Narrow operator profiles reduce individual connection grants but do not protect a copied signer.
 - Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host.

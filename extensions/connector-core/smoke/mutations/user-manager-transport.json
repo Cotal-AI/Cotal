@@ -9,7 +9,7 @@
   "mutations": [
     {
       "name": "omit the recorded model from the real spawn result",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-supervision.ts",
       "find": "data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },",
       "replace": "data: { ...(reply.data as Record<string, unknown> | undefined) },",
       "expectRed": "first real spawn model pin matched requested 'sonnet'",

@@ -8,7 +8,7 @@
  * SPLITS AND DISPATCHES only — the broker already forge-locked the identity slots via the minted
  * grant, so a reader recovers tokens, it does not re-prove their grammar. What the parser DOES
  * enforce is SHAPE: prefix, plane, exact arity, and the §13.2 explicit-discrimination rule (the
- * token after `<command>` is either one of the six reserved authorization-mode tokens or the
+ * token after `<command>` is either one of the seven reserved authorization-mode tokens or the
  * caller's owner token). §2's owner grammar (`local` or `u_`+base32) keeps those sets disjoint
  * for every spec-conformant mint; this module's owner validator is deliberately wider (it admits
  * legacy principal tokens), so the dispatch additionally rests on each mode's pinned arity — a
@@ -135,7 +135,7 @@ export interface EpCaller {
   uid: string;
 }
 
-/** The six reserved authorization-mode tokens. Disjoint from every spec-conformant owner token
+/** The seven reserved authorization-mode tokens. Disjoint from every spec-conformant owner token
  *  (`local` or `u_`+base32 per §2, never a bare mode word); the implementation's owner validator
  *  also admits legacy principal tokens, so the parser's discrimination rests on membership in
  *  this set PLUS each mode's pinned arity, not on the owner grammar alone. */
@@ -346,6 +346,109 @@ export function epIssuedInstanceServeFilter(space: string, endpoint: string, ins
   return `${spacePrefix(space)}.ep.${EP_RAIL_V1}.inst.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.>`;
 }
 
+// ---- the principal route (SPEC 13.21) -------------------------------------------------------
+
+/** The route tokens of the principal route: a principal serves a core-defined command set about
+ *  itself, addressed by its own identity, with no registration (SPEC 13.21). A reader that knows
+ *  only `one`, `all`, `inst` and `reply` parses both to `null`. */
+export const EP_PRINCIPAL_ROUTE = "prin";
+export const EP_PRINCIPAL_REPLY_ROUTE = "prin-reply";
+
+/** The largest `deadlineMs` a principal-route request may carry (SPEC 13.21). A larger one is
+ *  `bad-request` before the handler runs, so a serve's stop waits at most this long for a handler. */
+export const EP_PRINCIPAL_MAX_DEADLINE_MS = 30_000;
+
+/** The closed set of authority words a principal-route caller names after `<command>` (SPEC
+ *  13.21). It is not the §13.2 mode set: `owner` here covers the caller's own owner's principals
+ *  with no current-mapping check, and `grant` names one granted lifecycle. */
+export const EP_PRINCIPAL_AUTHORITIES = Object.freeze(["owner", "grant"] as const);
+export type PrincipalAuthority = (typeof EP_PRINCIPAL_AUTHORITIES)[number];
+const PRINCIPAL_AUTHORITY_SET = new Set<string>(EP_PRINCIPAL_AUTHORITIES);
+/** Is `w` an authority word of the principal route? Reads the private module-load set, never the
+ *  live export, so a post-import mutation cannot widen what a cluster document may declare. */
+export function isPrincipalAuthority(w: string): w is PrincipalAuthority { return PRINCIPAL_AUTHORITY_SET.has(w); }
+
+const RUNTIME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** The runtime id of one serving OS process as one subject token: the value presence publishes as
+ *  `runtime.id` (SPEC §6), at most 64 characters of `[A-Za-z0-9_-]`. */
+export function assertRuntimeToken(v: string, what = "runtimeId"): string {
+  if (typeof v !== "string" || !RUNTIME.test(v)) throw new Error(`${what} "${v}" is not a runtime token ([A-Za-z0-9_-]{1,64})`);
+  return v;
+}
+
+/** One process of a principal: the principal, its lifecycle UID and the runtime id of the OS
+ *  process that serves. The head of every principal-route subject. */
+export interface EpPrincipal {
+  owner: string;
+  actor: string;
+  uid: string;
+  runtimeId: string;
+}
+
+/** The validated head `<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>`. The lifecycle grammar on
+ *  `<pUid>` is what keeps `_nr` out of every head, so no head equals the sentinel's. */
+function principalHead(endpoint: string, p: EpPrincipal): string[] {
+  return [
+    endpointToken(endpoint),
+    assertBoundedOwner(p.owner, "principal owner"),
+    assertBoundedOwner(p.actor, "principal actor"),
+    assertLifecycleToken(p.uid, "principal lifecycleUid"),
+    assertRuntimeToken(p.runtimeId, "principal runtimeId"),
+  ];
+}
+
+/** A principal-route request:
+ *  `cotal.<space>.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<command>.<authority>.<cOwner>.<cActor>.<cUid>.<nonce>`. */
+export function epPrincipalRequestSubject(
+  space: string,
+  req: { endpoint: string; principal: EpPrincipal; command: string; authority: PrincipalAuthority; caller: EpCaller; nonce: string },
+): string {
+  if (!isPrincipalAuthority(req.authority)) throw new Error(`authority "${req.authority}" is not a principal-route authority word (${EP_PRINCIPAL_AUTHORITIES.join(", ")})`);
+  return assertSized([
+    spacePrefix(space), "ep", EP_PRINCIPAL_ROUTE, ...principalHead(req.endpoint, req.principal),
+    assertCommandToken(req.command), req.authority, ...callerTokens(req.caller), assertNonce(req.nonce),
+  ].join("."));
+}
+
+/** A principal-route reply: the serving head, then the caller triple and nonce of the request.
+ *  `cotal.<space>.ep.prin-reply.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<cOwner>.<cActor>.<cUid>.<nonce>`. */
+export function epPrincipalReplySubject(
+  space: string,
+  r: { endpoint: string; principal: EpPrincipal; caller: EpCaller; nonce: string },
+): string {
+  return assertSized([
+    spacePrefix(space), "ep", EP_PRINCIPAL_REPLY_ROUTE, ...principalHead(r.endpoint, r.principal),
+    ...callerTokens(r.caller), assertNonce(r.nonce),
+  ].join("."));
+}
+
+/** The reply to a parsed principal-route request, from the serving process's own identity and the
+ *  request's caller and nonce. It takes no transport reply field, so a body or a reply-to header
+ *  cannot redirect it (SPEC 13.21). */
+export function derivePrincipalReplySubject(space: string, request: ParsedEpPrincipalRequest, self: EpPrincipal): string {
+  return epPrincipalReplySubject(space, { endpoint: request.endpoint, principal: self, caller: request.caller, nonce: request.nonce });
+}
+
+/** The caller's no-responders sentinel on the principal route: the reply form with `_nr` in all
+ *  five head positions. `_nr` is neither an endpoint token nor a lifecycle UID, so no serving row
+ *  can name it and only the broker's no-responders status reaches it (SPEC 13.21). */
+export function epPrincipalNoRespondersSubject(space: string, caller: EpCaller, nonce: string): string {
+  return assertSized([spacePrefix(space), "ep", EP_PRINCIPAL_REPLY_ROUTE, "_nr", "_nr", "_nr", "_nr", "_nr", ...callerTokens(caller), assertNonce(nonce)].join("."));
+}
+
+/** What one serving process subscribes: its own head, every command, word, caller and nonce. No
+ *  queue group, because the subject already names one process. */
+export function epPrincipalServeFilter(space: string, endpoint: string, self: EpPrincipal): string {
+  return `${spacePrefix(space)}.ep.${EP_PRINCIPAL_ROUTE}.${principalHead(endpoint, self).join(".")}.*.*.*.*.*.*`;
+}
+
+/** A caller's reply read on the principal route: any head, its own caller triple, one nonce or
+ *  every nonce. One subscription with an exact nonce receives both the reply and the sentinel. */
+export function epPrincipalCallerReplyFilter(space: string, caller: EpCaller, nonce?: string): string {
+  return `${spacePrefix(space)}.ep.${EP_PRINCIPAL_REPLY_ROUTE}.*.*.*.*.*.${callerTokens(caller).join(".")}.${nonce === undefined ? "*" : assertNonce(nonce)}`;
+}
+
 // ---- endpoint-published planes (§13.2 "Event and journal subjects") -------------------------
 
 export type EpTimerPhase = "schedule" | "armed" | "fire";
@@ -438,8 +541,23 @@ export interface ParsedEpRequest {
   nonce: string;
 }
 
+/** A principal-route request (SPEC 13.21). Its own plane value, so no reader of the service
+ *  routes' `request` plane can take it for one. */
+export interface ParsedEpPrincipalRequest {
+  plane: "principal-request";
+  endpoint: string;
+  /** The addressed process: the head of the subject. */
+  principal: EpPrincipal;
+  command: string;
+  authority: PrincipalAuthority;
+  caller: EpCaller;
+  nonce: string;
+}
+
 export type ParsedEp =
   | ParsedEpRequest
+  | ParsedEpPrincipalRequest
+  | { plane: "principal-reply"; endpoint: string; principal: EpPrincipal; caller: EpCaller; nonce: string }
   | { plane: "reply"; rail?: typeof EP_RAIL_V1; endpoint: string; instanceId: string; epoch: number; caller: EpCaller; nonce: string }
   | { plane: "event"; endpoint: string; instanceId: string; epoch: number; topic: string[] }
   | { plane: "fact"; endpoint: string; topic: string[] }
@@ -531,6 +649,29 @@ export function parseEpSubject(subject: string): ParsedEp | null {
       const generation = parts[11];
       try { assertGeneration(generation); } catch { return null; }
       return { plane: "reply", rail: EP_RAIL_V1, endpoint: endpointNameOf(parts[5]), instanceId: parts[6], epoch, caller: { ...triple, generation } as IssuedCaller, nonce: parts[12] };
+    }
+    // The principal route (SPEC 13.21) has no versioned form, so `ep.v1.prin` is no shape.
+    if (!issued && route === EP_PRINCIPAL_ROUTE) {
+      const authority = parts[10];
+      if (parts.length !== 15 || !isPrincipalAuthority(authority)) return null;
+      // The caller's row spans the nonce, so the broker passes any token there. A malformed nonce
+      // or runtime id is no shape, and no shape is handled (SPEC 13.21).
+      try { assertRuntimeToken(parts[8]); assertNonce(parts[14]); } catch { return null; }
+      return {
+        plane: "principal-request", endpoint: endpointNameOf(parts[4]),
+        principal: { owner: parts[5], actor: parts[6], uid: parts[7], runtimeId: parts[8] },
+        command: parts[9], authority, caller: { owner: parts[11], actor: parts[12], uid: parts[13] }, nonce: parts[14],
+      };
+    }
+    if (!issued && route === EP_PRINCIPAL_REPLY_ROUTE) {
+      if (parts.length !== 13) return null;
+      // The sentinel carries `_nr` where a head carries a lifecycle UID, so it is no reply.
+      try { assertLifecycleToken(parts[7]); assertRuntimeToken(parts[8]); assertNonce(parts[12]); } catch { return null; }
+      return {
+        plane: "principal-reply", endpoint: endpointNameOf(parts[4]),
+        principal: { owner: parts[5], actor: parts[6], uid: parts[7], runtimeId: parts[8] },
+        caller: { owner: parts[9], actor: parts[10], uid: parts[11] }, nonce: parts[12],
+      };
     }
     return null;
   }

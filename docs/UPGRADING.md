@@ -1,5 +1,87 @@
 # Upgrading a running deployment
 
+## Messages carrying stored-message headers
+
+Cotal drops channel posts, DMs, role requests, delivery copies and legacy control requests
+that carry `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` or `Nats-Time-Stamp`, even when the
+claimed sender matches the subject. This applies to live delivery and stored history.
+
+If your integration forwards messages from storage, replace that forwarding call with a fresh
+send under the integration's own identity. For example, use
+`await endpoint.multicast(text, { channel: "general" })` for a channel post,
+`await endpoint.unicast(peer, text)` for a DM, or `await endpoint.anycast(role, text)` for a
+role request. For a legacy control request, use `await endpoint.requestControl(service, request)`.
+Do not copy the stored headers, sender or message ID. For custom receivers, core exports
+`hasStoredOrigin(headers)` to identify these reserved names. Do not apply it to answers to
+storage reads your client initiated, such as a roster lookup.
+
+## The agent endpoint on every space
+
+Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
+people sign in. A static agent started by an older release keeps a credential without the serve
+rows, because a renewal keeps what its first issuance recorded. It runs on, and its connector logs
+that the broker refused the serve and says to respawn the agent. Despawn it and start it again to
+give it the endpoint.
+
+On a static space, `cotal acp` calls agents through an `agent-caller` credential it mints in memory
+from the space's signing key, so a thread there shows the agent's questions and commands, and `/name`
+renames a running agent. On an open mesh any client that reaches the broker can answer an agent's
+questions and run its commands.
+
+The Manager's `status.connectors[].prompts` is now the connector's declaration on every mesh mode.
+Its schema and the Manager cluster revision are unchanged.
+
+## Opt-in launch fields
+
+The Manager cluster advances to revision 56. Its `spawn` takes the optional `askPermissions` and
+`reasoningEvents`, and every `status.connectors` row carries both. The closed schemas of revision 55
+reject either, so update Managers and their callers together. A launch without the fields runs as
+before.
+
+## Agents that label themselves
+
+The Manager cluster advances to revision 55: `spawn` takes `autoName: true`, and a revision-54
+Manager refuses the field. Check that a Manager reports revision 55 or later before you send it.
+A seat labels itself only when the Manager and the seat's connector are both updated. An older
+connector ignores `COTAL_AUTO_NAME` and shows no label. The label is card metadata,
+`meta["ai.cotal.label"]`, and the seat keeps its launch name as its address. A client that lists
+agents shows `meta["ai.cotal.label"] ?? name`.
+
+## A person's control of their own agents
+
+On a space where people sign in, a person can now stop, attach to, type into and interrupt every
+agent under their own owner, whatever their scope, and read those agents' event channels. The auth
+callout issues these permissions. Update and restart every member of the callout queue, the full auth
+service and each `--callout-only` replica, then reconnect each person's clients. A connect that an
+old member answers still gets the old permissions.
+
+The Manager cluster advances to revision 53 with the targeted `interrupt` command. An older Manager
+does not serve it, so update Managers before a client interrupts a turn through them.
+
+## Tool permissions on the agent endpoint
+
+A Claude Code seat that Cotal launches on a signed-in space now serves its tool permissions on its
+own agent endpoint, and Claude's dialog stays open beside them. A running Claude session keeps the
+plugin it already loaded, so reload plugins or reopen the session to register the new
+`PermissionRequest` and `SubagentStop` hooks. A managed seat still launches with `bypassPermissions`
+unless you pass a mode, and then it asks nothing.
+
+The Manager cluster advances to revision 52. Every `status.connectors` row carries `prompts`, and
+the closed status schema of revision 51 rejects such a row. Upgrade Managers and their callers
+together.
+
+## Participant payload history after 0.168.0
+
+Participant connections can read retained tool payloads for their own owner and for foreign
+event channels granted by full name. Chat and event-channel wildcards still grant no foreign
+payload access. Live payload subscriptions are unchanged.
+
+For user-auth spaces, update and restart the auth callout, then reconnect participant readers
+so it issues the corrected history-consumer grants. Updating only the reader leaves the old
+broker permissions in place. Static spaces must reissue participant credentials with this version
+and reconnect readers with those credentials. The delivery daemon needs no update or restart for
+this fix. Retained payloads need no migration.
+
 ## Durable channel leave after 0.166.0
 
 From 0.166.0 a channel leave retires every open durable membership the principal holds on that
@@ -128,6 +210,11 @@ space's services and prints one conversion line. Durable members, channel metada
 history are kept. A running stack, remote broker or adopted listener is not converted automatically.
 Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
 
+If you stopped the stack with `cotal down --preserve-state`, run
+`cotal up --recreate-membership-store` from the same project. It converts the derived feed
+before starting the stack's services and resumes the preserved cut without discarding channel
+history. If conversion fails, `up` stops the broker it started and keeps the cut for a retry.
+
 The command uses one exact short-lived credential to inspect and delete only the membership stream,
 then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and
 manager lease buckets remain File-backed. A missing File lease bucket refuses rather than being
@@ -137,8 +224,9 @@ authoritative rebuild and stamps a fresh heartbeat.
 A broker restart drops both Memory presence and membership stores. No background component restores
 them after a broker-only systemd/Docker restart or reboot. From the deployment's project root, run
 `cotal up --space <space>` to recreate them with provisioner authority. A reconnect alone does not
-recreate either stream. A new membership feed refuses missing storage and names that command; an
-already-running feed logs the same repair and its view stays stale. Embedded platforms must invoke
+recreate either stream. If the membership store is missing at startup, the delivery daemon names
+that command and retries the feed without interrupting delivery. An already-running feed logs the
+same repair and its view stays stale until it rebuilds. Embedded platforms must invoke
 `reconcileSpaceMemoryBuckets` after their broker restart or wake before treating these views as
 ready; standing membership credentials cannot create streams.
 
@@ -1069,7 +1157,7 @@ nothing on a running mesh changes.
 
 - If a script read the refusal from stderr, change it to read `error.message` and `error.remedy` from
   the envelope.
-- When the envelope cannot be written to stdout, the text report still goes to stderr.
+- When the envelope cannot be written to stdout, the text report goes to stderr unless the reader closed the pipe early.
 
 ## Endpoint caller files after 0.99.0
 
@@ -2008,10 +2096,10 @@ path. A separate broker or manager can stay running.
 
 ### What stops working
 
-- Replace a script's `cotal history --force` with `cotal history clear --yes`. `--force` is refused
-  on every `history` form, `history clear` included, and clears nothing. Add `--dms` to the
-  explicit clear command only when the purge should include direct messages and the identity holds
-  that authority.
+- `--force` is refused on every `history` form and clears nothing. For a history read or preview,
+  remove `--force` and keep the other arguments. For a script that intentionally purges history,
+  use `cotal history clear --yes` and keep the target options. Include `--dms` only when the purge
+  should include direct messages and the identity holds that authority.
 - `history clear` accepts no channel argument, read filters, or `--follow`. It purges every channel
   in the selected space. These inputs are refused. They are not treated as a selective purge.
 - Bare `history` reads channels within the caller's read grant. It never clears stored messages.
@@ -2021,10 +2109,10 @@ path. A separate broker or manager can stay running.
 
 ### Before the upgrade
 
-Find scripts that pass `--force` to `history` and change their explicit purge invocation. No stored
-state or credential backup is needed for this CLI-only transition. Before an intentional history
-purge, follow the deployment's usual backup procedure. Reads do not make a backup, and they do not
-restore data that retention has already removed.
+Find scripts that pass `--force` to `history` and update them according to the operation they
+intend. No stored state or credential backup is needed for this CLI-only transition. Before an
+intentional history purge, follow the deployment's usual backup procedure. Reads do not make a
+backup, and they do not restore data that retention has already removed.
 
 ## Status output in 0.91.0
 
@@ -3378,7 +3466,8 @@ them before anything stops.
 - **The trust records and credential directory** under `.cotal/auth` on the manager host, including
   the per-space material directory. A re-mint would otherwise have to replace them.
 - **A copy of the channel registry**, so you can verify that it came back instead of assuming it
-  did. Save the output of `cotal channels list` before the upgrade, and compare it afterwards.
+  did. Save the output of `cotal channels list` before the upgrade. Compare the channel names and
+  settings afterwards, not the output formatting.
 - **The output of `cotal ps`**, so you know how many seats you expect to see afterwards and can tell
   a lost view from a lost agent.
 
@@ -3505,7 +3594,9 @@ cotal down manager                                      # broker + delivery rema
 #    `ps` is also the signature of the broker/manager mismatch described
 #    above. The two are indistinguishable here, so compare what the mesh
 #    itself should have carried across instead:
-cotal channels list # compare against channels.before: this SHOULD match now
+#    On 0.49.0, run `cotal channels list` instead. Compare the channel names
+#    and settings with channels.before, not the output formatting.
+cotal channel       # current CLI
 cotal ps            # expect it to be EMPTY here; ps.before is the target for
                     # step 5, not for this step
 

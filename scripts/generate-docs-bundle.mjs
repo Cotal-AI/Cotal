@@ -101,12 +101,19 @@ const corpus = Buffer.concat(members);
 const index = gzipSync(encodeIndex(bundle));
 writeFileSync(join(dirname(out), CORPUS_FILE), corpus);
 writeFileSync(join(dirname(out), INDEX_FILE), index);
+/** The refusal when a data file is not the one built with the module. The files are read lazily, so a
+ *  session that loaded the module and was then updated in place reads the new release's files: the
+ *  refusal is right, and it tells the agent that a restart loads the matching pair. */
+const mismatch = file =>
+  JSON.stringify(`docs data file ${file} beside this module is not the one built with it for Cotal ${version}: ` +
+    "it changed after this process loaded, usually because Cotal was updated under a running session. " +
+    "Restart the session to read the docs of the installed version");
 /** The loader text that reads one of them. */
 const loader = (name, file, packed, returns, body) =>
   `export function ${name}(): ${returns} {\n` +
   `  const packed = readFileSync(join(import.meta.dirname, ${JSON.stringify(file)}));\n` +
   `  if (packed.length !== ${packed.length} || createHash("sha256").update(packed).digest("hex") !== ${JSON.stringify(createHash("sha256").update(packed).digest("hex"))})\n` +
-  `    throw new Error("docs data file ${file} beside this module is not the one built with it");\n` +
+  `    throw new Error(${mismatch(file)});\n` +
   `  return ${body};\n}\n`;
 
 const banner =
@@ -137,7 +144,7 @@ writeFileSync(
     "  if (corpusPacked) return corpusPacked;\n" +
     `  const packed = readFileSync(join(import.meta.dirname, ${JSON.stringify(CORPUS_FILE)}));\n` +
     `  if (packed.length !== ${corpus.length} || createHash("sha256").update(packed).digest("hex") !== ${JSON.stringify(createHash("sha256").update(corpus).digest("hex"))})\n` +
-    `    throw new Error("docs data file ${CORPUS_FILE} beside this module is not the one built with it");\n` +
+    `    throw new Error(${mismatch(CORPUS_FILE)});\n` +
     "  return (corpusPacked = packed);\n}\n\n" +
     `const sourceBounds: [number, number][] = ${JSON.stringify(bounds)};\n` +
     `const sourceLengths: number[] = ${JSON.stringify(bodies.map(body => body.length))};\n` +

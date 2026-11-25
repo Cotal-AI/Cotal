@@ -15,12 +15,13 @@
  *     the durable #team.build and a live-only one of the live #team.chat. Once it stops, it stays on
  *     #team.build as a member with stored copies and leaves #team.chat. A follow of #team.build drops
  *     it once only the channel's class turns live.
+ *  D. a bare join leaves no durable member after SIGINT or SIGTERM, even after the broker restarts.
  *
  * COTAL_HOME is sandboxed, the child environment carries no `COTAL_` variable of the runner, and the
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -35,24 +36,25 @@ const TSX = join(WT, "node_modules", ".bin", "tsx");
 const SERVER = `nats://127.0.0.1:${await freePort()}`;
 const SPACE = `channel-members-${process.pid}`;
 const base = mkdtempSync(join(tmpdir(), "cotal-channel-members-"));
-const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s");
+const home = join(base, "home"), configDir = join(base, "xdg"), s = join(base, "s"), legacy = join(base, "legacy");
 // The product refuses a local-record store that is not private, so every folder here is 0700.
-for (const dir of [home, configDir, s]) mkdirSync(dir, { mode: 0o700 });
-const sandbox = recordSmokeSandbox({ root: s, cotalHome: home, xdgConfigHome: configDir });
+for (const dir of [home, configDir, s, legacy]) mkdirSync(dir, { mode: 0o700 });
+const sandboxes = [s, legacy].map((root) => recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir }));
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined && !key.startsWith("COTAL_") && key !== "FORCE_COLOR") env[key] = value;
 Object.assign(env, { HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" });
 
 const { check, finish } = createSuite();
-const cotal = (...args: string[]) => {
-  const options = { cwd: s, env, encoding: "utf8" as const, timeout: 180_000 };
-  assertSmokeSandboxDown(sandbox, args, options);
+const at = (cwd: string, ...args: string[]) => {
+  const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000 };
+  assertSmokeSandboxDown(cwd === legacy ? sandboxes[1] : sandboxes[0], args, options);
   const run = spawnSync(TSX, [CLI, ...args], options);
   return { status: run.status, stdout: run.stdout, out: `${run.stdout}${run.stderr}` };
 };
+const cotal = (...args: string[]) => at(s, ...args);
 type Census = { asOf: number | null; members: { id: string; name: string | null; live: boolean; durable: boolean }[] };
 type Envelope = { outcome?: string; error?: { code?: string; message?: string; remedy?: string }; result?: Census };
-type StreamRecord = { type: string; data: Census & { lastAsOf?: number | null } };
+type StreamRecord = { type: string; target: { space: string | null; channel: string }; data: Census & { code?: string; reason?: string; lastAsOf?: number | null } };
 const envelope = (stdout: string): Envelope | undefined => { try { return JSON.parse(stdout) as Envelope; } catch { return undefined; } };
 const census = (channel: string) => envelope(cotal("channel", "members", channel, "--json").stdout)?.result;
 const named = (result: Census | undefined, name: string) => result?.members.some((member) => member.name === name) ?? false;
@@ -79,12 +81,35 @@ const shape = (data: Census) => JSON.stringify([data.asOf !== null, data.members
 
 let up = false;
 try {
+  const legacySpace = `${SPACE}-legacy`;
+  const open = at(legacy, "up", "--detach", "--open", "--no-manager", "--space", legacySpace, "--server", `nats://127.0.0.1:${await freePort()}`);
+  up = open.status === 0;
+  if (!up) throw new Error(open.out);
+  const stopped = at(legacy, "down", "--yes");
+  if (stopped.status !== 0) throw new Error(stopped.out);
+  up = false;
+  const stoppedFollow = at(legacy, "channel", "members", "volume.posts", "--follow", "--json");
+  const [error, end, extra] = records(stoppedFollow.stdout);
+  check("a directly started and stopped space is named on both membership setup-failure records",
+    stoppedFollow.status === 2 && stoppedFollow.out === stoppedFollow.stdout && extra === undefined
+      && error?.type === "error" && error.data.code === "TARGET_UNAVAILABLE" && end?.type === "end" && end.data.reason === "setup-failed" && end.data.lastAsOf === null
+      && [error, end].every((row) => row.target.space === legacySpace && row.target.channel === "volume.posts"), stoppedFollow.out);
+} finally {
+  if (up) at(legacy, "down", "--yes");
+}
+try {
   check("space create prepares the folder", cotal("space", "create", SPACE).status === 0);
   up = true;
   const stack = cotal("up", "--server", SERVER, "--no-manager");
   check("up starts the static-auth stack", stack.status === 0, stack.out.slice(-600));
   if (stack.status !== 0) throw new Error("the stack did not start; no later cell can run");
   check("#general is durable with replay disabled", cotal("channel", "set", "general", "--desc", "General talk", "--delivery", "durable", "--no-replay").status === 0);
+  const guide = readFileSync(join(WT, "docs", "UPGRADING.md"), "utf8");
+  const verification = guide.split("# 4. verify the mesh is whole again")[1]?.split("# 5. the step")[0];
+  const inventoryCommand = /^cotal ([^#\n]+)\s*# current CLI$/m.exec(verification ?? "")?.[1]?.trim();
+  const inventory = inventoryCommand === "channel" ? cotal(inventoryCommand) : undefined;
+  check("the current inventory command in the split upgrade guide reads the live channel settings",
+    inventory?.status === 0 && inventory.stdout.includes("general") && inventory.stdout.includes("General talk"), inventory?.out ?? verification);
   check("#archive has a retained message and no saved entry", cotal("send", "-c", "archive", "kept").status === 0);
   const anna = started("join", "--name", "anna", "--channel", "general");
   const bert = started("join", "--name", "bert", "--channel", "lounge");
@@ -102,7 +127,7 @@ try {
   check("an unknown name is refused TARGET_NOT_FOUND, exit 2, naming the registered channels",
     unknown.status === 2 && refusal?.outcome === "refused" && refusal.error?.code === "TARGET_NOT_FOUND"
       && refusal.error.message === "#nosuch has no observed members, no saved entry and no retained messages; registered channels: #general"
-      && refusal.error.remedy === "name a channel the space has; `cotal ch` lists the registered ones", unknown.out.slice(-600));
+      && refusal.error.remedy === `name a channel the space has; \`cotal ch --space ${SPACE}\` lists the registered ones`, unknown.out.slice(-600));
   const cased = cotal("channel", "members", "General");
   check("General names the registered #general and the command for it, with no census",
     cased.status === 2 && cased.out.includes("channel names are case-sensitive, and the registered one is #general")
@@ -113,8 +138,91 @@ try {
   check("#archive, with a retained message and no member, reads as an empty channel, exit 0",
     archive.status === 0 && archive.out.includes("No members in this feed snapshot."), archive.out.slice(-600));
   const general = cotal("channel", "members", "general");
-  check("#general lists anna and offers to follow it",
-    general.status === 0 && general.out.includes("anna") && general.out.includes("cotal ch members general --follow"), general.out.slice(-600));
+  check("#general lists anna and offers to follow it in the resolved space",
+    general.status === 0 && general.out.includes("anna") && general.out.includes(`cotal ch members general --space ${SPACE} --follow`), general.out.slice(-600));
+
+  const inferredInventory = cotal("channel", "--plain");
+  check("the channel inventory suggests the resolved space even when none is passed",
+    inferredInventory.status === 0 && ["cotal", "pnpm cotal"].some((cli) => inferredInventory.stdout.includes(`${cli} ch show <name> --space ${SPACE}`)), inferredInventory.out);
+
+  check("a leading hyphen is valid in a channel name", cotal("channel", "set", "#-audit", "--desc", "Dash-prefixed channel").status === 0);
+  const dashShow = cotal("channel", "show", "#-audit", "--plain");
+  check("channel show spells a dash-prefixed channel as a shell-safe operand",
+    dashShow.status === 0 && dashShow.out.includes("cotal ch members '#-audit' ") && dashShow.out.includes("cotal history '#-audit' "), dashShow.out);
+  const dashMembers = cotal("ch", "members", "#-audit", "--plain");
+  check("the suggested member read succeeds and its follow command keeps the operand safe",
+    dashMembers.status === 0 && dashMembers.out.includes(`cotal ch members '#-audit' --space ${SPACE} --follow`), dashMembers.out);
+  const dashCase = cotal("ch", "members", "#-Audit", "--space", SPACE, "--json");
+  check("a case correction keeps the registered dash-prefixed spelling, explicit space and JSON format",
+    dashCase.status === 2 && envelope(dashCase.stdout)?.error?.code === "TARGET_NOT_FOUND"
+      && envelope(dashCase.stdout)?.error?.remedy === `name it as registered: \`cotal channel members '#-audit' --space ${SPACE} --json\``, dashCase.out);
+  const corrected = cotal("channel", "members", "#-audit", "--space", SPACE, "--json");
+  check("the corrected member read returns its census as JSON", corrected.status === 0 && Array.isArray(envelope(corrected.stdout)?.result?.members), corrected.out);
+  const dashRemove = cotal("ch", "rm", "#-audit", "--json");
+  const confirm = envelope(dashRemove.stdout)?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
+  check("the removal confirmation prints a shell-safe operand and keeps --json",
+    dashRemove.status === 1 && confirm === "channel remove '#-audit' --yes --json", dashRemove.out);
+  const removed = confirm ? cotal(...confirm.split(" ").map((word) => word.replace(/^'|'$/g, ""))) : undefined;
+  check("the suggested confirmation removes the same channel with a JSON receipt",
+    removed?.status === 0 && JSON.parse(removed.stdout).result?.removed === true, removed?.out);
+
+  const plainTarget = ["--space", SPACE, "--server", SERVER];
+  const plainCard = cotal("channel", "set", "plain.retry", "--desc", "Confirmation fixture", ...plainTarget, "--json");
+  const askedPlain = cotal("channel", "remove", "plain.retry", ...plainTarget, "--plain");
+  const retry = askedPlain.out.match(/confirm with `(?:pnpm )?cotal ([^`]+)`/)?.[1];
+  const confirmed = retry ? cotal(...retry.split(" ")) : undefined;
+  check("the suggested removal confirmation preserves --plain and gives a plain receipt",
+    plainCard.status === 0 && askedPlain.status === 1 && askedPlain.stdout === "" && askedPlain.out.includes("USAGE_INVALID")
+      && retry === `channel remove plain.retry ${plainTarget.join(" ")} --yes --plain`
+      && confirmed?.status === 0 && /^Channel removed - #plain\.retry$/m.test(confirmed.stdout),
+    { saved: plainCard.out, refused: askedPlain.out, confirmed: confirmed?.out });
+
+  const other = join(base, "other");
+  mkdirSync(other, { mode: 0o700 });
+  const unstarted = "membership-unstarted";
+  const prepared = cotal("space", "create", unstarted, "--root", other);
+  const selected = cotal("use", unstarted);
+  try {
+    const defaultMembers = cotal("channel", "members", "general", "--json");
+    check("the default membership read refuses in the selected unstarted space",
+      prepared.status === 0 && selected.status === 0 && defaultMembers.status === 2
+        && defaultMembers.out.includes(unstarted) && envelope(defaultMembers.stdout)?.error?.code === "TARGET_UNAVAILABLE", defaultMembers.out);
+    const targetAuth = await getSpaceAuth(workspaceSecretStore(s), SPACE);
+    if (!targetAuth) throw new Error("fixture trust is missing");
+    const path = "reader with spaces.creds";
+    writeFileSync(join(s, path), await mintCreds(targetAuth, newIdentity(), "admin"), { mode: 0o600 });
+    const target = ["--space", SPACE, "--server", SERVER, "--creds", path];
+    const scope = `--space ${SPACE} --server ${SERVER} --creds '${path}'`;
+    const removal = cotal("channel", "remove", "genral", ...target, "--json");
+    const missing = envelope(removal.stdout);
+    const list = missing?.error?.remedy === `name a channel the space has; \`cotal ch ${scope}\` lists the registered ones`
+      ? cotal("ch", ...target, "--plain") : undefined;
+    check("an unknown removal suggests listing the intended space with its broker and credential",
+      removal.status === 2 && missing?.error?.code === "TARGET_NOT_FOUND" && list?.status === 0
+        && list.stdout.includes(`Mesh: ${SPACE}`) && list.stdout.includes("#general"), { removal: removal.out, list: list?.out });
+    const inventory = cotal("ch", ...target, "--plain");
+    const suggests = (action: string) => ["cotal", "pnpm cotal"].some((cli) => inventory.stdout.includes(`${cli} ch ${action} ${scope}`));
+    const suggestedShow = suggests("show <name>") ? cotal("ch", "show", "general", ...target, "--plain") : undefined;
+    check("the inventory's show, set and defaults commands keep the inspected space, broker and credential",
+      inventory.status === 0 && suggests('set <name> --desc "…"') && suggests("defaults")
+        && suggestedShow?.status === 0 && suggestedShow.stdout.includes(`Mesh: ${SPACE}`)
+        && /Description:\s+General talk/.test(suggestedShow.stdout), { inventory: inventory.out, show: suggestedShow?.out });
+    const card = cotal("channel", "show", "archive", ...target, "--plain");
+    const history = card.stdout.includes(`cotal history '#archive' ${scope}`) ? cotal("history", "#archive", ...target, "--json") : undefined;
+    check("the suggested history read uses the inspected space, broker and credential",
+      card.status === 0 && history?.status === 0 && history.stdout.includes('"text":"kept"'), { card: card.out, history: history?.out });
+    const members = card.stdout.includes(`cotal ch members archive ${scope}`) ? cotal("ch", "members", "archive", ...target, "--plain") : undefined;
+    check("the suggested membership read uses the inspected space, broker and credential",
+      members?.status === 0 && members.stdout.includes(`Mesh: ${SPACE}`) && members.stdout.includes("No members in this feed snapshot."), { card: card.out, members: members?.out });
+    if (members?.stdout.includes(`cotal ch members archive ${scope} --follow`)) {
+      const follow = started("ch", "members", "archive", ...target, "--follow", "--json");
+      const snapshot = await until(() => records(follow.out).some((row) => row.type === "snapshot" && row.target.space === SPACE && row.target.channel === "archive"), 20_000);
+      await killAndAwaitExit(follow.child, "SIGINT");
+      check("the suggested membership follow starts in the inspected space", snapshot, follow.out);
+    } else check("the suggested membership follow starts in the inspected space", false, members?.out);
+  } finally {
+    check("restore the membership stack selection", cotal("use", SPACE).status === 0);
+  }
 
   console.log("\nB. a follow writes changes only");
   const followJson = started("channel", "members", "general", "--follow", "--json");
@@ -144,7 +252,7 @@ try {
   const end = all.at(-1);
   check("the end record carries the last poll the follow read", end?.type === "end" && (end.data.lastAsOf ?? 0) > first, { first, end });
   check("the plain follow shows carl and offers no command to follow",
-    followPlain.out.includes("carl") && !followPlain.out.includes("cotal ch members general --follow"), followPlain.out.slice(-600));
+    followPlain.out.includes("carl") && !followPlain.out.includes("cotal ch members general"), followPlain.out.slice(-600));
 
   console.log("\nC. a family follower");
   check("#team.build is durable and #team.chat is live",
@@ -161,9 +269,10 @@ try {
   const fern = started("join", "--creds", fernCreds, "--lifecycle-uid", fernUid, "--space", SPACE, "--name", "fern", "--channel", "team.>");
   const member = (channel: string) => census(channel)?.members.find((m) => m.name === "fern");
   const online = await until(() => member("team.build")?.durable === true && member("team.chat")?.live === true, 90_000);
+  check("provisioned fern starts a headless join on the channel family", fern.out.includes("holding presence"), fern.out);
   const build = member("team.build"), chat = member("team.chat");
-  check("while connected, fern is a live and durable member of #team.build", online && build?.live === true && build.durable === true, build);
-  check("while connected, fern is a live member of #team.chat with no stored copies", chat?.live === true && chat.durable === false, chat);
+  check("while connected, fern is a live and durable member of #team.build", online && build?.live === true && build.durable === true, { build, out: fern.out });
+  check("while connected, fern is a live member of #team.chat with no stored copies", chat?.live === true && chat.durable === false, { chat, out: fern.out });
   const fernId = build?.id;
   const durableMember = (channel: string) => census(channel)?.members.find((m) => m.id === fernId);
   fern.child.kill("SIGINT");
@@ -184,9 +293,24 @@ try {
   follow.child.kill("SIGINT");
   await follow.exited;
 
-  console.log("\nD. a stopped legacy membership feed converts without losing durable state");
+  console.log("\nD. a bare join retires its durable membership");
   for (const run of running) if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill("SIGINT");
   await Promise.all(running.map((run) => run.exited));
+  check("#archive is saved as durable", cotal("channel", "set", "archive", "--replay", "--delivery", "durable").status === 0);
+  const archiveMembers = () => census("archive");
+  const archiveEmpty = () => archiveMembers()?.members.length === 0;
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+    const reader = started("join", "--name", "archive-reader", "--channel", "archive");
+    const armed = await until(() => reader.out.includes("holding presence") &&
+      archiveMembers()?.members.some((m) => m.name === "archive-reader" && m.live && m.durable) === true, 60_000);
+    check(`the bare join establishes a live durable member before ${signal}`, armed, reader.out);
+    reader.child.kill(signal);
+    await reader.exited;
+    check(`the bare join exits ${code} on ${signal}`, reader.child.exitCode === code, reader.out);
+    check(`the bare join leaves no archive member after ${signal}`, await until(archiveEmpty, 20_000), archiveMembers());
+  }
+
+  console.log("\nE. a stopped legacy membership feed converts without losing durable state");
   check("team.build is durable again before the upgrade", cotal("channel", "set", "team.build", "--delivery", "durable").status === 0);
   check("the old message is retained before conversion", cotal("history", "archive", "--json").stdout.includes("kept"));
   check("stop every stack member before preparing a legacy feed", cotal("down", "--yes").status === 0);
@@ -215,6 +339,7 @@ try {
   if (converted.status !== 0) throw new Error("automatic membership conversion failed");
   const durableFern = () => census("team.build")?.members.some((row) => row.id === fernId && row.durable);
   check("durable fern membership rebuilds with a fresh heartbeat", await until(() => durableFern() === true && (census("team.build")?.asOf ?? 0) > 0, 90_000), census("team.build"));
+  check("the two retired bare joins do not reappear after the broker restarts", archiveEmpty(), archiveMembers());
   check("retained history survives conversion", cotal("history", "archive", "--json").stdout.includes("kept"));
   check("new messages still store after conversion", cotal("send", "-c", "archive", "after conversion").status === 0);
   const repeat = cotal("up");

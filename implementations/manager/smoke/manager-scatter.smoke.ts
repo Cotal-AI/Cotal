@@ -55,7 +55,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection }; leaseStopping: boolean };
+type MgrPriv = { managerInstanceId: string; leaseStopping: boolean; servePlane: { serviceServe?: { nc: NatsConnection }; } };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -122,7 +122,7 @@ try {
   // re-dials it (#2073), which would bring this corpse back to answer. Set the stop fence first,
   // as a host that dies mid-teardown does, so the close stays a close and nothing deregisters.
   (m2 as unknown as MgrPriv).leaseStopping = true;
-  await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await ((m2 as unknown as MgrPriv).servePlane.serviceServe as { nc: NatsConnection }).nc.close();
   m2 = undefined; // left unstopped on purpose: a stop would deregister the corpse this section needs
   await wait(500);
   // The freeze STILL names IID2 (READY record, no deregistration): a severed instance is not silently

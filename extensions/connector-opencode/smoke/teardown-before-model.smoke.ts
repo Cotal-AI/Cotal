@@ -1,8 +1,8 @@
 /**
  * OPENCODE 2.x: A TEARDOWN THAT LANDS BEFORE THE MODEL CHECK SETTLES LEAVES NOTHING BEHIND.
  *
- * `setupCotal` queues the agent start behind the model check (`modelReady`), and the check polls
- * `GET /api/model` while the listing is empty. A host that tears the plugin down inside that window
+ * `setupCotal` queues the agent start behind the model check (`modelReady`), and the check waits
+ * while the server's plugins are still loading. A host that tears the plugin down inside that window
  * must not then see the queued start run on a stopped agent (`cannot start a stopped mesh session`,
  * an unhandled rejection) or a late model refusal call `process.exit(1)`: the teardown owns what
  * setup queued.
@@ -36,10 +36,12 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-let listAt = Infinity; // wall-clock time from which the fake server lists prov/m
+let listAt = Infinity; // wall-clock time from which the fake server's plugins have loaded and it lists prov/m
 const oc = createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/api/model") {
-    const data = Date.now() >= listAt ? [{ providerID: "prov", modelID: "m" }] : [];
+  const settled = Date.now() >= listAt;
+  const lists: Record<string, unknown[]> = { "/api/plugin": settled ? [{ id: "opencode.agent" }] : [], "/api/model": settled ? [{ providerID: "prov", modelID: "m" }] : [] };
+  const data = req.method === "GET" ? lists[req.url ?? ""] : undefined;
+  if (data) {
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data }));
     return;
   }

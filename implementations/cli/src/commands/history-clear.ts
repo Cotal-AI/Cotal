@@ -1,27 +1,55 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, connectOrThrow, credentialRefusalMessage, isConnectRefusal, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
-import { yesRequired } from "../lib/confirmation-required.js";
+import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { deniedWrite } from "../lib/denied-write.js";
+import { readStackJournal } from "../lib/stack-journal.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }
 interface PurgeReceipt { stream: string; purged: number }
 
 const brokerLabel = (server: string): string => brokerAddressForDisplay(server) ?? "selected broker (address unavailable)";
 
+function clearRemedy(values: Values, presentation: Presentation): string {
+  const command = `cotal history clear${targetWords(values)}${values.dms ? " --dms" : ""}`;
+  if (presentation !== "json" && oneLine(command) !== command) {
+    return "keep all arguments in your original command. Add `--dry-run` to preview the space-wide scope, then use `--yes` instead to confirm. Put the new flag before `--` if present";
+  }
+  const format = presentation === "rich" ? "" : ` --${presentation}`;
+  return `preview the space-wide scope with ${codeSpan(`${command} --dry-run${format}`)}, then confirm it with ${codeSpan(`${command} --yes${format}`)}`;
+}
+
 /** Explicit space-wide purge, using only the existing purger instrument or user purger view. */
 export async function historyClear(values: Values): Promise<void> {
   const presentation = presentationOf(values);
   if (values["dry-run"]) {
-    const selected = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
+    let selected: { space: string; server: string };
+    try {
+      const { space, server, creds } = values;
+      selected = space && server && creds === undefined && !findMesh(space) && !hasUserAuthState(findCotalRoot(), space, { readOnly: true })
+        ? { space, server }
+        : resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
+    } catch (error) {
+      // A completed down removes the live registration but keeps the broker address in its journal.
+      if (!isWorkspaceTargetError(error) || error.code !== "not-started") throw error;
+      const { root, space, stopped } = error.details;
+      if (!root || !space || !stopped) throw error;
+      const journal = readStackJournal(root)?.journal;
+      if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") throw error;
+      selected = { space, server: values.server ?? journal.server };
+    }
     const streams = [chatStream(selected.space), ...(values.dms ? [dmStream(selected.space)] : [])];
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
     return;
   }
-  if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), { remedy: `preview the space-wide scope with \`cotal history clear${values.dms ? " --dms" : ""} --dry-run\`, then confirm it with \`cotal history clear${values.dms ? " --dms" : ""} --yes\`` });
+  if (!values.yes && (!canPrompt() || presentation === "json")) {
+    throw new ConfirmationRequired(yesRequired("history clear", presentation === "json"), {
+      remedy: clearRemedy(values, presentation),
+    });
+  }
   const acknowledged: PurgeReceipt[] = [];
   let submitted: string | undefined;
   // A signal from the confirmed clear on ends it where it is, and says what was purged.
@@ -78,8 +106,16 @@ export async function historyClear(values: Values): Promise<void> {
       if (denied) throw new CommandFailure("partial", "OPERATION_PARTIAL", "some history purges were acknowledged, but the next stream was refused; no retry was made", { target, changed: acknowledged, native: { outcome: "not-executed", detail } });
       throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "a history purge was submitted without a confirmed outcome; it was not retried", { target, changed: acknowledged, native: { outcome: "unknown", detail }, remedy: "inspect retained history on the original broker before another purge; an unknown result does not mean nothing changed" });
     } finally { await nc.close(); }
-    if (absent.length === streams.length) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the streams this clear asked for are not on the broker, so nothing was purged", { target, native: { code: "not-found", outcome: "not-executed", detail: { acknowledged, absent } } });
+    const noOp = absent.length === streams.length;
     const warnings = absent.length === 0 ? undefined : [{ code: "HISTORY_STREAM_ABSENT", target, message: `these streams are not on the broker, so they were not purged: ${absent.join(", ")}` }];
-    writeResult(presentation, { command: "history", target, warnings, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({ sections: [{ title: "History purge acknowledged", blocks: [{ kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] }, { kind: "table", columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) }, { kind: "lines", lines: ["These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] }] }] }));
+    writeResult(presentation, { command: "history", target, warnings, noOp, result: { kind: "history-clear", acknowledged, includeDms: values.dms === true, agentsStopped: false, identityReset: false } }, (result): Report => ({
+      sections: [{ title: noOp ? "No retained history to clear" : "History purge acknowledged", blocks: [
+        { kind: "fields", rows: [["Space", conn.space], ["Broker", target.broker], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"]] },
+        ...(noOp ? [] : [
+          { kind: "table" as const, columns: [{ key: "stream", label: "Native stream" }, { key: "purged", label: "Messages purged" }], rows: result.acknowledged.map((row) => ({ stream: row.stream, purged: String(row.purged) })) },
+        ]),
+        { kind: "lines", lines: [noOp ? "0 messages purged." : "These counts come from native purge acknowledgements. Agents were not stopped and identity was not reset. New messages may arrive after the purge."] },
+      ] }],
+    }));
   } finally { release?.(); }
 }

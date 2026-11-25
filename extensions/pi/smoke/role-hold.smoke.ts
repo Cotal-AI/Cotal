@@ -49,7 +49,7 @@ function seat(name: string) {
   });
   mesh.on("error", () => {});
   const driver = new PiDriver(mesh);
-  const ctx: PiContextLike = { isIdle: () => !turnOpen, hasUI: false, ui: { notify: () => {} }, shutdown: () => {} };
+  const ctx: PiContextLike = { isIdle: () => !turnOpen, hasUI: false, ui: { notify: () => {} }, shutdown: () => {}, abort: () => {} };
   const received: string[] = [];
   let turnOpen = false;
   const host: PiHost = {

@@ -140,7 +140,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(sockRoot, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-mid-turn-control-token",
+      COTAL_CONTROL_KEY: "jcode-mid-turn-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -284,7 +284,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(sockRoot, "r.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-mid-turn-replacement-token",
+      COTAL_CONTROL_KEY: "jcode-mid-turn-replacement-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

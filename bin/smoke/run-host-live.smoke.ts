@@ -17,6 +17,7 @@
 import { execFile as execFileProc, spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { connect as connectSocket, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -34,6 +35,7 @@ const {
   mintGeneration, mintAcceptedToken, withIssuerSession, readRunAdmission, EP_UNBOUND_CALLER_AUTHORITY,
   issuedPermitsSubject, issuedPermitsPattern, chatSubject, registry, eventChannel, LEASE_TTL_MS,
   instanceOnlyManagerCapabilities, runCallerCapabilities, createRunAdmission, admissionBucket,
+  activateRun, createRunSpec, recordRunProgram, readRunRecord, startTimerWriter, writeRunStatus,
 } = await import("../../packages/core/dist/index.js");
 const { jetstream, jetstreamManager } = await import("@nats-io/jetstream");
 type EpCallerT = import("@cotal-ai/core").EpCaller;
@@ -98,6 +100,23 @@ const ownedSeats: OwnedSeatT[] = [];
 const spaceA = `runhost-${Math.random().toString(36).slice(2, 8)}`;
 const auth = await createSpaceAuth(spaceA);
 const brokerA = await bootBroker(auth);
+async function seedCompletedHistory(): Promise<void> {
+  const instanceId = mintLifecycleUid();
+  const now = Date.now();
+  const pins = { seed: "history", startedAt: now, yieldEvery: 1, stepBudget: 1, effectCeiling: 1, languageVersion: "1" };
+  // Two keys per run put the inherited checkpoint records on a later batch page.
+  for (let i = 0; i < 520; i++) {
+    const runId = `run-history-${i}`;
+    const takeoverId = newTakeoverId();
+    const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId, takeoverId, instanceId, epoch: 1 } });
+    const writer = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const kv = await openRecordsBucket(writer, spaceA);
+      const observedSpecRevision = await createRunSpec(kv, "manager", runId, { pins, createdAt: now });
+      await writeRunStatus(kv, "manager", runId, { observedSpecRevision, state: "completed", holder: `fixture.${takeoverId}`, epoch: 1, fencingToken: 1, journalHigh: 1, at: now });
+    } finally { await writer.close(); }
+  }
+}
 const wsA = mkdtempSync(join(tmpdir(), "cotal-runhost-wsA-"));
 scratch.push(wsA);
 mkdirSync(join(wsA, ".cotal", "agents"), { recursive: true });
@@ -127,6 +146,15 @@ let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 try {
   await setupSpaceStreams({ servers: brokerA.servers, space: spaceA, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: spaceA, server: brokerA.servers, root: wsA, mode: "auth", ts: new Date().toISOString() });
+  const startFile = join(wsA, "start.cotal.js");
+  writeFileSync(startFile, PURE);
+  const noManager = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "r", "start", startFile, "--json"], {
+    cwd: wsA, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  }).catch((error: { code?: number; stdout?: string }) => error);
+  const noManagerError = JSON.parse(noManager.stdout || "{}").error;
+  c("A0. Hosted start still points to the manager on a static-auth mesh without one",
+    "code" in noManager && noManager.code === 2 && noManagerError?.code === "TARGET_UNAVAILABLE"
+      && noManagerError?.remedy.endsWith("a stack started with --no-manager has none"), noManager);
   delivery = await bootDeliveryDaemon({
     space: spaceA, servers: brokerA.servers, auth,
     reloadStoreIdentity: workspaceSecretStore(wsA).identity,
@@ -175,6 +203,24 @@ try {
     const wheres = details.map((d) => (d as { where?: { file?: unknown; line?: unknown; frame?: unknown } }).where);
     c("each problem names its file and line and carries no rendered source frame (the caller holds the source)",
       wheres.every((w) => typeof w?.file === "string" && typeof w.line === "number" && !("frame" in (w as object))), wheres);
+    const syntaxFile = "syntax.cotal.js";
+    writeFileSync(join(wsA, syntaxFile), "const answer = 42\nconst broken =\n  )\n");
+    const startSyntax = (mode: "--json" | "--plain") => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "start", "--file", syntaxFile, mode], {
+      cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000,
+    }).then(({ stdout, stderr }) => ({ code: 0, stdout, stderr }), (error: { code: number; stdout: string; stderr: string }) => error);
+    const syntaxJson = await startSyntax("--json");
+    const syntax = (() => { try { return JSON.parse(syntaxJson.stdout); } catch { return undefined; } })();
+    const problem = syntax?.error?.cause?.detail?.[0];
+    c("hosted start JSON carries the syntax diagnostic and writes nothing to stderr",
+      syntaxJson.code === 1 && syntaxJson.stderr === "" && syntax?.outcome === "refused" && syntax.error?.code === "SCHEMA_INVALID"
+        && syntax.error.cause?.code === "bad-request" && syntax.error.cause.detail?.length === 1
+        && problem?.kind === LANG_PROBLEM_DETAIL_KIND && problem.code === "L1008" && problem.title === "Invalid syntax or newline hazard"
+        && problem.where?.file === syntaxFile && problem.where.line === 3 && problem.where.column === 3
+        && problem.cause?.includes("Unexpected token") && problem.fix === "Fix the syntax at the marked position.", syntaxJson);
+    const syntaxPlain = await startSyntax("--plain");
+    c("hosted start still prints the language problem in plain mode", syntaxPlain.code === 1 && syntaxPlain.stdout === ""
+      && syntaxPlain.stderr.includes("L1008 Invalid syntax or newline hazard (syntax.cotal.js:3:3)")
+      && syntaxPlain.stderr.includes("fix: Fix the syntax at the marked position."), syntaxPlain);
     const ps = await call("run-ps");
     c("nothing was recorded for it", ps.ok === true && (ps.data as RunListRowT[]).length === 0, ps.data);
   }
@@ -477,8 +523,13 @@ try {
     c("the checkpoint program starts", r.ok === true && cpId !== "", r);
     const parked = await until(async () => { const v = await status(cpId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
     c("run-status shows the open pause and what it asks", pending(parked, "Ship it?")?.step === "/checkpoint:approve#0", parked?.journal);
+    const shown = await execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", "show", cpId, "--space", spaceA],
+      { cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" } });
+    c("run show lists the checkpoint under Needs an answer without a resume",
+      /Needs an answer[\s\S]*\/checkpoint:approve#0 +Ship it\?/.test(shown.stdout), shown.stdout);
     const busy = await call("run-resume", { runId: cpId });
-    c("run-resume of a run this manager is driving is a conflict", busy.ok === false && busy.error?.code === "conflict", busy.error);
+    c("run-resume of a run this manager is driving is a conflict",
+      busy.ok === false && busy.error?.code === "conflict" && busy.error.message === `run ${cpId} is being driven by this manager already`, busy.error);
     const wrong = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:nope#0" });
     c("run-answer at a key with no open pause is not-found", wrong.ok === false && wrong.error?.code === "not-found", wrong.error);
     const named = await call("run-answer", { runId: cpId, stepKey: "/checkpoint:approve#0", value: "yes", by: "someone-else" }).then((r) => r, (e: unknown) => ({ ok: false as const, error: { code: (e as { code?: string }).code, message: String((e as Error).message) } }));
@@ -635,6 +686,11 @@ try {
     // sparing stop is refused. The restart takes the predecessor's seats down with it.
     await mgr.stop({ withAgents: true });
     mgr = undefined;
+    const interruptedTakeover = newTakeoverId();
+    const interruptedNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId, takeoverId: interruptedTakeover, instanceId: mintLifecycleUid(), epoch: 2 } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      await activateRun(jetstream(interruptedNc), await jetstreamManager(interruptedNc), { space: spaceA, runId, holder: `stopped.${interruptedTakeover}`, epoch: 2, fencingToken: 2, takeoverId: interruptedTakeover, at: Date.now(), expect: "existing" });
+    } finally { await interruptedNc.close(); }
     const leftBehind = await awaitSeatsExited(ownedSeats, 5_000);
     c("the stopped predecessor took its own seat processes down with it",
       ownedSeats.length === 2 && ownedSeats.every((s) => s.token !== undefined)
@@ -659,22 +715,128 @@ try {
         deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch,
         ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
       })).reply;
-    const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 2 ? v : undefined; }, 15_000);
-    c("the successor takes the parked run back: still running, now under epoch 2, the pause still open",
-      taken?.status?.epoch === 2 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
+    const taken = await until(async () => { const v = await statusB(runId); return v?.status?.epoch === 3 ? v : undefined; }, 15_000);
+    c("the successor takes the parked run back beyond an unnoted activation: epoch 3, the pause still open",
+      taken?.status?.epoch === 3 && stateOf(taken) === "running" && pending(taken, "Ship it?") !== undefined, { status: taken?.status, ms: Date.now() - t0 });
     const busy = await callB("run-resume", { runId });
     c("and holds it: a resume is a conflict on the successor too", busy.ok === false && busy.error?.code === "conflict", busy.error);
     const activations = (taken?.journal ?? []).filter((row): row is Extract<RunJournalRowT, { kind: "activation" }> => row.kind === "activation");
     const holders = activations.map((row) => row.holder);
     c("each attempt activated under ITS OWN holder id (the manager's id plus the takeover id), so no two attempts share the tuple the barrier admits as one process",
-      activations.length === 2 && holders[0] !== holders[1] && holders.every((h) => /\.[0-9a-f]{16}$/.test(h)), holders);
+      activations.length === 3 && new Set(holders).size === 3 && holders.every((h) => /\.[0-9a-f]{16}$/.test(h)), holders);
     const answered = await callB("run-answer", { runId, stepKey: "/checkpoint:approve#0", value: "go" });
     c("the answer lands on the taken-back run", answered.ok === true, answered);
     const done = await until(async () => { const v = await statusB(runId); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
-    c("and it completes under the successor", stateOf(done) === "completed" && done?.status?.epoch === 2, done?.status);
+    c("and it completes under the successor", stateOf(done) === "completed" && done?.status?.epoch === 3, done?.status);
     const ps = await callB("run-ps");
     c("run-ps on the successor shows all three runs completed",
       ps.ok === true && [pureId, cpId, runId].every((x) => (ps.data as RunListRowT[]).find((row) => row.runId === x)?.state === "completed"), ps.data);
+  }
+  console.log("A5a. a fresh batched scan takes back inherited runs after a dropped connection");
+  {
+    await seedCompletedHistory();
+    const startPaused = async (file: string) => {
+      const r = await callB("run-start", { source: CHECKPOINT, file });
+      const runId = (r.data as { runId?: string } | undefined)?.runId ?? "";
+      const view = await until(async () => { const v = await statusB(runId); return pending(v, "Ship it?") ? v : undefined; }, 15_000);
+      if (view?.status?.epoch !== 1 || stateOf(view) !== "running") throw new Error(`checkpoint did not park: ${JSON.stringify(r)}`);
+      return runId;
+    };
+    const runId = await startPaused("retry.cotal.js");
+    const revokedId = await startPaused("revoked-on-retry.cotal.js");
+    await mgrB.stop({ withAgents: true });
+    mgrB = undefined;
+    const logs: string[] = [];
+    const sockets = new Set<Socket>();
+    let droppedJwt: string | undefined;
+    let retryJwt: string | undefined;
+    let heldScan: (() => void) | undefined;
+    let batches = 0;
+    let pointReads = 0;
+    const port = Number(new URL(brokerA.servers).port);
+    const relay = createServer((client) => {
+      const upstream = connectSocket(port, "127.0.0.1");
+      let tail = "";
+      let jwt: string | undefined;
+      for (const s of [client, upstream]) {
+        sockets.add(s);
+        s.on("error", () => s.destroy());
+        s.on("close", () => { sockets.delete(s); client.destroy(); upstream.destroy(); });
+      }
+      upstream.pipe(client);
+      client.on("data", (bytes: Buffer) => {
+        const data = tail + bytes.toString("latin1");
+        jwt ??= /(?:^|\r\n)CONNECT [^\r\n]*"jwt":"([^"]+)"/.exec(data)?.[1];
+        tail = data.slice(jwt ? -512 : -16_384);
+        if (droppedJwt !== undefined && jwt === droppedJwt) {
+          // The client can redial despite its zero-attempt setting. Refuse that same connection
+          // promptly so its in-flight scan rejects as closed rather than waiting for a timeout.
+          upstream.unpipe(client);
+          client.end("-ERR 'Authorization Violation'\r\n");
+          return;
+        }
+        if (heldScan === undefined && jwt !== undefined && /(?:H?PUB) \$JS\.API\.DIRECT\.GET\.KV_cotal_records_/.test(data)) {
+          if (droppedJwt === undefined) {
+            droppedJwt = jwt;
+            client.resetAndDestroy();
+            return;
+          }
+          // Hold the retry's first inventory read until the gate and unchanged run are observed.
+          retryJwt = jwt;
+          batches++;
+          client.pause();
+          heldScan = () => { upstream.write(bytes); client.resume(); };
+          return;
+        }
+        if (retryJwt !== undefined && jwt === retryJwt) {
+          const chunk = bytes.toString("latin1");
+          batches += (chunk.match(/(?:H?PUB) \$JS\.API\.DIRECT\.GET\.KV_cotal_records_/g) ?? []).length;
+          pointReads += (chunk.match(/(?:H?PUB) \$JS\.API\.STREAM\.MSG\.GET\./g) ?? []).length;
+        }
+        upstream.write(bytes);
+      });
+    });
+    let hosting: InstanceType<typeof RunHosting> | undefined;
+    try {
+      await new Promise<void>((ready, reject) => { relay.once("error", reject); relay.listen(0, "127.0.0.1", ready); });
+      const address = relay.address();
+      if (!address || typeof address === "string") throw new Error("relay has no TCP address");
+      const successor = hosting = new RunHosting({
+        space: spaceA, servers: `nats://127.0.0.1:${address.port}`, endpoint: "manager", instanceId: mintLifecycleUid(),
+        holder: { id: principalKey(DEV_OWNER, newIdentity().id).key, lifecycleUid: mintLifecycleUid() }, auth, log: (line) => void logs.push(line),
+      });
+      await successor.revoke(revokedId, "operator", "withdrawn before takeover");
+      await successor.reconcile();
+      c("the initial reconcile loses its inventory connection", droppedJwt !== undefined && logs.some((line) => line.includes("boot reconcile failed: connection closed")), logs);
+      const releaseScan = await until(async () => heldScan, 5_000);
+      const parked = await successor.status({ runId });
+      const missing = await successor.resume({ runId: `run-${"0".repeat(32)}` }).then(() => undefined, (e: unknown) => e as { code?: string });
+      c("the run gate is open and the inherited run is still parked before retry completes", missing?.code === "not-found" && parked.status?.epoch === 1 && pending(parked, "Ship it?") !== undefined, { missing, status: parked.status });
+      releaseScan?.();
+      const recovered = releaseScan && await until(async () => { const v = await successor.status({ runId }); return v.status?.epoch === 2 ? v : undefined; }, 10_000);
+      c("a fresh scan takes back the admitted run once without another reconcile call",
+        recovered?.status?.epoch === 2 && pending(recovered, "Ship it?") !== undefined && recovered.journal.filter((r) => r.kind === "activation").length === 2, { status: recovered?.status, logs });
+      c("the retry reads multiple batches without point reads for completed runs", batches > 1 && pointReads < 20, { batches, pointReads });
+      const revoked = await successor.status({ runId: revokedId });
+      c("the retry still leaves the revoked run parked", revoked.status?.epoch === 1 && revoked.revoked?.by === "operator"
+        && revoked.journal.filter((r) => r.kind === "activation").length === 1, { status: revoked.status, logs });
+      // Clean up the inherited run after the assertions, even on the pre-fix build.
+      if (!recovered) await successor.resume({ runId });
+      await successor.answer({ runId, stepKey: "/checkpoint:approve#0", value: "go" }, "operator");
+      if (!await until(async () => stateOf(await successor.status({ runId })) === "completed" || undefined, 10_000))
+        throw new Error("the recovered run did not complete");
+    } finally {
+      await hosting?.stop();
+      for (const socket of sockets) socket.destroy();
+      if (relay.listening) await new Promise<void>((done) => relay.close(() => done()));
+    }
+    mgrB = new Manager({ space: spaceA, servers: brokerA.servers, runtime: "pty", workspaceRoot: wsA });
+    await mgrB.start();
+    const serviceB = await resolveService(nc, spaceA, "manager", caller, { deadlineMs: 10_000 });
+    callB = async (command, args) => (await invokeCommand(nc!, spaceA, serviceB, command, args, {
+      deadlineMs: 30_000, currentEpoch: async () => serviceB.responder.epoch,
+      ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
+    })).reply;
   }
   console.log("A6. the boot gate: no start or resume is served until the reconcile has taken back the predecessor's runs");
   {
@@ -737,6 +899,36 @@ try {
     const done = await until(async () => { const v = await hosting.status({ runId }).catch(() => undefined); return stateOf(v) === "completed" ? v : undefined; }, 15_000);
     c("and the run completes there", stateOf(done) === "completed", done?.status);
     c("the program's log line is written to the hosting manager's log", hostLog.includes(`run ${runId}: log resolved resolved`), hostLog.filter((line) => line.startsWith(`run ${runId}`)));
+    // A fresh attempt may record its program and activation without ever noting running.
+    const freshId = `run-${newTakeoverId()}${newTakeoverId()}`;
+    const freshTakeover = newTakeoverId();
+    const readerNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: "manager", runId, takeoverId: newTakeoverId() } }), tls: false }), maxReconnectAttempts: 0 });
+    let original: Awaited<ReturnType<typeof readRunAdmission>>;
+    let pins: NonNullable<Awaited<ReturnType<typeof readRunRecord>>>["spec"]["value"]["pins"];
+    try {
+      original = await readRunAdmission(await jetstreamManager(readerNc), spaceA, "manager", runId);
+      pins = (await readRunRecord(await openRecordsBucket(readerNc, spaceA), "manager", runId))!.spec.value.pins;
+    } finally { await readerNc.close(); }
+    const admitNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId: freshId } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const js = jetstream(admitNc);
+      const createOnly = { create: async (key: string, data: Uint8Array) => {
+        const h = headers();
+        h.set("Nats-Expected-Last-Subject-Sequence", "0");
+        return (await js.publish(`$KV.${admissionBucket(spaceA)}.${key}`, data, { headers: h })).seq;
+      } } as unknown as Parameters<typeof createRunAdmission>[0];
+      await createRunAdmission(createOnly, { ...original.admission, runId: freshId });
+    } finally { await admitNc.close(); }
+    const freshNc = await connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: "manager", runId: freshId, takeoverId: freshTakeover, instanceId: mintLifecycleUid(), epoch: 1 } }), tls: false }), maxReconnectAttempts: 0 });
+    try {
+      await activateRun(jetstream(freshNc), await jetstreamManager(freshNc), { space: spaceA, runId: freshId, holder: `stopped.${freshTakeover}`, epoch: 1, fencingToken: 1, takeoverId: freshTakeover, at: Date.now(), expect: "new" });
+      const kv = await openRecordsBucket(freshNc, spaceA);
+      await createRunSpec(kv, "manager", freshId, { pins, createdAt: Date.now() });
+      await recordRunProgram(kv, "manager", { v: 1, run: freshId, source: PURE, at: Date.now() });
+    } finally { await freshNc.close(); }
+    await hosting.resume({ runId: freshId });
+    const fresh = await until(async () => { const v = await hosting.status({ runId: freshId }); return v.status?.state === "completed" ? v : undefined; }, 15_000);
+    c("hosted resume recovers a fresh run with no first running note under epoch 2", fresh?.status?.epoch === 2 && fresh.status.fencingToken === 2, fresh?.status);
     // Revocation through the host (SPEC 14.8): the marker is written under a per-run admitter and a
     // hosted resume refuses by name, before any slot is spent on a drive.
     await hosting.revoke(runId, "operator", "withdrawn after review");
@@ -894,6 +1086,59 @@ try {
   c("RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, so the manager's own \"still launching\" refusal is what a slow activation reads as",
     RUN_LAUNCH_DEADLINE_MS > RUN_ACTIVATION_WAIT_MS, { RUN_LAUNCH_DEADLINE_MS, RUN_ACTIVATION_WAIT_MS });
 
+  console.log("A9. the same manager resumes a hosted run after a broker outage");
+  {
+    const file = join(wsA, "outage.cotal.js");
+    writeFileSync(file, 'await sleep("8s", { name: "before" }); await sleep("1s", { name: "after" });');
+    const cli = async (...args: string[]) => (await execFile(process.execPath,
+      [resolve("bin/dist/cotal.js"), "run", ...args, "--space", spaceA, "--server", brokerA.servers, "--json"],
+      { cwd: wsA, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, timeout: 30_000 })).stdout;
+    const creds = await mintCreds(auth, newIdentity(), "delivery");
+    const timerConnection = () => connect({ servers: brokerA.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: -1 });
+    let timerNc = await timerConnection();
+    try {
+      const timer = await startTimerWriter(timerNc, spaceA);
+      void timer.done.catch(() => {});
+      const start = JSON.parse(await cli("start", "--file", file));
+      const runId: string = start.result.result.runId;
+      const show = async (): Promise<RunStatusViewT> => JSON.parse(await cli("show", runId)).result.view;
+      const parked = await until(async () => {
+        const view = await show();
+        return pendingStep(view, "/sleep:before#0") !== undefined ? view : undefined;
+      }, 15_000);
+      if (!parked) throw new Error("the outage run never parked at its first sleep");
+      const errors: string[] = [];
+      const realError = console.error;
+      console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); realError(...args); };
+      try {
+        await brokerA.interrupt(async () => {
+          const interrupted = await until(async () => errors.find(line => line.includes(runId)
+            && line.includes('"released" status write did not land')), 80_000);
+          if (!interrupted) throw new Error("the outage did not interrupt a journal append");
+        });
+      } finally {
+        console.error = realError;
+        await timerNc.close();
+        await timer.stop();
+      }
+      timerNc = await timerConnection();
+      const restarted = await startTimerWriter(timerNc, spaceA);
+      void restarted.done.catch(() => {});
+      const completed = await until(async () => {
+        const view = await show().catch(() => undefined);
+        return view?.status?.state === "completed" ? view : undefined;
+      }, 45_000);
+      const activations = completed?.journal.flatMap(row => row.kind === "activation" ? [row.epoch] : []);
+      c("the original manager replays and activates exactly one successor without a resume command",
+        JSON.stringify(activations) === "[1,2]" && completed?.status?.holder.split(".")[0] === parked.status?.holder.split(".")[0], activations);
+      c("the recovered run completes both recorded sleeps", ["before", "after"].every(name =>
+        completed?.journal.some(row => row.kind === "step" && row.step === `/sleep:${name}#0` && row.outcome === "ok")), completed?.journal);
+      await restarted.stop();
+    } finally {
+      await timerNc.close();
+    }
+  }
+
   await nc.drain().catch(() => undefined);
   nc = undefined;
   await mgrB.stop({ withAgents: true });
@@ -927,11 +1172,28 @@ try {
   scratch.push(wsB);
   mkdirSync(join(wsB, ".cotal", "agents"), { recursive: true });
   recordMesh({ space: spaceB, server, root: wsB, mode: "open", ts: new Date().toISOString() });
+  const file = join(wsB, "cp.cotal.js");
+  writeFileSync(file, CHECKPOINT);
+  const runCli = (...args: string[]) => execFile(process.execPath, [resolve("bin/dist/cotal.js"), "run", ...args], {
+    cwd: wsB, env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" }, timeout: 30_000,
+  });
+  const { stdout: localList } = await runCli("list", "--local", "--plain");
+  c("B0. The local list on a broker-only open mesh keeps the local journal and offers offline simulation instead of start",
+    localList.includes("Open meshes cannot host workflow runs.") && ["cotal", "pnpm cotal"].some((cli) =>
+      localList.includes(`${cli} r show <run-id> --local`) && localList.includes(`${cli} r simulate <file>`) && !localList.includes(`${cli} r start`)), localList);
+  const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
+  const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
+  const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
+  const openStartRemedy = "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run";
+  c("B0a. Hosted start on a broker-only open mesh gives the same simulation and static-auth guidance in JSON and plain output",
+    "code" in brokerOnlyStart && brokerOnlyStart.code === 2 && refusal.outcome === "refused" && refusal.target?.space === spaceB
+      && refusal.error?.code === "UNSUPPORTED" && refusal.error?.message === "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission"
+      && refusal.error?.remedy === openStartRemedy
+      && "code" in plainStart && plainStart.code === 2
+      && plainStart.stderr?.split("\n").some((line) => line.trim() === openStartRemedy) === true, { refusal, plainStart });
   mgr = new Manager({ space: spaceB, servers: server, runtime: "pty", workspaceRoot: wsB });
   await mgr.start();
 
-  const file = join(wsB, "cp.cotal.js");
-  writeFileSync(file, CHECKPOINT);
   const LOGS: string[] = [];
   const realLog = console.log;
   console.log = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
@@ -941,13 +1203,13 @@ try {
     return LOGS.join("\n");
   };
   // An open mesh issues no caller authority and keeps no admission store (SPEC 14.8), so it hosts
-  // no run and admits no local one: both refusals name the fact. The hosted one is the manager's
-  // refusal, thrown classified for the command kernel; the local one goes through `console.error` +
+  // no run and admits no local one: both refusals name the fact. The hosted one is classified for
+  // the command kernel; the local one goes through `console.error` +
   // `process.exit(1)`, captured here the way A7 captures them.
   const realError = console.error, realExit = process.exit;
   console.error = (...a: unknown[]) => { LOGS.push(a.map(String).join(" ")); };
   process.exit = ((code?: number) => { throw new Error(`exit ${code}: ${LOGS.join("\n")}`); }) as never;
-  let hostedOut = "", localOut = "", ps = "";
+  let hostedOut = "", localOut = "", ps = "", plainPs = "";
   let hostedRefusal: { outcome?: unknown; code?: unknown } | undefined, unknownRun: { outcome?: unknown; code?: unknown; message?: unknown } | undefined;
   let unknownPin: { outcome?: unknown; code?: unknown; message?: unknown; remedy?: unknown } | undefined, pinMs = -1, pinnedPs = "";
   const madeUp = mintLifecycleUid();
@@ -958,6 +1220,7 @@ try {
     const realWrite = process.stdout.write;
     process.stdout.write = ((chunk: string | Uint8Array) => { LOGS.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)); return true; }) as typeof process.stdout.write;
     try { ps = await cli(["ps"], { json: true }); } finally { process.stdout.write = realWrite; }
+    plainPs = await cli(["ps"], { plain: true });
     await cli(["show", "run-00000000000000000000000000000000"], { json: true }).catch((e: unknown) => { unknownRun = e as typeof unknownRun; });
     // A pin that names no running manager is refused before any describe, so it does not wait out
     // the describe's deadline, and it names the manager that does run.
@@ -972,11 +1235,13 @@ try {
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh is refused by the manager, UNSUPPORTED, naming the space and that runs need a static-auth mesh", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh issues no caller authority") && hostedOut.includes(spaceB), hostedOut);
+  c("B1. `cotal run start` on an open mesh with a manager is still refused as UNSUPPORTED", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh cannot host workflow runs"), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB
     && listed.result?.kind === "runs" && Array.isArray(listed.result.items) && listed.result.items.length === 0, ps);
+  c("B3a. The open mesh list explains that it cannot host runs and offers offline simulation instead of start",
+    plainPs.includes("Open meshes cannot host workflow runs.") && plainPs.includes("cotal r simulate <file>") && !plainPs.includes("cotal r start"), plainPs);
   c("B4. `cotal run show` of a run the manager holds no record of is refused TARGET_NOT_FOUND for the command kernel", unknownRun?.outcome === "refused" && unknownRun.code === "TARGET_NOT_FOUND" && String(unknownRun.message).includes("no record"), unknownRun);
   c("B5. `cotal run ps --on <id>` naming no running manager is refused TARGET_NOT_FOUND at once, naming the pin and the manager that runs",
     unknownPin?.outcome === "refused" && unknownPin.code === "TARGET_NOT_FOUND" && pinMs < 5_000
@@ -1010,7 +1275,7 @@ try { await delivery?.stop(); } catch { /* teardown */ }
   if (stillUp.running.length) console.log(`  ! seat processes still running after SIGKILL: ${stillUp.running.join(", ")}`);
 }
 
-const EXPECTED_CELLS = 98;
+const EXPECTED_CELLS = 113;
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   fail += 1;

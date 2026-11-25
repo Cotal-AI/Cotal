@@ -5,12 +5,9 @@
  * Run: pnpm smoke:web-log-error-class
  */
 import { errorClassForLog } from "../src/web.js";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const secret = "launch-token-0123456789abcdef";
 class PermissionViolationError extends Error { override name = "PermissionViolationError"; code = "PERMISSIONS_VIOLATION"; }
@@ -28,5 +25,6 @@ const numeric = Object.assign(new Error("x"), { code: 503 });
 check("an integer code is printed as a token", errorClassForLog(numeric) === "Error 503", errorClassForLog(numeric));
 check("a thrown non-error is unclassified", errorClassForLog(secret) === "unclassified", errorClassForLog(secret));
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\n${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

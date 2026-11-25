@@ -37,13 +37,9 @@ import {
   reclaimDeadPreUpgradeRecord,
   saveSpaceAuth,
 } from "@cotal-ai/workspace";
-import { emitSentinel, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const SPACE = "boot-honesty";
@@ -364,11 +360,10 @@ try {
   releaseWrapper?.();
   releaseWrapper = undefined;
 
-  console.log(fail === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${pass} passed, ${fail} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${pass} passed, ${fail} failed)`);
+  console.log(failed() === 0 ? `\nDELIVERY-BOOT-HONESTY SMOKE OK ✅  (${passed()} passed, ${failed()} failed)` : `\nDELIVERY-BOOT-HONESTY SMOKE FAILED ❌  (${passed()} passed, ${failed()} failed)`);
   // Canonical sentinel: the shard runner refuses a suite that exits 0 having run zero cells, and
   // the banner above only parses through a legacy compatibility branch.
-  emitSentinel({ passed: pass, failed: fail });
-  process.exitCode = fail === 0 ? 0 : 1;
+  finish();
 } finally {
   process.chdir(origCwd);
   // Tear down first, then RELEASE: the helper must keep owning each child until it is actually gone,
