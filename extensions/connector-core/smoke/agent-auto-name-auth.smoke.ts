@@ -9,11 +9,13 @@
  * name and an `@mention` of it in a channel still reach it, and the label resolves to no one; an
  * owner `set-name` after labelling sets the name and drops the label in one record; a failed hook
  * shows no label and removes the mark; an owner `set-name` while the hook is out removes the mark at
- * once, and the hook's later reply sets no label; a label equal to another live agent's name is shown,
- * and that name still resolves to the other agent; a direct message from another owner's member
- * neither labels the agent nor ends naming, and the owner's next one still labels it; a launch prompt
- * is the first message; a connector with no hook never shows the mark, and an agent file's label
- * never reaches presence; and a seat stopping while naming is out leaves no mark behind.
+ * once, and the hook's later reply sets no label; a `set-name` with the agent's current name drops its
+ * label; the owner's watch reports each change of the label and the mark; a label equal to another
+ * live agent's name is shown, and that name still resolves to the other agent; a direct message from
+ * another owner's member neither labels the agent nor ends naming, and the owner's next one still
+ * labels it; a launch prompt is the first message; a connector with no hook never shows the mark, and
+ * an agent file's label never reaches presence; and a seat stopping while naming is out leaves no
+ * mark behind.
  *
  * Run: pnpm smoke:agent-auto-name:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -196,14 +198,14 @@ try {
     await caller.readRoster();
     check("its launch name still resolves to it, and its label resolves to no one",
       caller.resolvePeer("named")?.card.id === `${A}.named` && caller.resolvePeer(LABEL) === undefined, caller.resolvePeer("named")?.card.id);
-    const sent = await caller.dm("named", "and also the signup page");
+    const sent = await caller.dm("named", "and also the signup page").catch((e: Error) => e);
     check("a direct message sent to its launch name by name reaches it and starts no second request",
-      sent.recipient.id === `${A}.named` && await until(() => got.some((i) => i.kind === "dm" && i.text === "and also the signup page")) && (await wait(300), h.calls.length === 1),
-      { recipient: sent.recipient, got, calls: h.calls.length });
+      !(sent instanceof Error) && sent.recipient.id === `${A}.named` && await until(() => got.some((i) => i.kind === "dm" && i.text === "and also the signup page"))
+        && (await wait(300), h.calls.length === 1), sent instanceof Error ? sent.message : { recipient: sent.recipient, calls: h.calls.length });
     const text = "@named the checkout page is slow";
-    await caller.send(text, CH, mentionsIn(text));
+    const posted = await caller.send(text, CH, mentionsIn(text)).catch((e: Error) => e);
     check("an @mention of its launch name in a channel reaches it as a mention of it",
-      await until(() => got.some((i) => i.kind === "channel" && i.text === text && i.mentionsMe)), got);
+      !(posted instanceof Error) && await until(() => got.some((i) => i.kind === "channel" && i.text === text && i.mentionsMe)), posted instanceof Error ? posted.message : got);
     const r = await rename(W.named, "Login fix");
     const renamed = (await until(() => card(W.named)?.card.name === "Login fix")) ? records(W.named).find((x) => x.name === "Login fix") : undefined;
     check("an owner set-name after labelling sets the name, and the record that shows it drops the label",
@@ -222,6 +224,7 @@ try {
     check("the mark goes, with no label and the launch name", await until(() => card(W.failer) !== undefined && mark(W.failer) === undefined) && label(W.failer) === undefined && card(W.failer)?.card.name === "failer",
       { name: card(W.failer)?.card.name, mark: mark(W.failer), label: label(W.failer) });
     check("and the seat logs why", logged.some((l) => l.includes("shows no label") && l.includes("the model is not available on this login")), logged.filter((l) => l.includes("label")));
+    check("the owner's presence watch reports the mark going", records(W.failer)[0]?.naming === "pending" && records(W.failer).at(-1)?.naming === undefined, records(W.failer));
   }
 
   console.log("\nan owner rename while the request is out");
@@ -276,6 +279,9 @@ try {
     h.answer("Checkout service profiling");
     check("and its reply becomes the label, and the mark goes", await until(() => label(W.guarded) === "Checkout service profiling" && mark(W.guarded) === undefined) && card(W.guarded)?.card.name === "guarded",
       { name: card(W.guarded)?.card.name, label: label(W.guarded), mark: mark(W.guarded) });
+    const kept = await rename(W.guarded, "guarded");
+    check("an owner set-name with its current name drops the label, and the owner's watch reports it",
+      kept.ok && await until(() => records(W.guarded).at(-1)?.label === undefined) && records(W.guarded).at(-1)?.name === "guarded", { ok: kept.ok, last: records(W.guarded).at(-1) });
   }
 
   console.log("\na launch prompt is the first message");
