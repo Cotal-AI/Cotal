@@ -42,11 +42,12 @@ are public.
 ## Hosted composition [#hosted-composition]
 
 `openAuthAuthorityPlane` and `startAuthService` take `serviceEndpoints: { startup: { kind: "normal" } }`
-to host these operations; it is off by default. `cotal up --user-auth --service-endpoints` sets it
-on the stock auth service, and a lane of `auth-service --spaces` sets it when its manifest entry has
-`"serviceEndpoints": true`. With it, the plane and the
-hosted handle gain `serviceEndpointHost(request)`, which answers `decide`, `revoke`, `name-bind`, the
-four caller-policy operations and the instance, proposal, operation and name reads in process.
+to host these operations; it is off by default. On the [legacy startup route](cli-startup.mdx#up),
+`cotal up --user-auth --service-endpoints` enables it on the stock auth service. A lane of
+`auth-service --spaces` enables it when its manifest entry has `"serviceEndpoints": true`.
+The plane and the hosted handle then gain `serviceEndpointHost(request)`. It answers `decide`,
+`revoke`, `name-bind`, the four caller-policy operations, and the instance, proposal, operation
+and name reads in process.
 `instance-read` returns the current `ServiceInstanceView` for the proved owner's selector, including
 its approval digest and registration state. `instance-list` walks the native assignment subjects with
 a cursor and returns only that owner's instances. Missing and foreign selectors both read absent.

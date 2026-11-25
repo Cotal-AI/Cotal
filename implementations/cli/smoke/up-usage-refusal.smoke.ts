@@ -50,9 +50,10 @@
  *
  * Run: pnpm smoke:up-usage-refusal
  */
-import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { createServer as createHttpServer } from "node:http";
 import { connect, createServer, type AddressInfo, type Socket } from "node:net";
 import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -313,8 +314,8 @@ process.on("exit", () => rmSync(prepared, { recursive: true, force: true }));
 const created = run(["space", "create", "upusage", "--root", prepared, "--json"]);
 check("space create prepares a folder", created.status === 0, shown(created));
 const upHelp = run(["up", "--help"]);
-check("up help marks every public exchange flag as legacy user-auth only",
-  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url"].every((flag) =>
+check("up help marks public exchange and service endpoint flags as legacy user-auth only",
+  ["exchange-public-port", "exchange-public-url", "exchange-trusted-proxy", "advertised-server", "agent-provisioning-url", "service-endpoints"].every((flag) =>
     new RegExp(`^  --${flag} .*legacy user-auth startup only`, "m").test(upHelp.stdout)), shown(upHelp));
 const preparedExchange = run(["up", "--user-auth", "--no-manager", "--server", "nats://127.0.0.1:1", "--idp", "https://idp.example.test/auth",
   "--exchange-public-port", "0", "--exchange-public-url", "https://mesh.example.test", "--json"], prepared);
@@ -326,6 +327,77 @@ check("a prepared root refuses public exchange and names a route that keeps the 
     && exchangeError.remedy.includes("cotal up --user-auth --idp <auth base URL>")
     && exchangeError.remedy.includes("Keep the broker and public exchange flags")
     && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(preparedExchange));
+const serviceHostingFlags = ["--user-auth", "--no-manager", "--idp", "http://127.0.0.1:1/auth",
+  "--service-endpoints", "--json"];
+const serviceHostingRemedy = (remedy: string | undefined) => remedy?.includes("cotal up --user-auth --idp <auth base URL> --service-endpoints --max-payload <bytes>") === true
+  && remedy.includes("Keep your requested `--max-payload` if it is at least 2098176 bytes")
+  && remedy.includes("new, unprepared project folder without running `cotal space create` first")
+  && remedy.includes("use `--space <unused-name>`, and omit `--root`, `--json` and `--plain`");
+const hostingTlsAdvice = (remedy: string | undefined) => remedy?.includes("--server tls://<local IPv4 address>:<port>") === true
+  && remedy.includes("--tls-cert <cert.pem> --tls-key <key.pem>") && remedy.includes("matching IP SAN");
+for (const exchange of [[], ["--exchange-public-port", "0"]]) {
+  const before = readdirSync(join(prepared, ".cotal"));
+  const result = run(["up", ...serviceHostingFlags, "--max-payload", exchange.length ? "4194304" : "2098176",
+    "--server", "nats://127.0.0.1:1", ...exchange], prepared);
+  const error = result.envelope?.error;
+  check(`a fresh prepared root refuses --service-endpoints${exchange.length ? " with public exchange" : ""} before startup and names the legacy route`,
+    result.status === 2 && result.envelope?.outcome === "refused" && error?.code === "UNSUPPORTED"
+      && error.message?.includes(`no route for ${exchange.length ? "--exchange-public-port and " : ""}--service-endpoints`) === true
+      && serviceHostingRemedy(error.remedy) && (!exchange.length || error.remedy?.includes("Keep the broker and public exchange flags") === true)
+      && JSON.stringify(readdirSync(join(prepared, ".cotal")).sort()) === JSON.stringify(before.sort()), shown(result));
+}
+const hostingTls = run(["up", ...serviceHostingFlags, "--server", "tls://127.0.0.1:1",
+  "--tls-cert", join(prepared, "cert.pem"), "--tls-key", join(prepared, "key.pem")], prepared);
+const hostingTlsError = hostingTls.envelope?.error;
+check("a prepared root refusing service hosting with TLS gives a legacy retry that keeps both",
+  hostingTls.status === 2 && hostingTls.envelope?.outcome === "refused" && hostingTlsError?.code === "UNSUPPORTED"
+    && hostingTlsError.message?.includes("--service-endpoints, --tls-cert, --tls-key and --server tls://") === true
+    && serviceHostingRemedy(hostingTlsError.remedy)
+    && hostingTlsAdvice(hostingTlsError.remedy)
+    && !existsSync(join(prepared, ".cotal", "stack-controller.json")), shown(hostingTls));
+async function checkManifestHosting(root: string, tls?: { cert: string; key: string }): Promise<void> {
+  const scheme = tls ? "tls" : "nats";
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  let idpRequests = 0;
+  const idp = createHttpServer((req, res) => {
+    idpRequests++;
+    if (req.url !== "/auth/jwks") { res.writeHead(404).end(); return; }
+    res.writeHead(200, { "content-type": "application/json" }).end(jwks);
+  });
+  idp.listen(0, "127.0.0.1");
+  await once(idp, "listening");
+  try {
+    const port = (idp.address() as AddressInfo).port;
+    // The IdP also holds the broker port so a failed refusal cannot launch anything.
+    const server = `${scheme}://${tls ? "localhost" : "127.0.0.1"}:${port}`;
+    const hostingManifest = join(root, "hosting.yaml");
+    const space = scheme === "tls" ? "upusagetls" : "upusage";
+    writeFileSync(hostingManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  auth: user\n  idp: http://127.0.0.1:${port}/auth\n  servers: "${server}"\nchannels: {}\nagents: {}\n`);
+    const args = ["up", "-f", hostingManifest, "--user-auth", "--no-manager", ...(tls ? ["--tls-cert", tls.cert, "--tls-key", tls.key] : [])];
+    const manifest = (...flags: string[]) => new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
+      execFile(process.execPath, [BIN, ...args, ...flags], { cwd: root, env, timeout: 30_000 }, (error, stdout, stderr) =>
+        resolve({ status: error ? error.code : 0, stdout, stderr }));
+    });
+    const preview = await manifest("--dry-run");
+    check(`the ${scheme} user-auth manifest can be previewed without service hosting`,
+      preview.status === 0 && preview.stdout.includes("Dry run") && preview.stdout.includes(server) && idpRequests > 0, preview);
+    const before = readdirSync(join(root, ".cotal"), { recursive: true }).sort();
+    const requestsBefore = idpRequests;
+    const unchanged = () => idpRequests === requestsBefore
+      && JSON.stringify(readdirSync(join(root, ".cotal"), { recursive: true }).sort()) === JSON.stringify(before);
+    const keepsTls = (remedy: string | undefined) => serviceHostingRemedy(remedy) && hostingTlsAdvice(remedy)
+      && remedy?.includes("does not inherit broker settings from the manifest or the project's recorded policy") === true;
+    const message = "--service-endpoints cannot be combined with --file/-f";
+    const refused = await manifest("--dry-run", "--service-endpoints");
+    check(`${scheme} manifest preview refuses hosting before preflight or writes and says how to keep TLS`,
+      refused.status === 1 && refused.stdout === "" && refused.stderr.includes(message) && keepsTls(refused.stderr) && unchanged(), refused);
+    const apply = run([...args, "--service-endpoints", "--json"], root);
+    check(`${scheme} manifest apply refuses hosting before preflight or writes and says how to keep TLS`,
+      apply.status === 1 && apply.envelope?.outcome === "refused" && apply.envelope.error?.code === "USAGE_INVALID"
+        && apply.envelope.error.message?.includes(message) === true && keepsTls(apply.envelope.error.remedy) && unchanged(), shown(apply));
+  } finally { await new Promise<void>((resolve) => idp.close(() => resolve())); }
+}
+await checkManifestHosting(prepared);
 const named = run(["up", "--server", "nats://localhost:43131", "--json"], prepared);
 check("in a prepared folder a host name is the same USAGE_INVALID refusal, exit 1, naming 127.0.0.1", named.status === 1 && named.envelope?.error?.code === "USAGE_INVALID" && /names the host localhost/.test(named.envelope.error.message ?? "") && named.stdout.includes("--server nats://127.0.0.1:43131"), shown(named));
 check("it wrote no stack journal", !existsSync(join(prepared, ".cotal", "stack-controller.json")), readdirSync(join(prepared, ".cotal")));
@@ -602,6 +674,10 @@ try {
       const r = run(["up", ...args], cwd);
       check(`up refuses ${label} with its fix and no help, exit 1`, r.status === 1 && r.stdout === "" && r.stderr.includes(message) && r.stderr.includes(remedy) && !/Usage|Options/.test(r.stderr), shown(r));
     }
+    const dns = { cert: join(root, "dns.pem"), key: join(root, "dns.key") };
+    const dnsCert = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", dns.key, "-out", dns.cert, "-days", "2", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], { encoding: "utf8" });
+    check("openssl mints a DNS-only certificate for the TLS manifest", dnsCert.status === 0 && existsSync(dns.cert), dnsCert.stderr?.slice(0, 400));
+    await checkManifestHosting(root, dns);
     check("the refusals leave the recorded policy as it was and start no broker", readFileSync(policyFile, "utf8") === policy && !started(root) && !started(plainRoot), readdirSync(join(root, ".cotal")));
   }
 
@@ -779,6 +855,13 @@ try {
     members: (["broker", "auth", "delivery", "manager"] as const).map((role) => role === "auth" ? { role, definition: `stack-${role}`, instanceId: null, state: "not-attempted" as const } : { role, definition: `stack-${role}`, instanceId: randomUUID(), state: "stopped" as const }),
     operation: { id: randomUUID(), kind: "down", phase: "completed", recordedAt: now, withAgents: false }, updatedAt: now,
   });
+  const stackBefore = readStackJournal(journalRoot)?.sha256;
+  const recordedHosting = run(["up", ...serviceHostingFlags, "--space", "upusagejournal", "--server", `nats://127.0.0.1:${held}`], journalRoot);
+  check("an existing controller stack refuses --service-endpoints without rewriting its journal",
+    recordedHosting.status === 2 && recordedHosting.envelope?.outcome === "refused" && recordedHosting.envelope.error?.code === "UNSUPPORTED"
+      && recordedHosting.envelope.error.message?.includes("this root's stack is owned by the service controller, which has no route for --service-endpoints") === true
+      && serviceHostingRemedy(recordedHosting.envelope.error.remedy)
+      && stackBefore !== undefined && readStackJournal(journalRoot)?.sha256 === stackBefore && !started(journalRoot), shown(recordedHosting));
   for (const mode of ["--open", "--user-auth"]) {
     for (const members of [[], ["--no-manager"]]) {
       const mismatch = run(["up", mode, ...members, "--json"], journalRoot);

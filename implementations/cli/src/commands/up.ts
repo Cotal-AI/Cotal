@@ -294,7 +294,7 @@ export const upFlags: FlagSpec[] = [
   { name: "exchange-public-url", type: "string", value: "<https://…>", description: "legacy user-auth startup only, with --exchange-public-port: advertise the reverse proxy's HTTPS URL" },
   { name: "exchange-trusted-proxy", type: "boolean", description: "legacy user-auth startup only, with --exchange-public-port: attribute peers by the last X-Forwarded-For hop (default: socket address)" },
   { name: "advertised-server", type: "string", value: "<url>", description: "legacy user-auth startup only, with --exchange-public-port: broker address to advertise (default: --server)" },
-  { name: "service-endpoints", type: "boolean", description: "with --user-auth: the auth service also hosts service endpoints (the registration door and the owner-decision host route)" },
+  { name: "service-endpoints", type: "boolean", description: "legacy user-auth startup only: host the service endpoint registration and owner-decision routes" },
   { name: "agent-provisioning-url", type: "string", value: "<https://…>", description: "legacy user-auth startup only, with --exchange-public-port: agent-provisioning endpoint to advertise" },
   { name: "rotate-sys", type: "boolean", description: "renew the expired/expiring $SYS creds by rotating the system account (agents, data and creds survive; needs a stopped mesh)" },
   { name: "recreate-membership-store", type: "boolean", description: "replace a stopped space's legacy File-backed derived membership feed with the current Memory-backed store" },
