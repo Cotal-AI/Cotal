@@ -79,7 +79,7 @@ export interface SeatRef {
 
 /** A managed seat as a manager's `ps` lists it. */
 export interface SeatRow extends SeatRef {
-  /** The name the agent shows, when `set-name` made it differ from {@link SeatRef.name}. */
+  /** The name the agent shows, when its label or `set-name` made it differ from {@link SeatRef.name}. */
   readonly display?: string;
   readonly agent: string;
   readonly model?: string;
@@ -238,6 +238,11 @@ export interface Mesh {
   /** A seat's presence status (`idle`, `working`, `waiting`), or undefined when it is not on the
    *  roster. */
   presence(seat: SeatRef): string | undefined;
+  /** The name this run of the seat shows in its presence: the label it took from its first message,
+   *  else its card name (SPEC 13.22). Undefined when the roster does not show the run. */
+  shownName(seat: SeatRef): string | undefined;
+  /** Call `onChange` each time the roster changes. Returns a function that stops following. */
+  followRoster(onChange: () => void): () => void;
   roster(): Promise<RosterEntry[]>;
   /** The space's channels, by name, without the agents' event channels. */
   channels(): Promise<ChannelRow[]>;

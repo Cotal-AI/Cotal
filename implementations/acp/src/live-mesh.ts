@@ -9,6 +9,7 @@ import {
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
   AGENT_ENDPOINT,
+  AGENT_LABEL_META_KEY,
   AGUI_FRAME_KIND,
   chatSubject,
   DEV_OWNER,
@@ -183,6 +184,13 @@ export function frameOf(msg: CotalMessage, plane: SeatFrame["plane"] = "events")
     events: (part.events as unknown[]).filter((e): e is AguiEventLike => typeof e === "object" && e !== null && typeof (e as { type?: unknown }).type === "string"),
     ts: msg.ts,
   };
+}
+
+/** The name a presence card shows: the label the agent took from its first message, else its name
+ *  (SPEC 13.22). */
+function shownOf(card: Presence["card"]): string {
+  const label = card.meta?.[AGENT_LABEL_META_KEY];
+  return typeof label === "string" && label.trim() ? label : card.name;
 }
 
 /** A workspace failure as one plain error, or {@link SignInRequired} when the client's sign-in fixes
@@ -510,8 +518,9 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
         rows.map((row): SeatRow => {
           const r = row as unknown as { name: string; id: string; lifecycleUid: string; agent: string; model?: string; cwd?: string; status: string; uptimeMs?: number };
           const principal = principalOf(r.id);
-          // `set-name` changes the name the agent shows, never the name its manager lists.
-          const shown = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card.name;
+          // A label and `set-name` change the name the agent shows, never the name its manager lists.
+          const card = observer.getRoster().find((s) => s.card.id === principalKey(principal.owner, principal.actor).key && s.lifecycleUid === r.lifecycleUid)?.card;
+          const shown = card && shownOf(card);
           return {
             name: r.name,
             ...(shown && shown !== r.name ? { display: shown } : {}),
@@ -556,7 +565,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
 }
 
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
-function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "roster" | "channels" | "close"> {
+function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "shownName" | "followRoster" | "roster" | "channels" | "close"> {
   const { observer, events, payloads, started } = c;
   return {
     followFrames(onFrame) {
@@ -597,6 +606,17 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
       const id = principalKey(seat.owner, seat.actor).key;
       const status = observer.getRoster().find((p) => p.card.id === id)?.status;
       return status === "offline" ? undefined : status;
+    },
+
+    shownName(seat: SeatRef) {
+      const id = principalKey(seat.owner, seat.actor).key;
+      const card = observer.getRoster().find((p) => p.card.id === id && p.lifecycleUid === seat.lifecycleUid && p.status !== "offline")?.card;
+      return card && shownOf(card);
+    },
+
+    followRoster(onChange) {
+      observer.on("roster", onChange);
+      return () => void observer.off("roster", onChange);
     },
 
     async roster() {

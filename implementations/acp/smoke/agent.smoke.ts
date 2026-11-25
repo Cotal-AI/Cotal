@@ -39,6 +39,10 @@
  *    already drives one, and names the choices when two seats match;
  *  - a linked thread is listed under its own id with the seat's shown name, and loads and deletes
  *    through its link;
+ *  - the thread is titled with the name its seat shows once the seat starts, after `/name`, on `/open`
+ *    and on a load, not marked as replay, and whenever its presence shows another name, as a label or
+ *    a rename made elsewhere; a refused rename, an unchanged name or a seat the roster stops showing
+ *    sends no title;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
  *    permission request, without options ACP cannot answer and only when its digest matches, and the
  *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
@@ -193,6 +197,18 @@ class FakeMesh implements Mesh {
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
   presence(seat: SeatRef) { return this.present.get(seat.actor); }
+  /** The name each seat's presence shows, by actor. */
+  shown = new Map<string, string>();
+  private rosterListeners: (() => void)[] = [];
+  /** Show `name` in a seat's presence, as a label it takes or a rename made elsewhere does. Undefined:
+   *  the roster no longer shows the seat. */
+  show(actor: string, name: string | undefined): void {
+    if (name === undefined) this.shown.delete(actor);
+    else this.shown.set(actor, name);
+    for (const l of this.rosterListeners) l();
+  }
+  shownName(seat: SeatRef) { return this.shown.get(seat.actor); }
+  followRoster(on: () => void) { this.rosterListeners.push(on); return () => (this.rosterListeners = this.rosterListeners.filter((l) => l !== on)); }
   async roster() { return [{ name: "alice", status: "idle", role: "reviewer" }]; }
   async channels() { return [{ channel: "general", messages: 3 }, { channel: "ops", messages: 1 }]; }
   async close() { this.closed = true; }
@@ -1095,6 +1111,8 @@ for (const others of [["m2"], ["m2", "m3"]]) {
     await within(c.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] }));
     return c.updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
   };
+  const titles = (updates: SessionNotification[], sessionId: string) =>
+    updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "session_info_update").map((u) => (u.update as { title?: string | null }).title);
   const named = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
   await tick();
   const announced = c.updates.find((u) => u.sessionId === named.sessionId && u.update.sessionUpdate === "available_commands_update")?.update as { availableCommands?: { name: string; input?: { hint?: string } }[] } | undefined;
@@ -1105,10 +1123,26 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: named.sessionId, prompt: [{ type: "text", text: "go" }] }));
   check("the first prompt after /name spawns the seat under that name", space.spawned[0]?.name === "scout", space.spawned);
   check("and stores the thread's link to the seat's run", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: named.sessionId, lifecycleUid: "life-scout" }), c.links.rows);
+  check("once the agent starts, the thread is titled with its name", titles(c.updates, named.sessionId).at(-1) === "scout", titles(c.updates, named.sessionId));
   check("/name on a running seat changes the name it shows", (await say(named.sessionId, "/name Scout Two")).includes("now shows as Scout Two") && space.renamed.at(-1)?.name === "Scout Two", space.renamed);
+  check("and retitles the thread with it", titles(c.updates, named.sessionId).at(-1) === "Scout Two", titles(c.updates, named.sessionId));
   space.renameRefusal = "renaming a running agent needs a space where people sign in";
   check("a refused rename says why in the thread", (await say(named.sessionId, "/name other")).includes("Could not rename scout: renaming a running agent needs a space where people sign in"));
+  check("and keeps the title", titles(c.updates, named.sessionId).length === 0, titles(c.updates, named.sessionId));
   space.renameRefusal = undefined;
+  c.updates.length = 0;
+  space.show("actor-scout", "Login fix");
+  await tick();
+  check("a label the agent takes from its first message retitles the thread", JSON.stringify(titles(c.updates, named.sessionId)) === '["Login fix"]', titles(c.updates, named.sessionId));
+  space.show("actor-scout", "Scout Three");
+  await tick();
+  check("so does a rename made elsewhere that its presence shows", titles(c.updates, named.sessionId).at(-1) === "Scout Three", titles(c.updates, named.sessionId));
+  c.updates.length = 0;
+  space.show("actor-scout", "Scout Three");
+  space.show("actor-scout", undefined);
+  await tick();
+  check("an unchanged name, or a seat the roster stops showing, sends no title", titles(c.updates, named.sessionId).length === 0, titles(c.updates, named.sessionId));
+  space.show("actor-scout", "Scout Three");
 
   const scout: SeatRow = { name: "scout", display: "Scout Two", owner: "local", actor: "actor-scout", lifecycleUid: "life-scout", managerInstanceId: "m1", agent: "claude", model: "haiku", cwd: dir, status: "running" };
   const helper: SeatRow = { name: "helper", display: "Helper Bee", owner: "local", actor: "actor-helper", lifecycleUid: "life-helper", managerInstanceId: "m1", agent: "pi", cwd: dir, status: "running" };
@@ -1126,6 +1160,7 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   const opened = await say(opener.sessionId, "/open helper bee");
   check("/open finds a seat by the name it shows and replays what the space retains", opened.includes("earlier work") && opened.includes("now drives Helper Bee"), opened);
   check("/open sets its line apart from the replayed messages", /earlier work[^]*\n\nThis session now drives/.test(opened), opened);
+  check("/open titles the thread with the name the agent shows", titles(c.updates, opener.sessionId).at(-1) === "Helper Bee", titles(c.updates, opener.sessionId));
   check("/open stores the thread's link", JSON.stringify(c.links.rows.at(-1)) === JSON.stringify({ space: "fake", thread: opener.sessionId, lifecycleUid: "life-helper" }), c.links.rows);
   space.onInput = (seat) => { space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: opener.sessionId, prompt: [{ type: "text", text: "next step" }] }));
@@ -1144,6 +1179,9 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   await again.init;
   const reloaded = await again.agent.request(methods.agent.session.load, { sessionId: named.sessionId, cwd: dir, mcpServers: [] }).catch((e: unknown) => e);
   check("a thread whose seat has another name loads through its link", (reloaded as { configOptions?: unknown }).configOptions !== undefined, reloaded);
+  await tick();
+  const loadedTitles = again.updates.filter((u) => u.sessionId === named.sessionId && u.update.sessionUpdate === "session_info_update");
+  check("a loaded thread is titled with the name its agent shows now, not as replay", titles(loadedTitles, named.sessionId).at(-1) === "Scout Three" && loadedTitles.every((u) => u._meta?.isReplay !== true), loadedTitles);
   again.updates.length = 0;
   space.emit(scout, [{ type: "TEXT_MESSAGE_START", messageId: "s2", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "s2", delta: "still here" }], "r9");
   await tick();
