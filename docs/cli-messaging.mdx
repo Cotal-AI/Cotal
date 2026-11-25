@@ -546,7 +546,9 @@ the duration. For example, `--window ' 24h '` saves `24h`.
 
 With `channel set` or `channel defaults`, use `--replay` to turn replay on and `--no-replay` to turn
 it off. If you write `--replay off`, the write refuses without saving and gives a retry that keeps
-your other settings, target and output format. `channel show` reads settings without replay flags.
+your other settings, target and output format, even when `--replay off` comes before the channel
+name. If the extra word does not follow the replay flag, the refusal does not pick a channel for
+you. `channel show` reads settings without replay flags.
 
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
 poll, not proof of current activity or access. A roster name that is only whitespace is shown as
