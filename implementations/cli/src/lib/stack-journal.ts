@@ -17,6 +17,7 @@ import { shellWord } from "./endpoint-errors.js";
 import { readStoreIdentity, type StoreIdentity } from "./store-identity.js";
 import { assertRecordIdentity, localProcessOwnerStatus, projectRootDisplaced, projectRootProblem, projectRootProblemText, readMaintenanceLockHolder } from "@cotal-ai/workspace";
 import { displayCmd, displayRemedy } from "./self-exec.js";
+import { controlFileProblem } from "./paths.js";
 
 export const STACK_ROLES = ["broker", "auth", "delivery", "manager"] as const;
 export type StackRole = (typeof STACK_ROLES)[number];
@@ -247,10 +248,17 @@ export function readStackJournal(root: string): StackJournalSnapshot | undefined
   return { journal: validate(input, canonical), sha256: createHash("sha256").update(bytes).digest("hex") };
 }
 
-/** The refusal for a malformed or unreadable journal. A missing journal does not block startup. */
+/** The refusal for an unusable journal or a file blocking its directory. A missing journal is not a blocker. */
 export function unusableStackJournal(root: string): CommandFailure | undefined {
   try { readStackJournal(root); return undefined; }
-  catch (error) { return isCommandFailure(error) && (error.code === "SCHEMA_INVALID" || error.code === "PERMISSION_DENIED") ? error : undefined; }
+  catch (error) {
+    if (!isCommandFailure(error)) return undefined;
+    if (error.code === "PERMISSION_DENIED") {
+      const block = controlFileProblem(canonicalRoot(root));
+      return block ? new CommandFailure("refused", "TARGET_UNAVAILABLE", block.message, { remedy: block.remedy }) : error;
+    }
+    return error.code === "SCHEMA_INVALID" ? error : undefined;
+  }
 }
 
 /** The stack journal at `root` that another folder recorded, as a copy or a moved folder keeps it, with
