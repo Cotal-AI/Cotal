@@ -1304,6 +1304,23 @@ try {
   }
 
   {
+    const target = ["--space", openSpace, "--server", openServers, "--json"];
+    const description = "Output contract test";
+    const typo = await run(["channel", "set", "results", "--description", description, ...target]);
+    const unsupported = await run(["channel", "set", "results", "--mystery-option", ...target]);
+    const retry = await run(["channel", "set", "results", "--desc", description, ...target]);
+    const readback = await run(["channel", "show", "results", ...target]);
+    const result = readback.envelope?.result as { registry?: ChannelRegistryRead } | undefined;
+    check("channel set with a name suggests --desc for --description, not another operand",
+      typo.status === 1 && typo.stderr === "" && typo.envelope?.outcome === "refused"
+        && typo.envelope.error?.code === "USAGE_INVALID" && typo.envelope.error.remedy === "use --desc"
+        && unsupported.status === 1 && unsupported.envelope?.error?.remedy === "drop the unknown option"
+        && retry.status === 0 && retry.envelope?.outcome === "ok" && readback.status === 0
+        && result?.registry?.channels?.results?.description === description,
+      { typo: shown(typo), unsupported: shown(unsupported), retry: shown(retry), readback: shown(readback) });
+  }
+
+  {
     const saved = await run(["channel", "set", "wire.window", "--window", " 24h ", "--space", openSpace, "--json"]);
     const readback = await run(["channel", "show", "wire.window", "--space", openSpace, "--json"]);
     const patch = (saved.envelope?.result as unknown as { patch?: { replayWindow?: string } })?.patch;

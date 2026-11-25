@@ -596,7 +596,8 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
       if (findCommand(commandSurface(), service?.value)?.name === "service" && verb?.value === "add")
         return { message: reason, remedy: displayRemedy("to see the preset options, use `cotal service add <name> --preset <preset> --help`") };
     }
-    const nearest = option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
+    const nearest = cmd.name === "channel" && flagNames?.includes("desc") && option === "--description" ? ["--desc"]
+      : option ? nearestWords(option, [...(flagNames ?? (cmd.flags ?? []).map((flag) => flag.name)).map((name) => `--${name}`), "--no-color", "--no-input", "--help"]) : [];
     const spellings = nearest.join(" or ");
     const flag = cmd.flags?.find((item) => `--${item.name}` === spellings);
     if (flag && !flag.multiple && typeof parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values[flag.name] === flag.type) {
@@ -671,6 +672,7 @@ function parseOrExit(cmd: Command, rest: string[], noMoreOperands = false): Pars
         || (cmd.name === "ext" && selected.name === "root")
         || (cmd.name === "history" && selected.name === "limit")
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
+        || (cmd.name === "channel" && selected.name === "set" && positionals.length >= 2)
         || (cmd.name === "service" && selected !== cmd && (selected.name === "list" || positionals.length >= 2))
         || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
