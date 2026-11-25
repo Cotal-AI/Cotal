@@ -21,7 +21,8 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 // Sandbox the machine-home BEFORE importing anything registry-touching (`clean all` mutates
 // ~/.cotal/meshes) - homeCotalDir() reads COTAL_HOME per call, so the real one is never touched.
@@ -81,7 +82,9 @@ function meshRoot(): string {
   return root;
 }
 
-function checkLinkedClean(sandbox: string, run: (cwd: string, args: string[]) => SpawnSyncReturns<string>): void {
+type RunClean = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => SpawnSyncReturns<string>;
+
+function checkLinkedClean(sandbox: string, run: RunClean): void {
   const root = join(sandbox, "original project");
   const dot = join(root, ".cotal");
   const linked = join(sandbox, "linked project");
@@ -105,6 +108,40 @@ function checkLinkedClean(sandbox: string, run: (cwd: string, args: string[]) =>
     readlinkSync(join(linked, ".cotal")) === dot && existsSync(join(store, "jetstream")));
 }
 
+function checkLinkedCleanDisplay(sandbox: string, cli: string, cliEnv: NodeJS.ProcessEnv, run: RunClean): void {
+  const root = join(sandbox, "original project");
+  const linked = join(sandbox, "linked project");
+  const stores = ["old\tstore", "old\\u0009store"].map((dir) => join(linked, dir, "jetstream"));
+  for (const store of stores) mkdirSync(store, { recursive: true });
+  for (const mode of ["--dry-run", "--force"]) {
+    const refused = run(linked, ["store", "--store-dir", "old\tstore", mode]);
+    check(`linked clean ${mode} gives manual instructions instead of a command with a changed store path`,
+      refused.status === 2 && refused.stdout === "" && refused.stderr.includes("Code:    CONFLICT")
+        && refused.stderr.includes("rerun your original clean command with the same options")
+        && !refused.stderr.includes("--store-dir '") && stores.every((store) => existsSync(store)), refused.stderr);
+  }
+  const unicode = join(sandbox, "original – project");
+  mkdirSync(join(unicode, ".cotal"), { recursive: true });
+  const linkedUnicode = join(sandbox, "linked unicode");
+  mkdirSync(linkedUnicode);
+  symlinkSync(join(unicode, ".cotal"), join(linkedUnicode, ".cotal"));
+  const plain = run(linkedUnicode, ["store", "--dry-run"], { LC_ALL: "C" });
+  check("plain linked clean output keeps the original project's punctuation in the retry",
+    plain.status === 2 && plain.stderr.includes(` from \`'${unicode}'\`, whose .cotal this links to`), plain.stderr);
+
+  const tools = join(linked, "tools");
+  mkdirSync(tools);
+  writeFileSync(join(tools, "cotal"), "#!/bin/sh\nexit 42\n", { mode: 0o700 });
+  const env = { ...cliEnv, PATH: ["./tools", cliEnv.PATH].filter(Boolean).join(delimiter) };
+  const preview = run(linked, ["store", "--dry-run"], env);
+  const command = /run `([^`]+)` from /.exec(preview.stderr)?.[1];
+  check("linked clean with a relative PATH prints an absolute launcher",
+    preview.status === 2 && command === `${shellWord(process.execPath)} ${shellWord(cli)} clean store --dry-run`, preview.stderr);
+  const retry = spawnSync("/bin/sh", ["-c", command!], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+  check("the absolute launcher runs the preview in the original project",
+    retry.status === 0 && retry.stdout.includes("nothing to clean"), retry);
+}
+
 function checkCleanStoreCli(): void {
   if (process.platform === "win32") return;
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-clean-cli-")));
@@ -113,9 +150,9 @@ function checkCleanStoreCli(): void {
   const ambient = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   const options = {
     cwd: root, encoding: "utf8" as const, timeout: 30_000,
-    env: { ...ambient, COTAL_HOME: home, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config") },
+    env: { ...ambient, HOME: home, USERPROFILE: home, COTAL_HOME: home, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: join(home, "runtime") },
   };
-  const runClean = (cwd: string, args: string[]) => spawnSync(process.execPath, [cli, "clean", ...args], { ...options, cwd });
+  const runClean: RunClean = (cwd, args, env) => spawnSync(process.execPath, [cli, "clean", ...args], { ...options, cwd, env: { ...options.env, ...env } });
   const run = (...args: string[]) => runClean(root, ["store", ...args]);
   try {
     mkdirSync(join(root, ".cotal"));
@@ -156,6 +193,7 @@ function checkCleanStoreCli(): void {
     }
 
     checkLinkedClean(root, runClean);
+    checkLinkedCleanDisplay(root, cli, options.env, runClean);
     const link = join(root, ".cotal", "nats");
     const parked = "parked store";
     mkdirSync(join(root, parked, "jetstream"), { recursive: true });

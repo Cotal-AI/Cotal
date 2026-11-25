@@ -863,6 +863,8 @@ folder above it. When the link leads to this folder's own records, moved away an
 Next names moving them back, as [up](cli-startup.mdx#up) does. When the link leads to another
 project's `.cotal`, the retry in that project keeps the cleanup target and options, including
 `--dry-run`. It shows a relative `--store-dir` as an absolute path so the retry targets the same store.
+If the terminal would change the spelling of the command or folder, the refusal gives retry
+instructions without printing a command to copy.
 
 In a copy, in a folder moved away from its recorded path, and in the folder a later `up` took its
 space's name over from, the store may hold that space's only history. There `store` and `all`, and

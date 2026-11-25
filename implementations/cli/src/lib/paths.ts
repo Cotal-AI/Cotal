@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { authDir, canonicalRoot, codeSpan, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, readMaintenanceJournal, recordsMovedTo, shellPath, soleSpaceOf } from "@cotal-ai/workspace";
+import { authDir, canonicalRoot, codeSpan, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, oneLine, plainPunctuation, readMaintenanceJournal, recordsMovedTo, shellPath, soleSpaceOf } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
@@ -120,7 +120,12 @@ export function linkedCotalRefusal(action: "up" | "down" | "reset store" | "rese
     remedy = `${moveRecordsBack(root, original)}; then run ${removes ? "it" : `\`cotal ${command}\``} again`;
   } else if (basename(target) === ".cotal" && !command.startsWith("reset")) {
     const retry = typeof action === "string" ? `cotal ${action}` : action.cleanRetry();
-    remedy = `run ${codeSpan(retry)} from ${original}, whose .cotal this links to, or ${here}`;
+    if (typeof action !== "string" && (oneLine(retry) !== retry || oneLine(original) !== original)) {
+      remedy = "the terminal would change the spelling of the retry. From the project the link leads to, rerun your original clean command with the same options. If you used --store-dir, give the absolute path to the same store";
+    } else {
+      const folder = typeof action !== "string" && plainPunctuation(original) !== original ? codeSpan(shellPath(original)) : original;
+      remedy = `run ${codeSpan(retry)} from ${folder}, whose .cotal this links to, or ${here}`;
+    }
   }
   return new CommandFailure("refused", "CONFLICT", `${path} is a link to ${target}, and ${why}; nothing was ${effect}`, {
     target: failureTarget,
