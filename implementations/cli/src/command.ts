@@ -663,6 +663,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
         || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
         || (cmd.name === "ext" && selected.name === "root")
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
+        || (cmd.name === "service" && selected !== cmd && (selected.name === "list" || positionals.length >= 2))
         || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
         || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
           || (first === "work" && selected.name === "lease" && positionals.length >= 4)));
