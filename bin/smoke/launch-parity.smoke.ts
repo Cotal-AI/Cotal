@@ -54,6 +54,7 @@ const toolParamToOpKey: Record<string, string> = { deadline: "once" };
 const flagToOpKey: Record<string, string> = {
   name: "identity",
   opt: "launchOptions",
+  mode: "modes",
   "share-tools": "shareTools",
   "allow-subscribe": "allowSubscribe",
   "allow-publish": "allowPublish",
