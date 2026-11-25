@@ -126,7 +126,7 @@ export class EndpointChannelDiscovery {
     const reply = channelConfigReplySubject(space, card.id, randomUUID());
     const result = (await this.deps.requestBoundReply(nc, subject, JSON.stringify(change), reply, 5000)).json<{ ok: boolean; data?: ChannelState; error?: string; code?: string }>();
     if (result.code === "CONFLICT") throw new ChannelRegistryConflict(result.error);
-    if (!result.ok || !result.data) throw new Error(result.error ?? "The channel write returned no confirmed state.");
+    if (!result.ok || !result.data) throw new Error(result.error ?? "The change wasn't confirmed, so it may or may not have been saved.");
     return result.data;
   }
 

@@ -67,7 +67,7 @@ export async function changeChannelConfig(kv: KV, channel: string, change: Chann
   validateChannelChange(change);
   if (writer !== "operator" && !parsePrincipalKey(writer)) throw new Error("invalid channel writer principal");
   const current = await readChannelState(kv, channel);
-  if (current.revision !== change.expectedRevision) throw new ChannelRegistryConflict("channel revision changed; read it before retrying");
+  if (current.revision !== change.expectedRevision) throw new ChannelRegistryConflict("Someone changed the channel since your last read.");
   if (change.remove && !current.config) return current;
   if (change.patch && current.config && Object.entries(change.patch).every(([key, value]) => current.config?.[key as keyof ChannelPatch] === value)) return current;
   const config: ChannelConfig = change.remove
@@ -77,7 +77,7 @@ export async function changeChannelConfig(kv: KV, channel: string, change: Chann
   let revision: number;
   try { revision = await kv.put(channel, JSON.stringify(config), { previousSeq: change.expectedRevision }); }
   catch (e) {
-    if (isCasLoss(e)) throw new ChannelRegistryConflict("channel revision changed; read it before retrying");
+    if (isCasLoss(e)) throw new ChannelRegistryConflict("Someone changed the channel since your last read.");
     throw e;
   }
   return { revision, writer, ...(change.remove ? {} : { config }) };

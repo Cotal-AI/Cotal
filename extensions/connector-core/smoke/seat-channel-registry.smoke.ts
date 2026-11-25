@@ -169,7 +169,7 @@ try {
     const call = (input: Record<string, unknown>) => Promise.resolve(tool("cotal_channel_info").run(agent, cfg, { channel, ...input }));
     const prior = await info(channel);
     const rev = Number(/revision: (\d+)/.exec(prior)?.[1]);
-    check("the tool reads the operator's note and its revision", prior.includes("advisory note by operator") && rev > 0, prior);
+    check("the tool reads the operator's note and its revision", prior.includes("  • note by operator, purpose:") && rev > 0, prior);
     const patch = { description: "seat note\nnext line", instructions: "advisory\ncontinuation", replay: false, replayWindow: "2h", deliveryClass: "live" };
     const saved = await call({ set: patch, expectedRevision: rev });
     check("the tool sets all configuration fields and reports the writer", !saved.isError && saved.text.includes(`local.${id.id}`), saved);
@@ -177,8 +177,10 @@ try {
     assert.deepEqual(current.config, { ...patch, writer: `local.${id.id}` });
     check("the broker confirms the saved fields and revision", current.revision > rev, current);
     const rendered = await info(channel);
-    check("the tool contains agent text and attributes it", rendered.includes(`advisory note by local.${id.id}, purpose: seat note next line`) && rendered.includes("\n    continuation"), rendered);
-    check("the tool refuses a stale revision", (await call({ set: { description: "stale" }, expectedRevision: rev })).isError === true);
+    check("the tool contains agent text and attributes it", rendered.includes(`  • note by local.${id.id}, purpose: seat note next line`) && rendered.includes("\n    continuation"), rendered);
+    const stale = await call({ set: { description: "stale" }, expectedRevision: rev });
+    check("the tool refuses a stale revision and tells the caller to read again", stale.isError === true &&
+      stale.text === "Channel operation failed: Someone changed the channel since your last read. Read the channel again before you retry.", stale);
     const outside = await call({ channel: "outside", set: patch, expectedRevision: 0 });
     check("the tool refuses a channel outside the publish grant", outside.isError === true &&
       outside.text.includes("You need channel-config and a publish grant for this channel. Tell the user if it needs changing."), outside);

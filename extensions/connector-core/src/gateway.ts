@@ -197,7 +197,7 @@ const SELECTION_SHAPE = {
   capabilities: z
     .array(z.enum(["spawn", "run", "channel-config"]))
     .optional()
-    .describe("spawn: start and stop agents through a manager. run: start and manage workflow runs. channel-config: configure channels within publish grants."),
+    .describe("spawn: start and stop agents through a manager. run: start and manage workflow runs. channel-config: set and remove the settings of channels you may post to."),
 };
 
 /** The canonical selection a `cotal_connect` call names, or undefined when it names none. */

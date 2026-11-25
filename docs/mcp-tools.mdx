@@ -195,12 +195,12 @@ Read a channel's purpose, notes and revision before you first post there. If you
 * **Available:** reads always; writes need `channel-config` and the channel's publish grant on authenticated meshes.
 * `set` accepts description, instructions, replay, replayWindow and deliveryClass. Choose set or remove, not both. A read returns the revision needed for either write. An unregistered name is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.
 
-| Argument           | Type    | Required | Meaning                                                                                                     |
-| ------------------ | ------- | -------- | ----------------------------------------------------------------------------------------------------------- |
-| `channel`          | string  | yes      | The channel to look up (e.g. review).                                                                       |
-| `set`              | object  | no       | Configuration fields to replace, preserving unspecified fields. Needs channel-config.                       |
-| `remove`           | literal | no       | Remove the saved configuration, keeping history and access unchanged. Needs channel-config.                 |
-| `expectedRevision` | number  | no       | Revision returned by a prior read. Required with set or remove, including 0 for a never-configured channel. |
+| Argument           | Type    | Required | Meaning                                                                                               |
+| ------------------ | ------- | -------- | ----------------------------------------------------------------------------------------------------- |
+| `channel`          | string  | yes      | The channel to look up (e.g. review).                                                                 |
+| `set`              | object  | no       | The fields to change. Fields you don't name stay as they are. Needs channel-config.                   |
+| `remove`           | literal | no       | Delete the saved settings. Messages, and who can read or post, don't change. Needs channel-config.    |
+| `expectedRevision` | number  | no       | The revision from your last read. Needed with set or remove. It is 0 for a channel nobody has set up. |
 
 ## `cotal_channels`
 
