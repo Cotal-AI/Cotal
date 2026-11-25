@@ -969,13 +969,14 @@ try {
   const account = (idpUrl: string, ownerKey: string) => ({ idpUrl, issuer: new URL(idpUrl).origin, sub: ownerKey, ownerKey, catalogUrl: `${new URL(idpUrl).origin}/spaces` });
   const liveResult = { account: account(liveIdp, "live-owner"), state: "not-modified" as const, fetchedAt: new Date().toISOString(), snapshot: { v: 1, account: { idpUrl: liveIdp, issuer: "https://live.example", sub: "live-owner" }, spaces: [] } };
   const deadResult = { account: account(deadIdp, "dead-owner"), state: "failed" as const, error: `idp request to ${deadIdp}/spaces failed: fetch failed` };
+  let unscopedResults = [liveResult, deadResult];
   registry.register({
     kind: "auth-provider",
     name: "catalog-smoke",
     async prepareSpaceCatalogs(opts: { idpUrl?: string }) {
       catalogCalls.push(opts.idpUrl);
       if (opts.idpUrl === "https://none.example/api/auth") return [];
-      return opts.idpUrl === liveIdp ? [liveResult] : opts.idpUrl === deadIdp ? [deadResult] : [liveResult, deadResult];
+      return opts.idpUrl === liveIdp ? [liveResult] : opts.idpUrl === deadIdp ? [deadResult] : unscopedResults;
     },
     // Status reads the selected discovered space's login state: no session here.
     async userStatus() {
@@ -1081,6 +1082,10 @@ try {
     one.env?.outcome === "ok" && (one.exitCode ?? 0) === 0 && one.env.target?.idp === liveIdp && one.env.result.accounts.length === 1, one);
   const allFailed = await synced({ idp: deadIdp });
   check("sync with no account refreshed is refused DEPENDENCY_UNAVAILABLE", allFailed.thrown?.code === "DEPENDENCY_UNAVAILABLE" && allFailed.env === undefined, allFailed);
+  check("the scoped sync retry names only the selected provider", isCommandFailure(allFailed.thrown) && allFailed.thrown.remedy?.includes(`\`cotal sync --idp ${deadIdp}\``) === true, allFailed);
+  unscopedResults = [deadResult];
+  const unscoped = await synced({});
+  check("an unscoped sync still suggests retrying all accounts", isCommandFailure(unscoped.thrown) && unscoped.thrown.remedy?.includes("`cotal sync`") === true, unscoped);
   const none = await synced({ idp: "https://none.example/api/auth" });
   check("sync with no signed-in account reports none: ok, an empty list", none.env?.outcome === "ok" && none.env.result.accounts.length === 0, none);
   const human = await capture(() => sync({ positionals: [], values: { idp: liveIdp }, raw: [] }));
