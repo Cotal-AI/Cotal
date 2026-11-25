@@ -915,6 +915,8 @@ options. For a preview, omit `--force` and keep `--dry-run`.
 caller credential, connects nowhere and does not check authorization or retained message counts.
 For an open broker, pass both `--space` and `--server` to preview a target without a local registration.
 A local controller stack stopped by a completed `down` previews using its saved broker address.
+From a project started directly with `up` and then stopped, the preview also uses the saved broker
+address when the project records the requested space. The broker can stay offline.
 Without an explicit broker, a space that is prepared but not started is refused with
 `TARGET_UNAVAILABLE` (exit 2), and the refusal says how to start it.
 The purge uses the existing purger instrument or one-action user purger view, not a broader caller.

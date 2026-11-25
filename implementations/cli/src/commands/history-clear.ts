@@ -1,7 +1,7 @@
 import * as prompts from "../lib/prompts.js";
 import { chatStream, dmStream, dialerFor, isPublishPermissionDenied, isStreamNotFound, standaloneConnectOpts } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
+import { ConfirmationRequired, CommandFailure, recordOperationSpace, brokerAddressForDisplay, codeSpan, connectOrThrow, cotalDirLink, credentialRefusalMessage, findCotalRoot, findMesh, hasUserAuthState, isConnectRefusal, isWorkspaceTargetError, oneLine, presentationOf, resolveMeshTarget, userViewAuth, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
@@ -33,13 +33,17 @@ export async function historyClear(values: Values): Promise<void> {
         ? { space, server }
         : resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
     } catch (error) {
-      // A completed down removes the live registration but keeps the broker address in its journal.
       if (!isWorkspaceTargetError(error) || error.code !== "not-started") throw error;
-      const { root, space, stopped } = error.details;
-      if (!root || !space || !stopped) throw error;
-      const journal = readStackJournal(root)?.journal;
-      if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") throw error;
-      selected = { space, server: values.server ?? journal.server };
+      const { root, space, stopped, lastRun, stackSpace, server, recordedRoot } = error.details;
+      if (!root) throw error;
+      if (lastRun && stackSpace && server && recordedRoot === undefined && cotalDirLink(root) === undefined) {
+        selected = { space: stackSpace, server: values.server ?? server };
+      } else {
+        if (!space || !stopped) throw error;
+        const journal = readStackJournal(root)?.journal;
+        if (journal?.space !== space || journal.operation.kind !== "down" || journal.operation.phase !== "completed") throw error;
+        selected = { space, server: values.server ?? journal.server };
+      }
     }
     const streams = [chatStream(selected.space), ...(values.dms ? [dmStream(selected.space)] : [])];
     writeResult(presentation, { command: "history", target: { space: selected.space, broker: brokerLabel(selected.server) }, result: { kind: "history-clear-preview", dryRun: true, streams, includeDms: values.dms === true, authorization: "not-checked", retainedCounts: "not-checked", purged: false } }, (result): Report => ({ sections: [{ title: "History clear preview", blocks: [{ kind: "fields", rows: [["Space", selected.space], ["Broker", brokerLabel(selected.server)], ["Scope", "all retained channel history"], ["DM history", result.includeDms ? "included" : "not included"], ["Streams", result.streams.join(", ")], ["Authorization and counts", "not checked"]] }, { kind: "lines", lines: ["Offline target preview only. No connection, purge, agent stop, identity reset or caller issuance was attempted."] }] }] }));
