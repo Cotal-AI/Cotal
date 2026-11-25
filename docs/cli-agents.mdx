@@ -263,9 +263,11 @@ When the connector does not support variants, a direct preview or launch that re
 names what to remove: the `--variant` option, the `variant:` field in the persona file, or both.
 A launch with a variant or a mode is refused with `USAGE_INVALID` before provisioning unless the
 connector's model catalog lists it for the model, or for the catalog's default model when no
-`--model` is given. The refusal names the values the catalog lists. A spawn in this terminal reads
-the catalog from the application for that check, and only after the connector's own launch check
-accepts the variant, so a level the connector rejects gets the preview's refusal and starts nothing.
+`--model` is given. The refusal names the values the catalog lists. A mode the catalog marks
+unavailable for your account is refused with any value, and the refusal gives the reason. A spawn in
+this terminal reads the catalog from the application for that check, and only after the connector's
+own launch check accepts the variant, so a level the connector rejects gets the preview's refusal and
+starts nothing.
 A managed launch is checked by its manager, against the catalog it read last.
 A managed preview warns about an unknown local harness and reports `not-checked`, since the
 selected manager checks its own connectors at launch. On an open or static space, a managed
@@ -497,6 +499,7 @@ cotal models [--json | --plain] [-H | --harness <connector>] [--refresh] [--on <
 Asks the selected manager for each application's model catalog for connectors that expose one: model
 ids, their variants and modes, each model's default variant, and the model the application runs by
 default, marked `(default)`. A mode reads as `--mode` takes it, such as `fast=true|false (default false)`.
+A mode the account cannot use reads as `fast (unavailable: <reason>)`, with the reason the application gave.
 The manager keeps what it reads and checks later launches against it. Authenticated meshes must be registered. Run `cotal models` from
 the mesh's project folder or name the registered space with `--space`. `models` does not accept
 raw credential files (`--creds`).

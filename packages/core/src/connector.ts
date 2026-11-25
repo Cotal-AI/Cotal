@@ -266,10 +266,11 @@ export interface ModeOption {
 
 /** A launch setting a model offers besides its variant, such as a fast tier or an agent. A toggle is
  *  on or off; a choice picks one option. `default` is what the harness runs when a launch does not
- *  name the mode. */
+ *  name the mode. `unavailable` is set when the logged-in account cannot run the mode, and says why
+ *  for a person to read; a manager refuses a launch that names the mode. */
 export type ModeInfo =
-  | { id: string; label: string; kind: "toggle"; default: boolean }
-  | { id: string; label: string; kind: "choice"; options: ModeOption[]; default: string };
+  | { id: string; label: string; kind: "toggle"; default: boolean; unavailable?: string }
+  | { id: string; label: string; kind: "choice"; options: ModeOption[]; default: string; unavailable?: string };
 
 /** A launch's mode choices, by {@link ModeInfo.id}: a boolean for a toggle, an option id for a choice. */
 export type LaunchModes = Record<string, boolean | string>;
@@ -287,7 +288,8 @@ export interface ModelInfo {
   variants?: ModelVariantInfo[];
   /** The variant the harness runs when a launch names none. It is the name of one of {@link variants}. */
   defaultVariant?: string;
-  /** The modes this model can run for the account the harness is logged in as. */
+  /** The modes this model offers, each marked `unavailable` when the account the harness is logged in
+   *  as cannot run it. */
   modes?: ModeInfo[];
 }
 
