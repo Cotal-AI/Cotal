@@ -70,12 +70,15 @@ import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdir
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
 import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
-import { daemonPaths } from "../daemon/endpoint.js";
+import { openVerified } from "../daemon/client.js";
+import { DAEMON_PROTOCOL_VERSION, daemonPaths } from "../daemon/endpoint.js";
+import { encode, type DaemonResponse } from "../daemon/protocol.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
 // Read the scratch-parent override before the COTAL_* environment is cleared below.
@@ -195,6 +198,35 @@ async function stop(s: Serve | undefined, signal: NodeJS.Signals = "SIGTERM"): P
   if (!graceful) await kill(s.child);
 }
 const fileState = (p: string) => { const st = lstatSync(p); return { ino: st.ino, mtimeMs: st.mtimeMs }; };
+
+async function overlappingCatalogRefreshes(releaseCatalog: () => void): Promise<DaemonResponse[]> {
+  const socket = await openVerified({ paths: legacy });
+  const lines = createInterface({ input: socket });
+  const timeout = setTimeout(() => socket.destroy(new Error("overlapping daemon refreshes did not answer")), 15_000);
+  try {
+    const v = DAEMON_PROTOCOL_VERSION;
+    socket.write(encode({ v, id: "refresh-a", op: "spaces", refresh: true })
+      + encode({ v, id: "refresh-b", op: "spaces", refresh: true })
+      + encode({ v, id: "fence", op: "status" }));
+    const replies: DaemonResponse[] = [];
+    for await (const line of lines) {
+      const reply = JSON.parse(line) as DaemonResponse;
+      if (reply.id === "fence") {
+        if (!reply.ok || replies.length !== 0) throw new Error("status did not answer ahead of the two catalog refreshes");
+        releaseCatalog();
+      } else {
+        replies.push(reply);
+        if (replies.length === 2) return replies.sort((a, b) => a.id!.localeCompare(b.id!));
+      }
+    }
+    throw new Error("daemon closed before sending both refresh replies");
+  } finally {
+    clearTimeout(timeout);
+    releaseCatalog();
+    lines.close();
+    socket.destroy();
+  }
+}
 
 // ---------- a loopback fixture for the space's service authority (connect-check reads one GET) ----------
 const ACCOUNT = `A${"B".repeat(55)}`;
@@ -549,6 +581,7 @@ try {
   await cell("H6 managed catalog refresh never applies to the shared registry", async () => {
     let origin = "", idp = "", catalogHits = 0, unavailable = false;
     let slugs = ["catalog-new"], sub = "catalog-account", denied = false;
+    let catalogGate: Promise<void> | undefined;
     const session = "owned-catalog-session";
     const catalog = createHttpServer(async (req, res) => {
       for await (const _ of req) { /* drain */ }
@@ -563,6 +596,7 @@ try {
       }
       if (req.url !== "/catalog") return void send(404, {});
       catalogHits++;
+      if (catalogGate) await catalogGate;
       if (unavailable) return void send(503, {});
       send(200, {
         v: 1, account: { idpUrl: idp, issuer: origin, sub },
@@ -695,6 +729,14 @@ try {
       const conflict = await cli(["spaces", "--refresh", "--json"]);
       const details = [{ space: local.space, origin: "up", idp }, { space: manual.space, origin: "manual", idp }];
       check("H6 a partial refresh names the registrations it kept with their origins", conflict.status === 4 && conflict.doc.result?.refresh === "partial" && conflict.doc.result?.collisions === 2 && JSON.stringify(conflict.doc.result?.collisionDetails) === JSON.stringify(details), conflict.doc);
+      let releaseCatalog!: () => void;
+      catalogGate = new Promise<void>(resolve => { releaseCatalog = resolve; });
+      const replies = await overlappingCatalogRefreshes(releaseCatalog);
+      const summaries = replies.map(reply => reply.ok && !("event" in reply) && "collisionDetails" in reply.result
+        ? { id: reply.id, refresh: reply.result.refresh, collisions: reply.result.collisions, details: reply.result.collisionDetails }
+        : { id: reply.id, ok: reply.ok });
+      const expected = ["refresh-a", "refresh-b"].map(id => ({ id, refresh: "partial", collisions: 2, details }));
+      check("H6 overlapping refreshes both report the complete collision details", JSON.stringify(summaries) === JSON.stringify(expected), summaries);
       check("H6 a collision leaves both registrations unchanged", retained.every(({ file, before }) => readFileSync(file).equals(before)));
     } finally {
       await new Promise<void>((r) => catalog.close(() => r()));

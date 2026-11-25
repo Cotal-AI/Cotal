@@ -851,6 +851,8 @@ are reported rather than replaced.
 For each catalog row skipped because its name is taken, `collisionDetails` reports the space name,
 the retained registration's `origin` (`manual`, `up`, or `catalog`), and the `idp` URL of the
 catalog that could not register it. `collisions` remains the count of skipped rows.
+Overlapping refresh requests wait for the catalog lock and each report their own result. The
+daemon can still answer status requests while a catalog refresh is pending.
 Names outside the daemon's 1-64 letters, digits, underscores or hyphens count as unreadable
 registrations and are not offered in its CLI list or the desktop space selector. Their records
 remain unchanged. Listing them reports a partial outcome (exit 4).

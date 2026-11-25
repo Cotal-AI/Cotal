@@ -541,7 +541,17 @@ console.log("C2) advertised space catalog cache");
     prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply }),
     prepareIdpSpaceCatalogs({ dir: catalogDir, idpUrl: catalogIdp, validate, apply }),
   ]);
-  check("two concurrent preparations coalesce behind the account lock", catalogRequests === beforeConcurrent + 1, catalogRequests);
+  check("concurrent unforced preparations use the snapshot made fresh under the account lock", catalogRequests === beforeConcurrent + 1, catalogRequests);
+  const forcedStart = catalogRequests;
+  const appliedByCaller: string[] = [];
+  const forced = { dir: catalogDir, idpUrl: catalogIdp, force: true, validate };
+  const forcedReplies = await Promise.all([
+    prepareIdpSpaceCatalogs({ ...forced, apply: result => { if (result.state === "not-modified") appliedByCaller.push("first"); } }),
+    prepareIdpSpaceCatalogs({ ...forced, apply: result => { if (result.state === "not-modified") appliedByCaller.push("second"); } }),
+  ]);
+  check("both forced callers fetch conditionally and run their own application", catalogRequests === forcedStart + 2
+    && forcedReplies.every(reply => reply[0]?.state === "not-modified")
+    && [...appliedByCaller].sort().join(",") === "first,second", { catalogRequests, appliedByCaller });
   // An application that never finished. The provider commits a fetched candidate as `applied: false`
   // before the consumer's first registry write and marks it applied after the last, so a process
   // that dies or is paused mid-way leaves exactly this cache. The next preparation must apply that
