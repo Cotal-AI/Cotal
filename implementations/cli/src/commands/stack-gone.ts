@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, findMesh, getCurrent, identityRecord, isCommandFailure, loadMeshes, localMeshesForRoot, loopbackListeners, oneLine, presentationOf, processesNaming,
-  readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
+  preparedRootRemedy, projectRootProblem, projectRootProblemText, readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -31,6 +31,15 @@ const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 interface Member { role: StackRole; definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; pid: number | null; live: boolean }
 interface Stopped { role: StackRole; definition: string; instanceId: string; pid: number | null; result: "stopped" | "already-stopped"; signal?: "SIGTERM"; observedAt?: string }
+
+/** A project that denies traversal cannot be treated as gone or used as a retry location. */
+export function refuseInaccessibleDownRoot(root: string, space: string): void {
+  const problem = projectRootProblem(root);
+  if (problem !== "inaccessible") return;
+  throw new CommandFailure("refused", "PERMISSION_DENIED", `the project folder at ${oneLine(root)} ${projectRootProblemText(problem)}; nothing was stopped or changed`, {
+    target: { root, space }, remedy: preparedRootRemedy(space, problem),
+  });
+}
 
 /** The space and gone folder a whole-stack `down` names: `--space`, or else the space registered for
  *  this folder, or else, when this folder holds no `.cotal` of its own, the selected space. Undefined
@@ -236,6 +245,7 @@ function releaseDefinitions(space: string, root: string): string[] {
 export async function goneRootStackDown(space: string, root: string, values: ParsedArgs["values"]): Promise<void> {
   validateGoneRootDownArguments(values);
   recordOperationSpace(space);
+  refuseInaccessibleDownRoot(root, space);
   const presentation = presentationOf(values), target = { space, root };
   if (!stackDefinitionsAt(space, root).length) {
     const native = findMesh(space);
