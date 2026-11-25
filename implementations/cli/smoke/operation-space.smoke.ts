@@ -257,14 +257,24 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
-  [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
-  [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
+  [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance> --json"],
+  [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance> --json"],
   [["spawn", "--no-input", "-d", "--on=", "--name", "explicit", "--", "-persona"], "cotal spawn --no-input -d --name explicit --json --on <instance> -- -persona"],
 ] as const) {
   const refused = cotal("--json", ...argv);
   check(`${argv.join(" ")} names ${rerun}`,
     refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
 }
+for (const words of [["describe", "manager"], ["invoke", "ep:manager", "ps"]]) {
+  const server = "nats://127.0.0.1:39200";
+  const denied = cotal("endpoint", ...words, "--on", "bad", "--space", "elsewhere", "--server", server, "--json");
+  const message = denied.envelope?.error?.message ?? "";
+  check(`endpoint ${words[0]} names the requested Manager roster for a malformed pin`, denied.status === 1 &&
+    denied.envelope?.error?.code === "USAGE_INVALID" && message.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !message.includes("`cotal ps`"), shown(denied));
+}
+const otherEndpoint = cotal("endpoint", "invoke", "ref:reviews", "read", "--args", '{"note":"fixture body"}', "--on", "bad", "--json");
+check("a saved endpoint pin keeps the original request and never suggests a Manager roster", otherEndpoint.status === 1 &&
+  otherEndpoint.envelope?.error?.message?.includes("Replace only the --on value") === true && !otherEndpoint.stdout.includes("cotal ps") && !otherEndpoint.stdout.includes("fixture body"), shown(otherEndpoint));
 const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
 check("a malformed named status pin keeps plain output on the retry",
   plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));

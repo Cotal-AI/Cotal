@@ -395,7 +395,11 @@ digests - and prints each command with its capability class and targeting shape.
 pins `describe` to one manager instance's rail (the whole id, as `ps` prints it under its
 `manager <id>` headers), so an operator can read what that instance serves in a multi-manager space;
 unpinned, the class queue answers and the attribution line names whichever instance did. `invoke`
-calls one command by name. When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
+calls one command by name. If either command refuses an invalid pin, use the full instance ID of
+the selected endpoint. For the native `manager` endpoint without a credential file, the lookup
+keeps the selected space and broker. A Manager roster cannot identify a different endpoint.
+
+When the broker refuses an unpinned call on the class queue, nothing ran, and the call is sent
 once more to the instance that answered its describe; a caller whose grants name only that instance, such as a service
 caller grant, therefore needs no `--on`. It fetches only that command's cluster and schema closures,
 plus those of `inspect` when `--name` names a manager target. `--args` is a JSON object validated against the fetched input schema
