@@ -1,5 +1,12 @@
 # @cotal-ai/connector-core
 
+## 0.178.0
+
+### Patch Changes
+
+- 808a589: The shutdown reference now explains that `cotal down --space` accepts the matching space for a controller stack in its project folder, while a legacy pidfile sweep still requires omitting the flag.
+- 2381465: The scripted local setup example now creates the required project folder before running setup.
+
 ## 0.177.0
 
 ### Minor Changes

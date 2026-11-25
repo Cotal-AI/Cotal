@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.178.0
+
+### Patch Changes
+
+- aca749c: Backup fallback cleanup drops `--discard-history` for a newer store only when restore verifies that it holds no additional backed-up state.
+- a68895e: When an extension needs an export missing from a peer with the same version, identify the import and linked peer without assuming that reinstalling the CLI will fix it.
+- ee23092: When a symbolic link blocks `auth mint --out`, the suggested physical path stays together as one shell argument, even if it contains spaces.
+- 9370503: Starting a manager with a malformed roster leaves its saved definition unchanged, and the dry run shows why the start would fail.
+- @cotal-ai/core@0.178.0
+
 ## 0.177.0
 
 ### Patch Changes
