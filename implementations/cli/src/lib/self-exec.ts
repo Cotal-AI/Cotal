@@ -198,27 +198,35 @@ function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
 
 /** The copy-paste command prefix for user-facing hints: prefer PATH, npx, or pnpm dlx, then the
  *  installed entry under this Node runtime. A dev clone uses pnpm unless the command must run
- *  from another folder. Cross-folder hints use the installed entry when PATH depends on the
- *  working folder. Re-execs use {@link selfArgv}. */
+ *  from another folder. Re-execs use {@link selfArgv}. */
 export function displayCmd({ fromAnyFolder = false } = {}): string {
-  // A relative entry can shadow even an absolute bin later in PATH after changing folders.
-  if (!fromAnyFolder || (process.env.PATH ?? "").split(delimiter).every(isAbsolute)) {
-    if (cotalOnPath()) return "cotal";
-    if (isNpx()) return "npx cotal-ai";
-    if (isPnpmDlx()) return "pnpm dlx cotal-ai";
-  }
-  if (runsCliEntry() && (fromAnyFolder || seedWriterKind() === "released")) {
-    if (seedWriterKind() !== "released") return selfArgv().map(shellWord).join(" ");
-    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
-    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
-      const prefix = process.env.npm_config_prefix;
-      if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
-      // Match install.sh's pinned runtime and install destination without copying the whole PATH.
-      return `PATH=${shellWord(join(prefix, "nodebin"))}:"$PATH" npm_config_prefix=${shellWord(prefix)} COTAL_LAUNCHER=1 ${command}`;
-    }
-    return command;
+  if (cotalOnPath()) return "cotal";
+  if (isNpx()) return "npx cotal-ai";
+  if (isPnpmDlx()) return "pnpm dlx cotal-ai";
+  if (runsCliEntry()) {
+    const kind = seedWriterKind();
+    if (kind === "released") return displayReleasedEntry(entryScript());
+    if (fromAnyFolder) return selfArgv().map(shellWord).join(" ");
   }
   return "pnpm cotal";
+}
+
+/** This running CLI as a shell command, without selecting another executable on PATH. */
+export function displayCliEntry(): string | undefined {
+  if (!runsCliEntry()) return undefined;
+  const entry = entryScript();
+  return seedWriterKind() === "released" ? displayReleasedEntry(entry) : [...selfArgv().slice(0, -1), entry].map(shellWord).join(" ");
+}
+
+function displayReleasedEntry(entry: string): string {
+  const command = [process.execPath, entry].map(shellWord).join(" ");
+  if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+    const prefix = process.env.npm_config_prefix;
+    if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
+    // Match install.sh's pinned runtime and install destination without copying the whole PATH.
+    return `PATH=${shellWord(join(prefix, "nodebin"))}:"$PATH" npm_config_prefix=${shellWord(prefix)} COTAL_LAUNCHER=1 ${command}`;
+  }
+  return command;
 }
 
 /** Give the ticked commands in a workspace remedy the CLI's launcher, keeping each command whole. */

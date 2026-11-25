@@ -53,7 +53,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { readStackJournal, recordResetStore, STACK_DEFINITION, stackJournalPath } from "../lib/stack-journal.js";
 import { rollbackRestoreWithBroker } from "../lib/controller-restore.js";
 import { maintenanceNextStep, restoreNextStep } from "../lib/restore.js";
-import { displayCmd, displayRemedy } from "../lib/self-exec.js";
+import { displayCliEntry, displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { attemptProcessesGone } from "../lib/isolated-broker.js";
@@ -165,7 +165,8 @@ export async function clean(args: ParsedArgs): Promise<void> {
   const linked = linkedCotalRefusal({ cleanRetry: () => {
     // A retry from another folder must not reinterpret a relative store path.
     const picks = explicitStore === undefined ? attempt : cleanOption("store-dir", resolve(explicitStore));
-    return `${displayCmd({ fromAnyFolder: true })} clean ${target}${picks}${values.force ? " --force" : ""}${dryRun ? " --dry-run" : ""}${discard}`;
+    const cli = displayCliEntry();
+    return cli === undefined ? undefined : `${cli} clean ${target}${picks}${values.force ? " --force" : ""}${dryRun ? " --dry-run" : ""}${discard}`;
   } });
   if (linked) throw linked;
   const root = cotalRoot();

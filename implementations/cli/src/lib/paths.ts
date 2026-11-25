@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { authDir, canonicalRoot, codeSpan, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, oneLine, plainPunctuation, readMaintenanceJournal, recordsMovedTo, shellPath, soleSpaceOf } from "@cotal-ai/workspace";
+import { authDir, canonicalRoot, codeSpan, CommandFailure, findCotalRoot, homeCotalDir, localMeshesForRoot, moveRecordsBack, oneLine, readMaintenanceJournal, recordsMovedTo, shellPath, soleSpaceOf } from "@cotal-ai/workspace";
 import { shellWord } from "./endpoint-errors.js";
 
 /** The project's `.cotal/` root, found by walking up from cwd (like git finds `.git`), so every
@@ -101,7 +101,7 @@ export function linkedCotalRemedy(root: string, target: string): string {
  *  its own directory, and `clean` and `reset` read and remove nothing through a link, so none of
  *  them reads or writes through it. A link that leads nowhere is not passed over either: `clean`
  *  would otherwise remove the records of a folder above it. */
-export function linkedCotalRefusal(action: "up" | "down" | "reset store" | "reset space" | { cleanRetry: () => string }, link: CotalLink | undefined = cotalLinkHere()): CommandFailure | undefined {
+export function linkedCotalRefusal(action: "up" | "down" | "reset store" | "reset space" | { cleanRetry: () => string | undefined }, link: CotalLink | undefined = cotalLinkHere()): CommandFailure | undefined {
   if (link === undefined) return undefined;
   const command = typeof action === "string" ? action : "clean";
   const { root, path, target } = link;
@@ -115,20 +115,28 @@ export function linkedCotalRefusal(action: "up" | "down" | "reset store" | "rese
   if (link.dangling) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${path} links to ${target}, which does not exist${removes ? `, and ${why}` : ""}; nothing was ${effect}`, { target: failureTarget, remedy: here });
   const original = dirname(target);
   let remedy = here;
+  let remedyIsCommand: true | undefined;
   // A reset selects its root by the space's name, so running it from another folder changes nothing.
   if (recordsMovedTo(root, original)) {
     remedy = `${moveRecordsBack(root, original)}; then run ${removes ? "it" : `\`cotal ${command}\``} again`;
   } else if (basename(target) === ".cotal" && !command.startsWith("reset")) {
-    const retry = typeof action === "string" ? `cotal ${action}` : action.cleanRetry();
-    if (typeof action !== "string" && (oneLine(retry) !== retry || oneLine(original) !== original)) {
-      remedy = "the terminal would change the spelling of the retry. From the project the link leads to, rerun your original clean command with the same options. If you used --store-dir, give the absolute path to the same store";
+    if (typeof action === "string") {
+      remedy = `run ${codeSpan(`cotal ${action}`)} from ${original}, whose .cotal this links to, or ${here}`;
     } else {
-      const folder = typeof action !== "string" && plainPunctuation(original) !== original ? codeSpan(shellPath(original)) : original;
-      remedy = `run ${codeSpan(retry)} from ${folder}, whose .cotal this links to, or ${here}`;
+      const retry = process.platform === "win32" ? undefined : action.cleanRetry();
+      const line = retry === undefined ? undefined : `(cd ${shellPath(original)} && ${retry})`;
+      // The command renderer preserves spaces and punctuation but still escapes controls.
+      if (line !== undefined && oneLine(line) === line) {
+        remedy = line;
+        remedyIsCommand = true;
+      } else {
+        remedy = "from the project the link leads to, rerun your original clean command with the same options. If you used --store-dir, give the absolute path to the same store";
+      }
     }
   }
   return new CommandFailure("refused", "CONFLICT", `${path} is a link to ${target}, and ${why}; nothing was ${effect}`, {
     target: failureTarget,
     remedy,
+    remedyIsCommand,
   });
 }

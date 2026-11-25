@@ -861,10 +861,11 @@ anything reads through it: `CONFLICT`, exit 2, naming the link and where it lead
 `TARGET_NOT_FOUND` for a link that leads nowhere, which is not passed over to the records of a
 folder above it. When the link leads to this folder's own records, moved away and linked back, the
 Next names moving them back, as [up](cli-startup.mdx#up) does. When the link leads to another
-project's `.cotal`, the retry in that project keeps the cleanup target and options, including
-`--dry-run`. It shows a relative `--store-dir` as an absolute path so the retry targets the same store.
-If the terminal would change the spelling of the command or folder, the refusal gives retry
-instructions without printing a command to copy.
+project's `.cotal`, the retry keeps the cleanup target and options, including `--dry-run`. On POSIX,
+the command runs the same CLI in that project without changing your shell's directory. It shows a
+relative `--store-dir` as an absolute path so the retry targets the same store. When a command
+cannot be shown as written, or on Windows, the refusal gives instructions without printing a
+command to copy.
 
 In a copy, in a folder moved away from its recorded path, and in the folder a later `up` took its
 space's name over from, the store may hold that space's only history. There `store` and `all`, and

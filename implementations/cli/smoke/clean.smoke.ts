@@ -23,6 +23,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { shellWord } from "../src/lib/endpoint-errors.js";
+import { clean as stripAnsi, ptySpawn } from "./_console-pty.js";
 
 // Sandbox the machine-home BEFORE importing anything registry-touching (`clean all` mutates
 // ~/.cotal/meshes) - homeCotalDir() reads COTAL_HOME per call, so the real one is never touched.
@@ -82,9 +83,9 @@ function meshRoot(): string {
   return root;
 }
 
-type RunClean = (cwd: string, args: string[], env?: NodeJS.ProcessEnv) => SpawnSyncReturns<string>;
+type RunClean = (cwd: string, args: string[]) => SpawnSyncReturns<string>;
 
-function checkLinkedClean(sandbox: string, run: RunClean): void {
+function checkLinkedClean(sandbox: string, cli: string, run: RunClean): void {
   const root = join(sandbox, "original project");
   const dot = join(root, ".cotal");
   const linked = join(sandbox, "linked project");
@@ -93,23 +94,23 @@ function checkLinkedClean(sandbox: string, run: RunClean): void {
   mkdirSync(dot, { recursive: true });
   mkdirSync(join(store, "jetstream"), { recursive: true });
   symlinkSync(dot, join(linked, ".cotal"));
+  const prefix = `cd ${shellWord(root)} && ${shellWord(process.execPath)} ${shellWord(cli)}`;
   const preview = run(linked, ["all", `--store-dir=${dir}`, "--force", "--dry-run"]);
   check("linked clean all preserves preview even with --force and quotes the original store path",
     preview.status === 2 && preview.stdout === "" && preview.stderr.includes("Code:    CONFLICT")
-      && preview.stderr.includes(` clean all --store-dir '${store}' --force --dry-run\`\` from ${root}, whose .cotal this links to`), preview.stderr);
+      && preview.stderr.includes(`\nNext\n  (${prefix} clean all --store-dir '${store}' --force --dry-run)\n`), preview.stderr);
   const retry = run(root, ["all", "--store-dir", store, "--force", "--dry-run"]);
   check("the retry in the real project previews the same store without removing it",
     retry.status === 0 && retry.stdout.includes(`would remove ${store} (JetStream store: jetstream)`), retry);
   const restore = run(linked, ["restore-fallback", "--attempt=-restore 'old'", "--force", "--discard-history"]);
   check("linked restore cleanup preserves the quoted attempt and discard choice",
     restore.status === 2 && restore.stdout === "" && restore.stderr.includes("Code:    CONFLICT")
-      && restore.stderr.includes(` clean restore-fallback --attempt='-restore '\\''old'\\''' --force --discard-history\` from ${root}, whose .cotal this links to`), restore.stderr);
+      && restore.stderr.includes(`\nNext\n  (${prefix} clean restore-fallback --attempt='-restore '\\''old'\\''' --force --discard-history)\n`), restore.stderr);
   check("the refusals and retry leave the link and store intact",
     readlinkSync(join(linked, ".cotal")) === dot && existsSync(join(store, "jetstream")));
 }
 
-function checkLinkedCleanDisplay(sandbox: string, cli: string, cliEnv: NodeJS.ProcessEnv, run: RunClean): void {
-  const root = join(sandbox, "original project");
+function checkUnprintableCleanRetry(sandbox: string, run: RunClean): void {
   const linked = join(sandbox, "linked project");
   const stores = ["old\tstore", "old\\u0009store"].map((dir) => join(linked, dir, "jetstream"));
   for (const store of stores) mkdirSync(store, { recursive: true });
@@ -118,31 +119,54 @@ function checkLinkedCleanDisplay(sandbox: string, cli: string, cliEnv: NodeJS.Pr
     check(`linked clean ${mode} gives manual instructions instead of a command with a changed store path`,
       refused.status === 2 && refused.stdout === "" && refused.stderr.includes("Code:    CONFLICT")
         && refused.stderr.includes("rerun your original clean command with the same options")
-        && !refused.stderr.includes("--store-dir '") && stores.every((store) => existsSync(store)), refused.stderr);
+        && !refused.stderr.includes("\n  (cd ") && stores.every((store) => existsSync(store)), refused.stderr);
   }
-  const unicode = join(sandbox, "original – project");
-  mkdirSync(join(unicode, ".cotal"), { recursive: true });
-  const linkedUnicode = join(sandbox, "linked unicode");
-  mkdirSync(linkedUnicode);
-  symlinkSync(join(unicode, ".cotal"), join(linkedUnicode, ".cotal"));
-  const plain = run(linkedUnicode, ["store", "--dry-run"], { LC_ALL: "C" });
-  check("plain linked clean output keeps the original project's punctuation in the retry",
-    plain.status === 2 && plain.stderr.includes(` from \`'${unicode}'\`, whose .cotal this links to`), plain.stderr);
+}
 
+function narrowClean(cli: string, cwd: string, env: NodeJS.ProcessEnv): Promise<{ code: number; output: string }> {
+  return new Promise((done, reject) => {
+    const child = ptySpawn(process.execPath, [cli, "clean", "store", "--dry-run"], {
+      cwd, env: Object.fromEntries(Object.entries(env).flatMap(([key, value]) => value === undefined ? [] : [[key, value]])),
+      cols: 42, rows: 25, name: "xterm-256color",
+    });
+    let output = "";
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, 30_000);
+    child.onData((data) => { output += data; });
+    child.onExit(({ exitCode }) => {
+      clearTimeout(timer);
+      if (timedOut) reject(new Error(`linked clean did not exit: ${output}`));
+      else done({ code: exitCode, output: stripAnsi(output).replaceAll("\r\n", "\n") });
+    });
+  });
+}
+
+async function checkLinkedCleanDisplay(sandbox: string, cli: string, cliEnv: NodeJS.ProcessEnv): Promise<void> {
+  const original = join(sandbox, "original`  – project's folder");
+  const linked = join(sandbox, "linked narrow terminal");
+  const store = join(original, ".cotal", "nats", "jetstream");
+  mkdirSync(store, { recursive: true });
+  mkdirSync(linked);
+  const link = join(linked, ".cotal");
+  symlinkSync(join(original, ".cotal"), link);
   const tools = join(linked, "tools");
   mkdirSync(tools);
   writeFileSync(join(tools, "cotal"), "#!/bin/sh\nexit 42\n", { mode: 0o700 });
-  const env = { ...cliEnv, PATH: ["./tools", cliEnv.PATH].filter(Boolean).join(delimiter) };
-  const preview = run(linked, ["store", "--dry-run"], env);
-  const command = /run `([^`]+)` from /.exec(preview.stderr)?.[1];
-  check("linked clean with a relative PATH prints an absolute launcher",
-    preview.status === 2 && command === `${shellWord(process.execPath)} ${shellWord(cli)} clean store --dry-run`, preview.stderr);
-  const retry = spawnSync("/bin/sh", ["-c", command!], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
-  check("the absolute launcher runs the preview in the original project",
-    retry.status === 0 && retry.stdout.includes("nothing to clean"), retry);
+  const expected = `(cd ${shellWord(original)} && ${shellWord(process.execPath)} ${shellWord(cli)} clean store --dry-run)`;
+  for (const [path, locale] of [[tools, "C"], ["./tools", "C.UTF-8"]]) {
+    const env = { ...cliEnv, PATH: [path, "/usr/bin", "/bin"].join(delimiter), LC_ALL: locale };
+    const preview = await narrowClean(cli, linked, env);
+    const command = /\nNext\n  ([^\n]+)\n/.exec(preview.output)?.[1];
+    check(`linked clean on a narrow ${locale} terminal keeps the exact destination and running CLI`,
+      preview.code === 2 && preview.output.includes("CONFLICT") && command === expected, preview.output);
+    const retry = spawnSync("/bin/sh", ["-c", command!], { cwd: linked, env, encoding: "utf8", timeout: 30_000 });
+    check(`following the whole ${locale} retry previews the intended store without removing anything`,
+      retry.status === 0 && retry.stdout.includes("would remove .cotal/nats (JetStream store: jetstream)")
+        && existsSync(store) && lstatSync(link).isSymbolicLink(), retry);
+  }
 }
 
-function checkCleanStoreCli(): void {
+async function checkCleanStoreCli(): Promise<void> {
   if (process.platform === "win32") return;
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-clean-cli-")));
   const cli = join(import.meta.dirname, "../../../bin/dist/cotal.js");
@@ -152,7 +176,7 @@ function checkCleanStoreCli(): void {
     cwd: root, encoding: "utf8" as const, timeout: 30_000,
     env: { ...ambient, HOME: home, USERPROFILE: home, COTAL_HOME: home, LC_ALL: "C.UTF-8", NO_COLOR: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", COTAL_TELEMETRY: "off", XDG_CONFIG_HOME: join(home, "config"), XDG_RUNTIME_DIR: join(home, "runtime") },
   };
-  const runClean: RunClean = (cwd, args, env) => spawnSync(process.execPath, [cli, "clean", ...args], { ...options, cwd, env: { ...options.env, ...env } });
+  const runClean: RunClean = (cwd, args) => spawnSync(process.execPath, [cli, "clean", ...args], { ...options, cwd });
   const run = (...args: string[]) => runClean(root, ["store", ...args]);
   try {
     mkdirSync(join(root, ".cotal"));
@@ -192,8 +216,9 @@ function checkCleanStoreCli(): void {
       check(`the ${preview ? "dry run" : "missing-force refusal"} prints a runnable command for a hyphen-led store`, retry.status === 0 && !existsSync(store), retry.stderr);
     }
 
-    checkLinkedClean(root, runClean);
-    checkLinkedCleanDisplay(root, cli, options.env, runClean);
+    checkLinkedClean(root, cli, runClean);
+    checkUnprintableCleanRetry(root, runClean);
+    await checkLinkedCleanDisplay(root, cli, options.env);
     const link = join(root, ".cotal", "nats");
     const parked = "parked store";
     mkdirSync(join(root, parked, "jetstream"), { recursive: true });
@@ -539,7 +564,7 @@ try {
   check("dry run: lists what the real run then removes", JSON.stringify(listed) === JSON.stringify(removedAfterDry), { listed, removedAfterDry });
   await assert.rejects(() => clean({ positionals: ["history"], values: { "dry-run": true }, raw: [] }), /--dry-run previews clean store and clean all only/);
   rmSync(dryRoot, { recursive: true, force: true });
-  checkCleanStoreCli();
+  await checkCleanStoreCli();
 
   // --- stray words cannot narrow a purge or be ignored before local deletion -----------------
   const argsRoot = meshRoot(), argsCwd = process.cwd();
