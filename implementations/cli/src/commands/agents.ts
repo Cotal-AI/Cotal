@@ -52,7 +52,7 @@ import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { preparedRootWriteProblem } from "../lib/paths.js";
 import { legacyRestartAddressProblem } from "../lib/broker-service.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
-import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
+import { askManager, scatterManager, managerFailure, readFailure, refuseUnregisteredManager, startStackManagerRemedy, unansweredDescribeRefusal, type ScatterInstanceLiveness, type ScatterInstanceReply, type ScatterReply, type ManagerPin, managersByInstance, type ManagerCandidate, askYourManagers, locateSeat, managerReadFailure, refusedManagers, seatMissRefusal } from "@cotal-ai/workspace/control";
 
 /**
  * The manager's operator clients — thin control-plane request/reply commands (`stop`/`ps`/
@@ -749,7 +749,7 @@ function startManagerNext(root: string | undefined, space: string, named: boolea
   const pid = root === undefined ? undefined : runningStackManagerPid(root, space);
   if (pid !== undefined) return { command: `kill -KILL ${pid}`, description: "End the stack manager that does not answer; bare `cotal up` then starts it again" };
   const entry = findMesh(space);
-  if (root !== undefined && (stackManagerAbsent(root, space) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
+  if (root !== undefined && (stackManagerAbsent(root, space, { unanswered: true }) || (entry?.origin === "up" && entry.root === root))) return { command: "cotal up", description: "Start the stack's manager" };
   return { command: `cotal manager start${at}`, description: "Start a manager for this space" };
 }
 
@@ -945,31 +945,43 @@ export async function readSeats(v: ConnectFlags & FlagValues<typeof psFlags>, co
   // what this command established about it (pin 3).
   const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(cliControl, t.space, t.server, command, t.auth, t.spaceAuth, undefined, { reportHosts: true });
+  if (!scatter.ok) throwScatterFailure(scatter, target, t, command, v);
+  return seatCensus(target, scatter.instances, command, t.mode, v);
+}
+
+/** Classify a failed `ps` / `slots` scatter against this root's local stack state without
+ *  mistaking an unanswered registered standalone manager for an absent stack manager. */
+export function throwScatterFailure(
+  scatter: Extract<ScatterReply, { ok: false }>,
+  target: { space: string; scope: string },
+  t: { root?: string; space: string; server: string },
+  command: "ps" | "slots",
+  v: FlagValues<typeof psFlags>,
+): never {
   // An empty manager registry on this root's own controller stack, whose manager does not run, is
   // a known boundary with a remedy; the registry's own failure stays the cause. So is a registry
   // that still lists that manager after its process died: no manager answered the read. While an
   // `up` is still starting that manager, the answer is to wait for it, not to start another.
-  if (!scatter.ok && (scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
+  if ((scatter.code === "failed-precondition" || scatter.unanswered === true) && t.root !== undefined) {
     const native = { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) };
     if (stackManagerStarting(t.root, t.space))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's manager is starting, so it has no managed agents to list yet", { target, native, remedy: `run ${psRerun(v, command === "slots")} again once \`cotal up\` reports the manager started` });
-    if (stackManagerAbsent(t.root, t.space))
+    if (stackManagerAbsent(t.root, t.space, { unanswered: scatter.unanswered === true }))
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is running for this space, so it has no managed agents to list", { target, native, remedy: psManagerStartRemedy(t) });
   }
-  const silentPid = !scatter.ok && scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
-  if (!scatter.ok && silentPid !== undefined)
+  const silentPid = scatter.unanswered === true && t.root !== undefined ? runningStackManagerPid(t.root, t.space) : undefined;
+  if (silentPid !== undefined)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `this space's stack manager (pid ${silentPid}) is running but did not answer, so no agents were listed`, { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: `if it stays unresponsive, end that process with kill -KILL ${silentPid}; then bare \`cotal up\` starts the manager again` });
   // Anywhere else, a registry that was read and lists no live manager is the same boundary: no
   // manager was asked. It is not proof that no manager process runs, since one that is starting or
   // cannot register is not listed, so the refusal says only what the registry showed.
-  if (!scatter.ok && scatter.noLiveManager)
+  if (scatter.noLiveManager)
     throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "no manager is registered for this space, so none was asked and nothing was listed. A manager that is still starting or cannot register has no registration either, so this does not show that no manager process runs", { target, native: { code: scatter.code, ...(scatter.error ? { detail: scatter.error } : {}) }, remedy: psManagerStartRemedy(t) });
-  if (!scatter.ok) throw readFailure(scatter, target);
-  return seatCensus(target, scatter.instances, command, t.mode, v);
+  throw readFailure(scatter, target);
 }
 
 /** Diagnose the channel seed only for the recorded local stack at the broker we asked. */
-function psManagerStartRemedy(t: Awaited<ReturnType<typeof resolveControlTarget>>): string {
+function psManagerStartRemedy(t: { root?: string; space: string; server: string }): string {
   let entry: ReturnType<typeof findMesh>;
   try { entry = findMesh(t.space); } catch { entry = undefined; }
   if (entry?.origin === "up" && entry.root === t.root && brokerUrlKey(entry.server) === brokerUrlKey(t.server)) {
