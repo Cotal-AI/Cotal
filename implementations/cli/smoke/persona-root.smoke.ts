@@ -380,6 +380,16 @@ try {
   check("completion: send --channel offers the MESH's declared channels", sorted(sendComplete(["--channel", ""])).join(",") === "mesh-alpha,mesh-beta", sorted(sendComplete(["--channel", ""])));
   check("completion: personas show offers the MESH's persona names", sorted(personasComplete(["show", ""])).join(",") === "mesh-default,mesh-lead", sorted(personasComplete(["show", ""])));
   check("completion: personas show --space alpha offers ALPHA's names", sorted(personasComplete(["--space", "alpha", "show", ""])).join(",") === "alpha-only", sorted(personasComplete(["--space", "alpha", "show", ""])));
+  if (process.platform !== "win32") {
+    const path = join(MESH, ".cotal", "agents", "outbound-back\\slash.md");
+    writeFileSync(path, "---\nname: backslash\n---\nFixture.\n");
+    try {
+      const names = sorted(spawnComplete([""]));
+      check("completion: spawn omits the backslash selector and retains ordinary names", names.join(",") === "mesh-default,mesh-lead", names);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  }
 
   // POSITIVE CONTROL for every "the cwd's names are absent" claim above. Those are all zeroes, and
   // a zero fuses two claims: "the instrument looked" and "there was nothing". This proves the
