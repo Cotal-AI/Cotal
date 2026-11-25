@@ -8,7 +8,7 @@ import { spacesFrames } from "./spaces-frames.js";
 
 export async function replyToSpaces(sessionDir: string, request: Extract<DaemonRequest, { op: "spaces" }>,
   counters: { spacesAnswered: number; requestsRefused: number }, write: (line: string) => Promise<void>, connected: () => boolean): Promise<void> {
-  const header = { v: DAEMON_PROTOCOL_VERSION, id: request.id };
+  const header = { v: DAEMON_PROTOCOL_VERSION, id: request.id } as const;
   let result: DaemonSpaces;
   try { result = await desktopSpaces(sessionDir, request.refresh === true); }
   catch (error) {
