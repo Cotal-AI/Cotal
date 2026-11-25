@@ -6,6 +6,8 @@ log({
   argv: process.argv.slice(2),
   seatIdentity: "COTAL_SPACE" in process.env || "COTAL_NAME" in process.env,
   providerKey: "ANTHROPIC_API_KEY" in process.env,
+  // The names FAKE_PI_REPORT_ENV lists, with the value each arrived with, or null when absent.
+  env: Object.fromEntries((process.env.FAKE_PI_REPORT_ENV ?? "").split(",").filter(Boolean).map((name) => [name, process.env[name] ?? null])),
   cwd: process.cwd(),
 });
 if (process.argv.includes("--version")) {

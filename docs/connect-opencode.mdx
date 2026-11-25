@@ -14,6 +14,7 @@ First [start a mesh](run-a-mesh.mdx).
 <Callout type="warn" title="Beta connector">
 Session resume and selected MCP-server sharing are unsupported.
 Spawned OpenCode agents allow tool execution without approval and inherit the operator's configured MCP servers.
+A launch with `askPermissions`, or a persona that makes OpenCode ask through its `launchOptions` `permission`, has its asks and questions answered from a signed-in client (see [prompts](opencode-connector-reference.mdx#prompts)).
 </Callout>
 
 ## Prepare OpenCode [#no-install-needed]
@@ -60,7 +61,7 @@ cotal models --harness opencode
 ```
 
 On 1.x, add `--refresh` to refresh OpenCode's provider cache first.
-On 2.x, the connector starts a private OpenCode server and reads `GET /api/model` once the server's plugins have loaded.
+On 2.x, the connector starts a private OpenCode server with `opencode serve --stdio`, waits until its plugins load, and reads its model list.
 
 Choose a `provider/model` ID and, when the model offers variants, a variant from that listing:
 
@@ -93,8 +94,10 @@ See the [OpenCode connector reference](opencode-connector-reference.mdx) for con
 ## Watch structured events [#event-plane]
 
 OpenCode publishes run boundaries, assistant text, and tool activity to `events.<owner>.<actor>` by default, on 1.x and 2.x.
+Assistant text streams there as OpenCode writes it.
+Each finished tool call is marked there with whether it failed.
 It excludes user text, tool arguments, and tool results.
-Reasoning publication is off by default.
+It publishes reasoning only for a seat launched with the [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields).
 On 2.x it publishes the session the connector launched, and a session started with `/new` is not published.
 Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](opencode-connector-reference.mdx#event-plane) for the stream's limits.
 
@@ -104,7 +107,7 @@ On a space that permits opting out, add `--no-events` to disable publication.
 
 - Session resume and exact-session continuation are unsupported.
 - `connectors.opencode.mcpServers` is unsupported. Agents inherit the operator's MCP servers through the config merge, without a Cotal filter for selecting a subset.
-- Spawned agents use `permission: "allow"`. Tool calls do not wait for human approval.
+- Spawned agents use `permission: "allow"` unless the launch sets `askPermissions`. Without it, tool calls do not wait for human approval.
 - OpenCode 2.x has no `/new` session handoff.
 
 ## Continue [#see-also]

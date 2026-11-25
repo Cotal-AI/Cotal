@@ -173,7 +173,8 @@ Work shows what the agent publishes on its [event plane](claude-connector-refere
 its turns with how long each took, its tool calls grouped when no text sits between them, its text,
 and its own posts and direct messages, placed by time with a link back to where they were sent. When
 the agent's connector sends the result marker, each call says whether it is running, done or failed
-and how long it took, and a group says how many failed. Code in its text is highlighted once it is on
+and how long it took, and a group says how many failed. A marker that does not say whether the call
+failed shows it as done. Code in its text is highlighted once it is on
 screen. Work does not show tool inputs, tool output, error text or reasoning. A connector that sends
 no result marker says which tools it called and nothing more, and Work says so above the list. A
 failed turn says the turn failed and that the event plane does not say why; it quotes a reason only

@@ -287,7 +287,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       let hooks: ClaudeHooks | undefined;
       agent = new MeshAgent(config, env, {
         withholdProcessCwd: true,
-        ...(o.commands ? { commands: claudeCommands({ feed: () => o.commands, interrupting: () => hooks?.interrupting(agent!), warn }) } : {}),
+        ...(o.commands ? { commands: claudeCommands({ feed: () => o.commands, interrupting: () => hooks?.interrupting(agent!), warn, onStop: (stop) => agent!.once("stopping", stop) }) } : {}),
       });
       const turns = o.commands ? commandTurns(agent) : undefined;
       agent.on("error", () => process.stderr.write("[cotal-connector] personal connection error; inspect cotal_connection_status\n"));

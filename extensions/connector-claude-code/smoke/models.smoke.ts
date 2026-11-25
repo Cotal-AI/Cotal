@@ -155,6 +155,16 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
 }
 
 {
+  const rows = [{ value: "opus", displayName: "Opus", supportsEffort: true, supportedEffortLevels: ["low", "turbo", "max"] }, { value: "haiku", displayName: "Haiku", supportsEffort: false, supportedEffortLevels: ["low"] }];
+  const catalog = await ask(standIn("odd-effort", withModels(rows)).bin);
+  check(
+    "a level --effort does not take is left out, and a model claude marks without effort has no variants",
+    JSON.stringify(catalog.models.map((m) => m.variants?.map((v) => v.name))) === JSON.stringify([["low", "max"], undefined]),
+    catalog.models,
+  );
+}
+
+{
   let thrown: unknown;
   const catalog = await ask(join(dir, "missing", "claude")).catch((e: unknown) => {
     thrown = e;
@@ -197,6 +207,22 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   check("the 6s bound kills a stuck claude at once, without the exit grace an answered claude gets", waited < 6_900, waited);
   const { pid } = logged(log)[0];
   check("the lister kills the claude it gave up on", !alive(pid), pid);
+}
+
+{
+  // spawn.env names reach the catalog's claude as they reach a launch, so a provider that only
+  // spawn.env configures lists the models a seat would run. A name nobody declared stays out.
+  Object.assign(process.env, { CATALOG_GATEWAY_URL: "https://gateway.invalid", CATALOG_UNDECLARED: "undeclared" });
+  const { bin, log } = standIn("env-allow", recorded.loggedIn);
+  await claudeConnector.listModels!({ resolvedBinaries: { claude: bin }, envAllow: ["CATALOG_GATEWAY_URL"] });
+  const seen: string[] = logged(log)[0]?.env ?? [];
+  check(
+    "a catalog read gives claude the spawn.env names a launch gets, and no name spawn.env does not declare",
+    seen.includes("CATALOG_GATEWAY_URL") && !seen.includes("CATALOG_UNDECLARED"),
+    seen.filter((name) => name.startsWith("CATALOG_")),
+  );
+  delete process.env.CATALOG_GATEWAY_URL;
+  delete process.env.CATALOG_UNDECLARED;
 }
 
 for (const log of logs) {

@@ -73,13 +73,13 @@ try {
       const expected = join(binDir, process.platform === "win32" ? "uv.cmd" : "uv");
       check(
         "Hermes is available when uv is the only harness executable",
-        status?.state === "available" && status.eventPlane === false && status.binaries.uv === expected && !("hermes" in status.binaries),
+        status?.state === "available" && status.eventPlane === true && status.binaries.uv === expected && !("hermes" in status.binaries),
         status,
       );
     } else {
       check(
         "Hermes is unavailable when only the project command is on PATH",
-        status?.state === "unavailable" && status.eventPlane === false && status.reason?.includes("needs uv on PATH") === true && Object.keys(status.binaries).length === 0,
+        status?.state === "unavailable" && status.eventPlane === true && status.reason?.includes("needs uv on PATH") === true && Object.keys(status.binaries).length === 0,
         status,
       );
     }

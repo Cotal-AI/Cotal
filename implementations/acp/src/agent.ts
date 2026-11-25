@@ -16,6 +16,10 @@
  * Every update of a turn is sent before the prompt answers. A client may drop updates that arrive
  * after a prompt settled, so nothing is left to send afterwards.
  *
+ * Where agents serve their `agent` endpoint (a space where people sign in), the questions a seat
+ * stops to ask during a turn are asked in the thread, and the seat's own commands and skills are
+ * offered beside the session's commands.
+ *
  * A thread that spawns a seat, or opens one with `/open`, stores a link from its id to the seat's
  * run. The list names a linked seat by its thread, and a load resolves a thread through its link
  * before it looks for a seat of that name, so a thread whose seat has another name (`/name` before
@@ -23,11 +27,14 @@
  */
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type ContentBlock, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
+import { AGENT_CMD_COMMAND, AGENT_CMD_COMMANDS, AGENT_CMD_INTERRUPT, type AgentPrompt, type CommandEntry, type CommandsOutput } from "@cotal-ai/core";
+import { agent, methods, PROTOCOL_VERSION, RequestError, type AgentApp, type AgentContext, type AvailableCommand, type ClientCapabilities, type DeleteSessionRequest, type ListSessionsRequest, type LoadSessionRequest, type NewSessionRequest, type PromptRequest, type SessionUpdate, type SetSessionConfigOptionRequest, type StopReason } from "@agentclientprotocol/sdk";
 import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
+import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
-import { applyOption, configOptions, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, MAX_CHOICES, NO_CHANNEL, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
+import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
+import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -38,6 +45,21 @@ export const COMMANDS = [
   { name: "channels", description: "List the space's channels." },
 ] as const;
 
+/** The commands that pick a choice the thread's select cuts short. They set what the agent starts
+ *  with, so a thread offers them only while it has no agent, and never shadows a running agent's own
+ *  command of the same name. */
+const LAUNCH_COMMANDS = [
+  { name: "persona", configId: "persona", description: "Pick the persona this session's agent starts with, by its name in the manager's catalog.", input: { hint: "persona name" } },
+  { name: "join", configId: "channel", description: "Pick the channel this session's agent joins when it starts, by its name.", input: { hint: "channel name" } },
+] as const;
+
+/** The launch commands a session offers now: those of a list its select cuts short, while it has no
+ *  agent and may start one. */
+function launchCommands(session: Session): (typeof LAUNCH_COMMANDS)[number][] {
+  if (session.seat || session.offer.seatOnly) return [];
+  return LAUNCH_COMMANDS.filter((c) => cutShort(c.configId === "persona" ? session.offer.personas : session.offer.channels));
+}
+
 /** How long a seat may be absent from the roster during a turn before the turn fails. */
 const ABSENT_MS = 20_000;
 const WATCH_MS = 250;
@@ -46,6 +68,12 @@ export const START_MS = 30_000;
 /** How long a seat must stay stopped, with no run open, before a later prompt answers. Presence and
  *  the last frames travel separately, so this lets the last frames arrive first. */
 export const SETTLE_MS = 2_000;
+/** How long a seat spawned for a prompt with images may take to serve its agent endpoint, which
+ *  carries the images. */
+const SERVE_MS = 20_000;
+/** How long a prompt's answer waits for the seat's usage after its turn. A client such as T3 Code
+ *  files a turn's usage only when it arrives before the prompt answers; a later one still goes. */
+const USAGE_MS = 3_000;
 /** Frames from a seat no session holds are kept this long, in case a spawn reply names it next. */
 const UNCLAIMED_MS = 120_000;
 const UNCLAIMED_FRAMES = 500;
@@ -91,12 +119,17 @@ interface Turn {
   /** `run`: the first run that starts at or after `after` answers the prompt. `idle`: the prompt
    *  answers once the seat started working and stopped again. */
   readonly until: "run" | "idle";
-  /** Runs that start at or after this time belong to the prompt. */
-  readonly after: number;
+  /** Runs that start at or after this time belong to the prompt. For a prompt the seat queued, the
+   *  last time it was seen still waiting. */
+  after: number;
   /** The run that answers a `run` prompt, once it started. */
   runId?: string;
-  /** The runs that started at or after `after`. One that fails fails the prompt. */
-  readonly runs: Set<string>;
+  /** The runs that started at or after `after`, with when each started. One that fails fails the
+   *  prompt. */
+  readonly runs: Map<string, number>;
+  /** Until an `idle` prompt's `start` resolved: the runs that failed meanwhile. Whether one was the
+   *  prompt's own shows only once the seat took it. */
+  waiting?: Map<string, Error>;
   /** The seat has been seen working since the prompt was sent. */
   started: boolean;
   /** Since when the seat has been stopped with no run open. */
@@ -129,7 +162,14 @@ interface Session {
   /** The manager that held the agent a loaded thread opened with, as the load described it. It stays a
    *  Machine choice, and is not described again. */
   held?: ManagerChoice;
+  /** The seat's open prompts, followed while the thread drives the seat and asked while a turn runs. */
+  prompts?: PromptFollower;
+  /** The commands and skills the seat runs, as its last `commands` listed them. */
+  agentCommands?: CommandEntry[];
 }
+
+/** The application a session's seat runs, as its model choice names it. */
+const harnessOf = (session: Session): string => parseModel(session.selection.model).agent;
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
 
@@ -167,16 +207,6 @@ function canonical(path: string): string {
   }
 }
 
-/** A prompt's blocks as the text a seat receives. A link names its target; other kinds are refused
- *  by the capabilities `initialize` declares. */
-export function promptText(blocks: readonly ContentBlock[]): string {
-  return blocks.map((b) => {
-    if (b.type === "text") return b.text;
-    if (b.type === "resource_link") return b.name && b.name !== b.uri ? `[${b.name}](${b.uri})` : b.uri;
-    throw RequestError.invalidParams(undefined, `${b.type} content is not supported`);
-  }).join("\n\n").trim();
-}
-
 export function defaultName(): string {
   // Lowercase base32 keeps the name a valid user-mode actor token.
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
@@ -189,12 +219,17 @@ interface Bridge {
   readonly sessions: Map<string, Session>;
   readonly send: (session: Session, update: SessionUpdate, replay?: boolean) => Promise<void>;
   readonly mesh: () => Promise<Mesh>;
-  readonly bind: (session: Session, seat: SeatRef) => void;
+  readonly bind: (session: Session, seat: SeatRef, m: Mesh) => void;
   readonly unbind: (session: Session) => void;
   /** The session here that holds a seat, if any. */
   readonly holder: (seat: SeatRef) => Session | undefined;
   readonly sessionOf: (id: string) => Session;
   readonly announce: (session: Session) => Promise<void>;
+  /** Send the seat's context usage, when its connector reports it. Resolves once it is sent, or
+   *  after {@link USAGE_MS} while it is still being read; never rejects. */
+  readonly reportUsage: (session: Session, m: Mesh) => Promise<void>;
+  /** What the client said it can do when it initialized. */
+  readonly client: { capabilities?: ClientCapabilities };
   /** Fails the running prompts and closes the space, once the client disconnected. */
   readonly close: () => Promise<void>;
 }
@@ -205,6 +240,7 @@ function bridge(options: CotalAgentOptions): Bridge {
   const unclaimed = new Map<string, { at: number; frames: SeatFrame[] }>();
   let opened: Promise<Mesh> | undefined;
   let stopFollowing: (() => void) | undefined;
+  const client: Bridge["client"] = {};
 
   const send = (session: Session, update: SessionUpdate, replay = false): Promise<void> =>
     session.client.notify(methods.client.session.update, { sessionId: session.id, update, ...(replay ? { _meta: { isReplay: true } } : {}) });
@@ -240,14 +276,17 @@ function bridge(options: CotalAgentOptions): Bridge {
     if (!turn) return;
     if (run.kind === "start") {
       if (run.ts < turn.after) return;
-      turn.runs.add(run.runId);
+      turn.runs.set(run.runId, run.ts);
       turn.started = true;
       turn.runId ??= run.runId;
       return;
     }
     if (!turn.runs.has(run.runId)) return;
-    if (run.outcome === "error") turn.fail(new Error(`${session.seat?.name ?? session.id}'s turn failed${run.message ? `: ${run.message}` : ""}`));
-    else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
+    if (run.outcome === "error") {
+      const failed = new Error(`${session.seat?.name ?? session.id}'s turn failed${run.message ? `: ${run.message}` : ""}`);
+      if (turn.waiting) turn.waiting.set(run.runId, failed);
+      else turn.fail(failed);
+    } else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
   };
 
   const mesh = (): Promise<Mesh> => {
@@ -261,8 +300,13 @@ function bridge(options: CotalAgentOptions): Bridge {
     });
   };
 
-  const bind = (session: Session, seat: SeatRef): void => {
+  const bind = (session: Session, seat: SeatRef, m: Mesh): void => {
     session.seat = seat;
+    session.prompts?.stop();
+    if (m.agentEndpoints) {
+      const ask = (p: AgentPrompt) => askPrompt({ options, send, client }, session, m, p);
+      session.prompts = new PromptFollower(m, seat, ask, (line) => options.log(`session ${session.id}: ${line}`), () => session.turn !== undefined, WATCH_MS);
+    }
     const key = principal(seat);
     byPrincipal.set(key, session);
     const held = unclaimed.get(key);
@@ -280,6 +324,9 @@ function bridge(options: CotalAgentOptions): Bridge {
     session.seat = undefined;
     session.mapper = new FrameMapper();
     session.open = new Map();
+    session.prompts?.stop();
+    session.prompts = undefined;
+    session.agentCommands = undefined;
   };
 
   const holder = (seat: SeatRef): Session | undefined => byPrincipal.get(principal(seat));
@@ -290,16 +337,49 @@ function bridge(options: CotalAgentOptions): Bridge {
     return s;
   };
 
+  /** Offer the session's commands, and the seat's own where it serves them. A skill is named with a
+   *  leading `$`, which clients such as T3 Code show as a skill. A seat command that shares a name
+   *  with a session command is not offered. */
   const announce = async (session: Session): Promise<void> => {
-    await send(session, { sessionUpdate: "available_commands_update", availableCommands: COMMANDS.map((c) => ({ ...c })) });
+    const seat = session.seat;
+    const m = seat ? await opened?.catch(() => undefined) : undefined;
+    session.agentCommands = undefined;
+    if (seat && m?.agentEndpoints) {
+      try {
+        const out = (await m.agentCall(seat, AGENT_CMD_COMMANDS, {})) as CommandsOutput;
+        if (out.supported) session.agentCommands = out.commands.filter((c) => !COMMANDS.some((own) => own.name === c.name));
+      } catch (e) {
+        options.log(`session ${session.id}: ${seat.name}'s commands not read: ${(e as Error).message}`);
+      }
+    }
+    const theirs: AvailableCommand[] = (session.agentCommands ?? []).map((c) => ({
+      name: c.target === "skill" ? "$" + c.name : c.name,
+      description: c.description ?? (c.target === "skill" ? `${c.name} skill` : `/${c.name}`),
+      ...(c.inputHint ? { input: { hint: c.inputHint } } : {}),
+    }));
+    const launch = launchCommands(session).map(({ name, description, input }) => ({ name, description, input }));
+    await send(session, { sessionUpdate: "available_commands_update", availableCommands: [...COMMANDS.map((c) => ({ ...c })), ...launch, ...theirs] });
+  };
+
+  const reportUsage = async (session: Session, m: Mesh): Promise<void> => {
+    const seat = session.seat;
+    if (!seat) return;
+    const sent = usageUpdate(m, seat)
+      .then((u) => (u && session.seat === seat ? send(session, u) : undefined))
+      .catch((e: Error) => options.log(`session ${session.id}: ${seat.name}'s usage not read: ${e.message}`));
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([sent, new Promise<void>((r) => { timer = setTimeout(r, USAGE_MS); })]).finally(() => clearTimeout(timer));
   };
 
   const close = async (): Promise<void> => {
     stopFollowing?.();
-    for (const s of sessions.values()) if (s.turn) s.turn.fail(new Error("the client disconnected"));
+    for (const s of sessions.values()) {
+      s.prompts?.stop();
+      if (s.turn) s.turn.fail(new Error("the client disconnected"));
+    }
     if (opened) await (await opened.catch(() => undefined))?.close();
   };
-  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, close };
+  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, announce, reportUsage, close, client };
 }
 
 function launchOffers(options: CotalAgentOptions) {
@@ -326,11 +406,12 @@ function launchOffers(options: CotalAgentOptions) {
       return [];
     });
     const managers = heldId === undefined || listed.some((x) => x.instanceId === heldId) ? listed : [...listed, typeof held === "string" ? await m.manager(held) : held!];
-    // Read the lists of the manager a new session starts on, never whichever the exchange picks.
-    const from = machine ?? defaultManager(managers)?.instanceId;
+    // Read the lists of the manager a new session starts on, never whichever the exchange picks. With
+    // none chosen, show a live one's lists until the Machine option names one.
+    const from = machine ?? (defaultManager(managers) ?? managers.find((x) => x.live) ?? managers[0])?.instanceId;
     const [catalogs, personas, channels] = await Promise.all([m.catalogs(from), m.personas(from), m.channels()]);
-    if (personas.length >= MAX_CHOICES) options.log(`the persona catalog holds ${personas.length} personas, more than a client select shows; the persona option is not offered`);
-    if (channels.length >= MAX_CHOICES) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel option is not offered`);
+    if (cutShort(personas)) options.log(`the persona catalog holds ${personas.length} personas, more than a client select shows; the persona select offers your own, and /persona picks any`);
+    if (cutShort(channels)) options.log(`the space holds ${channels.length} channels, more than a client select shows; the channel select offers the described and busiest, and /join picks any`);
     return { catalogs, personas, channels, managers, defaultAgent: catalogs.find((c) => c.agent === m.defaultAgent)?.agent };
   };
 
@@ -358,12 +439,72 @@ function launchOffers(options: CotalAgentOptions) {
 
 type Offers = ReturnType<typeof launchOffers>;
 
+/** How one turn waits: `startMs` overrides how long the seat may take to start working, and `quiet`
+ *  ends a turn the seat never started without the note that it has the prompt. */
+interface TurnWait {
+  readonly startMs?: number;
+  readonly quiet?: boolean;
+}
+
+/** Ask one of the seat's prompts in the thread and send the answer back. A form goes to a client
+ *  that takes forms; anything else is a permission request. A request the client cancels, as when
+ *  the turn is stopped, is not answered. */
+async function askPrompt(b: Pick<Bridge, "options" | "send" | "client">, session: Session, m: Mesh, prompt: AgentPrompt): Promise<void> {
+  const seat = session.seat;
+  if (!seat) return;
+  const { content } = prompt;
+  const formOption = content.form ? content.options.find((o) => o.form === "required" && o.note !== "required") : undefined;
+  if (content.form && formOption && b.client.capabilities?.elicitation?.form) {
+    const reply = await session.client.request(methods.client.elicitation.create, {
+      sessionId: session.id,
+      mode: "form",
+      message: permissionRequest(session.id, seat.name, harnessOf(session), prompt).toolCall.title ?? content.title,
+      requestedSchema: content.form.schema,
+      ...(content.source?.toolCallId ? { toolCallId: content.source.toolCallId } : {}),
+    });
+    const plain = plainOptions(prompt);
+    const option = reply.action === "accept" ? formOption : plain.find((o) => o.effect === (reply.action === "decline" ? "refuse" : "cancel")) ?? plain.find((o) => o.effect !== "proceed");
+    if (!option) return;
+    const values = reply.action === "accept" && "content" in reply && reply.content ? (reply.content as Record<string, unknown>) : undefined;
+    b.options.log(`session ${session.id}: ${seat.name}'s prompt ${prompt.id} answered ${option.id}: ${await answer(m, seat, prompt, option.id, option === formOption ? values ?? {} : undefined)}`);
+    return;
+  }
+  const request = permissionRequest(session.id, seat.name, harnessOf(session), prompt, session.cwd);
+  if (request.options.length === 0) {
+    await b.send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${seat.name} asks "${content.title}", which can be answered only at its terminal.` } })
+      .catch((e: Error) => b.options.log(`session ${session.id}: update not sent: ${e.message}`));
+    return;
+  }
+  const reply = await session.client.request(methods.client.session.requestPermission, request);
+  if (reply.outcome.outcome !== "selected") return;
+  b.options.log(`session ${session.id}: ${seat.name}'s prompt ${prompt.id} answered ${reply.outcome.optionId}: ${await answer(m, seat, prompt, reply.outcome.optionId)}`);
+}
+
+/** What a turn owns once its `start` resolved, with the time a queued prompt was taken when it was one:
+ *  only the runs that started after that time. Returns the failure of one of them that failed before,
+ *  if any. */
+function taken(turn: Turn, since: number | void): Error | undefined {
+  if (since !== undefined) {
+    turn.after = since;
+    for (const [id, ts] of turn.runs) if (ts < since) turn.runs.delete(id);
+    turn.started = turn.runs.size > 0;
+  }
+  const failed = [...(turn.waiting ?? [])].find(([id]) => turn.runs.has(id))?.[1];
+  turn.waiting = undefined;
+  return failed;
+}
+
 function turnRunner(b: Bridge, startMs: number, settleMs: number) {
   const { options, send } = b;
+  const say = (session: Session, line: string): Promise<void> =>
+    send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => options.log(`session ${session.id}: update not sent: ${e.message}`));
+
   /** Run one turn to its end. Every update is sent before this resolves. A `run` prompt belongs to the
    *  seat's first run. An `idle` prompt's runs are the ones that start once `start` is called, so a
-   *  run that starts and ends before `start` resolves still counts. */
-  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: () => Promise<void>): Promise<StopReason> =>
+   *  run that starts and ends before `start` resolves still counts. A `start` that resolves with a
+   *  time gave the seat a queued prompt, which owns only the runs that start after that time; until it
+   *  resolves, a cancel aborts its signal. */
+  const runTurn = (session: Session, m: Mesh, until: Turn["until"], start: (signal: AbortSignal) => Promise<number | void>, wait: TurnWait = {}): Promise<StopReason> =>
     new Promise<StopReason>((resolve, reject) => {
       let settled = false;
       const finish = (close: "completed" | "failed", then: () => void) => {
@@ -374,13 +515,15 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         const closes = session.mapper.closeOpen(close).map((u) => send(session, u));
         void Promise.allSettled(closes).then(then);
       };
-      // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
-      const after = until === "run" ? 0 : Date.now();
       let begun = false;
+      const queued = new AbortController();
+      // One path, read once from the seat's presence: the endpoint's `interrupt` where the seat says
+      // it serves it now, else the manager's interrupt key.
       const interrupt = (): void => {
         const seat = session.seat;
         if (!seat) return;
-        m.interrupt(seat).then(() => {
+        const stopping = m.served(seat)?.interrupt ? m.agentCall(seat, AGENT_CMD_INTERRUPT, {}) : m.interrupt(seat);
+        stopping.then(() => {
           if (turn.cancelled === "requested") turn.cancelled = Date.now();
         }, (e: Error) => {
           // A cancelled prompt answers cancelled even when the seat cannot be stopped (ACP v1).
@@ -394,8 +537,10 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
       // After a cancel, the prompt answers `cancelled` however the turn ends.
       const turn: Turn = {
         until,
-        after,
-        runs: new Set(),
+        // A fresh seat's first run answers its kickoff prompt, whatever its clock says.
+        after: until === "run" ? 0 : Date.now(),
+        runs: new Map(),
+        ...(until === "idle" ? { waiting: new Map() } : {}),
         started: false,
         lastSeen: Date.now(),
         stop: (reason) => turn.cancelled !== undefined ? finish("failed", () => resolve("cancelled")) : finish("completed", () => resolve(reason)),
@@ -403,58 +548,105 @@ function turnRunner(b: Bridge, startMs: number, settleMs: number) {
         cancel: () => {
           if (turn.cancelled !== undefined) return;
           turn.cancelled = "requested";
-          // A cancel that beats the spawn reply or the typed prompt interrupts once that lands.
+          // A cancel that beats the spawn reply or the typed prompt interrupts once that lands. One
+          // whose prompt waits in the seat's queue takes it out of the queue.
           if (begun) interrupt();
+          else queued.abort();
         },
       };
       session.turn = turn;
       turn.timer = setInterval(() => {
-        if (!session.seat) return;
+        const seat = session.seat;
+        if (!seat) return;
         const now = Date.now();
         if (typeof turn.cancelled === "number") {
           // Connectors end an interrupted run differently or not at all, so wait briefly for it.
-          const running = [...turn.runs].some((id) => session.open.has(id));
+          const running = [...turn.runs.keys()].some((id) => session.open.has(id));
           if (!running || now - turn.cancelled >= settleMs) turn.stop("cancelled");
           return;
         }
         if (turn.cancelled === "requested") return;
-        const status = m.presence(session.seat);
+        const status = m.presence(seat);
         if (status === undefined) {
-          if (now - turn.lastSeen > ABSENT_MS) turn.fail(new Error(`${session.seat.name} left the mesh during its turn`));
+          if (now - turn.lastSeen > ABSENT_MS) turn.fail(new Error(`${seat.name} left the mesh during its turn`));
           return;
         }
         turn.lastSeen = now;
         // Settle only once the prompt was typed, so a refusal still fails the prompt.
         if (until !== "idle" || !begun) return;
-        if (status === "working") turn.started = true;
+        // An ask still open in the client holds the turn, so the request stays within it.
+        const asking = session.prompts?.pending === true;
+        if (status === "working" || asking) turn.started = true;
         if (!turn.started) {
-          if (now - after > startMs) {
+          if (now - turn.after > (wait.startMs ?? startMs)) {
             clearInterval(turn.timer);
-            const line = `${session.seat.name} has the prompt but has not started on it yet.`;
-            void send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).finally(() => turn.stop("end_turn"));
+            if (wait.quiet) return turn.stop("end_turn");
+            void say(session, `${seat.name} has the prompt but has not started on it yet.`).finally(() => turn.stop("end_turn"));
           }
           return;
         }
-        const running = [...turn.runs].some((id) => session.open.has(id));
-        if (status === "working" || running) turn.quietSince = undefined;
+        const running = [...turn.runs.keys()].some((id) => session.open.has(id));
+        if (status === "working" || running || asking) turn.quietSince = undefined;
         else if (now - (turn.quietSince ??= now) >= settleMs) turn.stop("end_turn");
       }, WATCH_MS);
-      start().then(() => {
+      start(queued.signal).then((since) => {
+        const failed = taken(turn, since);
         begun = true;
-        if (turn.cancelled === "requested") interrupt();
+        if (failed) turn.fail(failed);
+        else if (turn.cancelled === "requested") interrupt();
       }, (e: Error) => turn.fail(e));
     });
   return runTurn;
 }
 
-function slashCommands(b: Bridge, offers: Offers) {
+/** The seat command or skill a prompt runs: `/<name> <args>` for a command, `$<name> <args>` for a
+ *  skill, when the seat listed it. */
+export function seatCommand(commands: readonly CommandEntry[] | undefined, text: string): { entry: CommandEntry; args: string } | undefined {
+  const match = /^([/$])(\S+)\s*(.*)$/s.exec(text);
+  if (!match || !commands) return undefined;
+  const target = match[1] === "$" ? "skill" : "command";
+  const entry = commands.find((c) => c.target === target && c.name === match[2]);
+  return entry ? { entry, args: match[3]!.trim() } : undefined;
+}
+
+function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, settleMs: number) {
   const { send, unbind } = b;
   const name = nameCommand(b);
   const open = openCommand(b, offers);
+  const choose = chooseCommand(b);
+
+  /** Queue a seat command and wait until the seat started it, as {@link awaitTaken} does. */
+  const queue = async (m: Mesh, seat: SeatRef, entry: CommandEntry, args: string, signal: AbortSignal): Promise<number> => {
+    const label = entry.target === "skill" ? `the ${entry.name} skill` : `/${entry.name}`;
+    const since = Date.now();
+    const { id } = (await m.agentCall(seat, AGENT_CMD_COMMAND, { target: entry.target, name: entry.name, ...(args ? { args } : {}) })) as { id: string };
+    return awaitTaken(m, seat, id, label, since, signal);
+  };
+
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
-    const match = /^\/([a-z]+)\b\s*(.*)$/s.exec(text);
-    if (!match || !COMMANDS.some((c) => c.name === match[1])) return undefined;
     const say = (line: string) => send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } });
+    // A seat that has not listed its commands yet, such as one that just started, is asked first.
+    if (session.seat && m.agentEndpoints && session.agentCommands === undefined && /^[/$]\S/.test(text)) await b.announce(session);
+    const theirs = session.seat ? seatCommand(session.agentCommands, text) : undefined;
+    if (theirs && session.seat) {
+      const seat = session.seat;
+      b.options.log(`session ${session.id}: ${seat.name} runs its ${theirs.entry.target} ${theirs.entry.name}`);
+      // A command that runs no turn, such as one that clears the session, ends its prompt soon.
+      return runTurn(session, m, "idle", (signal) => queue(m, seat, theirs.entry, theirs.args, signal), { startMs: settleMs * 2, quiet: true }).then(async (stop) => {
+        await b.reportUsage(session, m);
+        return stop;
+      }, async (e: Error) => {
+        await say(e.message);
+        return "end_turn" as const;
+      });
+    }
+    const match = /^\/([a-z]+)\b\s*(.*)$/s.exec(text);
+    const launch = match && launchCommands(session).find((c) => c.name === match[1]);
+    if (launch) {
+      await say(await choose(session, launch.configId, match[2]!.trim()));
+      return "end_turn";
+    }
+    if (!match || !COMMANDS.some((c) => c.name === match[1])) return undefined;
     const arg = match[2]!.trim();
     switch (match[1]) {
       case "name":
@@ -472,6 +664,8 @@ function slashCommands(b: Bridge, offers: Offers) {
         const seat = session.seat;
         await m.despawn(seat);
         unbind(session);
+        // The seat's commands go, and the launch commands return for the next agent.
+        void b.announce(session).catch(() => {});
         await say(session.offer.seatOnly ? `Stopped ${seat.name}. Starting another agent here needs a grant that may spawn.` : `Stopped ${seat.name}. A new prompt spawns a fresh agent.`);
         return "end_turn";
       }
@@ -481,8 +675,8 @@ function slashCommands(b: Bridge, offers: Offers) {
         return "end_turn";
       }
       case "channels": {
-        const names = await m.channels();
-        await say(names.length ? names.map((n) => `- #${n}`).join("\n") : "The space has no channels.");
+        const rows = await m.channels();
+        await say(rows.length ? rows.map((c) => `- #${c.channel}`).join("\n") : "The space has no channels.");
         return "end_turn";
       }
     }
@@ -513,6 +707,30 @@ function nameCommand(b: Bridge) {
   };
 }
 
+/** `/persona <name>` and `/join <channel>`: set the persona or channel the thread's agent starts
+ *  with, by exact name, checked against the whole list as the select's own choice is, and send the
+ *  options holding it. Answers with the line the thread shows. */
+function chooseCommand(b: Bridge) {
+  const persona = (p: string) => (p === DEFAULT_PERSONA ? "the default persona" : `persona ${p}`);
+  const channel = (c: string) => (c === NO_CHANNEL ? "no channel" : `#${c}`);
+  return async (session: Session, configId: "persona" | "channel", want: string): Promise<string> => {
+    if (!want)
+      return configId === "persona"
+        ? `This session's agent starts with ${persona(session.selection.persona)}. Pick another with /persona <name>.`
+        : `This session's agent joins ${channel(session.selection.channel)} when it starts. Pick one with /join <channel>.`;
+    try {
+      session.selection = applyOption(session.offer, session.selection, configId, want);
+    } catch (e) {
+      const why = (e as Error).message;
+      return `${why[0]!.toUpperCase()}${why.slice(1)}.`;
+    }
+    await b.send(session, { sessionUpdate: "config_option_update", configOptions: configOptions(session.offer, session.selection) });
+    return configId === "persona"
+      ? `This session's agent will start with ${persona(session.selection.persona)}.`
+      : `This session's agent will join ${channel(session.selection.channel)} when it starts.`;
+  };
+}
+
 /** `/open <name>`: in a thread with no agent, drive the running seat with that name or display name.
  *  The thread shows what the space retains of the seat, then follows it live, and its link is stored
  *  so the thread reopens on that seat. Answers with the line the thread shows. */
@@ -532,19 +750,21 @@ function openCommand(b: Bridge, offers: Offers) {
     const opened = await offers.seatThread(m, row);
     const other = holder(row);
     if (other && other !== session) unbind(other);
-    Object.assign(session, opened, { mapper: new FrameMapper(), open: new Map() });
+    Object.assign(session, opened, { mapper: new FrameMapper(row.agent, row.cwd), open: new Map() });
     const replay = [...(await m.frameHistory(row)).flatMap((frame) => session.mapper.map(frame).updates), ...session.mapper.closeOpen("completed")];
     for (const update of replay) await send(session, update);
-    bind(session, row);
+    bind(session, row, m);
     options.links.add(m.space, { thread: session.id, lifecycleUid: row.lifecycleUid });
+    void b.announce(session).catch(() => {});
+    void b.reportUsage(session, m);
     // A client joins consecutive message chunks into one message, so the line keeps clear of the replay.
-    return `${replay.length > 0 ? "\n\n" : ""}This session now drives ${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""}). A prompt here is typed into its terminal.`;
+    return `${replay.length > 0 ? "\n\n" : ""}This session now drives ${row.display ?? row.name} (${row.agent}${row.model ? ` ${row.model}` : ""}). A prompt here reaches it as your own words.`;
   };
 }
 
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
-  const { options, sessions, mesh, bind, sessionOf, announce } = b;
+  const { options, sessions, mesh, bind, sessionOf, announce, reportUsage } = b;
   const { offerFor } = offers;
   return {
     newSession: async (params: NewSessionRequest, client: AgentContext) => {
@@ -558,7 +778,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       const session: Session = { id, cwd: params.cwd, offer, selection: initialSelection(offer), mapper: new FrameMapper(), open: new Map(), client };
       sessions.set(id, session);
       setImmediate(() => void announce(session).catch(() => {}));
-      return { sessionId: id, configOptions: configOptions(offer, session.selection) };
+      return { sessionId: id, configOptions: configOptions(offer, session.selection), models: modelState(offer, session.selection) };
     },
     setConfigOption: async (params: SetSessionConfigOptionRequest) => {
       const session = sessionOf(params.sessionId);
@@ -582,6 +802,8 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
           throw RequestError.invalidParams(undefined, (e as Error).message);
         }
         session.offer = offer;
+        // Another manager's catalog can change which lists the select cuts short.
+        void announce(session).catch(() => {});
       }
       session.selection = next;
       return { configOptions: configOptions(session.offer, session.selection) };
@@ -589,21 +811,27 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
     prompt: async (params: PromptRequest) => {
       const session = sessionOf(params.sessionId);
       if (session.turn) throw RequestError.invalidRequest(undefined, "a prompt is already running in this session");
-      const text = promptText(params.prompt);
+      const { text, images } = promptParts(params.prompt);
       const m = await mesh();
-      const handled = await slash(session, m, text);
+      const handled = images.length ? undefined : await slash(session, m, text);
       if (handled) return { stopReason: handled };
-      if (!text) throw RequestError.invalidParams(undefined, "the prompt is empty");
+      if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
       const running = session.seat;
       if (running) {
-        const stopReason = await runTurn(session, m, "idle", () => m.input(running, text));
+        const stopReason = await runTurn(session, m, "idle", (signal) => takeTurn(m, running, text, images, signal));
+        await reportUsage(session, m);
         return { stopReason };
       }
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
+      if (!session.selection.machine) throw new RequestError(-32602, noMachine(m.space));
       const { agent: harness, model } = parseModel(session.selection.model);
-      const why = refusal(session.offer.catalogs, harness);
+      const why = refusal(session.offer.catalogs, harness) ?? (images.length ? spaceImageRefusal(m, harness) : undefined);
+      const catalog = session.offer.catalogs.find((c) => c.agent === harness);
       if (why) throw RequestError.invalidParams(undefined, why);
-      const stopReason = await runTurn(session, m, "run", async () => {
+      session.mapper = new FrameMapper(harness, session.cwd);
+      // Images ride a turn, so a first prompt with images starts the seat with none and gives it the
+      // prompt once it takes a turn.
+      const stopReason = await runTurn(session, m, images.length ? "idle" : "run", async (signal) => {
         const spawning = m.spawn({
           name: session.name ?? session.id,
           agent: harness,
@@ -612,17 +840,28 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
           ...(session.selection.persona !== DEFAULT_PERSONA ? { persona: session.selection.persona } : {}),
           ...(session.selection.channel !== NO_CHANNEL ? { subscribe: [session.selection.channel] } : {}),
           cwd: session.cwd,
-          prompt: text,
+          ...(images.length ? {} : { prompt: text }),
           ...(session.selection.machine ? { managerInstanceId: session.selection.machine } : {}),
+          ...(catalog?.askPermissions ? { askPermissions: true } : {}),
+          ...(catalog?.reasoningEvents ? { reasoningEvents: true } : {}),
         });
         session.spawning = spawning;
         const seat = await spawning.finally(() => (session.spawning = undefined));
         // A session deleted or replaced while the spawn was pending keeps no claim on the seat. A
         // delete hides it.
         if (sessions.get(session.id) !== session) return;
-        bind(session, seat);
+        bind(session, seat, m);
         options.links.add(m.space, { thread: session.id, lifecycleUid: seat.lifecycleUid });
+        if (!images.length) return;
+        // A seat can serve its endpoint before its harness takes turns, as a Claude Code seat does
+        // until its command mod connects, so wait for `turn` before the one read that picks the path.
+        for (const until = Date.now() + SERVE_MS; !m.served(seat)?.turn; await new Promise((r) => setTimeout(r, WATCH_MS)))
+          if (Date.now() > until) throw new Error(`${seat.name} started but does not take a turn on its agent endpoint, so it cannot take the prompt's images`);
+        return takeTurn(m, seat, text, images, signal);
       });
+      // The seat's own commands can be read once it runs.
+      if (session.seat) void announce(session).catch(() => {});
+      await reportUsage(session, m);
       return { stopReason };
     },
   };
@@ -630,7 +869,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
 
 /** The handlers that list, load and delete threads. */
 function historyHandlers(b: Bridge, offers: Offers) {
-  const { options, sessions, send, mesh, bind, unbind, holder, announce } = b;
+  const { options, sessions, send, mesh, bind, unbind, holder, announce, reportUsage } = b;
   return {
     list: async (params: ListSessionsRequest) => {
       const m = await mesh();
@@ -654,7 +893,7 @@ function historyHandlers(b: Bridge, offers: Offers) {
       if (matches.length === 0) throw notListed(m, params.sessionId, listed);
       if (matches.length > 1) throw RequestError.invalidParams(undefined, `${matches.length} seats are named ${params.sessionId}; stop all but one`);
       const row: SeatRow = matches[0]!;
-      const session: Session = { id: params.sessionId, cwd: params.cwd, ...(await offers.seatThread(m, row)), mapper: new FrameMapper(), open: new Map(), client };
+      const session: Session = { id: params.sessionId, cwd: params.cwd, ...(await offers.seatThread(m, row)), mapper: new FrameMapper(row.agent, row.cwd), open: new Map(), client };
       const previous = sessions.get(params.sessionId);
       if (previous) unbind(previous);
       const other = holder(row);
@@ -666,9 +905,12 @@ function historyHandlers(b: Bridge, offers: Offers) {
         for (const update of updates) await send(session, update, true);
       }
       for (const update of session.mapper.closeOpen("completed")) await send(session, update, true);
-      bind(session, row);
-      setImmediate(() => void announce(session).catch(() => {}));
-      return { configOptions: configOptions(session.offer, session.selection) };
+      bind(session, row, m);
+      setImmediate(() => {
+        void announce(session).catch(() => {});
+        void reportUsage(session, m);
+      });
+      return { configOptions: configOptions(session.offer, session.selection), models: modelState(session.offer, session.selection) };
     },
     delete: async (params: DeleteSessionRequest) => {
       const session = sessions.get(params.sessionId);
@@ -696,19 +938,24 @@ export function cotalAgent(options: CotalAgentOptions): AgentApp {
   const b = bridge(options);
   const { sessions } = b;
   const offers = launchOffers(options);
-  const threads = threadHandlers(b, offers, turnRunner(b, options.waits?.startMs ?? START_MS, options.waits?.settleMs ?? SETTLE_MS), slashCommands(b, offers), options.newName ?? defaultName);
+  const settleMs = options.waits?.settleMs ?? SETTLE_MS;
+  const runTurn = turnRunner(b, options.waits?.startMs ?? START_MS, settleMs);
+  const threads = threadHandlers(b, offers, runTurn, slashCommands(b, offers, runTurn, settleMs), options.newName ?? defaultName);
   const history = historyHandlers(b, offers);
   const app = agent({ name: "cotal" })
-    .onRequest(methods.agent.initialize, async ({ params }) => ({
-      protocolVersion: PROTOCOL_VERSION,
-      agentInfo: { name: "cotal", title: "Cotal", version: options.version },
-      agentCapabilities: {
-        loadSession: true,
-        promptCapabilities: { image: false, audio: false, embeddedContext: false },
-        sessionCapabilities: { list: {}, delete: {} },
-      },
-      authMethods: params.clientCapabilities?.auth?.terminal && (await options.canSignIn?.() ?? true) ? [TERMINAL_AUTH] : [],
-    }))
+    .onRequest(methods.agent.initialize, async ({ params }) => {
+      b.client.capabilities = params.clientCapabilities ?? {};
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        agentInfo: { name: "cotal", title: "Cotal", version: options.version },
+        agentCapabilities: {
+          loadSession: true,
+          promptCapabilities: { image: true, audio: false, embeddedContext: false },
+          sessionCapabilities: { list: {}, delete: {} },
+        },
+        authMethods: params.clientCapabilities?.auth?.terminal && (await options.canSignIn?.() ?? true) ? [TERMINAL_AUTH] : [],
+      };
+    })
     .onRequest(methods.agent.authenticate, async () => {
       await b.mesh();
       return {};

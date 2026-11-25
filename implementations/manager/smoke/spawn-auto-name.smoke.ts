@@ -39,7 +39,7 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 console.log("the contract");
 {
   const input = MANAGER_CONTRACTS.spawn.input;
-  check("the Manager cluster is at revision 55", managerShippedSurface().revision === 55, managerShippedSurface().revision);
+  check("the Manager cluster is at revision 56", managerShippedSurface().revision === 56, managerShippedSurface().revision);
   check("spawn accepts autoName true, false or absent", [true, false, undefined].every((autoName) => input.validate({ name: "probe", ...(autoName === undefined ? {} : { autoName }) })));
   check("spawn refuses a non-boolean autoName", !input.validate({ name: "probe", autoName: "true" }) && !input.validate({ name: "probe", autoName: 1 }));
 }

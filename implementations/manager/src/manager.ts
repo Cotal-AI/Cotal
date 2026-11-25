@@ -403,6 +403,8 @@ export interface ManagerResumeAgent {
     endpoints?: PersonaEndpoint[];
     events: boolean;
     eventPayloads?: boolean;
+    askPermissions?: true;
+    reasoningEvents?: true;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;

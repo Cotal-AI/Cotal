@@ -21,6 +21,7 @@ interface JournalEntry {
   argv?: string[];
   seatIdentity?: boolean;
   providerKey?: boolean;
+  env?: Record<string, string | null>;
   command?: { id?: string; type?: string; provider?: string; modelId?: string };
   sigterm?: boolean;
 }
@@ -116,6 +117,29 @@ try {
     check("gives pi the provider keys a launch gets", start?.providerKey === true, start);
     check("gives pi no seat identity", start?.seatIdentity === false, start);
     check("stops pi once it answered", await goneWithin(pi.pid(), 3_000));
+  }
+
+  {
+    // spawn.env names reach the catalog's pi as they reach a launch, so it reads the agent dir and
+    // provider key a seat reads. A name nobody declared stays out.
+    const agentDir = join(dir, "private-agent");
+    Object.assign(process.env, { PI_CODING_AGENT_DIR: agentDir, PI_CATALOG_DECLARED_KEY: "declared", PI_CATALOG_UNDECLARED: "undeclared" });
+    const names = ["PI_CODING_AGENT_DIR", "PI_CATALOG_DECLARED_KEY", "PI_CATALOG_UNDECLARED"];
+    const envAllow = ["PI_CODING_AGENT_DIR", "PI_CATALOG_DECLARED_KEY"];
+    const declared = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REPORT_ENV: names.join(",") });
+    await listPiModels({ resolvedBinaries: { pi: declared.bin }, envAllow });
+    const seen = declared.journal()[0]?.env;
+    check("a catalog read gives pi the spawn.env names it is handed, with their values",
+      seen?.PI_CODING_AGENT_DIR === agentDir && seen?.PI_CATALOG_DECLARED_KEY === "declared", seen);
+    check("a name spawn.env does not declare stays out of the catalog read", seen?.PI_CATALOG_UNDECLARED === null, seen);
+    const launch = piConnector.buildLaunch({ space: "pilistmodels", name: "pi-1", events: false, envAllow }).env ?? {};
+    check("the catalog read gets the declared names a launch gets",
+      names.every((name) => (name in launch) === (seen?.[name] !== null)), { launch: names.filter((name) => name in launch), seen });
+    const bare = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REPORT_ENV: names.join(",") });
+    await listPiModels({ resolvedBinaries: { pi: bare.bin } });
+    check("without spawn.env names the catalog read gets none of them",
+      names.every((name) => bare.journal()[0]?.env?.[name] === null), bare.journal()[0]?.env);
+    for (const name of names) delete process.env[name];
   }
 
   {

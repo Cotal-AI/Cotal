@@ -94,7 +94,11 @@ const config = {
 const agent = new FakeAgent();
 const TOKEN = "quiet-bridge-token";
 let subscriptions = 0;
-const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN), () => { subscriptions++; });
+const clarifyFrames: Record<string, unknown>[] = [];
+const bridge = startBridgeServer(agent as unknown as MeshAgent, config, socketPath, bridgeKey(socketPath, TOKEN), {
+  onSubscribe: () => { subscriptions++; },
+  onClarify: (frame) => void clarifyFrames.push(frame),
+});
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -152,8 +156,16 @@ try {
   client.write(JSON.stringify({ t: "delivered", recvKey: "dm" }) + "\n");
   for (let i = 0; i < 50 && agent.items.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(agent.items.length, 0, "Hermes completion must exact-ack the delivered DM");
+
+  client.write(JSON.stringify({ t: "clarify", id: "q1", session: "s", question: "Which?", choices: [], multiple: false, timeoutMs: 1000 }) + "\n");
+  client.write(JSON.stringify({ t: "clarify_end", id: "q1", resolved: false }) + "\n");
+  for (let i = 0; i < 50 && clarifyFrames.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(clarifyFrames.map((frame) => frame.t), ["clarify", "clarify_end"], "the adapter's clarify frames must reach the sidecar's question handler");
+  assert.equal(bridge.answerPrompt({ t: "clarify_answer", id: "q1", response: "soon" }), true, "an answer goes to the subscribed adapter");
+  assert.deepEqual(await waitFrame((frame) => frame.t === "clarify_answer"), { t: "clarify_answer", id: "q1", response: "soon" }, "the adapter must get the owner's answer as sent");
   client.destroy();
   console.log("✓ hermes quiet bridge: pull-only traffic is isolated from automatic delivery");
+  console.log("✓ hermes bridge: clarify frames reach the question handler and its answers reach the adapter");
 } finally {
   bridge.close();
   rmSync(dir, { recursive: true, force: true });

@@ -674,7 +674,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         });
       }
       if (!model) {
-        const example = codeSpan(`${displayCmd()} spawn --harness hermes --no-events --model <model>`);
+        const example = codeSpan(`${displayCmd()} spawn --harness hermes --model <model>`);
         throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${message}. A managed Hermes profile needs a model. Set one with --model or the agent file's model: field.`, {
           target: { space, path },
           remedy: `${install}. For a basic launch: ${example}`,

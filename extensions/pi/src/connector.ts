@@ -100,7 +100,8 @@ async function piCatalog(ask: PiAsk): Promise<ModelCatalog> {
 
 export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // `--offline` skips startup network work, such as an OAuth refresh that stopping pi mid-request would lose.
-  const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS });
+  // The spawn.env names a launch gets, such as PI_CODING_AGENT_DIR, so pi lists what a seat reaches.
+  const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow });
   const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, boundMs: 6_000 }, piCatalog);
   return "failed" in answer ? unavailable(answer.failed) : answer.reply;
 }
@@ -118,6 +119,9 @@ export const piConnector: Connector = {
   supportsTurnRelay: true,
   supportsModelVariant: true, // variant = pi's `--thinking` level
   listModels: listPiModels,
+  supportsAskPermissions: true,
+  supportsReasoningEvents: true,
+  prompts: true,
   // pi's extension commands and prompt templates are commands, and its skills are skills (commands.ts).
   commands: { targets: ["command", "skill"], list: (o) => piCommandCatalog(o, launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: o.envAllow })) },
   eventChannel,
@@ -204,7 +208,7 @@ export const piConnector: Connector = {
     if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const control = controlEndpoint(opts.space, opts.name, artifacts);
     env.COTAL_CONTROL_SOCKET = control.path;
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
     Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
     if (persona) {
       const file = writeLaunchArtifact(artifacts, "cotal-persona-", "persona.md", persona);

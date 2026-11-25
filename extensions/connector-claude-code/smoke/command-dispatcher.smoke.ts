@@ -18,7 +18,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,12 +29,12 @@ import { CONNECTOR_VERSION } from "@cotal-ai/connector-core/version";
 import { EpEnvelopeError, type CommandState, type PresenceStatus } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 // The built lane, so its `CommandRefused` is the class the dispatcher throws.
-import { createCommandLane } from "../../connector-core/dist/agent-commands.js";
+import { createCommandLane, servedCommands } from "../../connector-core/dist/agent-commands.js";
 import { commandSocketPath, openCommandFeed, type CommandFeed } from "../src/command-feed.js";
 import { claudeCommands, commandTurns } from "../src/commands.js";
 import { createClaudeHandle } from "../src/hooks.js";
 
-const EXPECTED_CELLS = 35;
+const EXPECTED_CELLS = 51;
 const READER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "command-reader.cjs");
 const scratch = mkdtempSync(join(tmpdir(), "cmd-disp-"));
 process.env.TMPDIR = scratch;
@@ -104,10 +104,12 @@ function laneOver(dispatcher: CommandDispatcher) {
 let feed: CommandFeed;
 let reader: ReturnType<typeof startReader> | undefined;
 let interrupted = 0;
+const imageDir = mkdtempSync(join(scratch, "images-"));
 const dispatcher = claudeCommands({
   feed: () => feed,
   interrupting: () => async () => { interrupted++; },
   warn: (msg) => warnings.push(msg),
+  imageDir,
   bounds: BOUNDS,
 });
 
@@ -140,6 +142,30 @@ async function unsupported(): Promise<void> {
   const skewRun = await call("command", { target: "command", name: "context" });
   check("another mod version: command is unimplemented, naming both versions", refusal(skewRun).endsWith(`the mod is 0.0.1 and the server is ${CONNECTOR_VERSION}; reload the plugin or restart the session`), refusal(skewRun));
   skew.destroy();
+}
+
+/** Presence follows the mod: the dispatcher's watcher runs as a reader comes and goes, and what the
+ *  seat shows it serves is derived again each time. */
+async function watching(): Promise<void> {
+  let stops: (() => void)[] = [];
+  const watched = claudeCommands({ feed: () => feed, interrupting: () => undefined, warn: () => {}, imageDir, onStop: (stop) => stops.push(stop) });
+  const shown: string[] = [];
+  watched.watch!(() => shown.push(JSON.stringify(servedCommands(watched))));
+  const off = JSON.stringify({ interrupt: false, turn: false, images: false, usage: false });
+  const on = JSON.stringify({ interrupt: true, turn: true, images: true, usage: true });
+  check("with no mod, the seat shows none of the four served", JSON.stringify(servedCommands(watched)) === off, servedCommands(watched));
+  const r = startReader("2.1.330");
+  check("a mod saying hello calls the watcher, and the seat shows interrupt, turn, images and usage", await until(() => shown.at(-1) === on), shown);
+  r.child.kill("SIGTERM");
+  check("the mod leaving calls it again, and the seat shows none of the four again", await until(() => shown.at(-1) === off), shown);
+  for (const stop of stops) stop();
+  stops = [];
+  const seen = shown.length;
+  const again = startReader("2.1.330");
+  await until(() => feed.unsupported() === undefined);
+  check("once the agent stopped, the feed calls the watcher no more", shown.length === seen, shown);
+  again.child.kill("SIGTERM");
+  await until(() => feed.unsupported() !== undefined);
 }
 
 async function listing(): Promise<void> {
@@ -190,6 +216,63 @@ async function running(): Promise<void> {
   check("...and its late answer is still accepted", held !== undefined && (await answer(held, { op: "run", outcome: "started" })) === 0 && warnings.length === warned, warnings);
 }
 
+/** Queue one turn and take it, with `mod` answering the prompt request the reader printed. */
+async function turnRun(args: Record<string, unknown>, mod: (req: Request) => Promise<unknown>): Promise<{ state?: CommandState; seen?: Request }> {
+  const { call, lane } = laneOver(dispatcher);
+  const queued = await call("turn", args);
+  if (!queued.ok) return {};
+  const taking = lane.dispatchNext();
+  const seen = await reader?.next();
+  if (seen) await mod(seen);
+  await Promise.race([taking, wait(3_000)]);
+  const read = await call("command-state", { id: (queued.value as { id: string }).id });
+  return { state: read.ok ? (read.value as { state: CommandState }).state : undefined, seen };
+}
+
+async function turning(): Promise<void> {
+  const said = await turnRun({ text: "hello there" }, (r) => answer(r, { op: "prompt", outcome: "submitted" }));
+  check("a turn asks the mod to submit the owner's words as they are", said.seen?.op === "prompt" && said.seen.text === "hello there", said.seen);
+  check("a submitted prompt reads started", JSON.stringify(said.state) === '{"kind":"started"}', said.state);
+  const dropped = await turnRun({ text: "hello" }, (r) => answer(r, { op: "prompt", outcome: "refused", reason: "a Stop stands" }));
+  check("a prompt Claude drops reads refused, failed-precondition, with Claude's reason",
+    JSON.stringify(dropped.state) === JSON.stringify({ kind: "refused", code: "failed-precondition", message: "a Stop stands" }), dropped.state);
+  const red = Buffer.from("not really a png").toString("base64");
+  const pictured = await turnRun({ text: "what is this?", images: [{ mimeType: "image/png", data: red }, { mimeType: "image/webp", data: red }] },
+    (r) => answer(r, { op: "prompt", outcome: "submitted" }));
+  const text = String(pictured.seen?.text ?? "");
+  const paths = [...text.matchAll(/\[Image (\d): (.+)\]/g)].map((m) => m[2]!);
+  check("a turn's images are named after its words, one line each",
+    paths.length === 2 && text === `what is this?\n\n[Image 1: ${paths[0]}]\n\n[Image 2: ${paths[1]}]`, text);
+  check("each image is a new owner-only file in the seat's folder, with its bytes and its type's extension",
+    paths.every((p) => dirname(p) === imageDir && (statSync(p).mode & 0o777) === 0o600 && readFileSync(p).toString() === "not really a png") &&
+      paths[0]!.endsWith("-1.png") && paths[1]!.endsWith("-2.webp"), paths);
+  const only = await turnRun({ text: "", images: [{ mimeType: "image/gif", data: red }] }, (r) => answer(r, { op: "prompt", outcome: "submitted" }));
+  check("a turn of an image alone names just the image", /^\[Image 1: .+-1\.gif\]$/.test(String(only.seen?.text)), only.seen?.text);
+  const blind = laneOver(claudeCommands({ feed: () => feed, interrupting: () => undefined, warn: () => {} }));
+  const noImages = await blind.call("turn", { text: "look", images: [{ mimeType: "image/png", data: red }] });
+  check("with no image folder, a turn with images is unimplemented", /^unimplemented\/not-executed: .*takes no images/.test(refusal(noImages)), refusal(noImages));
+}
+
+async function usageReading(): Promise<void> {
+  const { call } = laneOver(dispatcher);
+  const ask = async (frame: Record<string, unknown>): Promise<Reply> => {
+    const p = call("usage");
+    const req = await reader!.next();
+    await answer(req!, frame);
+    return p;
+  };
+  const full = await ask({ op: "usage", window: 200000, tokens: 1234, usd: 0.5 });
+  check("usage carries Claude's context tokens over its window, and its cost in USD",
+    full.ok && JSON.stringify(full.value) === JSON.stringify({ supported: true, context: { used: 1234, size: 200000 }, cost: { amount: 0.5, currency: "USD" } }), full);
+  const fresh = await ask({ op: "usage", window: 200000 });
+  check("before Claude's first response, usage reports nothing it has not given", fresh.ok && JSON.stringify(fresh.value) === '{"supported":true}', fresh);
+  const none = laneOver(claudeCommands({ feed: () => undefined, interrupting: () => undefined, warn: () => {} }));
+  const off = await none.call("usage");
+  check("with no command mod, usage answers supported: false", off.ok && JSON.stringify(off.value) === '{"supported":false}', off);
+  const offTurn = await none.call("turn", { text: "hi" });
+  check("with no command mod, turn is unimplemented naming the cause", /^unimplemented\/not-executed: .*named no Claude Code process/.test(refusal(offTurn)), refusal(offTurn));
+}
+
 async function interrupting(): Promise<void> {
   const { call } = laneOver(dispatcher);
   const ask = async (frame: Record<string, unknown> | undefined): Promise<Reply> => {
@@ -219,14 +302,22 @@ async function readerLeaves(): Promise<void> {
   reader = startReader("2.1.330");
   await until(() => feed.unsupported() === undefined);
   const queued = await call("command", { target: "command", name: "deploy" });
+  const queuedTurn = await call("turn", { text: "hi" });
   reader.child.kill("SIGTERM");
   await until(() => feed.unsupported() !== undefined);
   reader = undefined;
   await lane.dispatchNext();
-  const state = queued.ok ? await call("command-state", { id: (queued.value as { id: string }).id }) : queued;
-  const s = state.ok ? (state.value as { state: CommandState }).state : undefined;
+  await lane.dispatchNext();
+  const stateOf = async (r: Reply) => {
+    const state = r.ok ? await call("command-state", { id: (r.value as { id: string }).id }) : r;
+    return state.ok ? (state.value as { state: CommandState }).state : undefined;
+  };
+  const s = await stateOf(queued);
   check("a command queued while the mod served and taken after it left reads refused, failed-precondition, naming the cause",
     s?.kind === "refused" && s.code === "failed-precondition" && /the command mod is not running/.test(s.message), s);
+  const t = await stateOf(queuedTurn);
+  check("...and so does a turn",
+    t?.kind === "refused" && t.code === "failed-precondition" && /the command mod is not running/.test(t.message), t);
 }
 
 /** A seat the queue drives: its presence status, its queue, and each dispatch the suite settles. */
@@ -300,8 +391,11 @@ async function hookTurns(): Promise<void> {
 try {
   feed = await openCommandFeed(process.pid, { warn: (msg) => warnings.push(msg) });
   await unsupported();
+  await watching();
   await listing();
   await running();
+  await turning();
+  await usageReading();
   await interrupting();
   await readerLeaves();
   await queueing();

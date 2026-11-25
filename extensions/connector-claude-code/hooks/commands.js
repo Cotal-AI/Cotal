@@ -2,6 +2,8 @@
 // socket or write to a running child's stdin, so a reader relays the seat server's requests on its
 // stdout and a one-shot helper carries each answer back.
 
+import { streamTo } from './stream.js';
+
 const ALLOW = 'allow';
 const PANEL = 'refuse-panel';
 const SETTINGS = 'refuse-writes-settings';
@@ -184,11 +186,31 @@ async function interrupt($) {
   return { op: 'interrupt', outcome: 'interrupted', ...(reason ? { reason } : {}) };
 }
 
+// The owner's words as the person's own, a turn of its own once the session is idle.
+async function prompt($, { text }) {
+  const submitted = await $.prompt.submit({ text, asUser: true });
+  if (submitted.drop !== undefined) return { op: 'prompt', outcome: 'refused', reason: submitted.drop || 'Claude Code dropped the prompt' };
+  return { op: 'prompt', outcome: 'submitted' };
+}
+
+// The status line's figures: no breakdown, so the call sends no request.
+async function usage($) {
+  const { context, cost } = await $.session.usage();
+  return {
+    op: 'usage',
+    window: context.window,
+    ...(context.tokens !== undefined ? { tokens: context.tokens } : {}),
+    ...(cost ? { usd: cost.usd } : {}),
+  };
+}
+
 async function answerFor($, request) {
   try {
     if (request.op === 'list') return await list($);
     if (request.op === 'run') return await run($, request);
     if (request.op === 'interrupt') return await interrupt($);
+    if (request.op === 'prompt') return await prompt($, request);
+    if (request.op === 'usage') return await usage($);
     return { op: 'error', reason: `unknown request op ${JSON.stringify(request.op)}` };
   } catch (error) {
     return { op: 'error', reason: messageOf(error) };
@@ -197,6 +219,7 @@ async function answerFor($, request) {
 
 async function serve($, line) {
   const request = JSON.parse(line);
+  if (request.op === 'stream') return streamTo(request);
   const answer = await answerFor($, request);
   if (answer.reason !== undefined) answer.reason = clip(answer.reason, MAX_REASON);
   await $.process.run(['node', $.plugin.root + '/dist/command-reader.cjs', 'answer', request.route], {

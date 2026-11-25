@@ -89,7 +89,7 @@ at spawn. A spent restart budget, changed persona or expired credential prevents
 
 `events: false` is the workflow form of
 `cotal spawn --no-events`: the seat starts without its AG-UI event plane. A connector that
-publishes none, such as Hermes, needs it, because an omitted `events` arms the plane and the
+publishes none needs it, because an omitted `events` arms the plane and the
 manager refuses that connector at the spawn. A value that is not a boolean is refused at the
 spawn. `runtime` names the terminal runtime of this one seat (`pty`, or an installed extension such
 as `tmux`). Omitted, the seat uses the serving manager's own runtime. A name that manager cannot

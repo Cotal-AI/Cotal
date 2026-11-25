@@ -24,10 +24,10 @@ const delay: { args: string[]; env: Record<string, string> } = delayOnce
   : { args: [], env: {} };
 // The space rides argv so the suite can find every seat it started by its command line.
 registry.register({
-  kind: "connector", name: "supervise-crash-stub", requires: ["node"],
+  kind: "connector", name: "supervise-crash-stub", requires: ["node"], supportsAskPermissions: true,
   ...(readinessTimeoutMs !== undefined ? { readinessTimeoutMs } : {}),
   buildLaunch: (o): LaunchSpec => {
-    appendFileSync(join(root, "payload-launches.jsonl"), `${JSON.stringify({ name: o.name, eventPayloads: o.eventPayloads })}\n`);
+    appendFileSync(join(root, "payload-launches.jsonl"), `${JSON.stringify({ name: o.name, eventPayloads: o.eventPayloads, askPermissions: o.askPermissions })}\n`);
     return { command: process.execPath, args: [...delay.args, stub, space], env: { ...envFor(o), ...delay.env } };
   },
 } as Connector);
