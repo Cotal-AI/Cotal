@@ -407,12 +407,9 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         }));
         return;
       }
-      if (req.op === "space-intent") {
-        managerResult(async () => { await account.intent(req.space, req.enabled); return status(); });
-        return;
-      }
-      if (req.op === "agent-stop" || req.op === "agent-terminal") {
-        managerResult(() => req.op === "agent-terminal" ? managers.terminalAgent(req.space, req.lifecycleUid) : managers.stopAgent(req.space, req.lifecycleUid).then(() => status()));
+      if (req.op === "space-intent" || req.op === "agent-stop" || req.op === "agent-terminal") {
+        managerResult(() => req.op === "agent-terminal" ? managers.terminalAgent(req.space, req.lifecycleUid)
+          : (req.op === "agent-stop" ? managers.stopAgent(req.space, req.lifecycleUid) : account.intent(req.space, req.enabled)).then(() => status()));
         return;
       }
       if (req.op === "connect-check") {
