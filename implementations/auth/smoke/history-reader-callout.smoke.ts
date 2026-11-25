@@ -1,17 +1,14 @@
 /**
- * An auth-callout connection's history-reader deletes are keyed on what the server assigned it (#4123).
+ * An auth-callout connection's history-reader deletes are keyed on the server-assigned connection.
  *
  * The observer and admin profiles may delete their own history readers, `hist_<readerId>_<n>`. Under
- * the auth callout a connection's connId is the inbox nonce the client chose and passed as its
- * connection name, so deletes keyed on it let one connection claim another's readers by naming the
- * same nonce. The callout now keys them on the server's id and the client id the server assigned the
- * connection, which the client reads from the server's INFO and does not choose.
+ * the auth callout the client chooses the connection name, but the callout keys reader grants on
+ * the server's id and the client id assigned by the server in INFO.
  *
  * The suite runs the shipped callout and permission builder with two admin-view principals. It reads
- * history through a user-mode endpoint, learning that endpoint's nonce and reader name from its
- * requests on the wire, as any responder sees a reply subject. It then connects as the other principal
- * under the same nonce and tries to delete a reader under the endpoint's name. Last, it reconnects the
- * endpoint, whose reader names move with the new connection, and reads again.
+ * history through a user-mode endpoint and checks reader-deletion isolation both for a second
+ * connection sharing the same principal and inbox name, and for a different principal on its own
+ * legacy inbox. After reconnecting, the endpoint reads again using the new connection's reader names.
  *
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -163,18 +160,23 @@ try {
   check("positive control: the endpoint's reader name and bound inbox name were seen on the wire",
     victim !== undefined && new RegExp(`^${OWNER}-dashboard-[a-z0-9]{25}$`).test(victim.nonce), seen.slice(0, 1));
   await jsm.consumers.add(CHAT, { name: victim.name, ack_policy: AckPolicy.None, mem_storage: true, inactive_threshold: 60_000_000_000 });
-  const intruder = await connect({
-    servers: SERVERS, name: victim.nonce, inboxPrefix: `_INBOX_${victim.nonce}`, maxReconnectAttempts: 0,
-    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(dashBearer)],
-  });
-  raws.push(intruder);
-  const intruderJsm = await jetstreamManager(intruder);
-  const admitted = await intruderJsm.streams.info(CHAT).then(() => true, () => false);
-  check("positive control: a second admin connection is admitted under the same inbox name", admitted);
-  const outcome = await intruderJsm.consumers.delete(CHAT, victim.name).then(() => "deleted", (e: Error) => e.message);
-  const survives = await exists(victim.name);
-  check("user mode: sharing an inbox name does not grant deletion of another connection's reader",
-    /permission/i.test(outcome) && survives, { outcome, survives });
+  const checkReaderIsolation = async (bearer: string, name: string, label: string) => {
+    const nc = await connect({
+      servers: SERVERS, name, inboxPrefix: `_INBOX_${name}`, maxReconnectAttempts: 0,
+      authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearer)],
+    });
+    raws.push(nc);
+    const otherJsm = await jetstreamManager(nc);
+    const admitted = await otherJsm.streams.info(CHAT).then(() => true, () => false);
+    check(`positive control: ${label} can read stream info`, admitted);
+    const outcome = await otherJsm.consumers.delete(CHAT, victim.name).then(() => "deleted", (e: Error) => e.message);
+    const survives = await exists(victim.name);
+    check(`user mode: ${label} cannot delete another connection's reader`,
+      /permission/i.test(outcome) && survives, { outcome, survives });
+    return { outcome, survives };
+  };
+  const { outcome, survives } = await checkReaderIsolation(dashBearer, victim.nonce, "same principal on a shared bound inbox");
+  await checkReaderIsolation(await adminBearer("intruder"), `ibx${randomUUID().replaceAll("-", "")}`, "different principal on its own legacy inbox");
   await jsm.consumers.delete(CHAT, victim.name).catch(() => {});
 
   // 3. A reconnect is a new connection, so its reader names are new, and reads go on.
