@@ -212,6 +212,12 @@ const gate = (positionals: string[], values: Record<string, string | boolean> = 
       usageRefusal(resume, message) && isCommandFailure(resume)
         && resume.remedy === `run \`cotal run list --local\` with the original target options. ${correction}`, resume);
   }
+  for (const verb of ["answer", "amend"]) {
+    const got = gate([verb, "bad/id", "/checkpoint:a#0"], { local: true, space: "beta", server: "wss://broker.example/ws?token=private", by: "operator", value: "true" });
+    c(`the local ${verb} remedy keeps the original target without repeating a private broker URL`,
+      usageRefusal(got, idFormat) && isCommandFailure(got) && got.selfContained === true
+        && got.remedy === "run `cotal run list --local` with the original target options. Then replace only the run ID in the original command", got);
+  }
   const hidden = gate(["show"], { space: "beta", server: "wss://example.invalid/socket?test=private" });
   c("a broker address that cannot be displayed is not copied or replaced by an unscoped lookup", isCommandFailure(hidden) && hidden.remedy?.includes("same broker") === true && !hidden.remedy.includes("private") && !hidden.remedy.includes("`cotal run`"), hidden);
   const unknown = gate(["show", "RUN-0123"]);
