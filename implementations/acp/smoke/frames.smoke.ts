@@ -19,7 +19,11 @@
  *  - `managerPlan` starts new threads where the auth service's own rule would, and reads agents from
  *    every live manager the person may use;
  *  - `managerChoices` describes a listed manager with no row under the person's principal, as the
- *    space's own, by the host it reports, so a new thread there defaults to it on this host.
+ *    space's own, by the host it reports, so a new thread there defaults to it on this host;
+ *  - the model select and model state list `<agent>/default` once when the catalog names a model
+ *    `default`, with that model's name and reasoning variants;
+ *  - `agentCatalogs` carries a failed models read, so the application is refused with its reason, and
+ *    a Jcode whose catalog lists models is offered with them.
  *
  * Run: pnpm --filter @cotal-ai/acp test   (needs `pnpm build` of core and workspace first)
  */
@@ -27,8 +31,8 @@ import type { CotalMessage, Presence } from "@cotal-ai/core";
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { FrameMapper } from "../src/frames.js";
 import { patchDiffs } from "../src/tools.js";
-import { answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
-import { defaultManager } from "../src/options.js";
+import { agentCatalogs, answeredReads, frameOf, managerChoice, managerChoices, managerPlan, namesDeregister } from "../src/live-mesh.js";
+import { applyOption, configOptions, defaultManager, initialSelection, modelState, refusal, type Offer } from "../src/options.js";
 import type { AguiEventLike, SeatFrame } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -291,6 +295,70 @@ check("frameOf ignores a frame that another sender put on an agent's event chann
   asked.length = 0;
   const [mine] = await managerChoices(["a"], [mineRow], "here", "u_p", reported);
   check("the person's own manager is described by its live row and is not asked", mine?.live === true && mine.local === true && asked.length === 0, { mine, asked });
+}
+
+// An application whose catalog has a model with the id `default`, as a Hermes endpoint can: the value
+// `<agent>/default` already means the application's own default, so it is one choice.
+{
+  const offer: Offer = { personas: [], channels: [], managers: [], catalogs: [{ agent: "hermes", available: true, eventPlane: true,
+    models: [{ id: "a", variants: ["high"] }, { id: "default", name: "default", variants: ["high"] }] }] };
+  const selection = initialSelection(offer);
+  const select = configOptions(offer, selection).find((o) => o.id === "model") as unknown as { options: { options: { value: string }[] }[] };
+  const values = select.options.flatMap((g) => g.options.map((o) => o.value));
+  check("a catalog model named default does not list <agent>/default twice", values.filter((v) => v === "hermes/default").length === 1, values);
+  const listed = modelState(offer, selection).availableModels.map((m) => m.modelId);
+  check("nor does the session's model state", listed.filter((v) => v === "hermes/default").length === 1, listed);
+}
+
+// That model is the application's default choice, with its name and reasoning variants. A Hermes
+// provider that lists an id `default` gives it Hermes's efforts, as every model it lists.
+{
+  const row = { agent: "hermes", state: "available", eventPlane: true };
+  const offerOf = (models: unknown[]): Offer => ({ personas: [], channels: [], managers: [], catalogs: agentCatalogs([row], [{ agent: "hermes", supported: true, models }] as never) });
+  const offer = offerOf([{ id: "a", variants: [{ name: "low" }] }, { id: "default", name: "Hermes pick", variants: [{ name: "high" }] }]);
+  const selection = initialSelection(offer);
+  const own = modelState(offer, selection).availableModels.find((m) => m.modelId === "hermes/default");
+  const efforts = (own?._meta.reasoningEfforts as { value: string }[] | undefined)?.map((e) => e.value);
+  check("the model state gives <agent>/default that model's name and reasoning variants", own?.name === "hermes: Hermes pick" && JSON.stringify(efforts) === JSON.stringify(["default", "high"]), own);
+  const select = configOptions(offer, selection).find((o) => o.id === "model") as unknown as { options: { options: { value: string; name: string }[] }[] };
+  const choice = select.options.flatMap((g) => g.options).find((o) => o.value === "hermes/default");
+  check("and so does the model select", choice?.name === "hermes: Hermes pick", choice);
+  let variant: string;
+  try {
+    variant = applyOption(offer, selection, "variant", "high").variant;
+  } catch (e) {
+    variant = (e as Error).message;
+  }
+  check("one of its variants can be chosen on <agent>/default", variant === "high", variant);
+  const alone = offerOf([{ id: "default", variants: [{ name: "high" }] }]);
+  const reasoning = configOptions(alone, initialSelection(alone)).find((o) => o.id === "variant") as unknown as { options: { value: string }[] } | undefined;
+  check("where it is the only model, the Reasoning select holds its variants", JSON.stringify(reasoning?.options.map((o) => o.value)) === JSON.stringify(["default", "high"]), reasoning);
+}
+
+// A Jcode whose `jcode model list` lists models, as its catalog reads them on an install with no
+// config.toml: the manager's row carries those ids, and the application is offered with them.
+{
+  const catalogs = agentCatalogs([{ agent: "jcode", state: "available", eventPlane: true }], [
+    { agent: "jcode", supported: true, source: "jcode model list --json", models: [{ id: "gpt-5.4", provider: "fakeprov" }, { id: "glm-4.7" }] },
+  ] as never);
+  const offer: Offer = { personas: [], channels: [], managers: [], catalogs };
+  const select = configOptions(offer, initialSelection(offer)).find((o) => o.id === "model") as unknown as { options: { options: { value: string }[] }[] };
+  const values = select.options.flatMap((g) => g.options.map((o) => o.value));
+  check("a Jcode whose catalog lists models is offered with them",
+    refusal(catalogs, "jcode") === undefined && JSON.stringify(values) === JSON.stringify(["jcode/default", "jcode/gpt-5.4", "jcode/glm-4.7"]), { catalogs, values });
+}
+
+// A manager whose read of an application's models failed, as OpenCode 1.19.6 refusing its database:
+// the models row carries the error, and the application is refused with it.
+{
+  const row = (agent: string) => ({ agent, state: "available", eventPlane: true });
+  const why = "Database is not empty and has no session table";
+  const catalogs = agentCatalogs([row("opencode"), row("pi")], [
+    { agent: "opencode", supported: true, models: [], error: why },
+    { agent: "pi", supported: false, models: [] },
+  ] as never);
+  check("an application whose models could not be read is refused with the read's reason", refusal(catalogs, "opencode")?.includes(why) === true, catalogs);
+  check("one with no model list to read is not, and keeps its default alone", refusal(catalogs, "pi") === undefined && catalogs[1]?.models.length === 0, catalogs);
 }
 
 // Which unanswered replies name the deregister command.

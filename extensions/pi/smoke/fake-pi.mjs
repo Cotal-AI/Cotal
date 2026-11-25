@@ -26,7 +26,7 @@ const recorded = mode === "catalog" ? JSON.parse(readFileSync(process.env.FAKE_P
 let selected;
 function catalogAnswer({ id, type, provider, modelId }) {
   const answer = (fields) => ({ id, type: "response", command: type, ...fields });
-  if (type === process.env.FAKE_PI_REFUSE) return answer({ success: false, error: `Unknown command: ${type}` });
+  if (type === process.env.FAKE_PI_REFUSE) return answer({ success: false, error: process.env.FAKE_PI_REFUSE_ERROR ?? `Unknown command: ${type}` });
   if (type === "get_available_models") return { ...recorded.models, id };
   if (type === "set_model") {
     const key = `${provider}/${modelId}`;

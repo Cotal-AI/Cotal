@@ -2,7 +2,8 @@
  * A session's config options, built from what the managers offer.
  *
  * The model select lists `<agent>/<model>` grouped by agent, with a `<agent>/default` choice for
- * the application's own default. Each choice's name starts with its agent, because a client may
+ * the application's own default. A catalog model whose id is `default` is that choice, with its
+ * name and variants. Each choice's name starts with its agent, because a client may
  * flatten the groups and drop their names (T3 Code does). A Harness select names the application on
  * its own. The model value names it too, so the two always agree: choosing a model moves the harness
  * to its application, and choosing another harness starts it on that application's default model.
@@ -68,18 +69,31 @@ export function parseModel(value: string): { agent: string; model?: string } {
   return { agent, ...(model === DEFAULT_MODEL ? {} : { model }) };
 }
 
-/** The applications a session can run: available and with an event plane. */
+/** A thread can drive a running seat of the application: it is available and has an event plane. */
+const drivable = (c: AgentCatalog): boolean => c.available && c.eventPlane;
+
+/** A session can run the application: drivable, and with models read. */
+const runnable = (c: AgentCatalog): boolean => drivable(c) && c.modelsUnread === undefined;
+
+/** The applications a session can run. */
 export function usable(catalogs: readonly AgentCatalog[]): AgentCatalog[] {
-  return catalogs.filter((c) => c.available && c.eventPlane);
+  return catalogs.filter(runnable);
 }
 
-/** Why `agent` cannot run a session, or undefined when it can. */
-export function refusal(catalogs: readonly AgentCatalog[], agent: string): string | undefined {
+/** Why a thread cannot drive a running seat of `agent`, or undefined when it can. Driving a seat
+ *  launches nothing, so a failed read of the application's models does not matter. */
+export function seatRefusal(catalogs: readonly AgentCatalog[], agent: string): string | undefined {
   const catalog = catalogs.find((c) => c.agent === agent);
   if (!catalog) return `the manager offers no application named "${agent}"`;
   if (!catalog.available) return `${agent} is not available on the manager's host${catalog.reason ? `: ${catalog.reason}` : ""}`;
   if (!catalog.eventPlane) return `${agent} publishes no event plane, so its turns cannot be shown here`;
   return undefined;
+}
+
+/** Why `agent` cannot run a session, or undefined when it can. */
+export function refusal(catalogs: readonly AgentCatalog[], agent: string): string | undefined {
+  const unread = catalogs.find((c) => c.agent === agent)?.modelsUnread;
+  return seatRefusal(catalogs, agent) ?? (unread === undefined ? undefined : `the manager could not read ${agent}'s models: ${unread}`);
 }
 
 /** The manager a new session starts on: this machine's live one. Another computer's is never the
@@ -103,14 +117,25 @@ export function initialSelection(offer: Offer): Selection {
     const reasons = offer.catalogs.map((c) => `${c.agent}: ${refusal(offer.catalogs, c.agent)}`);
     throw new Error(`no application can run a session${reasons.length ? ` (${reasons.join("; ")})` : ": the manager offers none"}`);
   }
-  const machine = defaultManager(offer.managers);
-  return { model: `${agent.agent}/${DEFAULT_MODEL}`, variant: DEFAULT_VARIANT, persona: DEFAULT_PERSONA, channel: NO_CHANNEL, ...(machine ? { machine: machine.instanceId } : {}) };
+  return selectionOf(offer, `${agent.agent}/${DEFAULT_MODEL}`);
 }
 
-/** The variants of one `<agent>/<model>` choice: none for an application's default or a custom id. */
+/** The selection of a thread that drives a running seat: the seat's model, on the seat's manager. It
+ *  needs no application a session can run, since driving the seat launches nothing. */
+export function seatSelection(offer: Offer, seat: { agent: string; model?: string; managerInstanceId?: string }): Selection {
+  return selectionOf(offer, `${seat.agent}/${seat.model ?? DEFAULT_MODEL}`, seat.managerInstanceId);
+}
+
+/** A selection of `model` with every other option at its default, on `machine` or else this
+ *  machine's live manager. */
+function selectionOf(offer: Offer, model: string, machine = defaultManager(offer.managers)?.instanceId): Selection {
+  return { model, variant: DEFAULT_VARIANT, persona: DEFAULT_PERSONA, channel: NO_CHANNEL, ...(machine ? { machine } : {}) };
+}
+
+/** The variants of one `<agent>/<model>` choice, as its catalog entry lists them: for an
+ *  application's default, the entry whose id is `default`. None for a custom id. */
 function variantsOfModel(offer: Offer, value: string): readonly string[] {
-  const { agent, model } = parseModel(value);
-  if (model === undefined) return [];
+  const { agent, model = DEFAULT_MODEL } = parseModel(value);
   return offer.catalogs.find((c) => c.agent === agent)?.models.find((m) => m.id === model)?.variants ?? [];
 }
 
@@ -191,13 +216,24 @@ function channelChoices(offer: Offer): string[] {
 const withCurrent = (choices: string[], current: string, unset: string): string[] =>
   current === unset || choices.includes(current) ? choices : [current, ...choices];
 
+/** The applications the selects list: those a session can run, and the one whose seat the thread
+ *  drives, which is listed even when the manager could not read its models. */
+function listed(offer: Offer, selection: Selection): AgentCatalog[] {
+  const { agent } = parseModel(selection.model);
+  return offer.catalogs.filter((c) => runnable(c) || (c.agent === agent && drivable(c)));
+}
+
 /** The model select's choices, grouped by application. */
 function modelGroups(offer: Offer, selection: Selection): { group: string; name: string; options: { value: string; name: string }[] }[] {
-  return usable(offer.catalogs).map((c) => {
+  return listed(offer, selection).map((c) => {
+    // A model whose id is the default's is the default choice, since its value already means the application's default.
+    const own = c.models.find((m) => m.id === DEFAULT_MODEL);
+    const named = c.models.filter((m) => m !== own);
     // A seat-only thread offers the model its agent runs, and the default only when it names none.
-    const choices = [
-      ...(offer.seatOnly && c.models.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: default` }]),
-      ...c.models.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
+    // A thread on a seat of an application whose models went unread offers only the seat's model.
+    const choices = c.modelsUnread !== undefined ? [] : [
+      ...(offer.seatOnly && named.length > 0 ? [] : [{ value: `${c.agent}/${DEFAULT_MODEL}`, name: `${c.agent}: ${own?.name ?? DEFAULT_MODEL}` }]),
+      ...named.map((m) => ({ value: `${c.agent}/${m.id}`, name: `${c.agent}: ${m.name ?? m.id}` })),
     ];
     // The current value is always a choice, a custom id included.
     if (parseModel(selection.model).agent === c.agent && !choices.some((o) => o.value === selection.model))
@@ -237,7 +273,7 @@ export function modelState(offer: Offer, selection: Selection): ModelState {
 
 /** The full option set for a selection. Every reply that changes an option carries all of them. */
 export function configOptions(offer: Offer, selection: Selection): SessionConfigOption[] {
-  const apps = usable(offer.catalogs);
+  const apps = listed(offer, selection);
   const options: SessionConfigOption[] = [{
     id: "model",
     name: "Model",

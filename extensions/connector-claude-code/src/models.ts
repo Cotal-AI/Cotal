@@ -10,8 +10,6 @@ import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
  *  stderr and runs at its default effort, so a variant outside this list is refused at launch. */
 export const CLAUDE_EFFORT_LEVELS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 
-const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
-
 interface ModelRow {
   value: string;
   displayName: string;
@@ -43,6 +41,8 @@ function modelInfo(row: ModelRow): ModelInfo {
   return { id: value, name: row.displayName + resolves, ...(variants.length ? { variants } : {}) };
 }
 
+/** A failed read, a logged-out claude and a malformed list throw, so the manager reports a failed
+ *  read. Only an answer that carries no model list at all is an install with no catalog to list. */
 export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
   // claude applies the settings of the project it runs in, so it runs in an empty private directory.
   const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
@@ -51,11 +51,12 @@ export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<Mod
     // The spawn.env names a launch gets, so claude lists the models of the provider a seat reaches.
     const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, envAllow: opts.envAllow });
     const answer = await claudeInitialize({ bin, cwd, env, boundMs: 6_000, what: "its models" });
-    if ("failed" in answer) return unavailable(answer.failed);
+    if ("failed" in answer) throw new Error(answer.failed);
     const { account, models: rows } = answer.response;
     // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
-    if (account?.tokenSource === "none" && !account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
-    if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
+    if (account?.tokenSource === "none" && !account.apiKeySource) throw new Error("claude is not logged in; run claude to log in");
+    if (rows === undefined) return { models: [], unavailable: "claude answered without a model list" };
+    if (!Array.isArray(rows) || !rows.every(isModelRow)) throw new Error("claude answered with a malformed model list");
     // `default` points at claude's own default model, which a launch that names no model gets anyway.
     return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map(modelInfo) };
   } finally {
