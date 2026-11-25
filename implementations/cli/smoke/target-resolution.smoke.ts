@@ -30,7 +30,7 @@
  * Run: pnpm smoke:target-resolution
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -870,6 +870,45 @@ const QUESTION = "Which one?";
     const plain = run([...command, "--plain"], forgotten);
     check(`${command.join(" ")} there names no Mesh and says no space is registered here`,
       plain.status === 2 && !/^Mesh: /m.test(plain.stdout + plain.stderr) && (plain.stdout + plain.stderr).includes(`no space is registered or prepared here for ${root}`), shown(plain));
+  }
+}
+
+{
+  const root = realpathSync(mkdtempSync(join(home, "open-stack-")));
+  const space = "open-roster";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const registration = join(env.COTAL_HOME!, "meshes", `space.${Buffer.from(space).toString("hex")}.json`);
+  const saved = join(root, "registration.saved");
+  const roster = (address: string) => run(["who", "--server", address, "--json"], root);
+  const complete = (read: ReturnType<typeof run>, name: string) => {
+    const data = envelope(read);
+    return read.status === 0 && data?.target?.space === name && data.outcome === "ok" && data.completeness === "complete" && data.warnings?.length === 0;
+  };
+  const prepared = run(["space", "create", space], root);
+  anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+  try {
+    const started = run(["up", "--no-manager", "--open", "--server", server], root);
+    const cleared = run(["use", "--clear", "--json"], root);
+    const registered = roster(server);
+    check("a registered open stack answers the roster at its explicit address", prepared.status === 0 && started.status === 0 && cleared.status === 0 && complete(registered, space), { started: shown(started), roster: shown(registered) });
+    renameSync(registration, saved);
+    for (const address of [server, `${server}/`]) {
+      const read = roster(address);
+      check(`the running open stack still answers as ${space} without its registration at ${address}`, complete(read, space) && !existsSync(registration), shown(read));
+    }
+    const bare = run(["who", "--json"], root);
+    check("bare who still requires the open stack registration", bare.status === 2 && envelope(bare)?.error?.code === "TARGET_UNAVAILABLE", shown(bare));
+    const raw = await broker();
+    for (let i = 0; i < 30 && !(await isReachable(raw)); i++) await wait(50);
+    const unrelated = roster(raw);
+    check("another unregistered broker still answers as main from the open project", complete(unrelated, "main"), shown(unrelated));
+    renameSync(saved, registration);
+    const restored = roster(server);
+    check("restoring the registration preserves the same live target", complete(restored, space), shown(restored));
+  } finally {
+    if (existsSync(saved)) renameSync(saved, registration);
+    const down = run(["down", "--yes", "--json"], root);
+    check("the live open roster fixture stops cleanly", down.status === 0, shown(down));
   }
 }
 
