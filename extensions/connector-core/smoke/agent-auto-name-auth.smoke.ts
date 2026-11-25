@@ -1,15 +1,19 @@
 /**
- * An agent names itself from its first message (SPEC 13.22), as a real `MeshAgent` on a real
+ * An agent labels itself from its first message (SPEC 13.22), as a real `MeshAgent` on a real
  * nats-server through the shipped auth callout, watched by its owner's interactive session.
  *
  * Covered: a seat launched with `autoName` and a naming hook shows `ai.cotal.naming: "pending"` in
- * presence from its first record; its first live direct message, and no later one, goes to the hook,
- * and the cleaned reply becomes its name while the mark goes; a failed hook keeps the launch name and
- * removes the mark; an owner `set-name` while the hook is out removes the mark at once, and the hook's
- * later reply never overwrites the owner's name; a name another live agent holds is not taken; a direct
- * message from another owner's member neither names the agent nor ends naming, and the owner's next one
- * still names it; a launch prompt is the first message; a connector with no hook never shows the mark; and a seat stopping
- * while naming is out leaves no mark behind.
+ * presence from its first record; its first live direct message, and no later one, goes to the hook;
+ * the cleaned reply becomes `ai.cotal.label` in the same record that drops the mark, while `card.name`
+ * stays the launch name; afterwards the launch name still resolves to the agent, a DM sent to it by
+ * name and an `@mention` of it in a channel still reach it, and the label resolves to no one; an
+ * owner `set-name` after labelling sets the name and drops the label in one record; a failed hook
+ * shows no label and removes the mark; an owner `set-name` while the hook is out removes the mark at
+ * once, and the hook's later reply sets no label; a label equal to another live agent's name is shown,
+ * and that name still resolves to the other agent; a direct message from another owner's member
+ * neither labels the agent nor ends naming, and the owner's next one still labels it; a launch prompt
+ * is the first message; a connector with no hook never shows the mark, and an agent file's label
+ * never reaches presence; and a seat stopping while naming is out leaves no mark behind.
  *
  * Run: pnpm smoke:agent-auto-name:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
@@ -21,8 +25,8 @@ import { join } from "node:path";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
-  AGENT_ENDPOINT, AGENT_NAMING_META_KEY, CotalEndpoint, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity,
-  processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams, type Presence,
+  AGENT_ENDPOINT, AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY, CotalEndpoint, createSpaceAuth, isReachable, mentionsIn, mintCreds, mintLifecycleUid,
+  newIdentity, parseAgentFileSource, processRuntime, provisionAgentDurables, serverConfig, setupSpaceStreams, type Presence,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER, type AclResolver } from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, createSuite, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -42,6 +46,8 @@ async function until(done: () => boolean, ms = 8000): Promise<boolean> {
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `autoname-${randomUUID().slice(0, 8)}`;
+/** The channel the labelled seat follows and the caller posts in. */
+const CH = "work";
 const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -57,14 +63,14 @@ const B = deriveOwnerToken("s".repeat(32), "better-auth|bob");
 interface Who { owner: string; actor: string; kind: "interactive" | "managed-agent"; uid: string }
 const who = (actor: string, kind: Who["kind"] = "managed-agent", owner = A): Who => ({ owner, actor, kind, uid: mintLifecycleUid() });
 const W = {
-  web: who("web", "interactive"), sender: who("sender"), rival: who("rival"), bob: who("bob", "managed-agent", B),
+  web: who("web", "interactive"), sender: who("sender"), rival: who("rival"), bob: who("bob", "managed-agent", B), caller: who("caller"),
   named: who("named"), guarded: who("guarded"), failer: who("failer"), raced: who("raced"), taker: who("taker"), launcher: who("launcher"), plain: who("plain"), stopper: who("stopper"),
 };
 const ledger = new Map(Object.values(W).map((w) => [w.uid, w]));
 const resolveAcl: AclResolver = (t) => {
   const w = ledger.get(t.act.lifecycleUid!);
   if (!w) throw new Error(`no ledger row for ${t.owner}.${t.act.actor}`);
-  return { allowSubscribe: [], allowPublish: [], lifecycleUid: w.uid, scope: [], kind: w.kind };
+  return { allowSubscribe: [CH], allowPublish: [CH], lifecycleUid: w.uid, scope: [], kind: w.kind };
 };
 async function bearer(w: Who): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -107,10 +113,10 @@ process.stderr.write = ((chunk: string | Uint8Array, ...rest: never[]) => {
   logged.push(String(chunk));
   return writeErr(chunk, ...rest);
 }) as typeof process.stderr.write;
-async function seat(w: Who, options: { hook?: NameFromMessage; launchPrompt?: string } = {}): Promise<MeshAgent> {
+async function seat(w: Who, options: { hook?: NameFromMessage; launchPrompt?: string; autoName?: boolean; subscribe?: string[]; meta?: Record<string, string> } = {}): Promise<MeshAgent> {
   const config: AgentConfig = {
-    space, servers: SERVERS, name: w.actor, kind: "agent", tls: false, lifecycleUid: w.uid, autoName: true,
-    subscribe: [], allowSubscribe: [], allowPublish: [],
+    space, servers: SERVERS, name: w.actor, kind: "agent", tls: false, lifecycleUid: w.uid, autoName: options.autoName ?? true, meta: options.meta,
+    subscribe: options.subscribe ?? [], allowSubscribe: [CH], allowPublish: [CH],
     userAuth: { owner: w.owner, actor: w.actor, sentinelCreds: callout.sentinelCreds, bearer: () => bearer(w) },
   };
   const agent = new MeshAgent(config, {}, options.hook ? { naming: { request: options.hook, launchPrompt: options.launchPrompt } } : {});
@@ -149,39 +155,62 @@ try {
   const senderEp = await userEndpoint(W.sender);
   const bobEp = await userEndpoint(W.bob);
   await userEndpoint(W.rival, { registerPresence: true, name: "Rival task" });
+  const caller = await seat(W.caller, { autoName: false });
+  await caller.start();
   const card = (w: Who): Presence | undefined => webEp.getRoster().find((p) => p.card.id === `${A}.${w.actor}`);
   const mark = (w: Who): unknown => card(w)?.card.meta?.[AGENT_NAMING_META_KEY];
-  const ever = new Map<string, unknown[]>();
+  const label = (w: Who): unknown => card(w)?.card.meta?.[AGENT_LABEL_META_KEY];
+  /** Every presence record the owner's watch delivered for an agent, as its name, label and mark. */
+  const seen = new Map<string, { name: string; label: unknown; naming: unknown }[]>();
+  const records = (w: Who) => seen.get(`${A}.${w.actor}`) ?? [];
+  const ever = (id: string) => (seen.get(id) ?? []).map((r) => r.naming);
   webEp.on("presence", (e: { presence: Presence }) => {
-    const id = e.presence.card.id;
-    ever.set(id, [...(ever.get(id) ?? []), e.presence.card.meta?.[AGENT_NAMING_META_KEY]]);
+    const { id, name, meta } = e.presence.card;
+    seen.set(id, [...(seen.get(id) ?? []), { name, label: meta?.[AGENT_LABEL_META_KEY], naming: meta?.[AGENT_NAMING_META_KEY] }]);
   });
   const dm = (w: Who, text: string) => senderEp.unicast(`${A}.${w.actor}`, text);
   const rename = (w: Who, name: string) =>
     webEp.callPrincipal({ endpoint: AGENT_ENDPOINT, principal: { owner: w.owner, actor: w.actor, uid: w.uid, runtimeId: processRuntime(w.uid).id }, command: "set-name", authority: "owner", args: { name }, deadlineMs: 15_000 });
 
-  console.log("a seat names itself from its first direct message");
+  console.log("a seat labels itself from its first direct message");
   {
     const h = hook();
-    const agent = await seat(W.named, { hook: h.fn });
-    let incoming = 0;
-    agent.on("incoming", () => incoming++);
+    const agent = await seat(W.named, { hook: h.fn, subscribe: [CH] });
+    const got: { kind: string; mentionsMe: boolean; text: string }[] = [];
+    agent.on("incoming", (i: { kind: string; mentionsMe: boolean; text: string }) => got.push({ kind: i.kind, mentionsMe: i.mentionsMe, text: i.text }));
     await agent.start();
     await until(() => card(W.named) !== undefined && card(W.named)!.prompts !== undefined);
-    check("its presence shows the pending mark from its first record", mark(W.named) === "pending" && ever.get(`${A}.named`)?.[0] === "pending", ever.get(`${A}.named`));
+    check("its presence shows the pending mark from its first record", mark(W.named) === "pending" && ever(`${A}.named`)[0] === "pending", ever(`${A}.named`));
     check("and no request goes out before a message arrives", h.calls.length === 0, h.calls.length);
     await dm(W.named, "fix the login bug in src/auth.ts, issue #88");
     check("its first direct message goes to the hook, framed as a message to name", await until(() => h.calls.length === 1)
       && h.calls[0]!.prompt.includes("<message>\nfix the login bug in src/auth.ts, issue #88\n</message>"), h.calls.map((c) => c.prompt));
     h.answer("**Name:** Login bug in src/auth.ts.");
-    check("the cleaned reply becomes its name in presence, and the mark goes", await until(() => card(W.named)?.card.name === "Login bug in src auth.ts" && mark(W.named) === undefined),
-      { name: card(W.named)?.card.name, mark: mark(W.named) });
-    check("its principal is unchanged", agent.ep.principal.actor === "named" && agent.id === `${A}.named`, agent.ep.principal);
-    await dm(W.named, "and also the signup page");
-    check("a later direct message reaches the agent and starts no second request", await until(() => incoming >= 2) && (await wait(300), h.calls.length === 1), { incoming, calls: h.calls.length });
+    const LABEL = "Login bug in src auth.ts";
+    const firstLabelled = async () => (await until(() => label(W.named) === LABEL)) ? records(W.named).find((r) => r.label !== undefined) : undefined;
+    const labelled = await firstLabelled();
+    check("the cleaned reply becomes its label, and the record that shows it keeps the launch name and drops the mark",
+      labelled?.label === LABEL && labelled.name === "named" && labelled.naming === undefined, labelled);
+    check("no record shows the label while the mark is still pending", records(W.named).every((r) => r.label === undefined || r.naming === undefined), records(W.named));
+    check("its name and principal are unchanged", agent.ep.card.name === "named" && agent.ep.principal.actor === "named" && agent.id === `${A}.named`, agent.ep.card.name);
+    await caller.readRoster();
+    check("its launch name still resolves to it, and its label resolves to no one",
+      caller.resolvePeer("named")?.card.id === `${A}.named` && caller.resolvePeer(LABEL) === undefined, caller.resolvePeer("named")?.card.id);
+    const sent = await caller.dm("named", "and also the signup page");
+    check("a direct message sent to its launch name by name reaches it and starts no second request",
+      sent.recipient.id === `${A}.named` && await until(() => got.some((i) => i.kind === "dm" && i.text === "and also the signup page")) && (await wait(300), h.calls.length === 1),
+      { recipient: sent.recipient, got, calls: h.calls.length });
+    const text = "@named the checkout page is slow";
+    await caller.send(text, CH, mentionsIn(text));
+    check("an @mention of its launch name in a channel reaches it as a mention of it",
+      await until(() => got.some((i) => i.kind === "channel" && i.text === text && i.mentionsMe)), got);
+    const r = await rename(W.named, "Login fix");
+    const renamed = (await until(() => card(W.named)?.card.name === "Login fix")) ? records(W.named).find((x) => x.name === "Login fix") : undefined;
+    check("an owner set-name after labelling sets the name, and the record that shows it drops the label",
+      r.ok && renamed !== undefined && renamed.label === undefined && label(W.named) === undefined, { ok: r.ok, renamed });
   }
 
-  console.log("\na failed request keeps the launch name");
+  console.log("\na failed request shows no label");
   {
     const h = hook();
     const agent = await seat(W.failer, { hook: h.fn });
@@ -190,9 +219,9 @@ try {
     await dm(W.failer, "summarize yesterday's incidents");
     await until(() => h.calls.length === 1);
     h.refuse(new Error("the model is not available on this login"));
-    check("the mark goes and the launch name stays", await until(() => card(W.failer) !== undefined && mark(W.failer) === undefined) && card(W.failer)?.card.name === "failer",
-      { name: card(W.failer)?.card.name, mark: mark(W.failer) });
-    check("and the seat logs why", logged.some((l) => l.includes("kept its launch name") && l.includes("the model is not available on this login")), logged.filter((l) => l.includes("naming")));
+    check("the mark goes, with no label and the launch name", await until(() => card(W.failer) !== undefined && mark(W.failer) === undefined) && label(W.failer) === undefined && card(W.failer)?.card.name === "failer",
+      { name: card(W.failer)?.card.name, mark: mark(W.failer), label: label(W.failer) });
+    check("and the seat logs why", logged.some((l) => l.includes("shows no label") && l.includes("the model is not available on this login")), logged.filter((l) => l.includes("label")));
   }
 
   console.log("\nan owner rename while the request is out");
@@ -210,11 +239,11 @@ try {
     check("the request is aborted", h.calls[0]!.signal.aborted);
     h.answer("Billing table migration");
     await wait(800);
-    check("the model's later reply never overwrites the owner's name", agent.ep.card.name === "Owner pick" && card(W.raced)?.card.name === "Owner pick",
-      { card: agent.ep.card.name, shown: card(W.raced)?.card.name });
+    check("the model's later reply sets no label over the owner's name", agent.ep.card.name === "Owner pick" && card(W.raced)?.card.name === "Owner pick" && label(W.raced) === undefined
+      && records(W.raced).every((x) => x.label === undefined), { card: agent.ep.card.name, shown: card(W.raced)?.card.name, label: label(W.raced) });
   }
 
-  console.log("\na name another live agent holds");
+  console.log("\na label that is another live agent's name");
   {
     const h = hook();
     const agent = await seat(W.taker, { hook: h.fn });
@@ -223,8 +252,10 @@ try {
     await dm(W.taker, "the rival's task");
     await until(() => h.calls.length === 1);
     h.answer("Rival task");
-    check("is not taken: the launch name stays and the mark goes", await until(() => mark(W.taker) === undefined) && card(W.taker)?.card.name === "taker" && agent.ep.card.name === "taker",
-      { name: card(W.taker)?.card.name, mark: mark(W.taker) });
+    check("is shown as the label, and the launch name stays", await until(() => mark(W.taker) === undefined) && label(W.taker) === "Rival task" && card(W.taker)?.card.name === "taker" && agent.ep.card.name === "taker",
+      { name: card(W.taker)?.card.name, label: label(W.taker), mark: mark(W.taker) });
+    await caller.readRoster();
+    check("and that name still resolves to the other agent", caller.resolvePeer("Rival task")?.card.id === `${A}.rival`, caller.resolvePeer("Rival task")?.card.id);
   }
 
   console.log("\na direct message from another owner's member");
@@ -240,11 +271,11 @@ try {
     await wait(300);
     check("but goes to no hook, and the mark stays", h.calls.length === 0 && mark(W.guarded) === "pending", { calls: h.calls.map((c) => c.prompt), mark: mark(W.guarded) });
     await dm(W.guarded, "profile the checkout service");
-    check("the owner's next direct message still names it", await until(() => h.calls.length === 1)
+    check("the owner's next direct message still labels it", await until(() => h.calls.length === 1)
       && h.calls[0]!.prompt.includes("profile the checkout service") && !h.calls[0]!.prompt.includes("Bob"), h.calls.map((c) => c.prompt));
     h.answer("Checkout service profiling");
-    check("and its reply becomes the name, and the mark goes", await until(() => card(W.guarded)?.card.name === "Checkout service profiling" && mark(W.guarded) === undefined),
-      { name: card(W.guarded)?.card.name, mark: mark(W.guarded) });
+    check("and its reply becomes the label, and the mark goes", await until(() => label(W.guarded) === "Checkout service profiling" && mark(W.guarded) === undefined) && card(W.guarded)?.card.name === "guarded",
+      { name: card(W.guarded)?.card.name, label: label(W.guarded), mark: mark(W.guarded) });
   }
 
   console.log("\na launch prompt is the first message");
@@ -256,21 +287,24 @@ try {
     await until(() => card(W.launcher) !== undefined);
     await dm(W.launcher, "a direct message after launch");
     h.answer("Issue 42 parser triage");
-    check("its reply becomes the name, and the mark goes", await until(() => card(W.launcher)?.card.name === "Issue 42 parser triage" && mark(W.launcher) === undefined),
-      { name: card(W.launcher)?.card.name, mark: mark(W.launcher) });
+    check("its reply becomes the label, and the mark goes", await until(() => label(W.launcher) === "Issue 42 parser triage" && mark(W.launcher) === undefined) && card(W.launcher)?.card.name === "launcher",
+      { name: card(W.launcher)?.card.name, label: label(W.launcher), mark: mark(W.launcher) });
     check("the direct message after it started no second request", (await wait(300), h.calls.length === 1), h.calls.length);
   }
 
-  console.log("\na connector with no naming hook");
+  console.log("\na connector with no naming hook, launched from an agent file that sets a label");
   {
-    const agent = await seat(W.plain);
+    const file = parseAgentFileSource(`---\nname: plain\n${AGENT_LABEL_META_KEY}: Spoofed label\n${AGENT_NAMING_META_KEY}: pending\n---\nWork.\n`, "plain.md");
+    const agent = await seat(W.plain, { meta: file.meta });
     await agent.start();
     await until(() => card(W.plain)?.prompts !== undefined);
     await dm(W.plain, "hello");
     await wait(500);
-    check("never shows the mark, and keeps its launch name", card(W.plain) !== undefined && (ever.get(`${A}.plain`) ?? []).every((m) => m === undefined) && card(W.plain)?.card.name === "plain",
-      ever.get(`${A}.plain`));
-    check("and says why once", logged.filter((l) => l.includes("cannot ask its model for a name")).length === 1, logged.filter((l) => l.includes("COTAL_AUTO_NAME")));
+    check("never shows the mark, and keeps its launch name", card(W.plain) !== undefined && ever(`${A}.plain`).every((m) => m === undefined) && card(W.plain)?.card.name === "plain",
+      ever(`${A}.plain`));
+    check("and the agent file's label never reaches presence", file.meta?.[AGENT_LABEL_META_KEY] === "Spoofed label" && records(W.plain).length > 0 && records(W.plain).every((x) => x.label === undefined),
+      records(W.plain));
+    check("and says why once", logged.filter((l) => l.includes("cannot ask its model for a label")).length === 1, logged.filter((l) => l.includes("COTAL_AUTO_NAME")));
   }
 
   console.log("\na seat that stops while the request is out");

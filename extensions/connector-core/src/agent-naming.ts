@@ -1,21 +1,21 @@
 /**
- * An agent that names itself from the first message it receives (SPEC 13.22, names from the first
+ * An agent that labels itself from the first message it receives (SPEC 13.22, labels from the first
  * message). The connector makes one request to its session's own model through its
- * {@link NameFromMessage} hook, and the reply, cleaned, is applied on the agent's name lane, so an
- * owner's `set-name` is never overwritten. The card shows `ai.cotal.naming: "pending"` until naming
- * settles, and the key is removed whatever the outcome.
+ * {@link NameFromMessage} hook, and the reply, cleaned, becomes the card's `ai.cotal.label`. The
+ * card's `name` stays the launch name, which mentions, DMs and name lookups keep resolving. The card
+ * shows `ai.cotal.naming: "pending"` until naming settles, and the key is removed whatever the
+ * outcome, in the same presence record as the label.
  */
 import type { EventEmitter } from "node:events";
 import { assertValidName, parsePrincipalKey } from "@cotal-ai/core";
 import type { InboxItem } from "./agent-inbox-model.js";
-import type { NameLane } from "./agent-name.js";
 
 /** How much of the first message the request carries, in code points. */
 export const NAMING_SOURCE_MAX = 8_000;
-/** How long naming may take, from the first message to the name being applied. */
+/** How long naming may take, from the first message to the label being set. */
 export const NAMING_TIMEOUT_MS = 60_000;
-/** The longest name naming gives, in code points, cut at a word boundary. */
-const NAME_MAX = 40;
+/** The longest label naming gives, in code points, cut at a word boundary. */
+const LABEL_MAX = 40;
 
 const SYSTEM = [
   'You name AI agents so people can tell them apart in a list. You will receive the first message an agent was given. Reply with a name for the agent and nothing else: one line, no quotes, no trailing period, no label such as "Name:".',
@@ -63,32 +63,32 @@ export function nameRequest(text: string): Omit<NameRequest, "signal"> {
   };
 }
 
-// A label, bare or in emphasis: `Name:`, `**Name:**`, `**Name**:`.
-const LABEL = /^[*_]*(?:title|name)[*_]*\s*:[*_]*\s*/i;
+// A prefix, bare or in emphasis: `Name:`, `**Name:**`, `**Name**:`.
+const PREFIX = /^[*_]*(?:title|name)[*_]*\s*:[*_]*\s*/i;
 const WRAPPERS: readonly (readonly [string, string])[] = [
   ["**", "**"], ["__", "__"], ["*", "*"], ["_", "_"], ["`", "`"], ['"', '"'], ["'", "'"], ["\u201c", "\u201d"], ["\u2018", "\u2019"],
 ];
 
-/** The name in a model's reply: its first non-empty line, without a `Title:` or `Name:` label,
+/** The label in a model's reply: its first non-empty line, without a `Title:` or `Name:` prefix,
  *  surrounding quotes, backticks or emphasis, or a trailing period, with `/` and `\` as spaces and
  *  whitespace collapsed, cut at a word boundary to 40 code points. Undefined when nothing is left
  *  or the result fails the shared name rule. */
-export function sanitizeName(reply: string): string | undefined {
+export function sanitizeLabel(reply: string): string | undefined {
   let line = reply.split(/\r\n|[\n\r\u2028\u2029]/).map((l) => l.trim()).find((l) => l !== "");
   if (line === undefined) return undefined;
   for (let before = ""; before !== line; ) {
     before = line;
-    line = line.replace(LABEL, "").replace(/\.$/, "").trim();
+    line = line.replace(PREFIX, "").replace(/\.$/, "").trim();
     const wrap = WRAPPERS.find(([open, close]) => line!.length >= open.length + close.length && line!.startsWith(open) && line!.endsWith(close));
     if (wrap) line = line.slice(wrap[0].length, line.length - wrap[1].length).trim();
   }
-  const name = capAtWord(line.replace(/[/\\]/g, " ").replace(/\s+/g, " ").trim(), NAME_MAX);
+  const label = capAtWord(line.replace(/[/\\]/g, " ").replace(/\s+/g, " ").trim(), LABEL_MAX);
   try {
-    assertValidName(name);
+    assertValidName(label);
   } catch {
     return undefined;
   }
-  return name;
+  return label;
 }
 
 function capAtWord(text: string, max: number): string {
@@ -115,21 +115,19 @@ type NamingState =
 export interface AutoNamingDeps {
   /** The agent, whose `incoming` and `mention-wake` items are the messages naming reads. */
   events: EventEmitter;
-  /** The agent's own owner. Only a message from one of its principals names the agent. */
+  /** The agent's own owner. Only a message from one of its principals labels the agent. */
   owner: string;
-  lane: NameLane;
   request: NameFromMessage;
-  /** Remove the card's naming key. */
-  clearPending(): Promise<void>;
-  /** Resolves once the agent is connected, and rejects after `timeoutMs`. */
-  connected(timeoutMs: number): Promise<void>;
+  /** Remove the card's naming key and set its label to what `label()` returns when the write runs,
+   *  both in one presence record. Removes the label when `label()` returns undefined. */
+  settle(label: () => string | undefined): Promise<void>;
   log(msg: string): void;
   timeoutMs?: number;
 }
 
 /**
  * Naming for one agent whose card shows `pending` from construction. It waits for the first message,
- * then names the agent once. Every way it ends removes the key: a name, a failure, a timeout, the
+ * then labels the agent once. Every way it ends removes the key: a label, a failure, a timeout, the
  * owner's `set-name`, and the agent stopping.
  */
 export class AutoNaming {
@@ -137,40 +135,50 @@ export class AutoNaming {
   private readonly onItem = (item: InboxItem): void => {
     if (addressedToAgent(item, this.deps.owner)) this.observe(item.text);
   };
+  /** The label naming took, until {@link end} drops it. */
+  private label?: string;
 
   constructor(private readonly deps: AutoNamingDeps) {
     deps.events.on("incoming", this.onItem);
     deps.events.on("mention-wake", this.onItem);
   }
 
-  /** Name the agent from `text`, its first message. Every later call does nothing, so an item the
+  /** Label the agent from `text`, its first message. Every later call does nothing, so an item the
    *  inbox announces again is not a second first message. */
   observe(text: string): void {
     if (this.state.phase !== "waiting") return;
     const ms = this.deps.timeoutMs ?? NAMING_TIMEOUT_MS;
     const abort = new AbortController();
-    const timer = setTimeout(() => this.fail(abort, `no name within ${ms} ms`), ms);
+    const timer = setTimeout(() => this.fail(abort, `no label within ${ms} ms`), ms);
     this.state = { phase: "naming", abort, timer };
-    void this.run(text, abort, Date.now() + ms);
+    void this.run(text, abort);
   }
 
-  /** End naming: the owner's `set-name` succeeded, so their name stands, or the agent is stopping. */
+  /** End naming with no label: the owner's `set-name` is about to change the card, or the agent is
+   *  stopping. A label naming took and the card has not shown yet is dropped, so it never covers the
+   *  owner's name. */
   end(): void {
+    this.label = undefined;
     this.settle();
   }
 
-  private async run(text: string, abort: AbortController, deadline: number): Promise<void> {
+  private async run(text: string, abort: AbortController): Promise<void> {
     try {
       const reply = await this.deps.request({ ...nameRequest(text), signal: abort.signal });
-      const name = sanitizeName(reply);
-      if (name === undefined) return this.fail(abort, `the model answered with no usable name: ${JSON.stringify(reply.slice(0, 80))}`);
-      await this.deps.connected(Math.max(1, deadline - Date.now()));
-      if (abort.signal.aborted) return;
-      if (await this.deps.lane.nameSelf(name, abort.signal)) this.deps.log(`named itself ${JSON.stringify(name)} from its first message`);
-      if (this.current(abort)) this.settle();
+      const label = sanitizeLabel(reply);
+      if (label === undefined) return this.fail(abort, `the model answered with no usable label: ${JSON.stringify(reply.slice(0, 80))}`);
+      if (!this.current(abort)) return;
+      this.label = label;
+      this.settle();
     } catch (e) {
       this.fail(abort, (e as Error).message);
     }
+  }
+
+  /** The label to write, read when the write runs, so an {@link end} after naming settled still drops it. */
+  private labelAtWrite(): string | undefined {
+    if (this.label !== undefined) this.deps.log(`labelled itself ${JSON.stringify(this.label)} from its first message`);
+    return this.label;
   }
 
   private current(abort: AbortController): boolean {
@@ -179,7 +187,7 @@ export class AutoNaming {
 
   private fail(abort: AbortController, why: string): void {
     if (!this.current(abort)) return;
-    this.deps.log(`kept its launch name, because naming from its first message failed: ${why}`);
+    this.deps.log(`shows no label, because labelling from its first message failed: ${why}`);
     this.settle();
   }
 
@@ -192,6 +200,6 @@ export class AutoNaming {
     this.state = { phase: "settled" };
     this.deps.events.off("incoming", this.onItem);
     this.deps.events.off("mention-wake", this.onItem);
-    this.deps.clearPending().catch((e: unknown) => this.deps.log(`naming settled, but presence did not drop the pending mark yet: ${(e as Error).message}`));
+    this.deps.settle(() => this.labelAtWrite()).catch((e: unknown) => this.deps.log(`naming settled, but presence did not take it yet: ${(e as Error).message}`));
   }
 }

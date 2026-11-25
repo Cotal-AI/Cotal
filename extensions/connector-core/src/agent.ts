@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import {
+  AGENT_LABEL_META_KEY,
   AGENT_NAMING_META_KEY,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
@@ -34,7 +35,6 @@ import { checkEventStartup, EventStateConflictError } from "./event-startup.js";
 import { claimOnceHandoff } from "./once.js";
 import { AgentManagerCalls, invokeUserManager } from "./manager-call.js";
 import { openAgentEndpoint, type AgentEndpoint } from "./agent-endpoint.js";
-import { createNameLane, type NameLane } from "./agent-name.js";
 import { AutoNaming } from "./agent-naming.js";
 import { takeFirstCommand } from "./first-command.js";
 import type { CommandDispatch } from "./agent-commands.js";
@@ -143,9 +143,7 @@ export class MeshAgent extends EventEmitter {
     { fromId: string; contextId?: string; text?: string; pending?: boolean }
   >();
   private _stopping = false;
-  /** The one queue every change of this agent's name runs through: `set-name` and its own naming. */
-  private readonly names: NameLane;
-  /** Naming from the first message, while the seat's launch asked for it and its connector can. */
+  /** Labelling from the first message, while the seat's launch asked for it and its connector can. */
   private readonly naming?: AutoNaming;
 
   /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
@@ -223,19 +221,16 @@ export class MeshAgent extends EventEmitter {
         meta: buildMeta(config, !options.withholdProcessCwd, options.eventsArmed, config.autoName === true && options.naming !== undefined),
       },
     });
-    this.names = createNameLane(this.ep, (msg) => this.log(msg), () => this.naming?.end());
     if (config.autoName && options.naming)
       this.naming = new AutoNaming({
         events: this,
         owner: this.ep.principal.owner,
-        lane: this.names,
         request: options.naming.request,
-        clearPending: () => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined })),
-        connected: (ms) => this.waitUntilConnected(ms),
+        settle: (label) => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: label() })),
         log: (msg) => this.log(msg),
       });
     else if (config.autoName)
-      this.log(`COTAL_AUTO_NAME is set, but ${config.connector ? `the ${config.connector}` : "this"} connector cannot ask its model for a name, so the seat keeps its launch name`);
+      this.log(`COTAL_AUTO_NAME is set, but ${config.connector ? `the ${config.connector}` : "this"} connector cannot ask its model for a label, so the seat shows no label`);
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
       const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
       if (notice !== undefined) void this.inboxState.ingestNotice(m, d, meta!, notice);
@@ -536,7 +531,7 @@ export class MeshAgent extends EventEmitter {
     try {
       const served = await openAgentEndpoint(this.ep, {
         warn: (msg) => this.log(msg),
-        names: this.names,
+        onNamed: () => this.naming?.end(),
         dispatcher: this.options.commands,
         onQueued: () => this.emit("command"),
         first: takeFirstCommand(),

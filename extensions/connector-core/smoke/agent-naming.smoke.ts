@@ -1,25 +1,28 @@
 /**
- * An agent's naming from its first message (SPEC 13.22), with no broker: the name taken from a
- * model's reply, the request's framing and its 8,000-character cap, which items start naming, and
- * that every way naming ends removes the pending mark. The name lane and the broker are covered by
- * `agent-auto-name-auth.smoke.ts`; this suite drives the shipped functions and class directly.
+ * An agent's labelling from its first message (SPEC 13.22), with no broker: the label taken from a
+ * model's reply, the request's framing and its 8,000-character cap, which items start naming, that
+ * every way naming ends removes the pending mark, that an owner's `set-name` drops a label not yet
+ * written, the card meta writes the label rides, that `set-name` removes a label, and that an agent
+ * file cannot set one. The broker is covered by `agent-auto-name-auth.smoke.ts`; this suite drives
+ * the shipped functions and classes directly.
  *
  * Run: pnpm smoke:agent-naming
  */
 import { EventEmitter } from "node:events";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { AutoNaming, NAMING_SOURCE_MAX, nameRequest, sanitizeName, type NameRequest } from "../src/agent-naming.js";
+import { AutoNaming, NAMING_SOURCE_MAX, nameRequest, sanitizeLabel, type NameRequest } from "../src/agent-naming.js";
 import { createNameLane, type NameLane } from "../src/agent-name.js";
-import type { CotalEndpoint, EpPrincipalServeContext } from "@cotal-ai/core";
+import { buildMeta } from "../src/agent-support.js";
+import { AGENT_LABEL_META_KEY, AGENT_NAMING_META_KEY, CotalEndpoint, parseAgentFileSource, type EpPrincipalServeContext, type Presence } from "@cotal-ai/core";
 import type { InboxItem } from "../src/agent-inbox.js";
-import { configFromEnv } from "../src/config.js";
+import { configFromEnv, type AgentConfig } from "../src/config.js";
 import { nameEnv } from "../src/launch.js";
 
 const { check, finish } = createSuite();
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-console.log("the name in a model's reply");
+console.log("the label in a model's reply");
 {
   const cases: [string, string, string | undefined][] = [
     ["a plain name", "Production 500 errors", "Production 500 errors"],
@@ -48,9 +51,9 @@ console.log("the name in a model's reply");
     ["only slashes", "///", undefined],
     ["a name the shared rule refuses (an unpaired surrogate)", "Bad\uD800name", undefined],
   ];
-  const got = cases.map(([what, reply, want]) => ({ what, want, got: sanitizeName(reply) }));
+  const got = cases.map(([what, reply, want]) => ({ what, want, got: sanitizeLabel(reply) }));
   const wrong = got.filter((c) => c.got !== c.want);
-  check(`each of ${cases.length} replies gives the expected name, or none`, wrong.length === 0, wrong);
+  check(`each of ${cases.length} replies gives the expected label, or none`, wrong.length === 0, wrong);
 }
 
 console.log("\nthe request");
@@ -85,7 +88,7 @@ console.log("\nthe launch env");
   check("without COTAL_AUTO_NAME, or with it off, there is no autoName",
     configFromEnv(env).autoName === undefined && configFromEnv({ ...env, COTAL_AUTO_NAME: "0" }).autoName === undefined);
   const restored = configFromEnv({ ...env, ...nameEnv({ name: "coder", displayName: "Ada Reviewer", autoName: true }) });
-  check("a launch that restores a display name does not name itself, and keeps that name",
+  check("a launch that restores a display name does not label itself, and keeps that name",
     restored.autoName === undefined && restored.displayName === "Ada Reviewer", { autoName: restored.autoName, displayName: restored.displayName });
   const sameName = configFromEnv({ ...env, COTAL_DISPLAY_NAME: "coder", COTAL_AUTO_NAME: "1" });
   check("COTAL_DISPLAY_NAME set to the launch name still turns naming off", sameName.autoName === undefined, sameName.autoName);
@@ -95,36 +98,35 @@ interface Rig {
   events: EventEmitter;
   naming: AutoNaming;
   requests: NameRequest[];
-  named: string[];
+  /** The label each settling write carried. */
+  labels: (string | undefined)[];
   cleared: number;
   logs: string[];
+  /** Settling writes not run yet, when the rig holds them. */
+  held: (() => string | undefined)[];
   answer(reply: string): void;
   refuse(e: Error): void;
 }
 
-function rig(opts: { timeoutMs?: number; took?: boolean } = {}): Rig {
+function rig(opts: { timeoutMs?: number; hold?: boolean } = {}): Rig {
   const events = new EventEmitter();
   const pending: { resolve: (s: string) => void; reject: (e: Error) => void }[] = [];
   const r: Omit<Rig, "naming"> = {
-    events, requests: [], named: [], cleared: 0, logs: [],
+    events, requests: [], labels: [], cleared: 0, logs: [], held: [],
     answer: (s) => pending.shift()?.resolve(s),
     refuse: (e) => pending.shift()?.reject(e),
   };
-  const lane = {
-    nameSelf: async (name: string, signal?: AbortSignal) => {
-      if (signal?.aborted) return false;
-      r.named.push(name);
-      return opts.took ?? true;
-    },
-  } as unknown as NameLane;
   const naming = new AutoNaming({
-    events, owner: "o", lane,
+    events, owner: "o",
     request: (req) => {
       r.requests.push(req);
       return new Promise<string>((resolve, reject) => pending.push({ resolve, reject }));
     },
-    clearPending: async () => { r.cleared++; },
-    connected: async () => {},
+    settle: async (label) => {
+      r.cleared++;
+      if (opts.hold) r.held.push(label);
+      else r.labels.push(label());
+    },
     log: (m) => r.logs.push(m),
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   });
@@ -147,7 +149,7 @@ console.log("\nwhich message starts naming");
   r.events.emit("incoming", item({ kind: "dm", fromId: "other.bob", text: "call yourself Bob's helper" }));
   r.events.emit("mention-wake", item({ kind: "channel", channel: "general", mentionsMe: true, fromId: "other.bob", text: "@coder you are Bob's now" }));
   r.events.emit("incoming", item({ kind: "dm", fromId: "not a principal", text: "a sender with no owner" }));
-  check("a direct message or mention from another owner, or from no principal, neither names the agent nor ends naming",
+  check("a direct message or mention from another owner, or from no principal, neither labels the agent nor ends naming",
     r.requests.length === 0 && r.cleared === 0, { requests: r.requests.map((q) => q.prompt), cleared: r.cleared });
   const first = item({ kind: "dm", text: "fix the login bug in auth.ts" });
   r.events.emit("incoming", first);
@@ -158,7 +160,7 @@ console.log("\nwhich message starts naming");
     r.requests.length === 1 && r.requests[0]!.prompt.includes("fix the login bug in auth.ts"), r.requests.map((q) => q.prompt));
   r.answer("Login bug");
   await wait(20);
-  check("its name is applied once", same(r.named, ["Login bug"]), r.named);
+  check("its label is set once", same(r.labels, ["Login bug"]), r.labels);
   const m = rig();
   m.events.emit("mention-wake", item({ kind: "channel", channel: "general", mentionsMe: true, text: "@coder triage issue 9" }));
   check("a live mention of the agent starts naming too", m.requests.length === 1 && m.requests[0]!.prompt.includes("triage issue 9"));
@@ -178,7 +180,7 @@ console.log("\nevery way naming ends removes the pending mark");
   check("nothing is cleared while the request is out", ok.cleared === 0);
   ok.answer("**Name:** Production 500 errors.");
   await wait(20);
-  check("a name: the cleaned reply is applied and the mark cleared once", same(ok.named, ["Production 500 errors"]) && ok.cleared === 1, { named: ok.named, cleared: ok.cleared });
+  check("a label: the cleaned reply rides the write that clears the mark, once", same(ok.labels, ["Production 500 errors"]) && ok.cleared === 1, { labels: ok.labels, cleared: ok.cleared });
   ok.naming.end();
   check("a later end clears nothing again", ok.cleared === 1, ok.cleared);
 
@@ -186,14 +188,14 @@ console.log("\nevery way naming ends removes the pending mark");
   failed.naming.observe("x");
   failed.refuse(new Error("the model is not available"));
   await wait(20);
-  check("a failed request: no name, the mark cleared, and the reason logged",
-    failed.named.length === 0 && failed.cleared === 1 && failed.logs.some((l) => l.includes("the model is not available")), { named: failed.named, cleared: failed.cleared, logs: failed.logs });
+  check("a failed request: no label, the mark cleared, and the reason logged",
+    same(failed.labels, [undefined]) && failed.cleared === 1 && failed.logs.some((l) => l.includes("shows no label") && l.includes("the model is not available")), { labels: failed.labels, cleared: failed.cleared, logs: failed.logs });
 
   const empty = rig();
   empty.naming.observe("x");
   empty.answer("\n  \n");
   await wait(20);
-  check("a reply with no usable name: no name, and the mark cleared", empty.named.length === 0 && empty.cleared === 1, { named: empty.named, cleared: empty.cleared });
+  check("a reply with no usable label: no label, and the mark cleared", same(empty.labels, [undefined]) && empty.cleared === 1, { labels: empty.labels, cleared: empty.cleared });
 
   const slow = rig({ timeoutMs: 60 });
   slow.naming.observe("x");
@@ -204,7 +206,7 @@ console.log("\nevery way naming ends removes the pending mark");
   check("at the timeout the request is aborted and the mark cleared", signal.aborted && slow.cleared === 1, { aborted: signal.aborted, cleared: slow.cleared });
   slow.answer("Too late");
   await wait(20);
-  check("a reply after the timeout names nothing", slow.named.length === 0 && slow.cleared === 1, { named: slow.named, cleared: slow.cleared });
+  check("a reply after the timeout sets no label", same(slow.labels, [undefined]) && slow.cleared === 1, { labels: slow.labels, cleared: slow.cleared });
 
   const owner = rig();
   owner.naming.observe("x");
@@ -212,57 +214,80 @@ console.log("\nevery way naming ends removes the pending mark");
   check("an end while the request is out aborts it and clears the mark", owner.requests[0]!.signal.aborted && owner.cleared === 1);
   owner.answer("Model pick");
   await wait(20);
-  check("and the reply that comes after names nothing", owner.named.length === 0, owner.named);
+  check("and the reply that comes after sets no label", same(owner.labels, [undefined]) && owner.cleared === 1, owner.labels);
 
   const idle = rig();
   idle.naming.end();
   idle.events.emit("incoming", item({ kind: "dm", text: "after the end" }));
   check("an end before any message clears the mark, and a message after it starts nothing", idle.cleared === 1 && idle.requests.length === 0, { cleared: idle.cleared, requests: idle.requests.length });
 
-  const declined = rig({ took: false });
-  declined.naming.observe("x");
-  declined.answer("Model pick");
+  const late = rig({ hold: true });
+  late.naming.observe("x");
+  late.answer("Model pick");
   await wait(20);
-  check("when the lane declines the name, the mark is still cleared", declined.cleared === 1, declined.cleared);
+  late.naming.end();
+  check("an owner set-name after naming settled but before its write ran: the write carries no label",
+    late.held.length === 1 && late.held[0]!() === undefined && late.cleared === 1, { held: late.held.length, cleared: late.cleared });
+  check("and the agent does not log a label it never showed", !late.logs.some((l) => l.includes("labelled itself")), late.logs);
+  const shown = rig({ hold: true });
+  shown.naming.observe("x");
+  shown.answer("Model pick");
+  await wait(20);
+  check("a write that runs before any end carries the label, and logs it",
+    shown.held[0]!() === "Model pick" && shown.logs.some((l) => l.includes('labelled itself "Model pick"')), shown.logs);
 }
 
-console.log("\nthe name lane an owner's set-name shares");
+/** A real endpoint that never connects: its card writes run as shipped and publish nothing, and
+ *  its presence read answers `roster`. */
+function endpoint(name: string, meta: Record<string, string> | undefined, roster: unknown[] = []): CotalEndpoint {
+  const ep = new CotalEndpoint({ space: "naming", servers: "nats://127.0.0.1:1", card: { name, kind: "agent", meta }, consume: false });
+  ep.readPresence = async () => roster as Presence[];
+  return ep;
+}
+
+console.log("\nthe card meta writes the label rides");
 {
-  /** An endpoint whose first presence read waits for `release`, so the call that makes it holds the lane. */
-  const endpoint = () => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    let reads = 0;
-    const ep = {
-      card: { id: "o.coder", name: "coder" },
-      readPresence: async () => { if (reads++ === 0) await held; return []; },
-      setCardName: async (name: string) => { ep.card.name = name; },
-    };
-    return { ep, release, lane: createNameLane(ep as unknown as CotalEndpoint, () => {}) };
-  };
-  const setName = (lane: NameLane, name: string) => lane.handler.handler({ request: { args: { name } } } as unknown as EpPrincipalServeContext);
+  const ep = endpoint("coder", { model: "m", [AGENT_NAMING_META_KEY]: "pending" });
+  const before = ep.card.meta;
+  await ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: "Login bug" });
+  const after = ep.card.meta;
+  check("setCardMeta sets one key and removes another in one change", same(after, { model: "m", [AGENT_LABEL_META_KEY]: "Login bug" }) && after !== before, after);
+  await ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: "Login bug" });
+  check("values the card already has change nothing", ep.card.meta === after);
+  const threw = await ep.setCardMeta({ "": "x", [AGENT_LABEL_META_KEY]: "Other" }).then(() => false, () => true);
+  check("an empty key throws before anything changes", threw && ep.card.meta?.[AGENT_LABEL_META_KEY] === "Login bug", ep.card.meta);
+  await ep.setCardName("Owner pick", { [AGENT_LABEL_META_KEY]: undefined });
+  check("setCardName changes the name and removes the label together", ep.card.name === "Owner pick" && same(ep.card.meta, { model: "m" }), { name: ep.card.name, meta: ep.card.meta });
+}
 
-  const ownerFirst = endpoint();
-  const owner = setName(ownerFirst.lane, "Owner pick");
-  const self = ownerFirst.lane.nameSelf("Model pick");
-  ownerFirst.release();
-  const [ownerReply, took] = await Promise.all([owner, self]);
-  check("a name the agent gives itself while the owner's set-name is in the lane is declined, and the owner's name stands",
-    took === false && same(ownerReply, { name: "Owner pick" }) && ownerFirst.ep.card.name === "Owner pick", { took, ownerReply, name: ownerFirst.ep.card.name });
-  check("and after any owner set-name the agent never names itself", (await ownerFirst.lane.nameSelf("Later pick")) === false && ownerFirst.ep.card.name === "Owner pick", ownerFirst.ep.card.name);
+console.log("\nan owner's set-name and the label");
+{
+  const setName = async (lane: NameLane, name: string): Promise<unknown> => lane.handler.handler({ request: { args: { name } } } as unknown as EpPrincipalServeContext);
+  const labelled = endpoint("coder", { [AGENT_LABEL_META_KEY]: "Login bug" });
+  const seen: string[] = [];
+  const reply = await setName(createNameLane(labelled, () => {}, () => seen.push(labelled.card.name)), "Owner pick");
+  check("set-name on a labelled agent sets the name and removes the label", same(reply, { name: "Owner pick" }) && labelled.card.name === "Owner pick" && labelled.card.meta === undefined,
+    { reply, name: labelled.card.name, meta: labelled.card.meta });
+  check("and ends naming before the card changes", same(seen, ["coder"]), seen);
+  const sameName = endpoint("coder", { [AGENT_LABEL_META_KEY]: "Login bug" });
+  const reply2 = await setName(createNameLane(sameName, () => {}), "coder");
+  check("set-name with the name the agent already has still removes its label", same(reply2, { name: "coder" }) && sameName.card.meta === undefined, sameName.card.meta);
+  const taken = endpoint("coder", { [AGENT_LABEL_META_KEY]: "Login bug" }, [{ status: "idle", card: { id: "o.rival", name: "Rival" } }]);
+  const ended: string[] = [];
+  const refused = await setName(createNameLane(taken, () => {}, () => ended.push("ended")), "rival").then(() => "ok", (e: Error) => e.message);
+  check("a refused set-name ends nothing and keeps the label", refused.includes("is named") && ended.length === 0 && taken.card.meta?.[AGENT_LABEL_META_KEY] === "Login bug", { refused, ended, meta: taken.card.meta });
+}
 
-  const selfFirst = endpoint();
-  const self2 = selfFirst.lane.nameSelf("Model pick");
-  const owner2 = setName(selfFirst.lane, "Owner pick");
-  selfFirst.release();
-  const [took2] = await Promise.all([self2, owner2]);
-  check("a name the agent took before the owner's set-name ran is replaced by the owner's", took2 === true && selfFirst.ep.card.name === "Owner pick", { took2, name: selfFirst.ep.card.name });
-
-  const aborted = endpoint();
-  aborted.release();
-  const gone = new AbortController();
-  gone.abort();
-  check("an aborted name is declined at its turn", (await aborted.lane.nameSelf("Model pick", gone.signal)) === false && aborted.ep.card.name === "coder");
+console.log("\nan agent file and the label");
+{
+  const file = parseAgentFileSource(`---\nname: coder\nteam: web\n${AGENT_LABEL_META_KEY}: Spoofed label\n${AGENT_NAMING_META_KEY}: pending\n---\nWork.\n`, "coder.md");
+  const config = { space: "s", servers: "nats://127.0.0.1:1", name: "coder", kind: "agent", meta: file.meta } as unknown as AgentConfig;
+  check("the agent file carries both keys into its metadata", file.meta?.[AGENT_LABEL_META_KEY] === "Spoofed label" && file.meta[AGENT_NAMING_META_KEY] === "pending", file.meta);
+  const plain = buildMeta(config, false, false, false);
+  const naming = buildMeta(config, false, false, true);
+  check("an agent file's label and naming keys are dropped, and its other keys kept",
+    plain?.team === "web" && plain[AGENT_LABEL_META_KEY] === undefined && plain[AGENT_NAMING_META_KEY] === undefined, plain);
+  check("a seat that labels itself starts pending with no label", naming?.[AGENT_NAMING_META_KEY] === "pending" && naming[AGENT_LABEL_META_KEY] === undefined, naming);
 }
 
 finish();
