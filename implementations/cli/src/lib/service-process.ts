@@ -785,7 +785,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
       const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
       // A foreground child wrote to this terminal, so its log holds nothing from this launch.
-      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "its log records the cause";
+      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "no log line was available from this start";
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` }) });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };
