@@ -30,7 +30,7 @@ import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_pro
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 
@@ -364,7 +364,15 @@ try {
       stopping.status === 0 && out(stopping).includes("after 600 s with no agents") && stoppedEarly.status === 0 && !out(stoppedStatus).includes("Idle exit") && !out(stoppedStatus).includes("by itself"), out(stoppedStatus));
 
     // ---- Bare down refuses while the space's service runs, and skips it once stopped -------------
+    // This start's manager reads spawn.env: a name set where it starts reaches it, while an
+    // Object.prototype member, which a seat never gets, does not.
+    const spawnConfig = join(xdg, "cotal", "config.json");
+    mkdirSync(dirname(spawnConfig), { recursive: true, mode: 0o700 });
+    writeFileSync(spawnConfig, JSON.stringify({ spawn: { env: ["SMOKE_SPAWN_PROBE", "constructor", "toString"] } }), { mode: 0o600 });
+    env.SMOKE_SPAWN_PROBE = "1";
     const start = cotal(["service", "start", "mgr", "--space", SPACE]);
+    delete env.SMOKE_SPAWN_PROBE;
+    rmSync(spawnConfig);
     const live = serviceInstances(SPACE, "mgr")[0];
     liveInstance = live?.name;
     const liveState = () => live ? serviceInstanceStore(SPACE).read(live.name)?.record.value.state : undefined;
@@ -376,6 +384,9 @@ try {
     const childArgv = childPid ? readFileSync(`/proc/${childPid}/cmdline`, "utf8").split("\0").filter(Boolean) : [];
     const childEntry = childArgv.indexOf(BIN);
     check("the controller runs the manager preset under node --max-semi-space-size=1", childEntry > 0 && childArgv.slice(1, childEntry).includes("--max-semi-space-size=1"), childArgv);
+    const childNames = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0").map((entry) => entry.slice(0, entry.indexOf("="))) : [];
+    check("the started manager gets a spawn.env name set where it starts, and no Object.prototype member it lists",
+      childNames.includes("SMOKE_SPAWN_PROBE") && !childNames.some((name) => ["constructor", "toString"].includes(name)), childNames);
     const stopCommand = `cotal service stop mgr --instance ${live?.name} --space ${SPACE} --yes`;
     const preview = cotal(["down", "--dry-run", "--json"]);
     let checks: { definition?: string; instanceId?: string; action?: string }[] = [], warnings: { code?: string; message?: string }[] = [];

@@ -277,12 +277,13 @@ function environment(definition: ServiceDefinitionInput): NodeJS.ProcessEnv {
 
 /** The `spawn.env` names set in this command's environment, read from the config the manager at
  *  `root` reads. A manager gives its seats those names from its own environment, so they reach it
- *  here; a name `spawn.env` gains later reaches a seat once the manager starts again. */
+ *  here; a name `spawn.env` gains later reaches a seat once the manager starts again. Only a variable
+ *  the environment holds is read, never a member every object inherits, such as `constructor`. */
 function spawnEnvironment(root: string): NodeJS.ProcessEnv {
   let names: readonly string[];
   try { names = spawnEnvAllow(loadCotalConfig(root)) ?? []; }
   catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `${(error as Error).message}; the manager reads spawn.env from it, so no process was launched`, { remedy: "fix the config file, then run the command again" }); }
-  return Object.fromEntries(names.filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]]));
+  return Object.fromEntries(names.filter((name) => Object.hasOwn(process.env, name)).map((name) => [name, process.env[name]]));
 }
 
 export function serviceLogPath(space: string, id: string, create = false): string | undefined {
