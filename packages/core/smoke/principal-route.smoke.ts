@@ -19,7 +19,7 @@ import {
   epPrincipalCallerReplyFilter, epPrincipalGrantRows, epPrincipalNoRespondersSubject, epPrincipalOwnerGrantRows,
   epPrincipalReplySubject, epPrincipalRequestSubject, epPrincipalServeFilter, epPrincipalServeGrantRows, epServeGrantRows,
   isPrincipalAuthority, mintLifecycleUid, parseClusterDocument, parseEndpointRequest, parseEpSubject, permissionsFor,
-  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable,
+  principalRouteCommands, isAgentCommandName, EpEnvelopeError, ContractInvalidError, chatHistDurable, assertValidLabel,
   type EndpointRequest, type EpCaller, type EpCapability, type EpPrincipal, type ParsedEpPrincipalRequest, type PromptContent,
 } from "../src/index.js";
 import * as coreRoot from "../src/index.js";
@@ -111,20 +111,20 @@ check("the builder writes authorities, and a row without it writes none",
   buildClusterDocument("ai.cotal.test", 1, [{ name: "a", targeted: false, authorities: ["owner"], capability: "x.y", input: {}, output: {} },
     { name: "b", targeted: false, capability: "x.y", input: {}, output: {} }]).commands.map((c) => c.authorities?.join() ?? "-").join("|") === "owner|-");
 
-// ── the `agent` cluster, revision 5 (SPEC 13.22) ──
+// ── the `agent` cluster, revision 6 (SPEC 13.22) ──
 const agentDoc = parseClusterDocument(structuredClone(AGENT_CLUSTER));
-check("the agent cluster is ai.cotal.agent revision 5 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn and usage",
-  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 5
-  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage", agentDoc.commands.map((c) => c.name));
+check("the agent cluster is ai.cotal.agent revision 6 with prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn, usage and set-label",
+  agentDoc.urn === "ai.cotal.agent" && agentDoc.revision === 6
+  && agentDoc.commands.map((c) => c.name).join() === "prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage,set-label", agentDoc.commands.map((c) => c.name));
 check("every command is ephemeral, untargeted and without modes",
   agentDoc.commands.every((c) => c.class === "ephemeral" && c.targeted === false && c.modes === undefined));
-check("the prompt commands admit owner and grant, and the four command commands, interrupt, set-name, turn and usage admit owner only",
+check("the prompt commands admit owner and grant, and the four command commands, interrupt, set-name, turn, usage and set-label admit owner only",
   agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`).join()
-    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner,set-name:owner,turn:owner,usage:owner",
+    === "prompts:owner+grant,prompt:owner+grant,prompt-answer:owner+grant,commands:owner,command:owner,command-cancel:owner,command-state:owner,interrupt:owner,set-name:owner,turn:owner,usage:owner,set-label:owner",
   agentDoc.commands.map((c) => `${c.name}:${c.authorities?.join("+")}`));
-check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read, and the interrupt, the rename, the turn and the usage read as their own",
+check("capabilities: prompt reads, the answer, the command list, a command run, its cancel as a run, its state as a read, the interrupt, the rename, the turn and the usage read as their own, and the label as the rename",
   agentDoc.commands.map((c) => c.capability).join()
-    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt,agent.profile.write,agent.turn.start,agent.usage.read",
+    === "agent.prompts.read,agent.prompts.read,agent.prompts.answer,agent.commands.read,agent.commands.run,agent.commands.run,agent.commands.read,agent.turn.interrupt,agent.profile.write,agent.turn.start,agent.usage.read,agent.profile.write",
   agentDoc.commands.map((c) => c.capability));
 check("the declared digests are the compiled contracts' closure digests",
   agentDoc.commands.every((c) => AGENT_CONTRACTS[c.name].input.closureDigest === c.inputDigest && AGENT_CONTRACTS[c.name].output.closureDigest === c.outputDigest));
@@ -190,6 +190,27 @@ check("set-name takes { name } of any string, so the agent gives every name it r
 check("set-name answers { name }, a name of 1 to 128 characters, and nothing else",
   nameOut({ name: "Reviewer Bot" }) && nameOut({ name: "x".repeat(128) }) && !nameOut({ name: "" }) && !nameOut({ name: "x".repeat(129) })
   && !nameOut({}) && !nameOut({ name: "a", changed: true }));
+const labelIn = contractOf("set-label", "input"), labelOut = contractOf("set-label", "output");
+check("set-label takes { label } of any string, so the agent gives every label it refuses the same typed answer, and nothing else",
+  labelIn({ label: "Login fix" }) && labelIn({ label: "" }) && labelIn({ label: "x".repeat(200) }) && labelIn({ label: "a/b" })
+  && !labelIn({}) && !labelIn({ label: 7 }) && !labelIn({ label: "a", name: "b" }));
+check("set-label answers { label }, of 1 to 128 characters, and nothing else",
+  labelOut({ label: "Login fix" }) && !labelOut({ label: "" }) && !labelOut({ label: "x".repeat(129) }) && !labelOut({}) && !labelOut({ label: "a", name: "b" }));
+const labelRefusal = (label: string): string | undefined => {
+  try {
+    assertValidLabel(label);
+    return undefined;
+  } catch (e) {
+    return (e as Error).message;
+  }
+};
+check("a label passes the rule auto-naming applies: one line, no surrounding whitespace, no / or \\, single spaces, at most 40 code points",
+  labelRefusal("Login fix") === undefined && labelRefusal("x".repeat(40)) === undefined && labelRefusal("😀".repeat(40)) === undefined
+  && /40-character/.test(labelRefusal("x".repeat(41)) ?? "") && /40-character/.test(labelRefusal("😀".repeat(41)) ?? "")
+  && /single spaces/.test(labelRefusal("Login  fix") ?? "") && /single spaces/.test(labelRefusal("Login\tfix") ?? "")
+  && /reserved/.test(labelRefusal("src/app.ts") ?? "") && /reserved/.test(labelRefusal("a\\b") ?? "")
+  && /single line/.test(labelRefusal("a\nb") ?? "") && /surrounding whitespace/.test(labelRefusal(" Login") ?? "") && labelRefusal("") !== undefined,
+  ["x".repeat(41), "Login  fix", "Login\tfix", "src/app.ts", "a\nb", " Login", ""].map(labelRefusal));
 const entry = (e: Record<string, unknown> = {}) => ({ supported: true, commands: [{ name: "review", target: "command", ...e }] });
 check("commands takes {} and answers { supported: false } or { supported: true, commands }",
   listIn({}) && !listIn({ target: "skill" }) && listOut({ supported: false }) && listOut({ supported: true, commands: [] }) && listOut(entry({ description: "d", inputHint: "[pr]" }))
@@ -298,8 +319,8 @@ check("serve rows: subscribe its own head for every runtime, publish replies und
 check("the serve subscribe row has the request's 15 tokens and the reply row the reply's 13",
   serve.sub[0].split(".").length === 15 && serve.pub[0].split(".").length === 13);
 const own = epPrincipalOwnerGrantRows(SPACE, web);
-check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn and usage, the caller's own owner pinned in the head",
-  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage"]
+check("owner rows: describe, prompts, prompt, prompt-answer, commands, command, command-cancel, command-state, interrupt, set-name, turn, usage and set-label, the caller's own owner pinned in the head",
+  own.pub.join("|") === ["describe", "prompts", "prompt", "prompt-answer", "commands", "command", "command-cancel", "command-state", "interrupt", "set-name", "turn", "usage", "set-label"]
     .map((cmd) => `${P}.ep.prin.agent.u_alice.*.*.*.${cmd}.owner.u_alice.web.${CUID}.*`).join("|"), own.pub);
 check("owner rows: one reply read with the caller triple pinned", own.sub.join("|") === `${P}.ep.prin-reply.*.*.*.*.*.u_alice.web.${CUID}.*`);
 const grantee: EpCaller = { owner: "u_bob", actor: "builder", uid: UID2 };
@@ -320,8 +341,9 @@ throws("no grant row interrupts a turn: interrupt admits owner only", () => epPr
 throws("no grant row renames an agent: set-name admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["set-name"]), "admits");
 throws("no grant row gives a turn: turn admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["turn"]), "admits");
 throws("no grant row reads usage: usage admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["usage"]), "admits");
+throws("no grant row labels an agent: set-label admits owner only", () => epPrincipalGrantRows(SPACE, grantee, { owner: "u_alice", actor: "coder", uid: UID }, ["set-label"]), "admits");
 check("the (command, word) pairs come from the cluster constant",
-  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage"
+  principalRouteCommands("owner").join() === "describe,prompts,prompt,prompt-answer,commands,command,command-cancel,command-state,interrupt,set-name,turn,usage,set-label"
   && principalRouteCommands("grant").join() === "describe,prompts,prompt,prompt-answer" && Object.isFrozen(principalRouteCommands("owner")),
   { owner: principalRouteCommands("owner"), grant: principalRouteCommands("grant") });
 
@@ -339,8 +361,8 @@ check("a managed-agent ledger row gets the serve rows and no caller row",
   prinRows(managed).sort().join("|") === [...serve.pub, ...serve.sub].sort().join("|"), prinRows(managed));
 const interactive = mint({ owner: "u_alice", actor: "web" }, { ledgerKind: "interactive" }, CUID);
 const webServe = epPrincipalServeGrantRows(SPACE, web);
-check("an interactive ledger row gets the serve rows, the twelve owner rows and the reply read",
-  own.pub.length === 12 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
+check("an interactive ledger row gets the serve rows, the thirteen owner rows and the reply read",
+  own.pub.length === 13 && prinRows(interactive).sort().join("|") === [...webServe.pub, ...webServe.sub, ...own.pub, ...own.sub].sort().join("|"), prinRows(interactive));
 check("an interactive row's owner rows cover its own actor as a target, so the command must refuse a self-answer (R4)",
   (interactive as { pub: { allow: string[] } }).pub.allow.includes(`${P}.ep.prin.agent.u_alice.*.*.*.prompt-answer.owner.u_alice.web.${CUID}.*`));
 check("a callout mint with no ledger kind (a chat session) gets none", prinRows(mint({ owner: "u_alice", actor: "chat" })).length === 0);
@@ -422,7 +444,7 @@ const without = await jwtBytes(fixture());
 const withRows = await jwtBytes(fixture("interactive"));
 console.log(`  maximum-capability fixture as an interactive mint: ${withRows} JWT bytes, ${withRows - without} of them the rows an interactive row adds (mint bound ${MAX_MINTED_JWT_BYTES})`);
 check("the maximum-capability fixture with the rows an interactive row adds stays under the mint bound", withRows < MAX_MINTED_JWT_BYTES, { withRows, without, bound: MAX_MINTED_JWT_BYTES });
-check("the interactive rows add 2 serve rows, 12 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 15,
+check("the interactive rows add 2 serve rows, 13 owner rows and 1 reply read", prinRows(fixture("interactive")).length - prinRows(fixture()).length === 16,
   prinRows(fixture("interactive")).length - prinRows(fixture()).length);
 
 // ── the entry point: the package root serves the `agent` endpoint only ──

@@ -396,7 +396,7 @@ Presence is a per-space directory keyed by instance id. NATS binding: JetStream 
 | `description` | string | MAY | one-line summary |
 | `tags` | string[] | MAY | capability tags |
 | `skills` | `AgentSkill[]` | MAY | `{ id, name, description? }` |
-| `meta` | object | MAY | free-form advisory metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). `ai.cotal.manager.instance` is the reference connector's holding-manager routing hint, never authority. `ai.cotal.naming` is `pending` while the agent's label from its first message is outstanding (§13.22) and absent otherwise. `ai.cotal.label` is that label, one line of at most 40 code points that only the agent's own connector writes; a reader that shows the agent SHOULD show `meta["ai.cotal.label"] ?? name`, and MUST NOT resolve the label as an address, since `@mentions`, direct messages and name lookups match `name`. All are advisory only |
+| `meta` | object | MAY | free-form advisory metadata. Reserved flat string keys are `connector` (host harness name), `model` (pinned model), `provider` (effective provider serving the model, connector-reported), `host` (self-reported machine), `cwd`, `repo`, `branch`, `head`, `sessionKind`, `sessionId`, and `terminal` (`stream` or `none`, whether a terminal attaches to the seats this manager starts). `ai.cotal.manager.instance` is the reference connector's holding-manager routing hint, never authority. `ai.cotal.naming` is `pending` while the agent's label from its first message is outstanding (§13.22) and absent otherwise. `ai.cotal.label` is that label, or the one its owner set with `set-label` (§13.22), one line of at most 40 code points that only the agent's own connector writes; a reader that shows the agent SHOULD show `meta["ai.cotal.label"] ?? name`, and MUST NOT resolve the label as an address, since `@mentions`, direct messages and name lookups match `name`. All are advisory only |
 | `protocolVersion` | string | MUST from v0.4 | wire version spoken (§11); `"0.4"` for this revision. Advertisement is the marker at the v0.4 reachability boundary (§13.11): a participant that omits it is pre-0.4 (omission means the pre-0.4 line, where the field was optional) and MUST NOT be addressed on the `ep` rails. A change signal, not negotiation |
 
 An instance MUST refresh its own presence entry on the heartbeat interval, default 2000 ms.
@@ -6552,7 +6552,7 @@ validators of §13.2, so `<pUid>` is a lifecycle UID and no row can name the sen
 | Mint | Serve rows | Caller rows |
 | --- | --- | --- |
 | User-auth, ledger row of kind `managed-agent` | yes | none |
-| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage`, and the reply read |
+| User-auth, ledger row of kind `interactive` | yes | `owner` rows for `describe`, `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn`, `usage` and `set-label`, and the reply read |
 | Static credential | no | no |
 | Open mesh | no rows exist | |
 | Every view, service credential and infrastructure profile | no | no |
@@ -6675,16 +6675,17 @@ invokes registered endpoints does not reach them.
 The endpoint `agent` on the principal route (§13.21) is the command set an agent serves about the
 questions its harness stops to ask (a tool permission, a question, a plan to approve, a form),
 about the harness commands and skills it runs, about its turns, about what its harness reports of
-its usage, and about its display name. Its contract is a core constant: cluster URN
-`ai.cotal.agent`, revision 5, every schema closed and frozen, nothing published to the contract
+its usage, and about its display name and label. Its contract is a core constant: cluster URN
+`ai.cotal.agent`, revision 6, every schema closed and frozen, nothing published to the contract
 store. A caller embeds the artifacts and pins their digests. Every command is ephemeral and
 untargeted. The prompt commands declare `authorities: ["owner", "grant"]`; `commands`, `command`,
-`command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage` declare
+`command-cancel`, `command-state`, `interrupt`, `set-name`, `turn`, `usage` and `set-label` declare
 `authorities: ["owner"]`, so only the owner's interactive session runs an agent's commands, gives it
-a turn, stops its turn, reads its usage or renames it.
+a turn, stops its turn, reads its usage, renames it or labels it.
 
 Revision 2 adds `commands`, `command`, `command-cancel` and `command-state`, revision 3 adds
-`interrupt`, revision 4 adds `set-name`, and revision 5 adds `turn` and `usage`. The earlier commands
+`interrupt`, revision 4 adds `set-name`, revision 5 adds `turn` and `usage`, and revision 6 adds
+`set-label`. The earlier commands
 and their digests are unchanged, so
 a caller pinned to an earlier revision still calls them. An agent that serves an earlier revision
 answers a command it lacks with `unimplemented`, `not-executed`.
@@ -6703,6 +6704,7 @@ answers a command it lacks with `unimplemented`, `not-executed`.
 | `set-name` | `agent.profile.write` | `{ name }` | `{ name }` |
 | `turn` | `agent.turn.start` | `{ text, images? }` | `{ id }` |
 | `usage` | `agent.usage.read` | `{}` | `{ supported: false }` or `{ supported: true, context?, cost? }` |
+| `set-label` | `agent.profile.write` | `{ label }` | `{ label }` |
 
 `prompts` lists at most 32 prompts in `open`, those that are `open` or `sent`, and at most 32 in
 `closed`, the last prompts of this runtime to close. `runtime` is the `id` and `startedAt` of the
@@ -7011,6 +7013,9 @@ stops, and its outcome leaves with the process.
 | `usage` | The agent's connector reports no usage, or none now | `ok`, with `{ supported: false }` |
 | `usage` | The harness did not report within 10 s, or failed | `unavailable`, `not-executed` |
 | `usage` | Otherwise | `ok`, with `{ supported: true }` and the fields the harness reported |
+| `set-label` | `label` fails the label rule | `bad-request`, `not-executed` |
+| `set-label` | The agent is stopping | `unavailable`, `not-executed` |
+| `set-label` | Otherwise | `ok`, with `{ label }`: the card carries the label and its name as before |
 
 **Names.** `set-name` changes the agent's display name, `card.name` (§6), and nothing else: the
 principal, the lifecycle, and every subject, durable and grant keyed by them stay as they are. The
@@ -7026,6 +7031,15 @@ Two agents can still take one name at once, because presence is advisory. Messag
 the name they were sent under (§5). A launcher that starts the same lifecycle again, such as after a
 crash or a preserved resume, keeps it under the same principal and SHOULD start it with the name its
 presence last showed.
+
+**Labels.** `set-label` sets the label readers show in place of the agent's name,
+`meta["ai.cotal.label"]` (§6), and nothing else: `card.name` stays, so `@mentions`, direct messages
+and name lookups still resolve it. The label rule is the one a label from the first message meets
+(below): the shared name rule, at most 40 code points, and words separated by single spaces. The agent
+refuses a label that breaks the rule as it stands and does not clean it. The input takes any string,
+so every label the rule refuses gets the same refusal. A label need not be unique, so the agent reads
+no presence for it. The agent runs `set-label` in turn with `set-name` and republishes presence once
+the card changed. A later `set-name` drops the label.
 
 **Turns.** `turn` gives the agent a turn on its owner's own words, as if the owner typed them at the
 harness's own input, never framed as a message from a peer. `text` is at most 262144 characters.
@@ -7058,10 +7072,11 @@ never changes `card.name`: the launch name stays the agent's address, so `@menti
 messages and name lookups resolve it before and after the label, and a label need not be unique.
 From launch until naming settles, the card carries `meta["ai.cotal.naming"] = "pending"`; the agent
 removes the key when naming settles, whether it took a label, its model failed or answered with no
-usable label, 60 s passed, the owner renamed it, or the agent stopped. A label and the removal of the
+usable label, 60 s passed, the owner renamed or labelled it, or the agent stopped. A label and the removal of the
 key reach presence in one record, so no reader sees a label while the key is still `pending`. A
 failed naming leaves no label: the agent tries no other model and no substitute label. An owner
-`set-name` before naming settles ends naming with no label, and the owner's name stands. Only the
+`set-name` or `set-label` before naming settles ends naming with no label of its own, and the owner's
+name or label stands. Only the
 agent's own connector writes `ai.cotal.label`; an agent file cannot set it or `ai.cotal.naming`. A
 connector that cannot make the request never shows the key, and an agent started with the name its
 presence last showed does not label itself, so a relaunch shows no label. A client MAY wait for the
@@ -7870,7 +7885,7 @@ Grouped placeholders such as `<CHAT|DM|TASK>` mean one concrete subject per list
 - minted by the auth callout from a ledger row of either kind (§13.21): `P.ep.prin-reply.agent.<owner>.<actor>.<uid>.*.*.*.*.*`,
   replies under its own principal-route head; from an `interactive` row also
   `P.ep.prin.agent.<owner>.*.*.*.<command>.owner.<owner>.<actor>.<uid>.*` for each of `describe`,
-  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn` and `usage`. The kind is the ledger row's, never a scope token's. A
+  `prompts`, `prompt`, `prompt-answer`, `commands`, `command`, `command-cancel`, `command-state`, `interrupt`, `set-name`, `turn`, `usage` and `set-label`. The kind is the ledger row's, never a scope token's. A
   static mint, a principal outside the ledger's row spaces such as a chat session, every view, and
   every observer, admin, delivery, supervisor, serve and infrastructure profile hold no
   principal-route row
@@ -8236,6 +8251,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-25 | **The owner labels an agent (§6, §13.21, §13.22, Appendix B), additive.** The `agent` cluster advances to revision 6 with `set-label`, capability `agent.profile.write`, `authorities: ["owner"]`, input `{ label }` of any string and output `{ label }`. It sets `meta["ai.cotal.label"]`, which readers show in place of the name, and leaves `card.name`, so `@mentions`, direct messages and name lookups still resolve it. It refuses as `bad-request`, `not-executed`, a label that breaks the rule a label from the first message meets: the shared name rule, at most 40 code points, and single spaces between words. It runs in turn with `set-name`, and a `set-label` before naming settles ends naming with the owner's label. An interactive ledger row's mint adds the `owner` row for `set-label`; no `grant` row admits it. Earlier commands and their digests are unchanged. No subject changes. |
 | 2026-11-24 | **Opt-in launch fields for permission prompts and reasoning (§9, §13.7), additive.** The Manager cluster advances to revision 56. Its `spawn` input takes the optional booleans `askPermissions`, which launches the harness asking before it uses a tool so its prompts reach the `agent` endpoint, and `reasoningEvents`, which publishes the model's reasoning on the event plane. Both default off. The manager refuses a field the connector does not declare before any provisioning, refuses `reasoningEvents` without the event plane, and keeps an accepted field with the seat across restarts. Every `status.connectors` row requires both as the connector's declarations, read as false when an installed extension's cache lacks them. No subject changes. |
 | 2026-11-24 | **An agent labels itself from its first message (§6, §9, §13.22), additive.** The Manager cluster advances to revision 55: the closed `spawn` input takes optional boolean `autoName`, which revision 54 rejects. A Manager refuses it on a `once` spawn and on a runtime that delegates seats outside its host, and never passes it again on a relaunch. The seat's connector makes one tool-less request to the seat's own model, outside its conversation, about the launch prompt or else the first live direct message or mention from a principal of the seat's own owner, and shows the cleaned reply as the card's `meta["ai.cotal.label"]`. `card.name` stays the launch name, so mentions, direct messages and name lookups keep resolving it, and readers show `meta["ai.cotal.label"] ?? name`. The card carries `meta["ai.cotal.naming"] = "pending"` from launch until naming settles, and the label and the key's removal reach presence in one record. An owner `set-name` before then ends naming with no label, and a `set-name` drops the label in the record that carries the new name. A connector that cannot make the request never shows the key. No subject changes. |
 | 2026-11-24 | **A launcher lists a harness's commands before launch and starts an agent with one (§13.6, §13.22, Appendix B), additive.** The Manager cluster advances to revision 54. The `harness-commands` launch read answers `{ agent, cwd, supported: true, commands }` with the entries a harness lists for a directory on the Manager's host, under the names a seat's `command` takes, or `{ supported: false, reason }` for a harness whose seats run no commands. It starts no seat, is granted where `list-dir` is, and a failed lookup is `unavailable`, never an empty list. `spawn` takes `firstCommand: { target, name, args? }`, and its acceptance names `firstCommand.id`, derived from the goal id. The agent queues the command under that id before any other and runs it as its first turn once its harness runs commands. A spawn whose harness runs no commands of that target, whose mesh is not user-auth, whose runtime starts seats elsewhere, or that also names `prompt` or `once` is refused before anything is provisioned. A harness that runs no commands within 60 s ends the command `refused` with its cause. Earlier commands, schemas and digests are unchanged. |
