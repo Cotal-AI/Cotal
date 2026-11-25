@@ -309,6 +309,43 @@ const prepare = (space: string): string => {
   return root;
 };
 
+async function checkStoppedReservation(): Promise<void> {
+  const holder = "stopped-reservation", holderRoot = join(projects, holder);
+  mkdirSync(join(holderRoot, ".cotal"), { recursive: true, mode: 0o700 });
+  anchors.set(holderRoot, recordSmokeSandbox({ root: holderRoot, cotalHome: home, xdgConfigHome: configDir }));
+  roots.push(holderRoot);
+  const port = await freePort(), server = `nats://127.0.0.1:${port}`;
+  const started = cli(holderRoot, "up", "--detach", "--open", "--server", server);
+  const stopped = cli(holderRoot, "down", "--yes");
+  check("legacy down leaves the other space registered at the stopped address",
+    started.status === 0 && stopped.status === 0 && findMesh(holder)?.server === server, { started: shown(started), stopped: shown(stopped) });
+
+  const probe = createServer();
+  await listenOn(probe, port);
+  await new Promise<void>((done) => probe.close(() => done()));
+
+  const space = "reserved-address", root = prepare(space);
+  const refused = cli(root, "up", "--foreground", "--open", "--server", server);
+  const retry = /`(?:pnpm )?cotal (up --foreground --open --server nats:\/\/127\.0\.0\.1:(\d+))`/.exec(refused.stderr);
+  check("a first foreground start refuses the stopped reservation and names a checked alternate",
+    refused.status === 2 && refused.stderr.includes("CONFLICT") && refused.stderr.includes(`space ${holder} in ${holderRoot} reserves ${server}`)
+    && retry !== null && Number(retry[2]) !== port && !refused.stderr.includes("inspect the stack's members")
+    && pidOf(space, "stack-broker") === null, shown(refused));
+  if (!retry || Number(retry[2]) === port) return;
+
+  const retried = cliAsync(root, ...retry[1]!.split(" "));
+  const ready = await until(() => runningPidOf(space, "stack-broker") !== null && runningPidOf(space, "stack-manager") !== null
+    && readStackJournal(root)?.journal.operation.phase === "completed", 60_000);
+  track(space);
+  const startedAt = findMesh(space)?.server;
+  const down = cli(root, "down", "--yes", "--json");
+  const result = await retried;
+  check("running the suggested foreground command starts both members and keeps the stopped reservation",
+    ready && down.status === 0 && result.status === 0 && result.stdout.includes("Foreground stack lifetime")
+    && startedAt === `nats://127.0.0.1:${retry[2]}` && findMesh(holder)?.server === server,
+    { ...shown(result), down: shown(down) });
+}
+
 /** Publish 900 KB messages over an operator credential until the broker refuses one; the refusal. */
 const fillStore = async (root: string, space: string): Promise<unknown> => {
   const auth = (await getSpaceAuth(workspaceSecretStore(root), space))!;
@@ -634,6 +671,8 @@ try {
     const cleared = cli(other, "use", "--clear", "--json");
     check("the caller clears its selection", cleared.status === 0, shown(cleared));
   }
+
+  await checkStoppedReservation();
 
   // 3. A busy port on the first up (B2-02).
   {
