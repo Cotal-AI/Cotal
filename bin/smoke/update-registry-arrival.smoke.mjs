@@ -125,7 +125,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     assert.equal(spawnSync('tar', ['-czf', archive, '-C', join(root, 'peer-payload'), 'package']).status, 0);
     hermesArchive = readFileSync(archive);
   }
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') && !/^npm_config_(?:before|offline|prefix|registry)$/i.test(name)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') &&
+    !/^npm_config_(?:before|offline)$/i.test(name) && !(stagingFetchTimeout && /^npm_config_(?:prefix|registry)$/i.test(name))));
   Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
   let origin, armed = false, disconnected = false, missing = 0, heldArchive, closureSignal, holdStaging = scenario === 'staging-killed';
   let hermesAvailable = false, installedAtWait, originalInstallation;
@@ -280,6 +281,8 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       cpSync(join(repo, 'bin/package.json'), join(packageRoot, 'package.json'));
       symlinkSync(join(repo, 'bin/node_modules'), join(packageRoot, 'node_modules'), 'dir');
       entry = join(packageRoot, 'dist/cotal.js');
+      // The built entry replaces the executable that npm linked in the private prefix.
+      if (stagingTimeout || stagingFetchTimeout) chmodSync(entry, 0o755);
     }
     if (scenario === 'offline-closure') {
       const extensions = join(root, 'config/cotal/extensions');
@@ -445,6 +448,7 @@ exec npm "$@"
       }
       let result;
       if (stagingFetchTimeout) {
+        env.PATH = `${join(prefix, 'bin')}:${env.PATH}`;
         const invalid = await run(process.execPath, [entry, 'update', '--self'], 60000);
         assert.equal(invalid.code, 1, invalid.output);
         assert.match(invalid.output, /staged pre-install check refused:[\s\S]*npm error code FETCH_ERROR[\s\S]*invalid json response body/);
