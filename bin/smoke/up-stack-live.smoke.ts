@@ -77,7 +77,6 @@ const anchors = new Map([
   [autoRoot, recordSmokeSandbox({ root: autoRoot, cotalHome: home, xdgConfigHome: configDir })],
   [occupantRoot, recordSmokeSandbox({ root: occupantRoot, cotalHome: home, xdgConfigHome: configDir })],
   [warningRoot, recordSmokeSandbox({ root: warningRoot, cotalHome: home, xdgConfigHome: configDir })],
-  [openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir })],
   [clonedRoot, recordSmokeSandbox({ root: clonedRoot, cotalHome: home, xdgConfigHome: configDir })],
 ]);
 const env = { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: configDir, COTAL_SKIP_CONNECTOR_SEED: "1" };
@@ -512,7 +511,9 @@ try {
   const openRecord = (template: string) => canonicalLocalProcessPath(template, { root: openRoot, space: basename(openRoot) });
   const openManagerPid = () => Number(readFileSync(openRecord(MANAGER_PIDFILE), "utf8").trim());
   const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
+  ok("the fresh project has no .cotal before startup", !existsSync(join(openRoot, ".cotal")));
   const openBoot = openRefresh();
+  if (existsSync(join(openRoot, ".cotal"))) anchors.set(openRoot, recordSmokeSandbox({ root: openRoot, cotalHome: home, xdgConfigHome: configDir }));
   ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
   // `up` made this folder's `.cotal`, so it trusts the folder to declare MCP servers, spawn.env names
   // and persona launch options.
@@ -520,7 +521,7 @@ try {
     try { return (JSON.parse(readFileSync(join(configDir, "cotal", "trusted-projects.json"), "utf8")) as { roots: string[] }).roots; }
     catch { return []; }
   };
-  ok("up in a new folder trusts the folder whose .cotal it made", trustedRoots().includes(realpathSync(openRoot)), trustedRoots());
+  ok("up in a new folder trusts the folder whose .cotal it made", trustedRoots().includes(realpathSync(openRoot)), { roots: trustedRoots(), stderr: plain(openBoot.stderr) });
   const openManager = openManagerPid();
   pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
   for (const extra of [[], ["--runtime", "pty"]]) {
@@ -1185,7 +1186,7 @@ process.report.getReport = () => {
   cliIn(autoRoot, "down", "--yes");
   if (startedOccupant) cliIn(occupantRoot, "down", "--yes");
   cliIn(warningRoot, "down", "--yes");
-  cliIn(openRoot, "down", "--yes");
+  if (anchors.has(openRoot)) cliIn(openRoot, "down", "--yes");
   cliIn(clonedRoot, "down", "--yes");
   for (const p of pids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(home, { recursive: true, force: true });
