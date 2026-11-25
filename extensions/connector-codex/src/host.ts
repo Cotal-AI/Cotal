@@ -199,9 +199,10 @@ function prepareCodexHome(space: string, name: string): string {
 }
 
 /** The `-c key=value` override list for the codex child: the operator's launch options first
- *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
- *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. */
-function configOverrides(model: string | undefined, variant: string | undefined): [string, string][] {
+ *  (verbatim), then the model, effort and service tier selectors and the autonomy defaults ONLY
+ *  where the operator didn't set that key — one rail, so an explicit `--opt approval_policy=…`
+ *  naturally wins. */
+export function configOverrides(model: string | undefined, variant: string | undefined, serviceTier: string | undefined): [string, string][] {
   const overrides: [string, string][] = [];
   const raw = process.env.COTAL_CODEX_CONFIG?.trim();
   if (raw) {
@@ -218,6 +219,7 @@ function configOverrides(model: string | undefined, variant: string | undefined)
   const has = (key: string): boolean => overrides.some(([k]) => k === key);
   if (model && !has("model")) overrides.push(["model", `"${model}"`]);
   if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
+  if (serviceTier && !has("service_tier")) overrides.push(["service_tier", `"${serviceTier}"`]);
   // Autonomy: a headless host has no one to answer an approval prompt, so an interactive
   // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
   // nullifying the operator's stated policy. Refuse anything but `never` rather than pretend.
@@ -392,7 +394,7 @@ export async function runCodexHost(): Promise<void> {
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
-  const baseOverrides = configOverrides(model, variant);
+  const baseOverrides = configOverrides(model, variant, process.env.COTAL_CODEX_SERVICE_TIER?.trim() || undefined);
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);

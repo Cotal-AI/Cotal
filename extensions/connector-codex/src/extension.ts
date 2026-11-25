@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { registry, type CommandCatalog, type CommandListOpts, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type ModeInfo } from "@cotal-ai/core";
+import { registry, type CommandCatalog, type CommandListOpts, type Connector, type LaunchModes, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts, type ModelInfo, type ModeInfo } from "@cotal-ai/core";
 import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { askAppServer } from "./app-server-once.js";
 import type { CodexSkill } from "./app-server.js";
@@ -94,6 +94,17 @@ function codexModelInfo(m: CodexModelEntry): ModelInfo {
   };
 }
 
+/** The service tier a launch's modes select, or undefined when they leave it to Codex. Codex lists
+ *  only the `fast` toggle, so any other mode, or a value that is not true or false, is refused. */
+function serviceTier(modes: LaunchModes | undefined): string | undefined {
+  for (const [id, value] of Object.entries(modes ?? {})) {
+    if (id !== "fast") throw new Error(`codex connector: mode ${JSON.stringify(id)} is not one Codex offers; its only mode is "fast"`);
+    if (typeof value !== "boolean") throw new Error(`codex connector: mode "fast" is a toggle, so it takes true or false, not ${JSON.stringify(value)}`);
+  }
+  if (modes?.fast === undefined) return undefined;
+  return modes.fast === true ? SERVICE_TIER.fast : SERVICE_TIER.standard;
+}
+
 /** The skills a seat started in `cwd` would run, from `skills/list` on a short-lived app-server
  *  there, in the environment a seat's host gets. A seat's Codex runs under a per-agent CODEX_HOME
  *  that loads none of the operator's config, so this one runs under an empty private home too.
@@ -119,6 +130,7 @@ export const codexConnector: Connector = {
   requires: ["codex"],
   readinessTimeoutMs: 35_000, // leave room for the app-server's 30s listen timeout and teardown
   supportsModelVariant: true, // variant = Codex reasoning effort, as model/list names it for each model
+  supportsModes: true, // the fast toggle, rendered as Codex's service_tier
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // Codex serves a first turn from an initial message — see buildLaunch
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
@@ -232,11 +244,14 @@ export const codexConnector: Connector = {
     if (opts.configPath) env.COTAL_AGENT_FILE = resolve(opts.configPath);
     if (opts.model) env.COTAL_MODEL = opts.model;
     if (opts.variant) env.COTAL_VARIANT = opts.variant; // reasoning effort, checked by the launcher against the catalog
+    const tier = serviceTier(opts.modes);
+    if (tier) env.COTAL_CODEX_SERVICE_TIER = tier;
     // Opaque connector options → codex `-c key=value` config overrides on the app-server child,
     // RAW passthrough (the spawn capability is the trust boundary, not the key set — see
     // connectorLaunchOptions). The key-shape guard admits top-level config keys only (no dotted
     // paths). The host appends its autonomy defaults (approval_policy, sandbox_mode) and the
-    // model/effort selectors ONLY for keys the operator didn't set, so an explicit --opt wins.
+    // model, effort and service tier selectors ONLY for keys the operator didn't set, so an
+    // explicit --opt wins.
     const overrides: Record<string, unknown> = {};
     let hasOverrides = false;
     for (const [k, v] of connectorLaunchOptions("codex", opts.launchOptions)) {
