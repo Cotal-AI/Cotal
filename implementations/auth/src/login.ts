@@ -35,7 +35,7 @@ import { idpSessionDir } from "./session-context.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { decodeJwt } from "jose";
+import { createLocalJWKSet, decodeJwt } from "jose";
 import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
@@ -246,13 +246,10 @@ async function idpJson<T>(url: string, res: Response, cancel?: AbortSignal): Pro
   }
 }
 
-/** Best-effort reachability + shape check of an IdP's JWKS. Used at the FIRST `--user-auth` enable
- *  so a dead or typo'd `--idp` fails loud BEFORE a space is provisioned around it, instead of only
- *  surfacing far away at the first user connect (the pin is written but the JWKS is fetched lazily).
- *  Normalizes the URL exactly as the pin does (`<base>/jwks`). Throws a legible sentence on an
- *  unreachable host, a redirect, a non-2xx, or a body that is not a JWKS key set. A redirect is
- *  refused because it could move the check onto another host or onto plaintext, away from the URL
- *  the space pins. */
+/** Reachability and signing-key check of an IdP's JWKS. Used at the FIRST `--user-auth` enable
+ *  so the CLI can refuse an unreachable IdP or a set without an importable Ed25519 verification
+ *  key before it provisions a space. Checks the same `<base>/jwks` URL the space pins and does
+ *  not follow redirects. */
 export async function probeIdpJwks(idpUrl: string): Promise<void> {
   const jwksUri = `${normalizeIdpUrl(idpUrl)}/jwks`; // a bad scheme throws its own message here
   const res = await idpFetch(jwksUri, { redirect: "manual" });
@@ -260,9 +257,19 @@ export async function probeIdpJwks(idpUrl: string): Promise<void> {
     throw new Error(`the IdP at ${idpUrl} answered ${jwksUri} with HTTP ${res.status}, a redirect; redirects are refused, so its target was not fetched. Check --idp <auth base URL>; it must serve <base>/jwks itself.`);
   if (!res.ok)
     throw new Error(`the IdP at ${idpUrl} did not serve a JWKS: ${jwksUri} returned HTTP ${res.status}. Check --idp <auth base URL>.`);
-  const body = await idpJson<{ keys?: unknown }>(jwksUri, res);
-  if (!Array.isArray(body.keys))
+  const body = await idpJson<{ keys?: unknown } | null>(jwksUri, res);
+  if (!Array.isArray(body?.keys) || body.keys.some((key) => !key || typeof key !== "object" || Array.isArray(key)))
     throw new Error(`the IdP at ${idpUrl} did not return a JWKS key set at ${jwksUri}. Check --idp <auth base URL>; it must expose <base>/jwks.`);
+  for (const key of body.keys) {
+    if (key.crv !== "Ed25519") continue;
+    try {
+      await createLocalJWKSet({ keys: [key] })({ alg: "EdDSA" });
+      return;
+    } catch {
+      // One unusable candidate does not disqualify another public verification key.
+    }
+  }
+  throw new Error(`the IdP at ${idpUrl} did not return a usable Ed25519 signing key at ${jwksUri}. Check --idp <auth base URL>; its JWKS must expose a public Ed25519 verification key.`);
 }
 
 /** True if `s` parses as a JWT — used to REJECT a JWT where an opaque session token is required.
@@ -705,6 +712,11 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
     advertisementCheckedAt: new Date().toISOString(),
     ...(catalogUrl ? { catalogUrl } : { catalogUrl: undefined }),
   };
+}
+
+/** Retained account identities, including signed-out holders. No session proofs are returned. */
+export function knownMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
+  return Object.values(readCatalogsFile(dir).accounts).map(accountView);
 }
 
 /** Account identities available to a machine client. Session proofs stay inside this module. */

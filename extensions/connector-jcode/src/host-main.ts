@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { EnvFlagError } from "@cotal-ai/connector-core";
 import { runJcodeHost } from "./host.js";
 import {
@@ -90,7 +91,7 @@ runJcodeHost().catch((error) => {
   } else {
     retainJcodeStartupError(error);
     const logPath = jcodeDiagnosticLogPath();
-    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode startup failed (${startupFailureCode(error)}); ${logPath ? `details: ${logPath}` : "private diagnostic log unavailable"}\n`);
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode startup failed (${startupFailureCode(error)}); ${logPath ? `workspace log: ${resolve(logPath)}` : "private diagnostic log unavailable"}\n`);
   }
   process.exit(1);
 });

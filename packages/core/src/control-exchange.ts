@@ -3,10 +3,9 @@
  * lifecycle hook relay, the Manager's stop and session calls) prove to each other that both hold the
  * endpoint's key. Neither side ever sends the key.
  *
- * A client used to send the key in its first frame and print whatever came back. A stand-in that
- * took the name of a server that had exited (another local user on a shared `/tmp`, or any process
- * on the Windows pipe namespace) received the key and answered the hook. With remote permission
- * answers, a hook's reply can be "allow this tool call". So the exchange proves both ends:
+ * A local socket or pipe can be claimed by a different process after the server exits. Both ends
+ * authenticate each other before either trusts a control request or reply, including a hook's
+ * answer that authorizes a tool call:
  *
  *   C → S  {"v":1,"nonce":"<Nc>"}\n
  *   S → C  {"v":1,"nonce":"<Ns>","mac":"<Ms>"}\n

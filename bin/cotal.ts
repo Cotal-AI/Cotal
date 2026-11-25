@@ -32,8 +32,9 @@ export function ensureSupportedNode(): void {
       `Re-run the installer to repin it:\n  curl -fsSL https://get.cotal.ai | sh\n\n` +
       `Or stop depending on the system Node altogether:\n  curl -fsSL https://get.cotal.ai | sh -s -- --vendor-node\n\n`
     : `Install a newer Node (https://nodejs.org). With nvm:\n  nvm install ${MIN_NODE} && nvm use ${MIN_NODE}\n\n` +
-      `If you already ran cotal once under the old Node, also clear the npx cache so the bundled\n` +
-      `nats-server is fetched cleanly, then retry:\n  rm -rf ~/.npm/_npx        # or: npx clear-npx-cache\n\n` +
+      `If you installed Cotal globally with npm, reinstall it with the newer Node to fetch the bundled broker:\n` +
+      `  npm install -g cotal-ai\n\n` +
+      `If you use npx, clear its cache instead, then rerun your npx command:\n  rm -rf ~/.npm/_npx\n\n` +
       `Or let the installer manage the runtime for you:\n  curl -fsSL https://get.cotal.ai | sh\n\n`;
   process.stderr.write(`\ncotal-ai requires Node.js >= ${MIN_NODE}, but this is ${process.version}.\n` +
     `Below Node ${MIN_MAJOR}, npm silently skips the bundled nats-server broker and the CLI's UI\n` +
@@ -172,7 +173,9 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
 export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
   const logical = resolve(entry), physical = realpathSync.native(logical);
   const canonicalRoot = realpathSync.native(root);
-  if (physical !== join(canonicalRoot, "dist", "cotal.js")) throw new Error("execution launch route does not resolve to this bootstrap");
+  // npm's postinstall can repoint the saved entry to this package's wrapper.
+  if (physical !== join(canonicalRoot, "dist", "cotal.js") && physical !== join(canonicalRoot, "dist", "cotal-npm"))
+    throw new Error("execution launch route does not resolve to this bootstrap");
   let path = join(canonicalRoot, "package.json");
   for (let current = dirname(logical); current !== dirname(current); current = dirname(current)) {
     if (lstatSync(current).isSymbolicLink()) { path = current; break; }
@@ -227,8 +230,13 @@ function executionProgram(root: string, verifyInventory: boolean): { root: strin
     const launch = object(descriptor.launch);
     if (!["entry", "path", "dev", "ino", "birth", "ctime"].every(key => typeof launch[key] === "string") || !isAbsolute(launch.entry as string) || !isAbsolute(launch.path as string))
       throw new Error("invalid execution launch binding");
-    try { if (JSON.stringify(executionLaunchBinding(installed, launch.entry as string)) !== JSON.stringify(launch)) return initial(); }
-    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) return initial(); throw error; }
+    try {
+      const currentLaunch = executionLaunchBinding(installed, launch.entry as string);
+      if (currentLaunch.entry !== launch.entry || currentLaunch.path !== launch.path || currentLaunch.dev !== launch.dev ||
+          currentLaunch.ino !== launch.ino || currentLaunch.birth !== launch.birth) return initial();
+      // ctime can change on an unchanged npm manifest. Keep it for the symlinked launch route.
+      if (currentLaunch.path !== join(installed, "package.json") && currentLaunch.ctime !== launch.ctime) return initial();
+    } catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) return initial(); throw error; }
   }
   const matches = (candidate: Record<string, unknown>): boolean => candidate.name === current.name && candidate.version === current.version && candidate.bootstrapSha256 === current.bootstrapSha256;
   if (descriptor.bindings !== undefined && (!Array.isArray(descriptor.bindings) || descriptor.bindings.length > 4 ||

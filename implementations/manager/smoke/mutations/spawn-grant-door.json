@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "D1 drop the served caller from the handoff",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/start-doors.ts",
       "find": "      caller,\n      hooks,\n      authenticatedCaller,\n    );\n  }",
       "replace": "      caller,\n      hooks,\n    );\n  }",
       "expectRed": "a served spawn wider than the spawner is refused at the door, naming the part",
@@ -24,7 +24,7 @@
     },
     {
       "name": "D2 drop the served caller from define-persona",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/command-dispatch.ts",
       "find": "this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller)",
       "replace": "this.opDefinePersona(args(ctx), callerOf(ctx), false)",
       "expectRed": "a define-persona capability the definer does not hold is refused at the door, naming it",
@@ -32,7 +32,7 @@
     },
     {
       "name": "D3 write the def composed before the evidence resolved",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "      composed = compose();\n      if (\"reply\" in composed) return composed.reply;\n      const kept",
       "replace": "      const kept",
       "expectRed": "a served definition that waited on its evidence does not overwrite a persona another principal defined meanwhile",

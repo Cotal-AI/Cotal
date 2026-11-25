@@ -26,6 +26,9 @@ try {
     const cfg = track(freshCfg());
     listNames(cfg);
     const pkgJson = join(cfg, "cotal", "extensions", "node_modules", "@cotal-ai", "connector-hermes", "package.json");
+    const metadata = JSON.parse(readFileSync(pkgJson, "utf8"));
+    delete metadata.main; // Hermes already declares the same entry in exports.
+    writeJson(pkgJson, metadata);
     // The entry check used to parse package.json a second time and answer "torn" for any failure of
     // that read (#3698). The hook fails the repair's second read of this file with EACCES, so a second
     // read reinstalls a healthy connector while a single read never meets the fault.
@@ -52,7 +55,7 @@ try {
     const rep = cotal(cfg, ["ext", "seed", "--repair"], { NODE_OPTIONS: `--require ${hook}`, READ_HOOK_TARGET: pkgJson, READ_HOOK_LOG: reads });
     const count = existsSync(reads) ? readFileSync(reads, "utf8").split("\n").filter(Boolean).length : 0;
     check("one read: --repair reads a seeded built-in's package.json once per check", rep.status === 0 && count === 1, { count, stderr: rep.stderr });
-    check("one read: a failed later read never reinstalls a healthy connector", !`${rep.stdout}${rep.stderr}`.includes("refreshed"), rep.stderr);
+    check("one read: repair keeps a healthy connector with an exports-only entry", !`${rep.stdout}${rep.stderr}`.includes("refreshed"), rep.stderr);
     if (process.platform !== "win32" && process.getuid?.() !== 0) {
       chmodSync(pkgJson, 0o000);
       const unreadable = cotal(cfg, ["ext", "seed", "--repair"]);

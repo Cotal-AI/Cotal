@@ -50,6 +50,13 @@ try {
   suite.check("the real broker retains the initial post", history.status === 0 && history.text.includes("retained-before-replacement"), history.text);
   const healthy = run("status", "--space", space, "--json");
   suite.check("unchanged store has no identity warning", !warning(healthy, "STORE_REPLACED") && !warning(healthy, "STORE_MISSING"), healthy.text);
+  const compact = run("status", "--space", space);
+  const verbose = run("status", "--verbose", "--space", space);
+  const brokerExecutable = /^ +NATS: +(?:bundled )?nats-server \S+ (?:on PATH )?at \S/m;
+  suite.check("compact status omits the healthy broker executable",
+    compact.status === 0 && !brokerExecutable.test(compact.text) && !/^ +Broker executable:/m.test(compact.text), compact.text);
+  suite.check("verbose status shows the selected broker executable and its path",
+    verbose.status === 0 && brokerExecutable.test(verbose.text), verbose.text);
   const outsideHealthy = selectedStatus("--json");
   suite.check("outside-project selection reaches the healthy stack without a store warning", outsideHealthy.envelope?.result?.selected?.root === root && !warning(outsideHealthy, "STORE_REPLACED") && !warning(outsideHealthy, "STORE_MISSING"), outsideHealthy.text);
 
@@ -147,6 +154,26 @@ try {
   suite.check("down reports a missing store without preventing shutdown", missingDown.status === 0 && Boolean(warning(missingDown, "STORE_MISSING")), missingDown.text);
   const missingUp = run("up", ...(managed ? [] : ["--no-manager"]), "--json");
   suite.check("missing-store restart keeps the existing empty-history warning", missingUp.status === 0 && /history starts empty/.test(warning(missingUp, "STORE_MISSING")?.message ?? ""), missingUp.text);
+
+  const stopped = run("down", "--yes", "--json");
+  if (stopped.status !== 0) throw new Error(`stop before store cleanup failed: ${stopped.text}`);
+  started = false;
+  const beforeClean = journal().broker.storeIdentity;
+  const clean = run("clean", "store", "--force");
+  const afterClean = run("status", "--plain");
+  suite.check("clean records an empty replacement without making stopped status report a missing store",
+    clean.status === 0 && /removed .*\(JetStream store:/.test(clean.text)
+    && existsSync(store) && readdirSync(store).length === 0
+    && JSON.stringify(journal().broker.storeIdentity) !== JSON.stringify(beforeClean)
+    && afterClean.status === 0 && !/recorded store.*(?:missing|replaced)/.test(afterClean.text), clean.text + afterClean.text);
+  const resetPreview = run("reset", "store", space, "--dry-run", "--plain");
+  suite.check("a named reset still recognizes the recorded store before the next up",
+    resetPreview.status === 0 && resetPreview.text.includes(`cotal reset store ${space} --yes`), resetPreview.text);
+  rmSync(store, { recursive: true, force: true });
+  const absentClean = run("clean", "store", "--force");
+  const afterManualRemoval = run("status", "--json");
+  suite.check("clean does not acknowledge a recorded store that was already removed by hand",
+    absentClean.status === 0 && !existsSync(store) && afterManualRemoval.status === 4 && Boolean(warning(afterManualRemoval, "STORE_MISSING")), absentClean.text + afterManualRemoval.text);
 } finally {
   if (started) {
     chmodSync(journalPath, 0o600);
@@ -168,9 +195,9 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const options = { cwd: project, env: isolated, encoding: "utf8" as const, timeout: 120_000 };
       assertSmokeSandboxDown(pin, args, options);
       const result = spawnSync(process.execPath, [bin, ...args], options);
-      let error: { code?: string; remedy?: string } | undefined;
-      try { error = JSON.parse(result.stdout).error; } catch { error = undefined; }
-      return { status: result.status, text: result.stdout + result.stderr, error };
+      let envelope: { error?: { code?: string; remedy?: string }; result?: { kind?: string } } | undefined;
+      try { envelope = JSON.parse(result.stdout); } catch { envelope = undefined; }
+      return { status: result.status, text: result.stdout + result.stderr, error: envelope?.error, result: envelope?.result };
     };
     const must = (args: string[]) => {
       const result = cli(...args);
@@ -223,9 +250,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
       const history = must(["history", "general", "--space", selected]);
       suite.check(`${route} repaired restart retains history`, history.text.includes("retained-permission-marker"), history.text);
       must(["down", "--yes"]);
-      if (route === "prepared") must(["reset", "store", selected, "--yes"]);
-      else must(["clean", "store", "--force", ...(route.startsWith("legacy") ? ["--store-dir", store] : [])]);
-      suite.check(`${route} cleanup succeeds after the exact startup remedy`, !existsSync(store));
+      // A reset leaves the stack an empty store its journal records; a clean leaves none.
+      if (route === "prepared") {
+        const refused = cli("reset", "store", selected, "--json");
+        const commands = [...(refused.error?.remedy ?? "").matchAll(/`cotal ([^`]+)`/g)].map((match) => match[1]!);
+        const jetstream = join(store, "jetstream");
+        suite.check("reset refusal keeps the store and offers JSON preview and confirmation", refused.status === 1 && refused.error?.code === "USAGE_INVALID"
+          && commands.join("\n") === `reset store ${selected} --dry-run --json\nreset store ${selected} --yes --json` && existsSync(jetstream), refused.text);
+        const preview = must(commands[0]?.split(" ") ?? []);
+        suite.check("the printed reset preview returns JSON without changing the store", preview.result?.kind === "reset-local-impact-preview" && existsSync(jetstream), preview.text);
+        const reset = must(commands[1]?.split(" ") ?? []);
+        suite.check("the printed reset confirmation removes JetStream and returns a JSON receipt", reset.result?.kind === "reset-store" && !existsSync(jetstream), reset.text);
+      } else must(["clean", "store", "--force", ...(route.startsWith("legacy") ? ["--store-dir", store] : [])]);
+      suite.check(`${route} cleanup succeeds after the exact startup remedy`, route === "prepared" ? existsSync(store) && readdirSync(store).length === 0 : !existsSync(store));
     } finally {
       spawnSync("chmod", ["-R", "u+rwX", project]);
       if (existsSync(store)) spawnSync("chmod", ["-R", "u+rwX", store]);

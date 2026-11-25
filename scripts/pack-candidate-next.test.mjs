@@ -18,18 +18,18 @@ function fixture(t, failure, offset = NEXT_PATCH_OFFSET) {
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const root = join(base, 'source'), candidate = join(base, 'A'), output = join(base, 'B');
   for (const path of [root, candidate, join(root, '.changeset'), join(root, 'scripts')]) mkdirSync(path, { recursive: true });
-  const names = Array.from({ length: 24 }, (_, i) => `pkg${i}`);
+  const names = Array.from({ length: 25 }, (_, i) => `pkg${i}`);
   save(join(root, '.changeset/config.json'), { fixed: [names] });
   writeFileSync(join(root, 'install.sh'), 'installer');
   const rows = names.map((name, i) => {
     const path = join(root, name); mkdirSync(path);
-    save(join(path, 'package.json'), { name, version: '1.2.3', dependencies: { [names[(i + 1) % 24]]: '1.2.3' } });
+    save(join(path, 'package.json'), { name, version: '1.2.3', dependencies: { [names[(i + 1) % 25]]: '1.2.3' } });
     return { name, path };
   });
   const originals = rows.map(row => readFileSync(join(row.path, 'package.json'), 'utf8'));
   const make = (dir, version) => {
     const packages = names.map((name, i) => {
-      const metadata = { name, version, peerDependencies: { [names[(i + 1) % 24]]: i % 2 ? '>=0.1.0' : '*' }, dependencies: { [names[(i + 1) % 24]]: version } };
+      const metadata = { name, version, peerDependencies: { [names[(i + 1) % 25]]: i % 2 ? '>=0.1.0' : '*' }, dependencies: { [names[(i + 1) % 25]]: version } };
       const files = { 'package.json': JSON.stringify(metadata), 'dist/index.js': `version=${version}` };
       const archive = `${name}.tgz`;
       const input = join(base, 'archive-input');
@@ -94,7 +94,7 @@ test('synthetic full contract stamps before build, preserves A, restores source'
     const f = fixture(t, undefined, offset);
     const before = readFileSync(join(f.candidate, 'manifest.json'));
     const manifest = await packCandidateNext({ sourceRoot: f.root, candidate: f.candidate, output: f.output, offset, exec: f.exec });
-    assert.equal(manifest.packages.length, 24);
+    assert.equal(manifest.packages.length, 25);
     assert.deepEqual(readFileSync(join(f.candidate, 'manifest.json')), before);
     for (const [i, row] of f.rows.entries()) assert.equal(readFileSync(join(row.path, 'package.json'), 'utf8'), f.originals[i]);
     assert.equal(JSON.parse(readFileSync(join(f.output, 'next.json'))).rule, `A.patch+${offset}`);
@@ -142,7 +142,7 @@ for (const [label, alter, expected] of [
   ['file hash', m => { m.packages[0].files['dist/index.js'] = '0'.repeat(64); }, /file hash/],
   ['omitted member', m => { delete m.packages[0].files['package.json']; }, /package metadata file hash/],
   ['unrecorded member', m => { m.packages[0].files = { 'package.json': m.packages[0].files['package.json'], 'dist/missing.js': hash('missing') }; }, /file hash/],
-  ['incomplete closure', m => { m.packages.pop(); }, /complete 24-package closure/],
+  ['incomplete closure', m => { m.packages.pop(); }, /complete 25-package closure/],
   ['unsafe manifest member', m => { m.packages[0].files['../escape'] = '0'.repeat(64); }, /safe archive member/],
 ]) test(`rejects ${label} before build`, async t => {
   const f = fixture(t);

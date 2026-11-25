@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep, isAbsolute } from "node:path";
 import { token } from "@cotal-ai/core";
-import { authDir, c, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
+import { authDir, boundedValue, c, codeSpan, CommandFailure, controlDirectory, foreignStoreEntries, loadMeshes, loadPreparedSpaces, localMeshesForRoot, oneLine, protectedLocalDirectory, shellPath } from "@cotal-ai/workspace";
 import { readStackJournal } from "./stack-journal.js";
 
 /** The stores the broker configurations `root`'s starts rendered name. */
@@ -155,13 +155,100 @@ function statIfPresent(path: string, stat: (path: string) => Stats = statSync): 
  *  default store: its files would mix with credentials and records, or with another root's store,
  *  and no reset could remove it alone. A link is refused and the directory it points to is named:
  *  the broker config records the path as given, and a reset removes only a real directory. */
-export function assertStoreDirArgument(value: string, root: string): void {
+export function assertStoreDirArgument(value: string, root: string, purpose: "start" | "restore" = "start"): void {
   const path = resolve(value);
+  checkStorePath(path, purpose, () => checkStoreDirPath(path, root, purpose));
+}
+
+/** Classify filesystem errors from a destination check that runs before startup or restore. */
+export function checkStorePath<T>(path: string, purpose: "start" | "restore", check: () => T): T {
+  try { return check(); }
+  catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const { code, errno, syscall } = error as NodeJS.ErrnoException;
+    if (code === undefined || errno === undefined || syscall === undefined) throw error;
+    throw storePathRefusal(path, code, purpose === "restore" ? "no restore was started" : "nothing was started or written");
+  }
+}
+
+function storePathRefusal(path: string, code: string, outcome: string): CommandFailure {
+  const target = { storeDir: path }, native = { code };
+  if (code === "EACCES" || code === "EPERM") {
+    const blocked = blockedStoreAncestor(path);
+    const message = blocked
+      ? `this account cannot search ${blocked.path}, in the --store-dir path ${path}`
+      : `this account was denied access to the --store-dir path ${path}`;
+    const remedy = blocked ? `restore search access${blocked.chmod ? ` with ${blocked.chmod}` : ""}`
+      : "check access along the store path, including any symbolic link targets";
+    return new CommandFailure("refused", "PERMISSION_DENIED", `${message}; ${outcome}`, {
+      target: { ...target, ...(blocked ? { path: blocked.path } : {}) }, native,
+      remedy: `${remedy}, or choose a new store path under a parent this account can search and write`,
+    });
+  }
+  const invalid = code === "ELOOP" ? "contains a symbolic-link loop or too many links"
+    : code === "ENAMETOOLONG" ? "is too long for this filesystem" : undefined;
+  if (invalid !== undefined)
+    return new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${boundedValue(path, 200)} ${invalid}; ${outcome}`, {
+      target, native, remedy: "correct the store path or choose a different path with --store-dir", selfContained: true,
+    });
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", `could not inspect the --store-dir path ${path}; ${outcome}`, {
+    target, native, remedy: "check that the store filesystem is available or choose a different path with --store-dir",
+  });
+}
+
+/** Diagnose a denied search on the physical path without trusting a link as a chmod target. */
+function blockedStoreAncestor(path: string): { path: string; chmod?: string } | undefined {
+  const uid = process.getuid?.();
+  if (uid === undefined) return undefined;
+  const pending = path.split(sep).filter(Boolean).reverse();
+  let folder: string = sep;
+  let links = 0;
+  try {
+    for (;;) {
+      const stat = lstatSync(folder);
+      if (stat.isSymbolicLink()) {
+        if (++links > 40) return undefined;
+        const link = readlinkSync(folder);
+        // Traversal can fail before a later '..', so do not normalize a link target first.
+        pending.push(...link.split(sep).filter(Boolean).reverse());
+        folder = isAbsolute(link) ? sep : dirname(folder);
+        continue;
+      }
+      const part = pending.pop();
+      if (part === undefined || !stat.isDirectory()) return undefined;
+      try { accessSync(folder, constants.X_OK); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EACCES" && code !== "EPERM") return undefined;
+        const chmod = stat.uid === uid && !(stat.mode & constants.S_IXUSR) && oneLine(folder) === folder
+          ? codeSpan(`chmod u+x ${shellPath(folder)}`) : undefined;
+        return { path: folder, chmod };
+      }
+      folder = join(folder, part);
+    }
+  } catch { return undefined; }
+}
+
+export function missingRestoreStoreParent(storeDir: string): CommandFailure {
+  const path = dirname(storeDir);
+  return new CommandFailure("refused", "USAGE_INVALID", `the --store-dir parent ${path} does not resolve to an existing directory; no restore was started`, {
+    target: { storeDir, path }, remedy: "name a --store-dir path that does not exist yet, inside an existing directory; the restore creates it", selfContained: true,
+  });
+}
+
+function checkStoreDirPath(path: string, root: string, purpose: "start" | "restore"): void {
   // A dangling link has no real path, so its own target is named instead.
   if (statIfPresent(path, lstatSync)?.isSymbolicLink()) {
     let real: string | undefined;
-    try { real = realpathSync.native(path); } catch { real = undefined; }
-    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy: real ? `name the directory itself with --store-dir ${real}` : "name a real directory with --store-dir" });
+    try { real = realpathSync.native(path); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    }
+    const remedy = purpose === "restore"
+      ? "name a real path for `--store-dir` that does not exist yet, inside an existing writable directory; the restore creates it"
+      : real ? `name the directory itself with --store-dir ${shellPath(real)}` : "name a real directory with --store-dir";
+    throw new CommandFailure("refused", "USAGE_INVALID", `the --store-dir path ${path} is a link to ${real ?? `${readlinkSync(path)}, which does not exist`}; nothing was started or written`, { target: { storeDir: path, ...(real ? { linkTarget: real } : {}) }, remedy });
   }
   let existing = path, stat = statIfPresent(existing);
   while (!stat) {
@@ -179,8 +266,16 @@ export function assertStoreDirArgument(value: string, root: string): void {
     throw new CommandFailure("refused", "USAGE_INVALID", `${existing === path ? `the --store-dir path ${path}` : `${existing}, in the --store-dir path ${path},`} is not a directory; nothing was started or written`, { target: { storeDir: path }, remedy: "name a directory, or a path to create in one, with --store-dir" });
   protectedLocalDirectory(realpathSync.native(existing), "the --store-dir path");
   if (existing === path) return;
+  if (purpose === "restore" && existing !== dirname(path)) throw missingRestoreStoreParent(path);
   try { accessSync(existing, constants.W_OK | constants.X_OK); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy: "name a store directory this account can create, or create it with the right owner first" }); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM" && code !== "EROFS") throw error;
+    const remedy = purpose === "restore"
+      ? "make the parent directory writable by this account or choose a path under a writable parent. Leave the store directory absent so the restore can create it."
+      : "name a store directory this account can create, or create it with the right owner first";
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the --store-dir path ${path} cannot be created, because this account cannot write ${existing}; nothing was started or written`, { target: { storeDir: path }, remedy });
+  }
 }
 
 /** Why a broker could not start JetStream on the store `storeDir`: this account cannot write the
@@ -227,6 +322,31 @@ export function storeWriteProblem(storeDir: string): { path: string; message: st
     return { path: storeDir, message: `the broker store ${storeDir} is not readable by this account (${code}), so the broker cannot open its store`, remedy: `make it readable and writable by you, for example with chmod -R u+rwX ${shellPath(storeDir)}` };
   }
   return undefined;
+}
+
+/** Check the store a restart opens, with an explicit path taking precedence over its records. */
+export function startupStoreProblem(root: string, storeDir?: string, beforeRestore = false): ReturnType<typeof storeWriteProblem> {
+  if (storeDir !== undefined) {
+    const path = resolve(storeDir);
+    return beforeRestore ? checkStorePath(path, "restore", () => storeWriteProblem(path)) : storeWriteProblem(path);
+  }
+  const defaultStore = join(root, ".cotal", "nats");
+  let recorded: string | undefined;
+  try { recorded = readStackJournal(root)?.journal.broker?.storeDir; } catch { recorded = undefined; }
+  if (recorded === undefined) {
+    const local = localMeshesForRoot(root);
+    recorded = local.length === 1 ? local[0]!.storeDir : undefined;
+    if (recorded === undefined && !existsSync(join(defaultStore, "jetstream"))) {
+      const served = lastServedStores(root, defaultStore);
+      if (served.length === 1) recorded = served[0];
+    }
+  }
+  return storeWriteProblem(recorded ?? defaultStore);
+}
+
+/** A write permission problem established during a read-only diagnosis. */
+export function rootStoreProblem(root: string): ReturnType<typeof storeWriteProblem> {
+  try { return startupStoreProblem(root); } catch { return undefined; }
 }
 
 /** The `store_dir` a broker configuration names for `storeDir`: relative to `root` when the store

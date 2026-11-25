@@ -254,14 +254,41 @@ const frameBody = (epoch: string): Part[] => [
  */
 type Seed = "none" | "decoy" | "landed" | "landed-window-closed" | "moved-tip" | "landed-below-tip";
 
-/** Close the chat stream's duplicate window behind a stored frame: the broker purges its dedup
- *  cache at once when the window shrinks, which is what two minutes of waiting would do. */
-const closeDuplicateWindow = async (url: string, space: string): Promise<void> => {
+/** Set the short window before seeding so its expiry timer never uses the original two minutes.
+ *  Then poll with a publish that can only duplicate or refuse until the broker proves id expiry. */
+const seedAndCloseDuplicateWindow = async (url: string, space: string, ep: CotalEndpoint,
+  frame: { channel: string; id: string; parts: Part[] }): Promise<number> => {
   const nc = await connect({ servers: dial(url) });
   try {
     const jsm = await jetstreamManager(nc);
     await jsm.streams.update(chatStream(space), { duplicate_window: nanos(100) });
-    await wait(500);
+    const { ack: stored } = await ep.multicastExpecting({ ...frame, expectedLastSubjectSeq: 0 });
+    const before = await jsm.streams.info(chatStream(space));
+    const deadline = performance.now() + 10_000;
+    let closed = false;
+    while (performance.now() < deadline) {
+      try {
+        const { ack } = await ep.multicastExpecting({
+          channel: frame.channel, id: frame.id, parts: frame.parts,
+          expectedLastSubjectSeq: stored.seq,
+          expectedLastMsgId: randomUUID(),
+        });
+        if (!ack.duplicate || ack.seq !== stored.seq)
+          throw new Error(`duplicate-window probe returned an unexpected ack: ${JSON.stringify(ack)}`);
+      } catch (e) {
+        // Only the last-id guard's refusal proves the broker passed dedup without finding our id.
+        // A timeout, a moved tip or any other failure is not evidence of expiry.
+        if ((e as { code?: number }).code !== 10070) throw e;
+        closed = true;
+        break;
+      }
+      await wait(50);
+    }
+    const after = await jsm.streams.info(chatStream(space));
+    if (!closed || after.config.duplicate_window !== nanos(100) ||
+      after.state.last_seq !== before.state.last_seq || after.state.messages !== before.state.messages)
+      throw new Error(`duplicate window did not close without a stream write: ${JSON.stringify({ closed, before: before.state, after: after.state })}`);
+    return stored.seq;
   } finally {
     await nc.close();
   }
@@ -328,11 +355,12 @@ const arm = async (opts: { config: string; url: string; seed: Seed; read?: boole
     // The first publish of the frozen frame, stored by the broker, its ack never recorded: what a
     // connection lost between the publish and its ack leaves behind.
     let landedSeq: number | undefined;
-    if (opts.seed === "landed" || opts.seed === "landed-window-closed" || opts.seed === "landed-below-tip")
+    if (opts.seed === "landed" || opts.seed === "landed-below-tip")
       landedSeq = (await ep.multicastExpecting({ channel: events, parts: frameBody(wal.epoch), id: frozenId, expectedLastSubjectSeq: 0 })).ack.seq;
     if (opts.seed === "landed-below-tip") await foreign(landedSeq!);
     if (opts.seed === "moved-tip") await foreign(0);
-    if (opts.seed === "landed-window-closed") await closeDuplicateWindow(opts.url, space);
+    if (opts.seed === "landed-window-closed") landedSeq = await seedAndCloseDuplicateWindow(opts.url, space, ep,
+      { channel: events, id: frozenId, parts: frameBody(wal.epoch) });
 
     // The seat's endpoint, without the channel read when the credential would not hold it.
     const endpoint = opts.read === false ? withoutChannelRead(ep) : ep;
@@ -379,12 +407,13 @@ const endedThread = async (url: string, seed: "landed" | "none" | "moved-tip" | 
     const id = randomUUID();
     const body = frameBody(old.epoch);
     await old.beginSend({ id, E: 0, seq: 1, sourceCursor: "ended", body, brackets: BR });
+    const channel = `events.${PRINCIPAL_KEY}`;
+    // Prove expiry while the seeded frame is still the tip. The other arms never stored its id.
     let landed = 0;
     if (seed === "landed" || seed === "landed-below-tip")
-      landed = (await ep.multicastExpecting({ channel: `events.${PRINCIPAL_KEY}`, parts: body, id, expectedLastSubjectSeq: 0 })).ack.seq;
+      landed = await seedAndCloseDuplicateWindow(url, space, ep, { channel, parts: body, id });
     if (seed === "moved-tip" || seed === "landed-below-tip")
-      await ep.multicastExpecting({ channel: `events.${PRINCIPAL_KEY}`, parts: [{ kind: "text", text: "another writer" }], id: randomUUID(), expectedLastSubjectSeq: landed });
-    await closeDuplicateWindow(url, space);
+      await ep.multicastExpecting({ channel, parts: [{ kind: "text", text: "another writer" }], id: randomUUID(), expectedLastSubjectSeq: landed });
     const next = await ensureEventWalDir({ workspaceRoot: root, space, principal: PRINCIPAL_KEY, threadId: "thread-2" });
     const wal = await EventWal.open(next.walPath, { space, principal: PRINCIPAL_KEY, threadId: "thread-2", subjectMayExist: false });
     const srcPath = join(next.threadDir, "session.jsonl");

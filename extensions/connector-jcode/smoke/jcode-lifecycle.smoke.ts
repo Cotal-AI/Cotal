@@ -151,7 +151,12 @@ try {
     code: failing.child.exitCode,
     stderr: failing.stderr(),
   });
-  check("the failure names the readiness refusal, not an unrelated crash", /Jcode host startup failed/.test(failing.stderr()), failing.stderr());
+  check(
+    "the failure names the readiness refusal, not an unrelated crash",
+    failing.stderr().includes("pre-join readiness outcome: cotal_orientation never became callable") &&
+      /\[cotal-jcode\] fatal: Jcode startup failed \([a-z_]+\); workspace log: /.test(failing.stderr()),
+    failing.stderr(),
+  );
   check(
     "startup failure stops the private daemon before the connector returns (#839)",
     !alive(daemonRecord.pid),

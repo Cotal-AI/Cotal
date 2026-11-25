@@ -29,7 +29,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, checkServer, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, payloadRefused, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
 import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
 import { streamsAbsent } from "../lib/space-streams.js";
@@ -92,13 +92,12 @@ export function sendArguments(args: ParsedArgs): SendInput {
   const destination = destinations[0]!;
   destination.target = destination.target.replace(destination.mode === "msg" ? /^#/ : /^@/, "");
   const bodies = Number(args.positionals.length === 1) + Number(values.file !== undefined) + Number(values.stdin === true);
-  // A remedy reruns the destination the caller gave.
-  const flag = destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t";
   if (!destination.target.trim()) {
     const [option, what] = destination.mode === "msg" ? ["--channel/-c", "channel"] : destination.mode === "ask" ? ["--role/-r", "role"] : ["--to/-t", "agent"];
-    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `run \`cotal send ${flag} <${what}> "<message>"\`` });
+    throw new CommandFailure("refused", "USAGE_INVALID", `${option} is empty; name one ${what === "agent" ? "agent or full instance id" : what}`, { remedy: `set ${option} in the original command and keep the same message body and options` });
   }
-  const again = (body: string) => sendAgain(destination, body);
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
+  const again = (body: string) => sendAgain(destination, values, `${output}${body}`);
   if (args.positionals.length > 1 || bodies !== 1 || values.file === "")
     throw new CommandFailure("refused", "USAGE_INVALID", "choose exactly one body: a quoted message, --file/-f <path>, or --stdin", { remedy: again('"<message>"') });
   // Stdin is read only when asked for, so a lone `-` is refused rather than published.
@@ -129,19 +128,37 @@ export function sendArguments(args: ParsedArgs): SendInput {
   return { ...destination, source: values.file !== undefined ? (values.file === "-" ? "stdin" : "file") : values.stdin ? "stdin" : "argument", ...(args.positionals[0] === undefined ? {} : { text: args.positionals[0] }) };
 }
 
-/** A remedy's rerun of the destination the caller gave, with another body. */
-function sendAgain(destination: Pick<SendInput, "mode" | "target">, body: string): string {
-  return `run ${codeSpan(`cotal send ${destination.mode === "msg" ? "-c" : destination.mode === "ask" ? "-r" : "-t"} ${shellWord(destination.target)} ${body}`)}`;
+const option = (name: string, value: string) => `--${name}${value.startsWith("-") ? "=" : " "}${shellWord(value)}`;
+
+function targetOptions(values: ConnectFlags): string[] {
+  return targetFlags.flatMap(({ name }) => values[name] === undefined ? [] : [option(name, values[name])]);
+}
+
+/** A remedy that replaces the body without changing where or as whom the message is sent. */
+function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Values, body: string): string {
+  // Body grammar is also checked before the dispatcher validates --server. Never echo an unchecked URL.
+  if (values.server !== undefined) {
+    const checked = checkServer(values.server, "--server");
+    if (!checked.ok) return checked.remedy ?? checked.message.replace(/^✗ /, "");
+  }
+  const [long, short] = destination.mode === "msg" ? ["channel", "-c"] : destination.mode === "ask" ? ["role", "-r"] : ["to", "-t"];
+  const recipient = destination.target.startsWith("-") ? option(long, destination.target) : `${short} ${shellWord(destination.target)}`;
+  const options = targetOptions(values);
+  options.push(...(values.mention ?? []).map((name) => option("mention", name)));
+  if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));
+  if (values.verbose) options.push("--verbose");
+  return `run ${codeSpan(["cotal send", recipient, ...options, body].join(" "))}`;
 }
 
 /** How a refused message file is reported: with the mesh the send was aimed at, as a refusal after
- *  connecting names it, and a remedy that keeps the destination with a quoted body instead. */
+ *  connecting names it, and a remedy that replaces the file with a quoted body. */
 interface FileRefusal { target(file: string): { space?: string; file: string }; instead: string }
 
 function fileRefusal(input: SendInput, values: Values): FileRefusal {
+  const output = values.json ? "--json " : values.plain ? "--plain " : "";
   return {
     target: (file) => { const space = connectSpace(values); return { ...(space === undefined ? {} : { space }), file }; },
-    instead: `or ${sendAgain(input, '"<message>"')}`,
+    instead: `or ${sendAgain(input, values, `${output}"<message>"`)}`,
   };
 }
 
@@ -236,7 +253,10 @@ function decoded(bytes: Buffer, file: string | undefined, { target, instead }: F
     if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is not valid UTF-8`, target(file), `save it as UTF-8 text, ${instead}`);
     throw new CommandFailure("refused", "USAGE_INVALID", "the message input is not valid UTF-8");
   }
-  if (!text.trim()) throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  if (!text.trim()) {
+    if (file !== undefined) throw new UnusableFile(`the message file ${JSON.stringify(file)} is empty or contains only whitespace`, target(file), `write a nonempty message in the file, ${instead}`);
+    throw new CommandFailure("refused", "USAGE_INVALID", "the explicit message input is empty");
+  }
   return text;
 }
 
@@ -257,7 +277,7 @@ function identityLabel(candidate: PeerCandidate, p: Presence | undefined): strin
   return `${candidate.id} (${name}, ${kind}${p.runtime ? `, started ${new Date(p.runtime.startedAt).toLocaleTimeString()}` : ""})`;
 }
 
-async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention"): Promise<Presence> {
+async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], space: string, name: string, use: "to" | "mention", values: ConnectFlags): Promise<Presence> {
   // Presence arrives asynchronously. Never turn a partial name into a fuzzy target.
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
@@ -270,7 +290,8 @@ async function directPeer(ep: Awaited<ReturnType<typeof openTransient>>["ep"], s
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with \`cotal who --all --space ${space}\`, then use one name or full identity` });
+  const roster = ["cotal who --all", ...targetOptions({ ...values, space })].join(" ");
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no matching participant was found in the authorized presence view", { target: { space, name }, remedy: `list the participants with ${codeSpan(roster)}, then use one name or full identity` });
 }
 
 /** How long a role send waits for the presence snapshot before it says nothing about holders. */
@@ -309,12 +330,6 @@ function editDistance(a: string, b: string): number {
     row = next;
   }
   return row[b.length]!;
-}
-
-/** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
-function payloadRefused(error: unknown): boolean {
-  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
-  return false;
 }
 
 /** JetStream answers 10023, insufficient resources, to a write while its file store holds more than
@@ -468,14 +483,14 @@ export async function send(args: ParsedArgs): Promise<void> {
     for (const name of values.mention ?? []) {
       // A mention travels as the peer's name (SPEC §5), the value a receiver compares with its own.
       // An instance id is accepted only when its name resolves back to that same peer.
-      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention");
+      const peer = await directPeer(ep, space, name.replace(/^@/, ""), "mention", values);
       let named: Presence | undefined;
       try { named = resolvePeer(ep.getRoster(), peer.card.name); } catch { named = undefined; }
       if (named?.card.id !== peer.card.id)
         throw new CommandFailure("refused", "TARGET_AMBIGUOUS", "a mention carries the agent's name, and this name does not name only that participant", { target: { space, name: peer.card.name }, remedy: `send to that participant with \`cotal send -t ${peer.card.id}\` instead` });
       mentions.push(peer.card.name);
     }
-    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to") : undefined;
+    const peer = input.mode === "dm" ? await directPeer(ep, space, input.target, "to", values) : undefined;
     let messageId: string;
     let sequence: number | null = null;
     try {

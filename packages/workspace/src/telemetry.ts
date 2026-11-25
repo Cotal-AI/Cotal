@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
+import { acquireLock, mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { userCotalDir } from "./mesh-registry.js";
 import { CommandFailure } from "./output.js";
 
@@ -73,8 +73,19 @@ function readFile(): TelemetrySettings | undefined {
   return s as unknown as TelemetrySettings;
 }
 
-function write(settings: TelemetrySettings): TelemetrySettings {
+function withLockedSettings<T>(update: (current: TelemetrySettings | undefined) => T, waitMs = 5000): T {
   mkSecretDir(userCotalDir());
+  const held = acquireLock(`${telemetrySettingsPath()}.lock`, { label: "telemetry settings", waitMs, pollMs: 10,
+    onTimeout: () => new CommandFailure("refused", "CONFLICT", "another process is updating telemetry settings", { native: { code: "TELEMETRY_BUSY" }, remedy: "retry after the other settings write finishes" }),
+  });
+  try { return update(readFile()); } finally { held.release(); }
+}
+
+function freshSettings(): TelemetrySettings {
+  return { v: 1, level: "regular", installId: randomUUID(), createdAt: new Date().toISOString() };
+}
+
+function write(settings: TelemetrySettings): TelemetrySettings {
   writeSecretFileAtomic(telemetrySettingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
   return settings;
 }
@@ -85,22 +96,32 @@ export function readTelemetrySettings(): TelemetrySettings {
 }
 
 /** {@link readTelemetrySettings}, saying whether this read created the file. */
-function readOrCreate(): { settings: TelemetrySettings; created: boolean } {
+function readOrCreate(waitMs?: number): { settings: TelemetrySettings; created: boolean } {
   const found = readFile();
   if (found) return { settings: found, created: false };
-  return { settings: write({ v: 1, level: "regular", installId: randomUUID(), createdAt: new Date().toISOString() }), created: true };
+  return withLockedSettings((current) => current ? { settings: current, created: false } : { settings: write(freshSettings()), created: true }, waitMs);
 }
 
 export function setTelemetryLevel(level: TelemetryLevel): TelemetrySettings {
-  return write({ ...readTelemetrySettings(), level });
+  return withLockedSettings((current) => write({ ...(current ?? freshSettings()), level }));
 }
 
-export function markTelemetryNoticeShown(): TelemetrySettings {
-  return write({ ...readTelemetrySettings(), noticeShownAt: new Date().toISOString() });
+export function markTelemetryNoticeShown(waitMs?: number): TelemetrySettings {
+  return withLockedSettings((current) => write({ ...(current ?? freshSettings()), noticeShownAt: new Date().toISOString() }), waitMs);
 }
 
 export function markTelemetryInstallEvent(at: Date): TelemetrySettings {
-  return write({ ...readTelemetrySettings(), lastInstallEventAt: at.toISOString() });
+  return withLockedSettings((current) => write({ ...(current ?? freshSettings()), lastInstallEventAt: at.toISOString() }));
+}
+
+/** Reserve the day's install report for this settings identity before sending. An exit never waits for another writer. */
+export function claimTelemetryInstallEvent(installId: string, at: Date): boolean {
+  const stamp = at.toISOString();
+  return withLockedSettings((current) => {
+    if (current?.installId !== installId || (current.lastInstallEventAt?.slice(0, 10) ?? "") >= stamp.slice(0, 10)) return false;
+    write({ ...current, lastInstallEventAt: stamp });
+    return true;
+  }, 0);
 }
 
 const truthy = (value: string | undefined): boolean => value === "1" || value?.toLowerCase() === "true";
@@ -119,10 +140,15 @@ export function telemetryLevelFromEnv(env: NodeJS.ProcessEnv): { level: Telemetr
 
 /** The level in force and where it comes from, with the settings file that holds the install id
  *  and whether this read created that file. The file is neither read nor created when the
- *  environment forces `off`, so a machine that opts out by environment keeps no install id. */
-export function effectiveTelemetry(env: NodeJS.ProcessEnv): { level: TelemetryLevel; source: TelemetrySource; settings?: TelemetrySettings; created?: boolean } {
+ *  environment forces `off`, so a machine that opts out by environment keeps no install id.
+ *  Pass `false` to resolve the level without creating a missing file, or a zero wait for optional collection. */
+export function effectiveTelemetry(env: NodeJS.ProcessEnv, create = true, waitMs?: number): { level: TelemetryLevel; source: TelemetrySource; settings?: TelemetrySettings; created?: boolean } {
   const forced = telemetryLevelFromEnv(env);
   if (forced?.level === "off") return forced;
-  const { settings, created } = readOrCreate();
+  if (!create) {
+    const settings = readFile();
+    return { level: forced?.level ?? settings?.level ?? "regular", source: forced?.source ?? "file", settings };
+  }
+  const { settings, created } = readOrCreate(waitMs);
   return forced ? { ...forced, settings, created } : { level: settings.level, source: "file", settings, created };
 }

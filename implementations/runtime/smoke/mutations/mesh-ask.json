@@ -26,7 +26,7 @@
   "mutations": [
     {
       "name": "attempts default to three, the design's number the spec overruled",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "    const attempts = req.attempts ?? 1;",
       "replace": "    const attempts = req.attempts ?? 3;",
       "expectRed": "the default is one attempt: no second pause was opened",
@@ -35,7 +35,7 @@
     },
     {
       "name": "an unreadable schema is silently accepted instead of refused",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "    const shape = askSchemaShape(req.schema);\n    if (shape === null) {",
       "replace": "    const shape = askSchemaShape(req.schema);\n    if (false) {",
       "expectRed": "the entry settles as L4022 before anything was bound or armed",
@@ -44,7 +44,7 @@
     },
     {
       "name": "every answer conforms",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (conformsToAskSchema(answer.value, shape)) return answer.value;",
       "replace": "      if (true) return answer.value;",
       "expectRed": "the refusal names the field and the kind it wants, judged by the same check that refused it",
@@ -53,7 +53,7 @@
     },
     {
       "name": "exhaustion loses its catchable class",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (attempt >= attempts) {\n        throw new EffectError(\n          \"L4006\",\n          \"ask-nonconforming\",",
       "replace": "      if (attempt >= attempts) {\n        throw new EffectError(\n          \"L4000\",\n          \"ask-nonconforming\",",
       "expectRed": "the entry settles as the ask effect's own catchable L4006",
@@ -62,7 +62,7 @@
     },
     {
       "name": "the refusal reason is never bound for the answerer",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "          ...(refused !== undefined ? { refused } : {}),",
       "replace": "          ...({}),",
       "expectRed": "the refusal names the field and the kind it wants, judged by the same check that refused it",
@@ -111,7 +111,7 @@
     },
     {
       "name": "the agent is never told: no relay is submitted",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      await this.relayAsk(seat, ctx, token, { attempt, attempts, deadlineAt, ...(refused !== undefined ? { refused } : {}) });\n",
       "replace": "",
       "expectRed": "the agent was TOLD: the attempt rode the turn relay under its own token, pinned to the spawned seat's incarnation",
@@ -129,7 +129,7 @@
     },
     {
       "name": "an ask outside the roster is not refused up front",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      if (seat.why === \"not-in-roster\")\n        throw new Error(`ask(${step}) addresses ${name}#${uid}, which is not in this run's roster; an ask is relayed to an agent this run spawned`);\n",
       "replace": "",
       "expectRed": "the refusal names the roster and reaches no endpoint",
@@ -138,7 +138,7 @@
     },
     {
       "name": "a re-ask tells the seat nothing about the refusal",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "      ask: { token, schema: seat.schema, attempt: ask.attempt, attempts: ask.attempts, deadlineAt: ask.deadlineAt, ...(ask.refused !== undefined ? { refused: ask.refused } : {}) },",
       "replace": "      ask: { token, schema: seat.schema, attempt: ask.attempt, attempts: ask.attempts, deadlineAt: ask.deadlineAt },",
       "expectRed": "attempt 2 is relayed under its derived token, and the seat is told why its last answer was refused",
@@ -156,7 +156,7 @@
     },
     {
       "name": "a resume drops the refusal the entry recorded",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-turn-ask.ts",
       "find": "    ...(typeof v.refused === \"string\" ? { refused: v.refused } : {}),\n  };",
       "replace": "  };",
       "expectRed": "a resume whose relay never landed re-tells the seat WITH the refusal the entry recorded",
@@ -174,7 +174,7 @@
     },
     {
       "name": "the relayed escalation carries no prompt",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "      checkpoint: { token, prompt: req.prompt, schema: req.schema ?? null, deadlineAt, escalatedTo: to },",
       "replace": "      checkpoint: { token, schema: req.schema ?? null, deadlineAt, escalatedTo: to },",
       "expectRed": "carrying the question, the addressee and the step to answer at",
@@ -192,7 +192,7 @@
     },
     {
       "name": "an escalation relays to whatever `to` names, seat or not",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) return;",
       "replace": "    const seat = this.seatAddress(to);\n    if (seat.address === undefined) { /* relay anyway */ }",
       "expectRed": "an escalation addressed to someone who is not a seat relays to nobody, stays parked, and still records who it names",
@@ -201,7 +201,7 @@
     },
     {
       "name": "an escalation whose seat is gone fails the checkpoint L4002 again",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-seat-watch.ts",
       "find": "      if (!(e instanceof EffectError && e.code === \"L4002\")) throw e;\n      console.error(",
       "replace": "      throw e;\n      console.error(",
       "expectRed": "an escalation whose seat is gone at the relay is TOLD to nobody and the pause stands, armed and answerable from anywhere",

@@ -1,10 +1,10 @@
 /**
  * The prompt desk (SPEC 13.22): the agent's own server for the questions its harness stops to ask,
  * such as "Allow this command?", a multiple-choice question, a plan or a form. It holds the open
- * prompts, runs their state table, keeps the expiry and settle timers, and serves the `agent`
- * endpoint's `prompts`, `prompt` and `prompt-answer` commands on the principal route (SPEC 13.21)
- * through `CotalEndpoint.servePrincipal`. Nothing per prompt is stored on the broker: presence
- * carries a count and a counter, and the rest lives in this process.
+ * prompts, runs their state table, keeps the expiry and settle timers, and answers the `agent`
+ * endpoint's `prompts`, `prompt` and `prompt-answer` commands, which `openAgentEndpoint` serves on
+ * the principal route (SPEC 13.21). Nothing per prompt is stored on the broker: presence carries a
+ * count and a counter, and the rest lives in this process.
  *
  * It knows no harness. An adapter opens a prompt for a native dialog, hands the one accepted answer
  * to its harness in `deliver`, reports what the harness was then seen to do with `settle`, and frees
@@ -23,7 +23,7 @@ import {
   AGENT_PROMPT_LIST_MAX, AGENT_PROMPT_SIZE_DETAIL, AGENT_PROMPT_STATE_DETAIL, EpEnvelopeError,
   agentPromptDigest, canonicalJson, compileContractSchema, contractDigest, processRuntime,
   type AgentPrompt, type ContractValidator, type CotalEndpoint, type EpCaller, type EpPrincipalCommandDef,
-  type EpPrincipalServeContext, type PrincipalServe, type PromptAnswerInput, type PromptAnswerRef, type PromptAnswerer,
+  type EpPrincipalServeContext, type PromptAnswerInput, type PromptAnswerRef, type PromptAnswerer,
   type PromptContent, type PromptEffect, type PromptOption, type PromptOutcome, type PromptSeen, type PromptState,
   type PromptSummary, type PromptsOutput,
 } from "@cotal-ai/core";
@@ -110,9 +110,15 @@ export interface PromptDesk {
   open(spec: PromptSpec, hooks: PromptHooks): PromptHold;
   /** How many prompts are `open` or `sent`. */
   readonly waiting: number;
-  /** Close every prompt (the event C), reply to every `prompt-answer` still waiting, clear the presence
-   *  field and stop serving. Does not wait for a `deliver` call that has not ended. */
-  close(): Promise<void>;
+}
+
+export interface ServedPromptDesk extends PromptDesk {
+  handlers(): EpPrincipalCommandDef[];
+  /** The endpoint is served: take the first presence counter now, and show it once `ready` resolves. */
+  served(ready: Promise<void>): void;
+  /** Close every prompt (the event C) and reply to every `prompt-answer` still waiting. Does not wait
+   *  for a `deliver` call that has not ended. */
+  close(): void;
 }
 
 /** Why {@link PromptDesk.open} refused a prompt: 32 are `open` or `sent` (`full`), the content or a
@@ -347,7 +353,7 @@ function largestSummaryBytes(base: Omit<PromptSummary, "state">, options: readon
   return max;
 }
 
-class Desk implements PromptDesk {
+class Desk implements ServedPromptDesk {
   /** Every prompt in memory, in the order it opened. */
   private readonly held = new Map<string, Held>();
   /** The closed prompts in memory, in the order they closed. */
@@ -359,9 +365,8 @@ class Desk implements PromptDesk {
   private stepping = false;
   private readonly later: (() => void)[] = [];
   private presenceOwed = false;
+  private serving = false;
   private closed = false;
-  private closing?: Promise<void>;
-  serve?: PrincipalServe;
 
   /** The adapter's logger. A logger that throws stops no step and no close. */
   private readonly warn: (msg: string) => void;
@@ -378,54 +383,29 @@ class Desk implements PromptDesk {
     return this.live;
   }
 
-  /** Serve the `agent` endpoint, and close on a refused subscription or a smaller payload limit. */
-  start(): PrincipalServe {
-    const handlers: EpPrincipalCommandDef[] = [
+  handlers(): EpPrincipalCommandDef[] {
+    return [
       { command: "prompts", contract: AGENT_CONTRACTS.prompts, handler: (ctx) => this.list(ctx) },
       { command: "prompt", contract: AGENT_CONTRACTS.prompt, handler: (ctx) => this.read(ctx) },
       { command: "prompt-answer", contract: AGENT_CONTRACTS["prompt-answer"], handler: (ctx) => this.answer(ctx) },
     ];
-    const serve = this.ep.servePrincipal({ handlers });
+  }
+
+  served(ready: Promise<void>): void {
     this.seq = this.ep.nextPromptsSeq();
-    this.serve = serve;
-    this.ep.on("transport", this.onTransport);
-    void serve.failed.then((err) => {
-      if (this.closed) return;
-      this.warn(`the prompt desk closed: ${err.message}`);
-      void this.close();
-    });
-    return serve;
+    this.serving = true;
+    ready.then(() => {
+      this.presenceOwed = true;
+      this.flushPresence();
+    }, () => { /* the endpoint's owner reports the refusal */ });
   }
 
-  /** The broker accepted the subscription: show this desk's counter. */
-  announce(): void {
-    this.presenceOwed = true;
-    this.flushPresence();
-  }
-
-  /** Every replaced connection runs the payload check again. */
-  private readonly onTransport = (t: { connected: boolean }): void => {
-    if (!t.connected || this.closed) return;
-    let max: number;
-    try {
-      max = this.ep.maxPayload;
-    } catch {
-      return; // not live after all; the next connection runs the check
-    }
-    if (max >= PROMPT_DESK_MIN_MAX_PAYLOAD) return;
-    this.warn(`the prompt desk closed: the connection's max_payload is ${max} bytes, under the ${PROMPT_DESK_MIN_MAX_PAYLOAD} its largest replies need`);
-    void this.close();
-  };
-
-  close(): Promise<void> {
-    if (this.closing) return this.closing;
+  close(): void {
+    if (this.closed) return;
     this.closed = true;
-    this.ep.off("transport", this.onTransport);
     this.defer(() => {
       for (const h of [...this.held.values()]) if (h.state.kind !== "closed") this.apply(h, { kind: "close" });
     });
-    this.closing = this.serve ? this.serve.stop() : Promise.resolve();
-    return this.closing;
   }
 
   open(spec: PromptSpec, hooks: PromptHooks): PromptHold {
@@ -615,7 +595,7 @@ class Desk implements PromptDesk {
   }
 
   private flushPresence(): void {
-    if (!this.presenceOwed || this.closed || !this.serve) return;
+    if (!this.presenceOwed || this.closed || !this.serving) return;
     this.presenceOwed = false;
     this.ep.setPromptsPresence({ open: this.live, seq: this.seq }).catch((e) => {
       if (!this.closed) this.warn(`the prompts presence field was not written: ${describe(e)}`);
@@ -772,30 +752,6 @@ function answerFingerprint(a: PromptAnswerInput, caller: EpCaller): string {
   });
 }
 
-/**
- * Open this process's prompt desk on `ep`: serve the `agent` endpoint on the principal route and show
- * the `prompts` presence field. Resolves once the broker accepted the subscription.
- *
- * Rejects on an open mesh, under a static credential and without a lifecycle UID, when the broker
- * refuses the subscription (a credential minted before the rows existed), and when the connection's
- * `max_payload` is under {@link PROMPT_DESK_MIN_MAX_PAYLOAD}. Then the connector leaves every dialog to
- * the harness, and presence shows no `prompts` field. The same checks run on every replaced
- * connection, and a failure there closes the desk and warns. Stopping `ep` ends the serve and not the
- * prompts, so call `close()` first: it ends every prompt and gives each open dialog back.
- */
-export async function openPromptDesk(ep: CotalEndpoint, opts: { warn(msg: string): void }): Promise<PromptDesk> {
-  if (typeof opts?.warn !== "function") throw new TypeError("openPromptDesk needs opts.warn");
-  const max = ep.maxPayload;
-  if (max < PROMPT_DESK_MIN_MAX_PAYLOAD)
-    throw new Error(`the prompt desk needs a connection whose max_payload is at least ${PROMPT_DESK_MIN_MAX_PAYLOAD} bytes, and this one is ${max}`);
-  const desk = new Desk(ep, opts.warn);
-  const serve = desk.start();
-  try {
-    await serve.ready;
-  } catch (e) {
-    void desk.close();
-    throw e;
-  }
-  desk.announce();
-  return desk;
+export function createPromptDesk(ep: CotalEndpoint, warn: (msg: string) => void): ServedPromptDesk {
+  return new Desk(ep, warn);
 }

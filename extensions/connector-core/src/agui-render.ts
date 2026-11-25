@@ -219,11 +219,12 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
 
       case AGUI_EVENT_TYPE.CUSTOM: {
         // The tool result marker draws as the result line it stands in for: done or failed, and no
-        // content, since it carries none. Its shape is read through `toolResultValue`, the rule the
-        // closed schema applies, so a marker of any other shape is drawn as the plain custom line.
-        // The browser's `toolResult.ts` restates that rule, and the parity suite compares the two.
-        const failed = e.name === TOOL_RESULT_EVENT ? toolResultValue(e.value)?.isError : undefined;
-        if (failed !== undefined) emit(RESULT_PREFIX, CONT, failed ? "failed" : "done");
+        // content, since it carries none. A marker that does not say whether the call failed draws as
+        // done. Its shape is read through `toolResultValue`, the rule the closed schema applies, so a
+        // marker of any other shape is drawn as the plain custom line. The browser's `toolResult.ts`
+        // restates that rule, and the parity suite compares the two.
+        const marker = e.name === TOOL_RESULT_EVENT ? toolResultValue(e.value) : undefined;
+        if (marker !== undefined) emit(RESULT_PREFIX, CONT, marker.isError ? "failed" : "done");
         else emit("• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
         break;
       }

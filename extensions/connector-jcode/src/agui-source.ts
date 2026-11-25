@@ -1,7 +1,7 @@
 import { access, open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { JsonlFileSource, JsonlFileResetError, type DurableSource, type EventWal, type SourceRead } from "@cotal-ai/connector-core";
+import { JsonlFileSource, JsonlFileResetError, type DeltaMergedSource, type EventWal, type OrderedSource, type SourceRead } from "@cotal-ai/connector-core";
 import type { JcodeJournalRecord, PositionedJcodeJournalRecord } from "./agui-map.js";
 
 const JOURNAL_WAIT_MS = 5_000;
@@ -11,6 +11,9 @@ const RETRY_MAX_MS = 250;
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const isMissing = (error: unknown): error is NodeJS.ErrnoException =>
   error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT";
+
+/** The beginning of the journal Jcode has not created yet, after a fold removed the last one. */
+const NEXT_FILE = "jcode:next-file";
 
 export function jcodeJournalPath(jcodeHome: string, sessionId: string): string {
   return join(jcodeHome, "sessions", `${sessionId}.journal.jsonl`);
@@ -37,18 +40,23 @@ async function captureJcodeJournalCursor(path: string, waitMs = JOURNAL_WAIT_MS)
 /**
  * Persist where the public event stream begins before its first turn can start. A restart always
  * trusts the WAL's acknowledged cursor and never captures a later end, so output appended after this
- * boundary remains replayable even if the process dies before its first pump.
+ * boundary remains replayable even if the process dies before its first pump. The boundary is a
+ * cursor of `source`, so the deltas journaled after it stream too.
  */
-export async function initializeJcodeEventBoundary(path: string, wal: EventWal): Promise<string> {
+export async function initializeJcodeEventBoundary(
+  path: string,
+  wal: EventWal,
+  source: DeltaMergedSource<PositionedJcodeJournalRecord>,
+): Promise<string> {
   const acknowledged = wal.frontier.sourceCursor;
   if (acknowledged !== undefined) return acknowledged;
-  const boundary = await captureJcodeJournalCursor(path);
+  const boundary = source.start(await captureJcodeJournalCursor(path));
   await wal.advanceCursorOnly(boundary);
   return boundary;
 }
 
 /** Read native journal appends and report checkpoints as explicit event discontinuities. */
-export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
+export class JcodeJournalSource implements OrderedSource<JcodeJournalRecord> {
   readonly kind = "jcode-session-journal";
   private readonly file: JsonlFileSource<JcodeJournalRecord>;
 
@@ -63,7 +71,62 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     return this.file.end();
   }
 
+  /** The position a delta is journaled at: the journal's end, or the next file's beginning while a
+   *  fold has left no journal. */
+  anchor(): string {
+    return this.currentEnd() ?? NEXT_FILE;
+  }
+
+  /**
+   * Orders two positions. A fold replaces the journal, so of two positions on different files the
+   * one on the file at the path now is the later, and two on files a fold removed compare equal. The
+   * next file's beginning is before every position on the file at the path, and after any other.
+   */
+  compare(a: string, b: string): number {
+    if (a === NEXT_FILE || b === NEXT_FILE) return a === b ? 0 : a === NEXT_FILE ? this.nextFileAgainst(b) : -this.nextFileAgainst(a);
+    const aNow = this.onFile(a), bNow = this.onFile(b);
+    if (aNow !== bNow) return aNow ? 1 : -1;
+    try {
+      return this.file.compare(a, b);
+    } catch (error) {
+      if (!(error instanceof JsonlFileResetError)) throw error;
+      return 0;
+    }
+  }
+
+  private nextFileAgainst(cursor: string): number {
+    return this.onFile(cursor) ? -JsonlFileSource.offsetOf(cursor) : 1;
+  }
+
+  private currentEnd(): string | undefined {
+    try {
+      return this.file.endSync();
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+  }
+
+  /** Whether `cursor` is on the journal at the path now. A fold's new journal can reuse the inode of
+   *  the one it replaced, as ext4 does, so the file's identity alone does not tell them apart. */
+  private onFile(cursor: string): boolean {
+    try {
+      return this.file.holdsSync(cursor);
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+  }
+
   async read(cursor: string | undefined): Promise<SourceRead<JcodeJournalRecord>> {
+    if (cursor === NEXT_FILE) {
+      try {
+        return await this.file.readFromBeginning();
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+        return { cursor, records: [] };
+      }
+    }
     if (cursor !== undefined) {
       try {
         return await this.file.read(cursor);
@@ -152,11 +215,12 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
 }
 
 export function positionedJcodeJournalSource(
-  source: DurableSource<JcodeJournalRecord>,
-): DurableSource<PositionedJcodeJournalRecord> {
+  source: OrderedSource<JcodeJournalRecord>,
+): OrderedSource<PositionedJcodeJournalRecord> {
   return {
     kind: source.kind,
     end: () => source.end(),
+    compare: (a, b) => source.compare(a, b),
     async read(cursor) {
       const read = await source.read(cursor);
       return {

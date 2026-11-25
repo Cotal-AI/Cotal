@@ -236,14 +236,14 @@ try {
     assert.deepEqual(importers.map((f) => f.slice(root.length)), []);
   });
 
-  await check("only provisioner and teardown hold the server-view grant", async () => {
+  await check("only provisioner, quiescence reader and teardown hold the server-view grant", async () => {
     // These trusted profiles query their connection's account before native impact reads.
     // Keep the holder set closed without granting discovery to peer-held profiles.
     assert.equal(holdsServerView({ pub: { allow: ["$SYS.REQ.USER.INFO"] } }), true);
     assert.equal(holdsServerView({ pub: { allow: [">"] } }), true);
     assert.equal(holdsServerView({ pub: { allow: ["cotal.x.>"] } }), false);
     const holders = fixtures.filter((f) => holdsServerView(f.permissions));
-    assert.deepEqual(holders.map((f) => `${f.profile}/${f.variant}`).sort(), ["provisioner/default", "teardown/default"]);
+    assert.deepEqual(holders.map((f) => `${f.profile}/${f.variant}`).sort(), ["provisioner/default", "space-quiescence-reader/default", "teardown/default"]);
     for (const holder of holders) {
       assert.ok(TRUSTED_PROFILES.includes(holder.profile));
       assert.equal(PEER_HELD_PROFILES.includes(holder.profile), false);

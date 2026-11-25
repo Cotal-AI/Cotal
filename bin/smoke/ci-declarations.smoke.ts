@@ -1,10 +1,7 @@
 import { DECLARATIONS, committed, renderDeclaration } from "./gen-ci-suites-dts.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, detail?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 for (const entry of DECLARATIONS) {
   let emitted: string | undefined;
@@ -20,6 +17,6 @@ for (const entry of DECLARATIONS) {
 }
 
 const EXPECTED = DECLARATIONS.length;
-check(`every declaration cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED);
-console.log(`CI DECLARATIONS SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+check(`every declaration cell ran (${EXPECTED} before sentinel)`, passed() + failed() === EXPECTED);
+console.log(`CI DECLARATIONS SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

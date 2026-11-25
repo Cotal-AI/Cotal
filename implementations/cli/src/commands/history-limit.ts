@@ -181,7 +181,6 @@ export async function historyLimit(values: Values): Promise<void> {
   const presentation = presentationOf(values);
   const request = historyLimitRequest(values);
   const readOnly = request.size === 0;
-  if (!readOnly && !values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history limit", presentation === "json"), { remedy: "add --yes to set the limit without a prompt; a lower limit deletes the entries it no longer keeps" });
   const selected = resolveMeshTarget(process.cwd(), { ...(values.space ? { space: values.space } : {}) });
   const kinds = readOnly ? ORDER : ORDER.filter((kind) => request.has(kind));
   const target = { space: selected.space, broker: brokerLabel(selected.server), streams: kinds.map((kind) => historyLimitStreamName(selected.space, kind)) };
@@ -234,6 +233,7 @@ export async function historyLimit(values: Values): Promise<void> {
       writeResult(presentation, { command: "history", target, result: resultOf(false), noOp: true }, (): Report => ({ sections: [{ title: "History limits unchanged", blocks: [{ kind: "fields", rows: [["Space", selected.space], ...limitRows(rows, (row) => row.to)] }, { kind: "lines", lines: ["The streams already hold these limits. Nothing was written."] }] }] }));
       return;
     }
+    if (!values.yes && (!canPrompt() || presentation === "json")) throw new ConfirmationRequired(yesRequired("history limit", presentation === "json"), { remedy: "add --yes to set the limit without a prompt; a lower limit deletes the entries it no longer keeps" });
     const snapshots: LoweringSnapshot[] = [];
     for (const row of changing) {
       const snapshot = await lowering(jsm, row, readAt);

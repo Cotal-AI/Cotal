@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager, jetstream, AckPolicy } from "@nats-io/jetstream";
+import type { KV } from "@nats-io/kv";
 import {
   CotalEndpoint,
   isReachable,
@@ -38,6 +39,8 @@ import {
   dlvSubject,
   dlvDurable,
   dlvStream,
+  memberKey,
+  openMembersRegistry,
   type Delivery,
   type CotalMessage,
   type MessageMeta,
@@ -141,12 +144,15 @@ try {
   // write, no `ctl.delivery`). The manager stays provisioner (provisionAgent above) + publisher (the
   // multicast calls below post chat AS the operator; the daemon's fan-out reads CHAT and delivers).
   const dlvId = newIdentity();
+  const dlvCreds = await mintCreds(auth, dlvId, "delivery");
+  const deliveryErrors: string[] = [];
   const dlv = new CotalEndpoint({
-    space, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
+    space, servers: SERVERS, creds: dlvCreds,
     card: { id: dlvId.id, name: "delivery", role: "delivery", kind: "endpoint" },
     channels: [], consume: false, registerPresence: false, watchPresence: true,
   });
   dlv.on("error", (e: Error) => console.error("  ! dlv", e.message));
+  dlv.on("error", (e: Error) => deliveryErrors.push(e.message));
   await dlv.start();
   await dlv.startPlane3(aclFor);
 
@@ -184,6 +190,36 @@ try {
   check("kind=channel (path-derived from the DELIVER durable, not a header — SPEC §4)", h?.kind === "channel");
   check("durable:true (real JetStream backstop ack, coalesces with any live copy)", h?.durable === true);
 
+  const encode = new TextEncoder();
+  const writer = await connect({ servers: SERVERS, authenticator: credsAuthenticator(encode.encode(dlvCreds)), inboxPrefix: `_INBOX_${dlvId.id}` });
+  const watchedMembers = await (dlv as unknown as { membersRegistry(): Promise<KV> }).membersRegistry();
+  const writerMembers = await openMembersRegistry(writer, space);
+  const status = watchedMembers.status.bind(watchedMembers);
+  const writeChurn = (cursor: number) => writerMembers.put(memberKey("other", aPrincipal, uidA), encode.encode(JSON.stringify({
+    channel: "other", owner: aPrincipal, lifecycleUid: uidA, state: "durable-active", activated: true,
+    joinCursor: 0, generation: 1, writerIdentity: dlv.card.id, updatedAt: cursor,
+  })));
+  let writes = 0;
+  const errorsBefore = deliveryErrors.length;
+  try {
+    await writeChurn(++writes);
+    watchedMembers.status = async () => {
+      const snapshot = await status();
+      // A separate writer commits just after every fence read, before the caller can proceed.
+      await writeChurn(++writes);
+      return snapshot;
+    };
+    const texts = Array.from({ length: 6 }, (_, i) => `churn ${i}`);
+    for (const text of texts) await poster.multicast(text, { channel: "review" });
+    check("every post reaches the exact durable member during membership churn without a fan-out error",
+      await until(() => deliveryErrors.length > errorsBefore || texts.every((text) => got.some((m) => m.text === text && m.ch === "review" && m.durable))) &&
+      deliveryErrors.length === errorsBefore && writes > texts.length,
+      { writes, errors: deliveryErrors.slice(errorsBefore), received: got.filter((m) => texts.includes(m.text)) });
+  } finally {
+    watchedMembers.status = status;
+    await writer.close();
+  }
+
   // The payload channel is advisory. A raw publisher cannot relabel a #review post as #general to
   // bypass connector attention after fan-out: Plane-3 carries the subject-derived channel in its
   // versioned DLV frame and the agent surfaces that value.
@@ -198,8 +234,8 @@ try {
     parts: [{ kind: "text", text: "plane3-subject-wins" }],
   };
   const posterJs = (poster as unknown as {
-    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
-  }).js;
+    conn: { js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> } };
+  }).conn.js;
   await posterJs.publish(
     chatSubject(space, posterPrincipal.owner, posterPrincipal.actor, "review"),
     JSON.stringify(mismatch),
@@ -219,8 +255,8 @@ try {
     parts: [{ kind: "text", text: "legacy-unversioned-dlv" }],
   };
   const dlvJs = (dlv as unknown as {
-    js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> };
-  }).js;
+    conn: { js: { publish(subject: string, data: string, opts: { msgID: string }): Promise<unknown> } };
+  }).conn.js;
   await dlvJs.publish(dlvSubject(space, DEV_OWNER, aId.id, uidA), JSON.stringify(legacy), { msgID: legacy.id });
   check("unversioned persisted DLV entries terminate loudly", await until(() =>
     agentErrors.some((message) => message.includes("unauthenticated or unversioned DLV entry terminated"))));

@@ -3,13 +3,13 @@ import { accessSync, constants, existsSync, lstatSync, mkdtempSync, readdirSync,
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import {
-  acquireLock, agentFilePath, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
-  parseAgentFileSource, saveAgentFile, utf16Problem, writeSecretFile, writeSecretFileAtomic,
+  acquireLock, assertValidName, hardenPrivate, MAX_NAME_LENGTH, mkSecretDir,
+  parseAgentFileSource, personaDir, saveAgentFile, utf8Problem, writeSecretFile, writeSecretFileAtomic,
   type AgentDef,
 } from "@cotal-ai/core";
 import {
-  cachedPreferences, CommandFailure, ConfirmationRequired, explicitNoInputFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
-  localWriteFailure, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
+  cachedPreferences, codeSpan, CommandFailure, ConfirmationRequired, cotalDirLink, explicitNoInputFlag, findCotalRoot, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, legacyStackOtherHome, loadMeshes, meshesForRoot, movedProject,
+  localWriteFailure, personaDefinitionProblem, preparedNeverStarted, preparedSpaceAt, resolveMeshTarget, resolvePreference, retainedLegacyBroker, retainedOpenSpace, stackJournalPath, targetErrorCode, workspaceErrorParts, type Presentation,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -19,8 +19,12 @@ import { catalogFolderProblem, linkTarget } from "./personas.js";
 export interface PersonaCatalog { root: string; space: string }
 export interface PersonaSource { bytes: Buffer; ino: number; dev: number; mtimeMs: number }
 
-/** Resolve once, without inventing a broker for a prepared space or falling back to the cwd. */
+/** Resolve the catalog without requiring a running broker or guessing which space owns the cwd. */
 export function personaCatalog(values: { space?: string; server?: string }): PersonaCatalog {
+  return personaCatalogContext(values).catalog;
+}
+
+export function personaCatalogContext(values: { space?: string; server?: string }): { catalog: PersonaCatalog; userMode: boolean; prepared?: boolean } {
   try {
     const target = resolveMeshTarget(process.cwd(), { ...values, readOnly: true });
     // A `--server` that no registration names resolves to this folder's project, as launch does.
@@ -29,11 +33,21 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space registered here is at ${values.server}, and this folder is not a space's project`, {
         remedy: "name a prepared or registered space with `--space <name>`, or run this in its project folder", target: { server: values.server },
       });
-    return catalogAt(target.root, target.space);
+    return { catalog: catalogAt(target.root, target.space), userMode: target.mode === "user" };
   } catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
-    if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
-      return catalogAt(error.details.root, error.details.space);
+    if (error.code === "not-started" && error.details.root && error.details.space && !error.details.rootMissing &&
+        (!values.server || (values.space === error.details.space && preparedNeverStarted(error.details) &&
+          !existsSync(stackJournalPath(error.details.root)) && !retainedLegacyBroker(error.details.root))))
+      return { catalog: catalogAt(error.details.root, error.details.space), userMode: false, prepared: preparedNeverStarted(error.details) };
+    if ((error.code === "unknown-space" || error.code === "not-started" && error.details.lastRun) && values.space !== undefined && values.server === undefined) {
+      const root = findCotalRoot();
+      // Legacy down can drop the registration, but the rendered open config still names the space.
+      if (isGenuineSpace(root) && cotalDirLink(root) === undefined && !existsSync(stackJournalPath(root)) &&
+          !preparedSpaceAt(root) && meshesForRoot(root).length === 0 && retainedLegacyBroker(root)?.open &&
+          retainedOpenSpace(root) === values.space && legacyStackOtherHome(root) === undefined)
+        return { catalog: catalogAt(root, values.space), userMode: false };
+    }
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
     // A folder whose records name no space already has its next step, including a team file there.
     // Every other no-mesh refusal is a machine with nothing selected: the catalog is read offline,
@@ -69,10 +83,48 @@ export function personaNameProblem(name: string): string | undefined {
   return undefined;
 }
 
-export function personaPath(root: string, name: string): string {
-  const problem = personaNameProblem(name);
+export function personaNameWords(name: string, flags = ""): string {
+  const word = shellWord(name);
+  return name.startsWith("-") ? `${flags} -- ${word}` : ` ${word}${flags}`;
+}
+
+export function personaPath(root: string, name: string, access: "show" | "legacy-remove" | "write" = "write"): string {
+  if (access === "show" && !name.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "persona show needs a nonblank catalog filename stem");
+  const problem = access === "show"
+    ? (/[\\/\u0000-\u001f\u007f]/u.test(name) || (process.platform === "win32" && name.includes(":"))
+      ? "persona show needs a catalog filename stem, not a path or a name with control characters" : undefined)
+    : personaNameProblem(access === "legacy-remove" && name !== "." && name !== ".." ? name.replaceAll(".", "_") : name);
   if (problem) throw new CommandFailure("refused", "USAGE_INVALID", problem);
-  return agentFilePath(root, name);
+  return join(personaDir(root), `${name}.md`);
+}
+
+function personaLinkRemedy(path: string): string | undefined {
+  const link = linkTarget(path);
+  if (link === undefined) return undefined;
+  try {
+    if (statSync(path).isFile()) {
+      accessSync(path, constants.R_OK);
+      return `${path} is a link to ${link}; replace the link with a copy of that file`;
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR")
+      return `${path} is a link to ${link}, but its target is missing. Move the link aside and put a regular persona file in its place. To use the original definition, restore the target first and copy that file into the catalog.`;
+  }
+  return `${path} is a link to ${link}, but its target is not a readable regular file. Move the link aside and put a regular persona file in its place.`;
+}
+
+/** Suggest a mode change only for an owned regular file missing its owner read bit. */
+export function unreadablePersona(path: string, code: string | undefined, target: object = { path }): CommandFailure | undefined {
+  if (code !== "EACCES" && code !== "EPERM") return undefined;
+  let remedy = "check that this account can read the file and enter its parent folders, then retry";
+  try {
+    const stat = lstatSync(path);
+    if (stat.isFile() && stat.uid === process.getuid?.() && !(stat.mode & 0o400))
+      remedy = `run ${codeSpan(`chmod u+r ${shellWord(path)}`)}, then retry`;
+  } catch { /* The file or a parent may not be accessible to stat. */ }
+  return new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path} (${code})`, { remedy, target });
 }
 
 /** Only absence is absent. Unreadable and non-regular sources refuse rather than becoming empty. */
@@ -80,8 +132,8 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
   try {
     const stat = lstatSync(path);
     if (!stat.isFile()) {
-      const link = stat.isSymbolicLink() ? linkTarget(path) : undefined;
-      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, link === undefined ? {} : { remedy: `${path} is a link to ${link}; replace the link with a copy of that file` });
+      const remedy = stat.isSymbolicLink() ? personaLinkRemedy(path) : undefined;
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `persona is not a regular file: ${path}`, remedy === undefined ? {} : { remedy });
     }
     return { bytes: readFileSync(path), ino: stat.ino, dev: stat.dev, mtimeMs: stat.mtimeMs };
   } catch (error) {
@@ -90,37 +142,29 @@ export function readPersonaSource(path: string): PersonaSource | undefined {
     if (error instanceof CommandFailure) throw error;
     const folder = code === "ENOTDIR" || code === "ELOOP" ? catalogFolderProblem(dirname(path)) : undefined;
     if (folder) throw folder;
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`);
+    throw unreadablePersona(path, code) ?? new CommandFailure("refused", "PERMISSION_DENIED", `cannot read persona: ${path}`);
   }
 }
 
-export function requirePersonaSource(path: string): PersonaSource {
+export function requirePersonaSource(path: string, target = "", presentation: Presentation = "rich"): PersonaSource {
   const source = readPersonaSource(path);
-  if (!source) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: "see the personas here with `cotal persona`" });
+  if (!source) {
+    const output = presentation === "rich" ? "" : ` --${presentation}`;
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no persona at ${path}`, { remedy: `see the personas here with ${codeSpan(`cotal persona${target}${output}`)}` });
+  }
   return source;
-}
-
-/** Why the agent-file parser refused a definition. A YAML error keeps only its position: the
- *  parser's own text can quote the document's sensitive values. */
-function definitionProblem(error: unknown, path: string): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const prefix = `agent file ${path}: `;
-  const reason = message.startsWith(prefix) ? message.slice(prefix.length) : message;
-  if (!reason.startsWith("invalid YAML frontmatter")) return reason;
-  // The parser counts lines from the first line after the opening `---`.
-  const at = /at line (\d+), column (\d+)/.exec(reason);
-  return `the frontmatter is not valid YAML${at ? ` at line ${Number(at[1]) + 1}, column ${at[2]}` : ""}`;
 }
 
 /** `name` is required of a new definition only. A stored one may launch under another name: the
  *  seeded `default` persona launches as `default_agent`. */
 export function validatePersona(bytes: Buffer, path: string, name?: string): AgentDef {
   // Its encoding names no value from the file, so it is the one reason given.
-  const encoding = utf16Problem(bytes.toString("utf8"));
+  const source = bytes.toString("utf8");
+  const encoding = utf8Problem(bytes, source);
   if (encoding) throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition: ${path}: ${encoding}`, { remedy: `save ${path} as UTF-8` });
   let def: AgentDef;
-  try { def = parseAgentFileSource(bytes.toString("utf8"), path); }
-  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${definitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
+  try { def = parseAgentFileSource(source, path); }
+  catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona definition ${path}: ${personaDefinitionProblem(error, path)}`, { remedy: "check the agent-file frontmatter and channel declarations" }); }
   if (name !== undefined && def.name !== name) throw new CommandFailure("refused", "SCHEMA_INVALID", `persona name must match the catalog name '${name}'`);
   return def;
 }
@@ -133,7 +177,10 @@ function sameSource(a: PersonaSource | undefined, b: PersonaSource | undefined):
 function assertCatalogWritable(dir: string): void {
   if (!existsSync(dir)) return;
   try { accessSync(dir, constants.W_OK); }
-  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${shellWord(dir)}\` to change its personas` }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EROFS") throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is on a read-only file system (EROFS); nothing was changed`, { remedy: "retry with the catalog on a writable file system" });
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `the persona catalog ${dir} is not writable; nothing was changed`, { remedy: `make it writable with \`chmod u+w ${shellWord(dir)}\` to change its personas` });
+  }
 }
 
 /** The largest persona definition the CLI saves, the bound a create on a manager applies to its input. */
@@ -148,14 +195,29 @@ function tooLarge(bytes: Buffer, remedy: string): CommandFailure | undefined {
  *  holds the two as one file. */
 function caseTwin(path: string): string | undefined {
   const file = basename(path);
-  const twin = readdirSync(dirname(path)).find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
-  return twin === undefined ? undefined : basename(twin, ".md");
+  return readdirSync(dirname(path)).find(entry => entry !== file && entry.toLowerCase() === file.toLowerCase());
+}
+
+/** Whether the `persona create` a mismatch refusal suggests for the name at `path` would itself
+ *  be refused: an entry already occupies the name, a non-regular entry sits at its path, or a
+ *  twin differs only in case. A missing catalog folder is free: the create would make it. */
+export function personaCreateOccupied(path: string): boolean {
+  try {
+    if (readPersonaSource(path) !== undefined) return true;
+  } catch {
+    return true;
+  }
+  try {
+    return caseTwin(path) !== undefined;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
 }
 
 /** Shared by canonical and legacy CLI writes only. Manager and external writers do not take this lock.
  *  A new persona whose name differs from an existing one only in case is refused. */
-export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined): void {
-  const oversized = bytes && tooLarge(bytes, "shorten its instructions to 1 MiB or less");
+export function commitPersona(path: string, expected: PersonaSource | undefined, bytes: Buffer | undefined, target = ""): void {
+  const oversized = bytes && tooLarge(bytes, `reduce the complete definition, including frontmatter, to ${PERSONA_LIMIT} bytes or less`);
   if (oversized) throw oversized;
   const dir = dirname(path);
   assertCatalogWritable(dir);
@@ -170,8 +232,12 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     if (!sameSource(expected, current))
       throw new CommandFailure("refused", "CONFLICT", `persona ${current === undefined ? "was removed" : "changed"} while the operation was open: ${path}`, { remedy: current === undefined ? "list the catalog with `cotal persona` and retry" : "read the current definition and retry" });
     const twin = current === undefined && bytes !== undefined ? caseTwin(path) : undefined;
-    if (twin !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit ${twin}\`` });
+    if (twin !== undefined) {
+      if (!twin.endsWith(".md")) throw new CommandFailure("refused", "CONFLICT", `catalog filename '${basename(path)}' differs from '${twin}' only in case; nothing was written`, { remedy: "choose another persona name" });
+      const name = basename(twin, ".md");
+      const edit = personaNameWords(name, target);
+      throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${name}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit${edit}\`` });
+    }
     if (bytes === undefined) unlinkSync(path);
     else {
       try { writeSecretFileAtomic(path, bytes); }
@@ -187,7 +253,8 @@ function draftFolder(): string {
   try { return mkdtempSync(join(parent, "cotal-persona-")); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "EACCES" || code === "EPERM" || code === "EROFS")
+    if (code === "EROFS") throw new CommandFailure("refused", "PERMISSION_DENIED", `the temporary directory ${parent} is on a read-only file system (${code}), so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: `set ${process.platform === "win32" ? "TEMP" : "TMPDIR"} to a writable folder you own, then retry` });
+    if (code === "EACCES" || code === "EPERM")
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the temporary directory ${parent} is not writable by this account (${code}), so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: `make ${parent} writable by you, or set TMPDIR to a folder you own` });
     if (code === "ENOENT" || code === "ENOTDIR")
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the temporary directory ${parent} ${code === "ENOENT" ? "does not exist" : "is not a directory"}, so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: "set TMPDIR to an existing folder you own, or unset it" });
@@ -257,8 +324,7 @@ interface EditorExit { status: number | null; signal: NodeJS.Signals | null; err
 /** Run the editor on the draft and wait for it to exit. A SIGINT, SIGTERM or SIGHUP the CLI receives
  *  meanwhile is passed to the editor, so the editor does not outlive the CLI. Under `--json` stdout
  *  carries only the final JSON envelope, so the editor's output goes to stderr. */
-function runEditor(editor: string, draft: string, json = false): Promise<EditorExit> {
-  const program = editorProgram(editor);
+function runEditor(editor: string, program: string | undefined, draft: string, json: boolean): Promise<EditorExit> {
   const quoted = process.platform === "win32" ? `"${draft.replaceAll('"', '""')}"` : `'${draft.replaceAll("'", "'\\''")}'`;
   let received: InterruptSignal | undefined;
   // The editor starts running as soon as it is spawned, so the CLI holds the signals first.
@@ -279,36 +345,37 @@ function runEditor(editor: string, draft: string, json = false): Promise<EditorE
 
 /** What an edit did. An editor that exits non-zero cancels it, as vim's `:cq` does; a draft it changed
  *  is kept. A draft left as it was saves nothing. */
-export type PersonaEdit = { action: "saved" } | { action: "unchanged" } | { action: "cancelled"; status: number; draft?: string };
+export type PersonaEdit = { action: "saved"; displayName: string } | { action: "unchanged" } | { action: "cancelled"; status: number; draft?: string };
 
 /** Never expose the catalog file to an editor. Validate successful draft bytes, then compare under lock.
  *  An interrupt that stops the edit saves nothing, removes an unchanged draft, names a changed one, and
  *  exits with the signal's code. */
-export async function editPersona(path: string, name: string, catalog: PersonaCatalog, json = false): Promise<PersonaEdit> {
+export async function editPersona(path: string, name: string, catalog: PersonaCatalog, target: string, presentation: Presentation = "rich"): Promise<PersonaEdit> {
   if (explicitNoInputFlag())
     throw new ConfirmationRequired("persona edit opens an editor, and --no-input forbids one", { remedy: "edit interactively without --no-input" });
-  const source = requirePersonaSource(path);
-  validatePersona(source.bytes, path);
+  const source = requirePersonaSource(path, target, presentation);
   assertCatalogWritable(dirname(path));
   const editor = resolvePreference("editor", { preferences: cachedPreferences(), space: catalog.space }).value;
   if (!editor) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
+  const output = presentation === "rich" ? "" : ` --${presentation}`;
+  const retry = `cotal persona edit${personaNameWords(name, target + output)}`;
   // A draft the editor may have changed and that was not saved is kept, and the failure names it.
   let keep = false;
   const edit = await withDraft(name, async (draft): Promise<PersonaEdit | { action: "interrupted"; signal: InterruptSignal; draft?: string }> => {
     writeSecretFile(draft, source.bytes);
-    const result = await runEditor(editor, draft, json);
+    const program = editorProgram(editor);
+    const result = await runEditor(editor, program, draft, presentation === "json");
     // SIGTERM or SIGHUP stops the edit. Ctrl-C reaches the editor too, and stops the edit only when
     // it ends the editor, since an editor such as vim takes Ctrl-C as a key.
     if (result.received && (result.received !== "SIGINT" || result.signal)) {
       keep = readPersonaSource(draft)?.bytes.equals(source.bytes) === false;
       return { action: "interrupted", signal: result.received, ...(keep ? { draft } : {}) };
     }
-    // A POSIX shell exits 127 when it finds no such command and 126 when it cannot run it: the editor
-    // is missing, as it is when none is set, and nothing was edited. A program that cannot be run is
-    // refused the same way.
+    // A POSIX shell uses 127 for a missing command and 126 for one it cannot run.
+    // A directly launched editor can return either status to cancel the edit.
     if (result.error?.code === "EACCES")
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} could not be run - not saved`, { remedy: `make ${editor} executable, or set VISUAL or EDITOR to an installed editor` });
-    if (process.platform !== "win32" && !result.error && (result.status === 127 || result.status === 126))
+    if (process.platform !== "win32" && !program && (result.status === 127 || result.status === 126))
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the editor ${JSON.stringify(editor)} ${result.status === 127 ? "was not found" : "could not be run"} - not saved`, {
         remedy: "set VISUAL or EDITOR to an installed editor, or run `cotal config set editor vim`; a value that is not the path of an existing file runs as a shell command, so quote a path that holds spaces",
       });
@@ -325,14 +392,15 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     }
     const edited = requirePersonaSource(draft).bytes;
     if (edited.equals(source.bytes)) return { action: "unchanged" };
-    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`);
+    const oversized = tooLarge(edited, `your edit is kept in ${draft}; shorten it to 1 MiB or less, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`);
     if (oversized) { keep = true; throw oversized; }
-    try { validatePersona(edited, draft); }
+    let displayName: string;
+    try { displayName = validatePersona(edited, draft).name; }
     catch (error) {
       if (!isCommandFailure(error)) throw error;
       keep = true;
       throw new CommandFailure("refused", "SCHEMA_INVALID", `${error.message} - not saved`, {
-        remedy: `your edit is kept in ${draft}; correct it, run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`,
+        remedy: `your edit is kept in ${draft}; correct it, run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`,
       });
     }
     try { commitPersona(path, source, edited); }
@@ -341,17 +409,22 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
       keep = true;
       if (isCommandFailure(error) && error.code === "CONFLICT") {
         const removed = readPersonaSource(path) === undefined;
+        const next = removed
+          ? process.platform === "win32"
+            ? `copy the draft to ${path} without replacing any file there`
+            : `restore it with ${codeSpan(`cp -n ${shellWord(draft)} ${shellWord(dirname(path) + sep)}`)}, which leaves an existing file untouched`
+          : `compare it with ${codeSpan(`cotal persona show${personaNameWords(name, target)}`)}, then edit again`;
         throw new CommandFailure("refused", "CONFLICT", error.message, {
-          remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+          remedy: `your edit is kept in ${draft}; ${next}, and remove ${dirname(draft)} when you are done`,
         });
       }
       const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error), { cause: error });
-      const kept = `your edit is kept in ${draft}, so run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`;
+      const kept = `your edit is kept in ${draft}, so run \`${retry}\` again and paste it in, then remove ${dirname(draft)}`;
       throw new CommandFailure(failure.outcome, failure.code, failure.message, {
         remedy: failure.remedy ? `${failure.remedy}; ${kept}` : kept, target: failure.target, changed: failure.changed, native: failure.native, cause: error,
       });
     }
-    return { action: "saved" };
+    return { action: "saved", displayName };
   }, () => keep);
   if (edit.action === "interrupted") {
     exitInterrupted(edit.signal, edit.draft

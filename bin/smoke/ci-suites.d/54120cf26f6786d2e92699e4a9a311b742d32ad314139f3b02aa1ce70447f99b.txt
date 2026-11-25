@@ -1,0 +1,2 @@
+# A Codex launch with reasoningEvents asks Codex for reasoning summaries on every turn.
+smoke:codex-reasoning-events

@@ -15,22 +15,34 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Connector } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorSetupProvider } from "@cotal-ai/core";
 import { setInstalledExtensionsEnabled } from "../src/ext-loader.js";
-import { connectorSetupProvider, setupConnectorSurface } from "../src/commands/setup.js";
+import { connectorSetupProvider, refreshConnectorInstalls, setupConnectorSurface } from "../src/commands/setup.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
 
-const tmp = mkdtempSync(join(import.meta.dirname, ".setup-failloud-"));
+const tmp = mkdtempSync(join(tmpdir(), "cotal-setup-failloud-"));
 process.env.XDG_CONFIG_HOME = tmp;
+process.env.COTAL_HOME = join(tmp, "home");
 setInstalledExtensionsEnabled(true); // published-binary posture: an unregistered connector materializes from the manifest
 
 const manifestPath = join(tmp, "cotal", "extensions", "extensions.json");
 mkdirSync(join(tmp, "cotal", "extensions"), { recursive: true });
 const writeManifest = (extensions: unknown[]) => writeFileSync(manifestPath, JSON.stringify({ extensions }));
 const launch = () => ({ command: "true", args: [] });
+
+function registerRefresh(name: string, run: () => Promise<string> | string): void {
+  const connector: Connector = { kind: "connector", name, setup: { kind: "connector-setup", name }, buildLaunch: launch };
+  const provider: ConnectorSetupProvider = {
+    kind: "connector-setup", name,
+    available: () => false,
+    refresh: { name: "refresh", title: `Refresh ${name}`, explain: "Refresh the test integration", run },
+  };
+  registry.register(connector, provider);
+}
 
 try {
   // Removed: absent from the manifest means absent from the surface setup derives membership from.
@@ -63,6 +75,19 @@ try {
     /no installed extension provides connector-setup/,
     "a declared-but-unresolvable setup provider must fail loud",
   );
+
+  writeManifest([]);
+  registerRefresh("rejected-refresh", async () => { throw new Error("ownership refused\nUse the owning home."); });
+  let repaired = 0;
+  registerRefresh("working-refresh", () => { repaired++; return "repaired"; });
+  const reported: string[] = [];
+  process.argv[1] = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
+  await assert.rejects(refreshConnectorInstalls(), { message: "ownership refused\nUse the owning home." });
+  assert.equal(repaired, 0, "migration stops after a failed refresh");
+  await assert.rejects(refreshConnectorInstalls((line) => reported.push(line)), {
+    message: "rejected-refresh: ownership refused\nUse the owning home.",
+  });
+  assert.deepEqual(reported, ["Refresh working-refresh: repaired"], "a later provider still refreshes and reports its result");
 
   console.log("setup-failloud.smoke: all assertions passed");
 } finally {

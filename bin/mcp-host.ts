@@ -7,6 +7,7 @@ import {
 } from "@cotal-ai/connector-core";
 import type { ConversationSelection } from "@cotal-ai/core";
 import { resolveTargetOrThrow } from "@cotal-ai/workspace";
+import { retireLocalAppIdentity } from "@cotal-ai/cli/app-identity";
 import { selfArgv } from "@cotal-ai/cli/self-exec";
 
 type IdentityReply =
@@ -44,8 +45,8 @@ export function createMcpHost(space?: string): GatewayHost & { closeAll(): Promi
     // A failed retirement remains owned, but may never route another tool to a stopped agent.
     held.stopped = true;
     await held.connection?.agent.stop();
-    const result = await plumbing(["retire", "--dir", held.dir]);
-    if (!result.ok) throw new Error("identity cleanup is unfinished; call cotal_disconnect again to retry it");
+    try { await retireLocalAppIdentity(held.dir); }
+    catch { throw new Error("identity cleanup is unfinished; call cotal_disconnect again to retry it"); }
     held = undefined;
   };
   const open = async (name: string, selection?: ConversationSelection): Promise<GatewayConnection> => {

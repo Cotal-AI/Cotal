@@ -73,20 +73,18 @@ try {
   await mgr.start();
   const M = mgr as unknown as {
     managerInstanceId: string;
-    sessionLedgerIdentity?: { id: string };
-    sessionLedgerCreds?: string;
-    sessionPlane?: { liveSessions: number };
     mintAndStageSessionLedger(authKv: unknown): Promise<string>;
+    servePlane: { sessionLedgerIdentity?: { id: string }; sessionLedgerCreds?: string; sessionPlane?: { liveSessions: number }; };
   };
   // The registration gate + §13.1 family are keyed by the persisted registration instanceId
   // (item 3's split), NOT the per-process lifecycleUid — read/drive at the same key the manager registers under.
   const iid = M.managerInstanceId;
 
-  check("the manager stood up its ONE session plane at boot", M.sessionPlane !== undefined && M.sessionPlane.liveSessions === 0);
-  check("the session-ledger credential is minted + stashed (auth mode)", typeof M.sessionLedgerCreds === "string" && M.sessionLedgerCreds.length > 0);
+  check("the manager stood up its ONE session plane at boot", M.servePlane.sessionPlane !== undefined && M.servePlane.sessionPlane.liveSessions === 0);
+  check("the session-ledger credential is minted + stashed (auth mode)", typeof M.servePlane.sessionLedgerCreds === "string" && M.servePlane.sessionLedgerCreds.length > 0);
 
-  const swPrincipal = principalKey(DEV_OWNER, M.sessionLedgerIdentity!.id).key;
-  const gwId0 = credId(M.sessionLedgerCreds!);
+  const swPrincipal = principalKey(DEV_OWNER, M.servePlane.sessionLedgerIdentity!.id).key;
+  const gwId0 = credId(M.servePlane.sessionLedgerCreds!);
 
   // Read the §13.1 revocation family over a scoped executor (the FAMILY + RENEWAL assertions).
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: MANAGER_ENDPOINT, instanceId: iid } });
@@ -129,7 +127,7 @@ try {
   //    bucket. Raw STREAM.MSG.GET requests: an ALLOWED read returns a response (even "not found"); a
   //    DENIED read gets no responder → times out (the M7 broker-denial pattern). ─────────────────
   {
-    const swNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.sessionLedgerCreds!, tls: false }), maxReconnectAttempts: 0 });
+    const swNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: M.servePlane.sessionLedgerCreds!, tls: false }), maxReconnectAttempts: 0 });
     conns.push(swNc);
     const msgGet = async (bucket: string, key: string): Promise<boolean> => {
       // true = ALLOWED (a response arrived); false = DENIED (no responder / timeout).

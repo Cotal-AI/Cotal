@@ -173,8 +173,8 @@ try {
       dependencies: [], spawner: "smoke", startedAt: new Date().toISOString(),
     };
     const prepared = { spec: { command: "true", args: [], env: {} } };
-    const resumed = await (mgr as unknown as { launchPreparedResume(e: unknown, p: unknown, b: boolean): Promise<{ ok: boolean; error?: string }> })
-      .launchPreparedResume(entry, prepared, true);
+    const resumed = await (mgr as unknown as { preservedResumeComponent: { launchPreparedResume(e: unknown, p: unknown, b: boolean): Promise<{ ok: boolean; error?: string }> } })
+      .preservedResumeComponent.launchPreparedResume(entry, prepared, true);
     check("the resume path really ran (it adopted the credential and reported a launch outcome)", typeof resumed.ok === "boolean", resumed);
     check("the adopted credential was READ through the injected store (else the manager cannot recover the seed it renews from)",
       store.sawSince(before, "get", credKey), store.seen.slice(before).filter((x) => x.op === "get"));

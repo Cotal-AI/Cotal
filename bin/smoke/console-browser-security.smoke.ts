@@ -170,7 +170,7 @@ try {
   assert(launchUrl && launchNonce);
   const dashboardToken = new URL(launchUrl).searchParams.get("k")!;
   const dashboardBase = new URL(launchUrl).origin;
-  chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });
+  chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], detached: true });
   const decoder = new StringDecoder("utf8");
   (chrome.stdio[4] as Readable).on("data", (data: Buffer) => {
     wire += decoder.write(data);
@@ -236,6 +236,9 @@ try {
   process.exitCode = failed ? 1 : 0;
 } finally {
   for (const entry of pending.values()) clearTimeout(entry.timer);
+  // A wrapper script such as Debian's chromium-headless-shell runs the browser as its child, which
+  // outlives a signal to the wrapper and holds the debugging pipes open, so end the whole group.
+  if (chrome?.pid !== undefined) try { process.kill(-chrome.pid, "SIGTERM"); } catch { /* already gone */ }
   if (chrome) await killAndAwaitExit(chrome);
   if (dashboard) await killAndAwaitExit(dashboard);
   await manager?.stop();

@@ -12,8 +12,8 @@
  * THE DESIGN: the launch writes a sibling identity pin `<pidfile>.identity` holding `pid token`
  * (the process-start token the advisory lock already uses on Linux/macOS, and on Windows the
  * process creation FILETIME), and every teardown runs ONE shared open-verify-terminate rule:
- * mismatch (pid reuse) refuses and preserves; legacy (no pin) live records warn and proceed for
- * upgrade compatibility; torn pins refuse; only an ESRCH-proven death clears a record.
+ * mismatch (pid reuse) clears the stale pair without signalling; legacy (no pin) live records
+ * warn and proceed for upgrade compatibility; torn pins refuse unless the recorded PID is dead.
  *
  * WHAT IS AND IS NOT PROVEN HERE. Every cell drives the REAL stop entry points with REAL child
  * processes and REAL pins; the pid-reuse state itself is built by pinning a start token that
@@ -173,46 +173,46 @@ try {
       existsSync(dirPin) && existsSync(join(identityPinPath(dirPin), "keep")));
   }
 
-  // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
+  // A. Reuse cleanup on the delivery daemon's own stop path (#969 acceptance 1).
   {
     const { stopDelivery } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
     // The trailing `deliver` argv makes command attribution PASS, so the PIN is the only thing that
-    // can refuse here: a reused pid running a delivery-looking command line (another mesh's daemon)
+    // prevents a signal here: a reused pid running a delivery-looking command line (another mesh's daemon)
     // is exactly the case attribution cannot catch and the pin must (#1528).
     const foreign = spawnForeign("deliver");
     strays.push(foreign.child);
+    assert.ok(foreign.pid);
     await wait(150);
     // The post-reuse state: pidfile holds the FOREIGN process's pid, the pin holds a start token
     // belonging to the DEAD recorded process. Forged as "1": the earliest possible starttime, so it
     // can never equal the live token of any process started this boot.
     writeFileSync(join(root, ".cotal", "delivery.pid"), String(foreign.pid));
     writeFileSync(join(root, ".cotal", "delivery.pid.identity"), `${foreign.pid} 1`);
-    let refused: string | undefined;
-    try { await stopDelivery(); }
-    catch (e) { refused = (e as Error).message; }
-    check("A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled", refused !== undefined, refused?.split("\n")[0]);
-    check("A2 the refusal names the pid reuse and the two starts", /reused/.test(refused ?? "") && /recorded start/.test(refused ?? ""), refused?.split("\n")[0]);
-    check("A3 the foreign process SURVIVES the refused stop", foreign.child.exitCode === null && alive(foreign.pid));
-    check("A4 the pidfile AND its pin are preserved for the operator", existsSync(join(root, ".cotal", "delivery.pid")) && existsSync(join(root, ".cotal", "delivery.pid.identity")));
+    const token = defaultStartToken(foreign.pid);
+    check("A1 the live delivery-looking PID does not match the old creation pin", verifyIdentityPin(join(root, ".cotal", "delivery.pid")).kind === "mismatch");
+    await stopDelivery();
+    await wait(150);
+    check("A2 the live PID retains its creation identity", token !== undefined && defaultStartToken(foreign.pid) === token);
+    check("A3 the foreign process survives stale delivery record cleanup", foreign.child.exitCode === null && foreign.child.signalCode === null && alive(foreign.pid));
+    check("A4 the stale pidfile and pin are both removed", !existsSync(join(root, ".cotal", "delivery.pid")) && !existsSync(join(root, ".cotal", "delivery.pid.identity")));
     reap(foreign.child);
   }
 
-  // ── B. THE SAME REFUSAL on the manager, auth-service and broker (down) stop paths ─────────
+  // B. The same cleanup on the manager, auth-service and broker stop paths.
   {
     const { stopManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
     // The trailing `supervise` argv makes command attribution PASS, so the pin is the only thing
-    // that can refuse here: a reused pid that happens to run a supervisor-looking command line
+    // that prevents signalling here: a reused pid that happens to run a supervisor-looking command line
     // (another mesh's manager) is exactly the case attribution cannot catch and the pin must.
     const foreign = spawnForeign("supervise");
     strays.push(foreign.child);
     await wait(150);
     writeFileSync(join(root, ".cotal", "manager.pid"), String(foreign.pid));
     writeFileSync(join(root, ".cotal", "manager.pid.identity"), `${foreign.pid} 1`);
-    let refused: string | undefined;
-    try { await stopManager(); }
-    catch (e) { refused = (e as Error).message; }
-    check("B1 a reused pid is REFUSED by stopManager too (one rule, four paths)", refused !== undefined && foreign.child.exitCode === null && alive(foreign.pid), refused?.split("\n")[0]);
-    check("B2 stopManager preserves pidfile, pin and marker", existsSync(join(root, ".cotal", "manager.pid")) && existsSync(join(root, ".cotal", "manager.pid.identity")));
+    await stopManager();
+    await wait(150);
+    check("B1 stopManager does not signal the foreign process", foreign.child.exitCode === null && foreign.child.signalCode === null && alive(foreign.pid));
+    check("B2 stopManager removes the stale pidfile and pin", !existsSync(join(root, ".cotal", "manager.pid")) && !existsSync(join(root, ".cotal", "manager.pid.identity")));
     reap(foreign.child);
   }
   {
@@ -223,11 +223,10 @@ try {
     const pidPath = join(root, ".cotal", "auth-service.6d61696e.pid"); // spaceKey("main")
     writeFileSync(pidPath, String(foreign.pid));
     writeFileSync(identityPinPath(pidPath), `${foreign.pid} 1`);
-    let refused: string | undefined;
-    try { await stopAuthService("main"); }
-    catch (e) { refused = (e as Error).message; }
-    check("B3 a reused pid is REFUSED by stopAuthService too", refused !== undefined && foreign.child.exitCode === null && alive(foreign.pid), refused?.split("\n")[0]);
-    check("B4 the auth record and pin are preserved", existsSync(pidPath) && existsSync(identityPinPath(pidPath)));
+    await stopAuthService("main");
+    await wait(150);
+    check("B3 stopAuthService does not signal the foreign process", foreign.child.exitCode === null && foreign.child.signalCode === null && alive(foreign.pid));
+    check("B4 the stale auth record and pin are removed", !existsSync(pidPath) && !existsSync(identityPinPath(pidPath)));
     reap(foreign.child);
   }
   {
@@ -238,15 +237,13 @@ try {
     const pidPath = join(root, ".cotal", "nats.pid");
     writeFileSync(pidPath, String(foreign.pid));
     writeFileSync(identityPinPath(pidPath), `${foreign.pid} 1`);
-    let refused: string | undefined;
-    try {
-      await stopLocalProcess(
-        { kind: "local-process", name: "nats", label: "nats-server", pidFile: "nats.pid", stopLast: true, clearsMesh: true },
-        { root, space: "main" },
-      );
-    } catch (e) { refused = (e as Error).message; }
-    check("B5 a reused pid is REFUSED on the BROKER's stop path (bare cotal down)", refused !== undefined && foreign.child.exitCode === null, { head: refused?.split("\n")[0] });
-    check("B6 the broker record and pin are preserved", existsSync(pidPath) && existsSync(identityPinPath(pidPath)));
+    await stopLocalProcess(
+      { kind: "local-process", name: "nats", label: "nats-server", pidFile: "nats.pid", stopLast: true, clearsMesh: true },
+      { root, space: "main" },
+    );
+    await wait(150);
+    check("B5 the broker stop path does not signal the foreign process", foreign.child.exitCode === null && foreign.child.signalCode === null && alive(foreign.pid));
+    check("B6 the stale broker record and pin are removed", !existsSync(pidPath) && !existsSync(identityPinPath(pidPath)));
     reap(foreign.child);
   }
 

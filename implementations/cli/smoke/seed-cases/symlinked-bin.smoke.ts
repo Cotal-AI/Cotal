@@ -1,4 +1,4 @@
-import { spawnSync, existsSync, mkdtempSync, symlinkSync, tmpdir, join, REPO, BIN, check, cotal, HOST_ENV, freshCfg, seedDir, readJson, track, finishScenario } from "./harness.js";
+import { spawnSync, existsSync, mkdtempSync, symlinkSync, tmpdir, join, REPO, BIN, bootArgs, check, cotal, HOST_ENV, freshCfg, seedDir, readJson, track, finishScenario } from "./harness.js";
 
 try {
   // ── the GLOBAL-INSTALL shape: the binary reached through a bin SYMLINK ────────────────────────────
@@ -13,8 +13,8 @@ try {
     const linkDir = track(mkdtempSync(join(tmpdir(), "cotal-seed-binlink-")));
     const link = join(linkDir, "cotal");
     symlinkSync(BIN, link);
-    // A boot through the link: preference writes still cross the seed gate.
-    const r = spawnSync("node", [link, "config", "unset", "color", "--user"], {
+    // A boot through the link still crosses the seed gate.
+    const r = spawnSync("node", [link, ...bootArgs], {
       encoding: "utf8",
       env: { ...HOST_ENV, XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" },
     });

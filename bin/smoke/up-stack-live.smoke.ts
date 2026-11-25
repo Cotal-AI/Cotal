@@ -48,11 +48,12 @@ import { createConnection } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
-import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
+import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { canonicalLocalProcessPath, deliveryCredsKey, DELIVERY_PIDFILE, displayWidth, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readMaintenanceLockHolder, resolveOnPath, workspaceSecretStore } from "@cotal-ai/workspace";
 
 // Ephemeral OS-assigned port: no fixed-port collision across back-to-back / concurrent runs.
 const PORT = await freePort();
@@ -96,6 +97,37 @@ const cliInEnv = (cwd: string, extraEnv: NodeJS.ProcessEnv, ...args: string[]) =
   return spawnSync(TSX, [CLI, ...args], options);
 };
 const cli = (...args: string[]) => cliIn(root, ...args);
+type AcpReply = { id: number; result?: { authMethods?: unknown[]; stopReason?: string }; error?: { code: number; message: string } };
+async function withAcp<T>(cwd: string, test: (rpc: (method: string, params: object) => Promise<AcpReply>) => Promise<T>, server?: string): Promise<T> {
+  const child = spawnProc(process.execPath, ["--import", join(WT, "implementations/acp/dist/index.js"), join(WT, "bin/dist/cotal.js"), "acp", "--space", basename(cwd), ...(server ? ["--server", server] : [])],
+    { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
+  const closed = new Promise((done) => child.once("close", done));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 60_000);
+  let id = 0;
+  try {
+    return await test(async (method, params) => {
+      const requestId = ++id;
+      child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n");
+      for (let line = await lines.next(); !line.done; line = await lines.next()) {
+        const reply = JSON.parse(line.value) as AcpReply;
+        if (reply.id === requestId) return reply;
+      }
+      throw new Error(`ACP closed before answering ${method}`);
+    });
+  } finally {
+    child.stdin.end();
+    await closed;
+    clearTimeout(deadline);
+  }
+}
+function acpOnOpenSpace(server?: string) {
+  return withAcp(openRoot, async (rpc) => {
+    const init = await rpc("initialize", { protocolVersion: 1, clientCapabilities: { auth: { terminal: true } } });
+    const opened = await rpc("session/new", { cwd: openRoot, mcpServers: [] });
+    return { init: init.result, refusal: opened.error };
+  }, server);
+}
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 /** The rows of a report's last Next section, each as its command and description. */
 const nextRows = (stdout: string) => {
@@ -144,34 +176,35 @@ const deliveryDaemons = (space: string) => daemonsOf("__daemon-deliver", space);
 const pids: number[] = [];
 let startedOccupant = false;
 try {
-  ok("detached summary omits unavailable mode-dependent components", renderDetachedSummary({
+  const launchers = ["cotal", "pnpm cotal"];
+  ok("detached summary omits unavailable mode-dependent components", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: false,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42) - stop with: `cotal down`");
-  ok("detached summary reports partial component availability independently", renderDetachedSummary({
+  }) === `✓ running in the background: nats-server (pid 42) - stop with: \`${launcher} down\``));
+  ok("detached summary reports partial component availability independently", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: false,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal down`");
+  }) === `✓ running in the background: nats-server (pid 42), delivery daemon - stop with: \`${launcher} down\``));
   // Bare `down` refuses the machine home, so the home stack's summary names the stop that works.
-  ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", renderDetachedSummary({
+  ok("a machine-home summary names down --preserve-state, the stop that reaches the home stack", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: true,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: `cotal down --preserve-state`");
+  }) === `✓ running in the background: nats-server (pid 42), delivery daemon, manager - stop with: \`${launcher} down --preserve-state\``));
   // With no manager, --preserve-state refuses until one serves the space, so the summary names both steps.
-  ok("a machine-home summary with no manager names cotal up before down --preserve-state", renderDetachedSummary({
+  ok("a machine-home summary with no manager names cotal up before down --preserve-state", launchers.some((launcher) => renderDetachedSummary({
     pid: 42,
     delivery: true,
     authService: false,
     manager: false,
     machineHome: true,
-  }) === "✓ running in the background: nats-server (pid 42), delivery daemon - stop with: `cotal up` to start its manager, then `cotal down --preserve-state`");
+  }) === `✓ running in the background: nats-server (pid 42), delivery daemon - stop with: \`${launcher} up\` to start its manager, then \`${launcher} down --preserve-state\``));
 
   // Default-port collision: `up` without an explicit `--server` should allocate a free port and
   // record it, not fail with "use --server ...:<port>". If the developer already has a real :4222
@@ -218,14 +251,15 @@ try {
   ok("up --detach exits 0", up.status === 0, up.stdout + up.stderr);
   ok(
     "auth up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(up.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(up.stdout)),
     up.stdout,
   );
   ok("old generic background wording is absent", !/mesh running in the background/.test(up.stdout), up.stdout);
   const upText = plain(up.stdout);
   ok("the receipt begins with the mesh it started", upText.startsWith(`Mesh: ${SPACE}\n\n`), up.stdout);
   ok("it says the new project's space is named after its folder", upText.includes(`This new project's space is named after its folder, "${SPACE}"`), up.stdout);
-  ok("it ends with a Next that launches an agent and stops the stack", new RegExp(`\nNext\n\\s+cotal spawn --space ${SPACE}\\s+Launch your default agent\n\\s+cotal down\\s+Stop the stack\\s*$`).test(upText), up.stdout);
+  ok("it ends with a Next that launches an agent and stops the stack", launchers.some((launcher) =>
+    new RegExp(`\nNext\n\\s+${launcher} spawn --space ${SPACE}\\s+Launch your default agent\n\\s+${launcher} down\\s+Stop the stack\\s*$`).test(upText)), up.stdout);
   for (const [file, label] of [["nats.pid", "nats-server"], [recordName(DELIVERY_PIDFILE), "delivery daemon"], [recordName(MANAGER_PIDFILE), "manager"]] as const) {
     const pid = pidOf(file);
     pids.push(pid);
@@ -376,7 +410,7 @@ try {
   );
   ok(
     "a no-op refresh ends with the Next a launch ends with: spawn, because its manager runs, and the stop",
-    /\nNext\n\s+cotal spawn --space \S+\s+Launch your default agent\n\s+cotal down\s+Stop the stack\s*$/.test(plain(noop.stdout)),
+    /\nNext\n\s+(pnpm )?cotal spawn --space \S+\s+Launch your default agent\n\s+\1cotal down\s+Stop the stack\s*$/.test(plain(noop.stdout)),
     plain(noop.stdout),
   );
   ok("the manager pidfile is unchanged by the no-op refresh", pidOf(recordName(MANAGER_PIDFILE)) === restoredPid, managerPidFile);
@@ -386,7 +420,7 @@ try {
   //    down gracefully, which can take a few seconds on slow CI.
   const down = cli("down", "--yes");
   ok("down exits 0", down.status === 0, down.stdout + down.stderr);
-  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
+  ok("its stop lines follow the mesh heading and end with the step that starts it again", plain(down.stdout).startsWith(`Mesh: ${SPACE}\n\n✓ stopped`) && /\nNext\n\s+(?:pnpm )?cotal up\s+Start it again\s*$/.test(plain(down.stdout)), down.stdout);
   let dead = false;
 
   for (let i = 0; i < 24 && !dead; i++) {
@@ -394,6 +428,9 @@ try {
     dead = pids.every((p) => !alive(p)) && !(await portOpen());
   }
   ok("all pid files removed by down", [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].every((f) => !existsSync(f)));
+  const retireAfterPlain = cli("down", "--yes", "--with-agents");
+  ok("down --with-agents still refuses after a plain legacy stop",
+    retireAfterPlain.status === 2 && /LIFECYCLE_BLOCKED/.test(retireAfterPlain.stdout + retireAfterPlain.stderr), plain(retireAfterPlain.stdout + retireAfterPlain.stderr));
   ok("all three processes are dead + broker port closed", dead, pids.filter(alive));
 
   // A space named after its folder keeps its registration after down, so another folder of the same
@@ -415,7 +452,7 @@ try {
   const otherUp = cliIn(other, "up", "--detach", "--server", SERVER);
   if (otherUp.status === 0) cliIn(other, "down", "--yes");
   ok("another folder's up at this stopped space's address refuses CONFLICT, exit 2, naming this one, and writes nothing",
-    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
+    otherUp.status === 2 && /Code:\s+CONFLICT/.test(plain(otherUp.stderr)) && plain(otherUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)}; nothing was started`) && !existsSync(join(other, ".cotal")), otherUp.stdout + otherUp.stderr);
   // A manifest names its broker in `broker.servers`, and that address is held by the same rule, so
   // `up -f` is refused there too and its next step names the field to change.
   const manifestRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-manifest-"));
@@ -424,15 +461,23 @@ try {
   if (manifestUp.status === 0) cliIn(manifestRoot, "down", "--yes");
   ok("an up -f whose broker.servers is this stopped space's address refuses CONFLICT, exit 2, naming this one and broker.servers, and writes nothing",
     manifestUp.status === 2 && /Code:\s+CONFLICT/.test(plain(manifestUp.stderr)) &&
-      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)} and stopped`) &&
+      plain(manifestUp.stderr).includes(`${SERVER} is the broker address of "${SPACE}", registered for ${realpathSync(root)}; nothing was started`) &&
       plain(manifestUp.stderr).includes("point broker.servers in cotal.yaml at another address") &&
-      plain(manifestUp.stderr).includes(`cotal space forget ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
-  rmSync(manifestRoot, { recursive: true, force: true });
+      plain(manifestUp.stderr).includes(`cotal status --space ${SPACE}`) && !existsSync(join(manifestRoot, ".cotal")), manifestUp.stdout + manifestUp.stderr);
   const restart = cli("up", "--detach", "--server", SERVER);
   if (existsSync(join(root, ".cotal", "nats.pid"))) pids.push(pidOf("nats.pid"));
   ok("a bare up starts it again on the retained launcher, with no stack journal",
-    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
+    restart.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), delivery daemon, manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(restart.stdout)) && !existsSync(join(root, ".cotal", "stack-controller.json")),
     restart.stdout + restart.stderr);
+  const previewAt = (server: string) => cliIn(manifestRoot, "up", "-f", "cotal.yaml", "--server", server, "--dry-run");
+  const refusedPreview = previewAt(SERVER), advice = plain(refusedPreview.stderr);
+  ok("a manifest preview at the running stack's address names its registration and keeps the retry read-only",
+    refusedPreview.status === 2 && advice.includes(`registered for ${realpathSync(root)}; nothing was started`)
+      && advice.includes("choose another address for --server and repeat the same --dry-run") && !advice.includes("space forget"), advice);
+  const freeServer = `nats://127.0.0.1:${await freePort()}`, retriedPreview = previewAt(freeServer);
+  ok("repeating the preview at another address plans the stack without starting it",
+    retriedPreview.status === 0 && retriedPreview.stdout.includes(freeServer) && !existsSync(join(manifestRoot, ".cotal")), retriedPreview.stdout + retriedPreview.stderr);
+  rmSync(manifestRoot, { recursive: true, force: true });
   // A read of a registration whose address this running stack serves is refused by the holder's
   // name, and the record stays: deleting it would leave its folder naming no space at all, and the
   // address is held rather than reused.
@@ -447,7 +492,11 @@ try {
       plain(heldRead.stderr).includes(`cotal space forget ${SPACE}`) && existsSync(heldFile), heldRead.stdout + heldRead.stderr);
   rmSync(heldFile, { force: true });
   rmSync(heldRoot, { recursive: true, force: true });
-  ok("its down exits 0", cli("down", "--yes").status === 0);
+  const retired = cli("down", "--yes", "--with-agents");
+  ok("down --with-agents stops the restarted legacy stack", retired.status === 0, plain(retired.stdout + retired.stderr));
+  const retiredRetry = cli("down", "--yes", "--with-agents");
+  ok("repeating down --with-agents on the stopped legacy stack is a no-op",
+    retiredRetry.status === 0 && /Nothing was stopped/.test(retiredRetry.stdout), plain(retiredRetry.stdout + retiredRetry.stderr));
   // The kept registration does not make the stopped stack look like one to stop.
   const again = cli("down");
   ok("a second down reports the stack not running, names cotal up, and exits 0",
@@ -462,7 +511,7 @@ try {
   const openManagerPid = () => Number(readFileSync(openRecord(MANAGER_PIDFILE), "utf8").trim());
   const openRefresh = (...extra: string[]) => cliIn(openRoot, "up", "--detach", "--open", "--server", openServer, ...extra);
   const openBoot = openRefresh();
-  ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
+  ok("a fresh open up --detach starts the broker and manager", openBoot.status === 0 && /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(openBoot.stdout)), plain(openBoot.stdout + openBoot.stderr));
   const openManager = openManagerPid();
   pids.push(Number(readFileSync(join(openRoot, ".cotal", "nats.pid"), "utf8").trim()), openManager);
   for (const extra of [[], ["--runtime", "pty"]]) {
@@ -476,19 +525,78 @@ try {
   const openBrokerOnly = openRefresh("--no-manager");
   ok("a --no-manager open refresh stays broker-only and exits 0",
     openBrokerOnly.status === 0 && !existsSync(openRecord(MANAGER_PIDFILE)) && !/restored in the background/.test(openBrokerOnly.stdout), plain(openBrokerOnly.stdout + openBrokerOnly.stderr));
+  const acpOpen = await acpOnOpenSpace();
+  ok("ACP offers no terminal sign-in on an open space", acpOpen.init?.authMethods?.length === 0, acpOpen);
+  ok("ACP names the reachable space and how to add its manager", acpOpen.refusal?.code === -32603 &&
+    acpOpen.refusal.message.includes(`The broker for ${basename(openRoot)} is reachable, but no manager is registered.`) &&
+    acpOpen.refusal.message.includes(`bare \`cotal up\` in ${realpathSync(openRoot)}`), acpOpen);
+  const override = `nats://127.0.0.1:${await freePort()}`;
+  const acpOverride = await acpOnOpenSpace(override);
+  ok("ACP dials the explicit broker instead of the recorded one", acpOverride.refusal?.message.includes(`nothing answered at ${override}`) === true &&
+    acpOverride.refusal.message.includes(`recorded broker at ${openServer}`), acpOverride);
+  if (process.platform === "linux") {
+    // Only the Node libc evidence is simulated. The built CLI and broker are real.
+    const preload = join(fakeBin, "libc.cjs");
+    writeFileSync(preload, `
+const getReport = process.report.getReport.bind(process.report);
+process.report.getReport = () => {
+  const report = getReport();
+  report.header.glibcVersionRuntime = process.env.SMOKE_LIBC === 'musl' ? undefined : '2.44.9000';
+  report.header.glibcVersionCompiler = process.env.SMOKE_LIBC === 'musl' ? undefined : '2.39';
+  return report;
+};
+`);
+    const preparedRoot = mkdtempSync(join(tmpdir(), "cotal-upstack-musl-"));
+    const preparedSpace = basename(preparedRoot);
+    anchors.set(preparedRoot, recordSmokeSandbox({ root: preparedRoot, cotalHome: home, xdgConfigHome: configDir }));
+    try {
+      const prepare = cliIn(preparedRoot, "space", "create", preparedSpace, "--root", preparedRoot);
+      ok("the isolated musl space is prepared", prepare.status === 0, prepare.stdout + prepare.stderr);
+      const controller = spawnSync(process.execPath, ["--require", preload, join(WT, "bin/dist/cotal.js"), "up", "--detach", "--open", "--space", preparedSpace, "--server", `nats://127.0.0.1:${await freePort()}`], {
+        cwd: preparedRoot, env: { ...env, SMOKE_LIBC: "musl" }, encoding: "utf8", timeout: 120_000,
+      });
+      const refusedOutput = plain(controller.stdout + controller.stderr);
+      ok("up names glibc without launching a manager child on musl",
+        controller.status === 4 && /before a child launch: Cotal's built-in PTY runtime requires glibc/.test(refusedOutput) && !/OPERATION_UNKNOWN/.test(refusedOutput)
+        && !existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root: preparedRoot, space: preparedSpace })), refusedOutput);
+    } finally {
+      cliIn(preparedRoot, "down", "--yes", "--space", preparedSpace);
+      rmSync(preparedRoot, { recursive: true, force: true });
+    }
+    const run = (libc: string) => spawnSync(process.execPath, ["--require", preload, join(WT, "bin/dist/cotal.js"), "supervise", "--space", basename(openRoot), "--server", openServer], {
+      cwd: openRoot, env: { ...env, SMOKE_LIBC: libc }, encoding: "utf8", timeout: 15_000,
+    });
+    const refused = run("musl");
+    ok("the built PTY manager refuses musl before starting",
+      refused.status === 1 && refused.signal === null && /built-in PTY runtime requires glibc/.test(refused.stderr) && !existsSync(openRecord(MANAGER_PIDFILE)), refused.stderr);
+    const supported = spawnProc(process.execPath, ["--require", preload, join(WT, "bin/dist/cotal.js"), "supervise", "--space", basename(openRoot), "--server", openServer], {
+      cwd: openRoot, env: { ...env, SMOKE_LIBC: "glibc" }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    supported.stdout.on("data", chunk => { output += chunk; });
+    supported.stderr.on("data", chunk => { output += chunk; });
+    const running = () => supported.exitCode === null && supported.signalCode === null;
+    try {
+      const deadline = Date.now() + 15_000;
+      while (!/manager up/.test(output) && running() && Date.now() < deadline) await sleep(50);
+      ok("a multi-component glibc version starts the built PTY manager", /manager up/.test(output) && running(), plain(output));
+    } finally {
+      await killAndAwaitExit(supported, "SIGTERM");
+    }
+  }
   writeFileSync(openRecord(MANAGER_PIDFILE), "not-a-pid");
   // `down` refuses that record as well, so the Next names the steps that work in this state: the
   // check only the operator can make, then removing the file and refreshing. Its report uses no
   // internal names.
   const removal = `rm ${shellWord(openRecord(MANAGER_PIDFILE))}`;
   const recordCheck = "The manager pidfile names no process, so cotal cannot check whether a manager still runs for this folder, and one that does not answer on the mesh may still be running. Confirm yourself that none runs before you remove that file.";
-  const recoveryNext = [[removal, "Remove it once no manager runs for this folder"], ["cotal up", "Then start the manager"]];
+  const recoveryNext = launchers.map((launcher) => JSON.stringify([[removal, "Remove it once no manager runs for this folder"], [`${launcher} up`, "Then start the manager"]]));
   for (const extra of [[], ["--runtime", "pty"]]) {
     const degraded = openRefresh(...extra);
     const degradedOut = plain(degraded.stdout + degraded.stderr);
     ok(`an open refresh${extra.length ? " with --runtime" : ""} over a manager pidfile that holds no pid exits 1 with the degraded line, and its Next states the operator's check, then removes that file and refreshes instead of a down that refuses it`,
       degraded.status === 1 && degradedOut.includes(`! control plane degraded: the manager pidfile at ${openRecord(MANAGER_PIDFILE)} holds content that is not a pid ("not-a-pid")`) &&
-        nextCheck(degraded.stdout) === recordCheck && JSON.stringify(nextRows(degraded.stdout).slice(1)) === JSON.stringify(recoveryNext) && !/stopped stack/.test(degraded.stdout) && !/cutover preflight|Plane-3|fanout\/reader/.test(degradedOut), degradedOut);
+        nextCheck(degraded.stdout) === recordCheck && recoveryNext.includes(JSON.stringify(nextRows(degraded.stdout).slice(1))) && !/stopped stack/.test(degraded.stdout) && !/cutover preflight|Plane-3|fanout\/reader/.test(degradedOut), degradedOut);
   }
   // On an 80-column terminal the report wraps as every other warning does. Only the words wider than
   // the line stay whole: the pidfile path, and the Next command that removes it.
@@ -517,6 +625,34 @@ try {
   for (let i = 0; i < 24 && alive(openHealedPid); i++) await sleep(500);
   ok("down stops the open root's stack", openRootDown.status === 0 && !alive(openHealedPid), plain(openRootDown.stdout + openRootDown.stderr));
 
+  const homeRecord = openRecord("stack-home.json");
+  const intactHome = readFileSync(homeRecord);
+  const restoreHome = "restore the intact stack-home record before retrying";
+  // Earlier starts leave registrations and a current selection. Reproduce the unregistered path.
+  const reportHome = mkdtempSync(join(home, "stack-home-report-"));
+  const readOpenStack = (...args: string[]) => cliInEnv(openRoot, { COTAL_HOME: reportHome }, ...args);
+  try {
+    writeFileSync(homeRecord, '{"home":\n');
+    for (const args of [["status"], ["status", "--components"], ["ps", "--plain"]]) {
+      const r = readOpenStack(...args);
+      const text = plain(r.stdout + r.stderr);
+      ok(`${args.join(" ")} names the malformed stack-home record and its recovery`,
+        r.status !== 0 && text.includes(homeRecord) && text.includes("malformed") && text.includes(restoreHome) && !text.includes("OPERATION_UNKNOWN"), text);
+      if (args[0] === "status") ok("status still reports the machine", text.includes("This machine"), text);
+    }
+    const r = readOpenStack("status", "--json");
+    const report = JSON.parse(r.stdout);
+    ok("JSON status retains machine data but does not resolve the damaged stack", r.status === 4 &&
+      report.completeness === "partial" && report.result?.machine && report.result.selected?.resolved === false &&
+      report.result.selected.code === "SCHEMA_INVALID" && report.result.hints.includes(restoreHome) &&
+      report.warnings.some((w: { code: string; target?: { path?: string } }) => w.code === "SCHEMA_INVALID" && w.target?.path === homeRecord), report);
+    ok("inspection leaves the malformed record untouched", readFileSync(homeRecord, "utf8") === '{"home":\n');
+  } finally {
+    writeFileSync(homeRecord, intactHome);
+  }
+  const openRestored = readOpenStack("status");
+  ok("after restoration status names the last-run broker again", openRestored.status === 0 && openRestored.stdout.includes(openServer), openRestored.stdout + openRestored.stderr);
+
   // Open mode in the SAME root retains static-auth files from the prior boot. Reporting follows the
   // effective live mode, not stale on-disk auth material: broker + manager, never delivery/auth-service.
   // The mode also decides what starts: no delivery daemon, so the next down has none to stop.
@@ -530,7 +666,7 @@ try {
     { pidfile: existsSync(record(DELIVERY_PIDFILE)), daemons: process.platform === "linux" ? deliveryDaemons(SPACE) : "not read" });
   ok(
     "open up reports the exact running component set",
-    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `cotal down`$/m.test(plain(open.stdout)),
+    /^✓ running in the background: nats-server \(pid \d+\), manager - stop with: `(?:pnpm )?cotal down`$/m.test(plain(open.stdout)),
     open.stdout,
   );
   ok("open summary omits auth-only components", !/running in the background:.*(?:delivery daemon|user-auth service)/.test(open.stdout), open.stdout);
@@ -584,7 +720,7 @@ try {
   ok("broker-only up --detach exits 0", brokerOnly.status === 0, brokerOnly.stdout + brokerOnly.stderr);
   ok(
     "broker-only up reports the exact running component set (no manager)",
-    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: `cotal down`$/m.test(brokerOnlyOut),
+    /^✓ running in the background: nats-server \(pid \d+\), delivery daemon - stop with: `(?:pnpm )?cotal down`$/m.test(brokerOnlyOut),
     brokerOnly.stdout,
   );
   ok("broker-only boot writes no manager pidfile", !existsSync(record(MANAGER_PIDFILE)), record(MANAGER_PIDFILE));
@@ -626,6 +762,12 @@ try {
     clientPs.status === 2 && remedyOf(clientPs)?.code === "TARGET_UNAVAILABLE" &&
       remedyOf(clientPs)?.remedy === "start this space's manager where its stack runs; a stack started with --no-manager has none",
     clientPs.stdout + clientPs.stderr);
+  const localRuns = cliIn(autoRoot, "run", "list", "--space", SPACE, "--json");
+  ok("the workflow list from another project names the broker-only stack's folder",
+    localRuns.status === 2 && remedyOf(localRuns)?.code === "TARGET_UNAVAILABLE" && remedyOf(localRuns)?.remedy?.includes(`bare \`cotal up\` in ${realpathSync(root)};`) === true, localRuns.stdout);
+  const clientRuns = cliInEnv(clientHome, clientEnv, "run", "list", "--space", SPACE, "--json");
+  ok("the workflow list on a manually registered space points to the host, not a local start",
+    clientRuns.status === 2 && remedyOf(clientRuns)?.code === "TARGET_UNAVAILABLE" && remedyOf(clientRuns)?.remedy === "start this space's manager where its stack runs; a stack started with --no-manager has none", clientRuns.stdout);
   rmSync(clientHome, { recursive: true, force: true });
   // --preserve-state takes its inventory from a manager. With none serving the space it refuses
   // before any stop, where it used to stop the delivery daemon and then wait on a manager that never ran.
@@ -777,7 +919,10 @@ try {
     "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,",
     "registerPresence:true,watchPresence:false,",
     "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
-    "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
+    "ep.on('error',()=>{});await ep.start();",
+    "process.stdin.on('data',data=>{fs.appendFileSync(process.env.PIDFILE+'.input',data);",
+    "void ep.setStatus('working').then(()=>setTimeout(()=>void ep.setStatus('idle'),500));});",
+    "setInterval(()=>{},1000);});",
   ].join(""));
   writeFileSync(join(fgBin, "claude"), "#!/usr/bin/env node\nrequire(process.env.SHIM_BODY);\n");
   chmodSync(join(fgBin, "claude"), 0o755);
@@ -825,6 +970,16 @@ try {
     ok("the seat is a live OS process", fgSeatPid !== undefined && alive(fgSeatPid), fgSeatPid);
     const fgPs = cliInEnv(fgRoot, fgEnv, "ps");
     ok("cotal ps lists the managed seat", /bard/.test(plain(fgPs.stdout)), fgPs.stdout + fgPs.stderr);
+    const prose = "/despawn is an example, please explain the syntax";
+    const proseReply = await withAcp(fgRoot, async (rpc) => {
+      await rpc("initialize", { protocolVersion: 1 });
+      const load = await rpc("session/load", { sessionId: "bard", cwd: fgRoot, mcpServers: [] });
+      ok("ACP loads the running seat", load.result !== undefined, load);
+      return rpc("session/prompt", { sessionId: "bard", prompt: [{ type: "text", text: prose }] });
+    });
+    const inputFile = `${fgSeatPidFile}.input`;
+    ok("ACP forwards prose beginning with /despawn without stopping the seat", proseReply.result?.stopReason === "end_turn" &&
+      alive(fgSeatPid!) && existsSync(inputFile) && readFileSync(inputFile, "utf8").includes(prose), proseReply);
 
     // Ctrl-C. Bounded wait: the handler must finish its awaited teardown and end the process.
     fgUp.kill("SIGINT");
@@ -874,12 +1029,16 @@ try {
     rgUp.stdout?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     rgUp.stderr?.on("data", (b: Buffer) => void (rgOutText += b.toString()));
     const rgRecord = (template: string) => canonicalLocalProcessPath(template, { root: rgRoot, space: basename(rgRoot) });
-    let rgManagerUp = false;
-    for (let i = 0; i < 60 && !rgManagerUp; i++) {
-      await sleep(1000);
-      try { rgManagerUp = /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")); } catch { /* not yet */ }
-    }
-    ok("refusal rig: foreground up reached manager up", rgManagerUp);
+    // Foreground startup reads the spare capability before releasing its maintenance lock.
+    const rgStartupFinished = () => {
+      try {
+        return /✓ manager up/.test(readFileSync(rgRecord(MANAGER_LOGFILE), "utf8")) &&
+          readMaintenanceLockHolder(rgRoot)?.operation !== "foreground up";
+      } catch { return false; }
+    };
+    const rgStartupDeadline = Date.now() + 60_000;
+    while (!rgStartupFinished() && Date.now() < rgStartupDeadline) await sleep(200);
+    ok("refusal rig: foreground up finished starting", rgStartupFinished(), plain(rgOutText));
     const rgManagerPid = Number(readFileSync(rgRecord(MANAGER_PIDFILE), "utf8").trim());
     // The shape under test: a pinned manager whose spare capability is NOT proven.
     rmSync(rgRecord(MANAGER_SPARE_CAPABILITY), { force: true });
@@ -896,7 +1055,8 @@ try {
       { manager: rgManagerPid, managerAlive: alive(rgManagerPid), upAlive: rgUp ? alive(rgUp.pid ?? 0) : false });
     ok("no spared report is printed on the refusal path", !/left \d+ managed agent/.test(plain(rgOutText)), rgOutText);
     // The operator's route ends the run: down --with-agents, then up exits via the broker-exit path.
-    cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
+    const rgDown = cliInEnv(rgRoot, rgEnv, "down", "--with-agents", "--yes");
+    ok("the operator's cotal down --with-agents exits 0", rgDown.status === 0, plain(rgDown.stdout + rgDown.stderr));
     const rgExited = await new Promise<boolean>((res) => {
       const timer = setTimeout(() => res(false), 45_000);
       rgUp?.once("exit", () => { clearTimeout(timer); res(true); });
@@ -946,11 +1106,11 @@ try {
     const noAppStatus = plain(cliInEnv(recRoot, noAppEnv, "status", "--plain").stdout);
     const noAppStatusNext = noAppStatus.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, status recommends setup instead of spawn",
-      /Agent applications:\s+not set up/.test(noAppStatus) && /setup\s+Set up an agent application/.test(noAppStatusNext) && !/\bspawn\s+Open your default agent/.test(noAppStatusNext), noAppStatus);
+      /Agent applications:\s+not set up/.test(noAppStatus) && /setup --help\s+See setup flags for scripts/.test(noAppStatusNext) && !/\bspawn\s+Open your default agent/.test(noAppStatusNext), noAppStatus);
     const noAppPs = plain(cliInEnv(recRoot, noAppEnv, "ps", "--plain").stdout);
     const noAppPsNext = noAppPs.split("\nNext\n")[1] ?? "";
     ok("with seeded connectors and no agent binary on PATH, empty ps recommends setup instead of spawn",
-      /setup\s+Set up an agent application/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
+      /setup --help\s+See setup flags for scripts/.test(noAppPsNext) && !/\bspawn\s+Launch your default agent/.test(noAppPsNext), noAppPs);
 
     for (const badArgs of [["status", "nosuch", "--json", "--plain"], ["status", "nosuch", "--wide", "--json"], ["status", "nosuch", "--verbose", "--json"]]) {
       const bad = cliIn(recRoot, ...badArgs);

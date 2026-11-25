@@ -13,14 +13,15 @@
  *
  * The derivation is checked rather than trusted: over the real session the mapper produced 2911
  * events (RUN 13/13, TEXT 232, REASONING 83, TOOL 485 of each), and over the fixture it produces the
- * same counts. That equality is the evidence the redaction preserved what these cells assert.
+ * same counts. That equality is the evidence the redaction preserved what these cells assert. The
+ * `cotal.toolResult` marker adds one event per tool call to both.
  *
  * Never prints record content: cells report counts, type names, and the fixture's own ids.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { AguiBrackets, AGUI_EVENT_TYPE, runFinished } from "@cotal-ai/connector-core";
+import { AguiBrackets, AGUI_EVENT_TYPE, TOOL_RESULT_EVENT, runFinished } from "@cotal-ai/connector-core";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodePart } from "../src/agui-source.js";
 import { createOpenCodeMapper } from "../src/agui-map.js";
 
@@ -97,7 +98,8 @@ const R = await replay(true);
 // ---------------------------------------------------------------------------- the real session
 {
   const parts = fixture.reduce((n, m) => n + m.parts.length, 0);
-  c("fixture:every record in the session was offered to the mapper", R.records === parts, { R: R.records, parts });
+  const tools = fixture.reduce((n, m) => n + m.parts.filter((p) => p.type === "tool").length, 0);
+  c("fixture:every record in the session was offered to the mapper, each tool's call with it", R.records === parts + tools, { R: R.records, parts, tools });
   c("fixture:no frame violated the brackets", R.bracketError === null, R.bracketError);
   c("fixture:no run is left open at the end", R.brackets.runId === undefined, R.brackets.runId ?? null);
   const next = unitOf(R.mapper.map({
@@ -172,11 +174,12 @@ const R = await replay(true);
 {
   const mapper = createOpenCodeMapper({ threadId: "t", mintRunId: ids });
   const msg = { id: "msg_1", role: "assistant", time: { created: 1, completed: 9 } };
-  const ok = unitOf(mapper.map({
-    part: { id: "prt_1", messageID: "msg_1", type: "tool", callID: "toolu_native", tool: "bash",
-            state: { status: "completed", input: { a: 1 }, output: "done", time: { start: 5, end: 6 } } },
-    message: msg,
-  }))!.events as Record<string, unknown>[];
+  // A tool is two records, its call and then its result, as the source hands them over.
+  const both = (part: OpenCodePart) =>
+    [unitOf(mapper.map({ part, message: msg, call: true })), unitOf(mapper.map({ part, message: msg }))]
+      .flatMap((u) => (u?.events ?? []) as Record<string, unknown>[]);
+  const ok = both({ id: "prt_1", messageID: "msg_1", type: "tool", callID: "toolu_native", tool: "bash",
+    state: { status: "completed", input: { a: 1 }, output: "done", time: { start: 5, end: 6 } } });
   const start = ok.find((e) => e.type === AGUI_EVENT_TYPE.TOOL_CALL_START)!;
   const result = ok.find((e) => e.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT)!;
   const args = ok.find((e) => e.type === AGUI_EVENT_TYPE.TOOL_CALL_ARGS)!;
@@ -188,15 +191,33 @@ const R = await replay(true);
     result.messageId !== start.parentMessageId, { result: result.messageId, parent: start.parentMessageId });
   c("tool:the source timestamp comes from state.time, where a tool part actually keeps it",
     start.timestamp === 5, start.timestamp);
-  const failed = unitOf(mapper.map({
-    part: { id: "prt_2", messageID: "msg_1", type: "tool", callID: "toolu_bad", tool: "bash",
-            state: { status: "error", error: "boom", time: { start: 7 } } },
+  const failed = both({ id: "prt_2", messageID: "msg_1", type: "tool", callID: "toolu_bad", tool: "bash",
+    state: { status: "error", error: "boom", time: { start: 7 } } });
+  const call = unitOf(mapper.map({
+    part: { id: "prt_3", messageID: "msg_1", type: "tool", callID: "toolu_running", tool: "bash", state: { status: "running", input: { b: 2 }, time: { start: 8 } } },
     message: msg,
-  }))!.events as Record<string, unknown>[];
+    call: true,
+  }))?.events.map((e) => e.type) ?? [];
+  c("tool:a running call's record publishes its start, args and end, and no result yet",
+    JSON.stringify(call) === JSON.stringify([AGUI_EVENT_TYPE.TOOL_CALL_START, AGUI_EVENT_TYPE.TOOL_CALL_ARGS, AGUI_EVENT_TYPE.TOOL_CALL_END]), call);
+  const ended = unitOf(mapper.map({
+    part: { id: "prt_3", messageID: "msg_1", type: "tool", callID: "toolu_running", tool: "bash", state: { status: "completed", input: { b: 2 }, output: "ok", time: { start: 8, end: 9 } } },
+    message: msg,
+  }))?.events.map((e) => (e.type === AGUI_EVENT_TYPE.CUSTOM ? String((e as { name?: string }).name) : e.type)) ?? [];
+  c("tool:its completed record then publishes only the result and its marker",
+    JSON.stringify(ended) === JSON.stringify([AGUI_EVENT_TYPE.TOOL_CALL_RESULT, TOOL_RESULT_EVENT]), ended);
   const badResult = failed.find((e) => e.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT)!;
   c("tool:a FAILED call reports its error as the content, not an empty string",
     badResult.content === "boom", badResult.content);
   c("tool:and is marked isError", (badResult.cotal as { isError?: boolean } | undefined)?.isError === true, badResult.cotal);
+  const marker = (events: Record<string, unknown>[]) => {
+    const i = events.findIndex((e) => e.type === AGUI_EVENT_TYPE.CUSTOM && e.name === TOOL_RESULT_EVENT);
+    return { after: i > events.findIndex((e) => e.type === AGUI_EVENT_TYPE.TOOL_CALL_RESULT), value: events[i]?.value };
+  };
+  c("tool:the result marker follows the result, naming the call, not failed",
+    JSON.stringify(marker(ok)) === JSON.stringify({ after: true, value: { toolCallId: "toolu_native", isError: false } }), marker(ok));
+  c("tool:and for a FAILED call it says failed",
+    JSON.stringify(marker(failed)) === JSON.stringify({ after: true, value: { toolCallId: "toolu_bad", isError: true } }), marker(failed));
 }
 
 // ---------------------------------------------------------------------------- run boundaries
@@ -260,7 +281,7 @@ const R = await replay(true);
     control?.runId === "run-new" && (control.events[0] as { type: string }).type === AGUI_EVENT_TYPE.RUN_STARTED, control);
 }
 
-const EXPECTED = 41;
+const EXPECTED = 45;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(

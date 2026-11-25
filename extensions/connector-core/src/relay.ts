@@ -6,8 +6,9 @@
  * its local control socket and print the reply for the runtime to apply, but only once the
  * connector has proved it holds the endpoint's key and the reply's MAC verifies (the control
  * exchange in `@cotal-ai/core/control-exchange`). The key itself is never sent. It must NEVER
- * block the session: any error → exit 0, no output. The Claude Code hook
- * entry points are one-liners over {@link runHookRelay}.
+ * block the session: any error → exit 0, no output. An event the hook marks as held waits for its
+ * reply with no deadline once a proven server has it, while the runtime's own dialog stays open.
+ * The Claude Code hook entry points are one-liners over {@link runHookRelay}.
  */
 import { connect } from "node:net";
 import { checkControlSocketDir, clientExchange, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
@@ -25,10 +26,23 @@ const MAX_HOOK_REPLY_BYTES = 1 << 20;
 const MAY_HAVE_BEEN_HANDLED =
   "this session's control endpoint proved it holds the session's key and was sent the event, " +
   "but no proven reply came back, so the event may have been handled. No reply was used.";
-/** A startup hook may run before the MCP process has bound its socket. Stay inside the existing
- * hook budget, but do not turn one early ENOENT into a permanently lost lifecycle event. */
+/** A startup hook may run before the MCP process has bound its socket. Do not turn one early
+ * ENOENT into a permanently lost lifecycle event. */
 const CONNECT_RETRY_INITIAL_MS = 25;
 const CONNECT_RETRY_MAX_MS = 250;
+/**
+ * How long a SessionStart fired at launch keeps dialing a connector that has not bound its socket.
+ * Claude Code fires that hook before the session's MCP servers are available and starts the
+ * connector process alongside it. Measured with six managed seats starting at once, the connector
+ * bound up to four seconds after the hook began, and a relay that stopped at two seconds lost the
+ * only event carrying `source`, so the seat published no events for the whole session. Claude Code
+ * gives its MCP servers 30 seconds to connect; a connector not bound by then has been dropped.
+ * Once connected, the exchange still has {@link TIMEOUT_MS}.
+ */
+const LAUNCH_CONNECT_MS = 30_000;
+/** The SessionStart sources that fire as the session's process launches. A clear or a compaction
+ *  fires with the connector already bound, so it keeps the short budget. */
+const LAUNCH_SOURCES: ReadonlySet<unknown> = new Set(["startup", "resume", "fork"]);
 
 const isRetryableConnectError = (error: unknown): boolean => {
   const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
@@ -117,9 +131,20 @@ function done(out: string, confirm?: (then: () => void) => void): void {
  *  the only kind the relay forwards. */
 export type LocalHookAnswer = (event: unknown, session: { managed: boolean }) => Record<string, unknown> | undefined;
 
+export interface HookRelayOptions {
+  /** Events the connector holds until someone answers them, such as a tool permission. The 2 s
+   *  deadline still bounds the dial and the server's proof of a held event, and ends once its request
+   *  was sent to a proven server, so only the runtime's own hook timeout bounds the wait for the reply. */
+  readonly holds?: (event: unknown) => boolean;
+}
+
 /** Relay one hook event from stdin to the connector's control socket and print the reply. `answer`
  *  runs first, so a decision that needs no connector state holds even when the socket is down. */
-export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: unknown, session: { managed: boolean }) => Promise<void>): Promise<void> {
+export async function runHookRelay(
+  answer?: LocalHookAnswer,
+  observe?: (event: unknown, session: { managed: boolean }) => Promise<void>,
+  opts: HookRelayOptions = {},
+): Promise<void> {
   const managed = hasIdentity();
   if (!managed && !answer && !observe) return done(""); // plain session with nothing to answer — no-op
   const raw = (await readStdin()).trim() || "{}";
@@ -160,7 +185,14 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
   // operator to ignore the channel.
   if (!control) return done("");
   const endpoint = control;
+  let held = false;
+  try {
+    held = opts.holds?.(event) === true;
+  } catch {
+    /* a predicate that throws holds nothing */
+  }
   const startupCritical = isSessionStart(event);
+  const launch = startupCritical && LAUNCH_SOURCES.has((event as { source?: unknown }).source);
   let sock: ReturnType<typeof connect> | undefined;
   let settled = false;
   let retryDelayMs = CONNECT_RETRY_INITIAL_MS;
@@ -208,7 +240,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
     if (requestSent) warnOnce(MAY_HAVE_BEEN_HANDLED);
     finish("");
   };
-  const timer = setTimeout(unanswered, TIMEOUT_MS);
+  let timer = setTimeout(unanswered, launch ? LAUNCH_CONNECT_MS : TIMEOUT_MS);
 
   const retryLater = (): void => {
     const wait = retryDelayMs;
@@ -238,6 +270,10 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
     candidate.on("connect", () => {
       if (settled || sock !== candidate) return;
       connected = true;
+      if (launch) {
+        clearTimeout(timer);
+        timer = setTimeout(unanswered, TIMEOUT_MS);
+      }
       try {
         clientExchange(
           candidate,
@@ -256,7 +292,14 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
             );
             finish("");
           },
-          { maxReplyBytes: MAX_HOOK_REPLY_BYTES, onRequestSent: () => (requestSent = true) },
+          {
+            maxReplyBytes: MAX_HOOK_REPLY_BYTES,
+            onRequestSent: () => {
+              requestSent = true;
+              // A proven server has the held event: it answers when someone does, or closes.
+              if (held) clearTimeout(timer);
+            },
+          },
         );
       } catch {
         finish("");

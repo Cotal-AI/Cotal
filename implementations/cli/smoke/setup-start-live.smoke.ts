@@ -1,4 +1,4 @@
-/** Live regression for #4421: implicit local addresses and classified setup startup refusals.
+/** Live regressions for implicit local addresses and classified setup startup refusals.
  * Run: pnpm smoke:setup-start:live
  */
 import { spawnSync } from "node:child_process";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { resolveOnPath } from "@cotal-ai/workspace";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
@@ -18,17 +18,18 @@ const env: Record<string, string | undefined> = { ...host, HOME: home, USERPROFI
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 Object.assign(process.env, env);
 const { check, finish } = createSuite();
-interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; next?: { command: string }; startup?: { state: string; failure?: { code: string; message?: string } } } }
+interface Receipt { outcome: string; error?: { code: string; message: string; remedy?: string }; result?: { server?: string; check?: string; spaceState?: string; withAgents?: boolean; signalled?: boolean; next?: { command: string; cwd: string | null }; startup?: { state: string; agent?: unknown; failure?: { code: string; outcome?: string; message?: string } } } }
 const unconfirmed = new Set<string>();
 const anchors = new Map<string, SmokeSandboxAnchor>();
-const run = (cwd: string, ...args: string[]) => {
-  assertSmokeSandboxDown(anchors.get(cwd), [...args, "--json"], { cwd, env });
-  const r = spawnSync(process.execPath, [BIN, ...args, "--json"], { cwd, env, encoding: "utf8", timeout: 120_000 });
+const invoke = (cwd: string, ...args: string[]) => {
+  assertSmokeSandboxDown(anchors.get(cwd), args, { cwd, env });
+  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 120_000 });
   let receipt: Receipt | undefined;
   try { receipt = JSON.parse(r.stdout) as Receipt; } catch { /* Printed below if the command failed. */ }
   if (args[0] === "up" && (r.status === null || receipt?.outcome === "unknown")) unconfirmed.add(cwd);
   return { status: r.status, receipt, stdout: r.stdout, stderr: r.stderr };
 };
+const run = (cwd: string, ...args: string[]) => invoke(cwd, ...args, "--json");
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(-2000), stderr: r.stderr.slice(-1000) });
 const project = (name: string) => {
   const path = join(home, name); mkdirSync(path, { mode: 0o700 });
@@ -80,15 +81,57 @@ try {
       const detached = spawnSync(process.execPath, [BIN, "spawn", "--detach"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
       check(`detached ${agent} spawn names the missing executable, not an extension to reinstall`, detached.status === 2 && detached.stderr.includes(`${agent} harness needs ${agent} on PATH`) && /DEPENDENCY_UNAVAILABLE/.test(detached.stderr) && /manager .+ on host/.test(detached.stderr) && !/ext add|none has an agent application installed/.test(detached.stderr), detached.stderr);
       const detachedJson = run(root, "spawn", "--detach");
-      check(`the console's JSON launch path carries ${agent}'s missing dependency and a usable stack restart`, detachedJson.status === 2 && detachedJson.receipt?.error?.code === "DEPENDENCY_UNAVAILABLE" && detachedJson.receipt.error.message.includes(`${agent} harness needs ${agent} on PATH`) && detachedJson.receipt.error.remedy?.includes("PATH used to start each manager") === true && detachedJson.receipt.error.remedy.includes("`cotal manager stop --yes` then `cotal up`") && !detachedJson.stdout.includes("ext add"), shown(detachedJson));
+      const remedy = detachedJson.receipt?.error?.remedy ?? "";
+      check(`the JSON launch refusal distinguishes saved service and foreground restart remedies for ${agent}`, detachedJson.status === 2 && detachedJson.receipt?.error?.code === "DEPENDENCY_UNAVAILABLE" && detachedJson.receipt.error.message.includes(`${agent} harness needs ${agent} on PATH`) && remedy.includes("`cotal service restart <name> --yes`") && remedy.includes("`cotal down --yes` from its project folder or Ctrl-C") && remedy.includes("hosted workflow runs and can stop agents") && remedy.includes("Repeat the original foreground start with the updated PATH") && !/manager stop|ext add/.test(remedy), shown(detachedJson));
       check("detached dependency refusals issue no credentials", credentialFiles() === before);
       const status = run(root, "status");
       check("the stack remains available after the dependency refusal", status.status === 0, shown(status));
+      if (agent === "claude") {
+        const confirm = run(root, "down", "--with-agents");
+        const next = confirm.receipt?.error?.remedy ?? "";
+        check("the controller requires confirmation and keeps with-agents in both suggestions",
+          confirm.status === 1 && confirm.receipt?.error?.code === "USAGE_INVALID" && ["cotal", "pnpm cotal"].some((prefix) => next.includes(`\`${prefix} down --with-agents --json --yes\``) && next.includes(`\`${prefix} down --with-agents --json --dry-run\``)), shown(confirm));
+        const preview = run(root, "down", "--with-agents", "--dry-run");
+        check("the suggested preview retains the agent policy without signalling the stack", preview.status === 0 && preview.receipt?.result?.withAgents === true && preview.receipt.result.signalled === false, shown(preview));
+      }
       const stopped = run(root, "down", "--yes");
       check("the missing-application stack stops cleanly", stopped.status === 0, shown(stopped));
       active.splice(active.indexOf(root), 1);
     }
     } finally { env.PATH = path; }
+  }
+
+  if (!selected || selected === "stopped") {
+    // An unprepared project takes the retained launcher and keeps its same-name registration on down.
+    const space = "stopped-project";
+    const root = join(home, space);
+    mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
+    anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+    const legacyUp = (...flags: string[]) => spawnSync(process.execPath, [BIN, "up", "--detach", ...flags], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+    const stop = (...flags: string[]) => {
+      assertSmokeSandboxDown(anchors.get(root), ["down", ...flags], { cwd: root, env });
+      return spawnSync(process.execPath, [BIN, "down", ...flags], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+    };
+    const setup = () => run(root, "setup", "--destination", "local", "--harness", "setup-smoke", "--project", root, "--space", space, "--configure-only", "--yes");
+    env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(connector).href}`;
+    try {
+      const started = legacyUp("--open", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`);
+      check("the local stack starts before configure-only setup", started.status === 0, started.stderr);
+      const running = setup();
+      check("a running local stack suggests spawn without starting anything", running.status === 0 && running.receipt?.result?.spaceState === "started" && running.receipt.result.next?.command.endsWith(` spawn --space ${space}`) === true && running.receipt.result.startup?.state === "not-requested", shown(running));
+      const confirm = stop("--with-agents");
+      check("the retained stack's noninteractive confirmation keeps with-agents in both suggestions", confirm.status === 1 && ["cotal", "pnpm cotal"].some((prefix) => confirm.stderr.includes(`\`${prefix} down --with-agents --yes\``) && confirm.stderr.includes(`\`${prefix} down --with-agents --dry-run\``)), confirm.stderr);
+      const stopped = stop("--yes");
+      check("the retained local stack stops", stopped.status === 0, stopped.stderr);
+      const configured = setup();
+      check("configure-only setup reports the stopped local stack and points to up from that project", configured.status === 0 && configured.receipt?.result?.spaceState === "stopped" && configured.receipt.result.next?.command.endsWith(" up") === true && configured.receipt.result.next.cwd === root && configured.receipt.result.startup?.state === "not-requested", shown(configured));
+      const restarted = legacyUp();
+      check("up from the configured project restarts its local stack", restarted.status === 0, restarted.stderr);
+    } finally {
+      delete env.NODE_OPTIONS;
+      const cleanup = stop("--yes");
+      check("the retained local stack is stopped after the test", cleanup.status === 0, cleanup.stderr);
+    }
   }
 
   if (!selected || selected === "address") {
@@ -109,8 +152,44 @@ try {
     }
   }
 
+  if (!selected || selected === "unprepared-address") {
+    mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
+    const root = join(home, "unprepared-address");
+    mkdirSync(root, { mode: 0o700 });
+    const started = invoke(root, "up");
+    if (existsSync(join(root, ".cotal"))) {
+      anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+      active.push(root);
+    }
+    check("bare up in an empty project starts beside a reserved default address", started.status === 0, shown(started));
+    const own = run(root, "space", "show", "unprepared-address");
+    check("the project answers on a distinct registered address", own.status === 0 && own.receipt?.result?.check === "reachable" && own.receipt.result.server !== "nats://127.0.0.1:4222", shown(own));
+    const original = run(root, "space", "show", "held");
+    check("the original reservation keeps the default address", original.status === 0 && original.receipt?.result?.server === "nats://127.0.0.1:4222", shown(original));
+  }
+
+  if (!selected || selected === "self-hosted-refusal") {
+    const root = join(home, "self-hosted-refused");
+    mkdirSync(root, { mode: 0o700 });
+    const space = "self-hosted-refused";
+    const broker = `nats://127.0.0.1:${await freePort()}`;
+    const registration = run(root, "space", "add", space, "--mode", "open", "--server", broker, "--root", ".", "--force", "--yes");
+    check("self-hosted space registers without a live broker", registration.status === 0, shown(registration));
+    const args = ["setup", "--destination", "self-hosted", "--harness", "setup-smoke", "--project", ".", "--space", space, "--start", "--detach", "--yes"];
+    env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(connector).href}`;
+    const setup = run(root, ...args);
+    const startup = setup.receipt?.result?.startup;
+    check("unreachable broker refuses self-hosted startup but keeps preparation", setup.status === 4 && setup.receipt?.outcome === "partial" && startup?.state === "refused" && startup.agent === null && startup.failure?.code === "TARGET_UNAVAILABLE" && startup.failure.outcome === "refused" && startup.failure.message?.includes(`no broker answered at ${broker}`) === true && existsSync(join(root, ".cotal", "agents", "default.md")), shown(setup));
+    const text = invoke(root, ...args, "--plain");
+    check("plain setup explains that no launch was sent and tells the user to restore the broker", text.status === 4 && text.stdout.includes(`no broker answered at ${broker}`) && text.stdout.includes(`space show ${space}`) && text.stderr.includes("startup was refused before a launch was sent") && text.stderr.includes("start or restore the broker") && !/OPERATION_UNKNOWN|original (?:manager|startup)/.test(text.stdout + text.stderr), shown(text));
+    const inspect = run(root, "space", "show", space);
+    check("the suggested inspection works with the broker still offline", inspect.status === 0 && inspect.receipt?.result?.server === broker, shown(inspect));
+    delete env.NODE_OPTIONS;
+  }
+
   if (!selected || selected === "refusal") {
     const root = project("refused");
+    const reservation = "space held in ";
     const refused = run(root, "up", "--space", "refused", "--server", "nats://127.0.0.1:4222", "--open", "--no-manager");
     check("an explicit reserved address is a confirmed CONFLICT", refused.status === 2 && refused.receipt?.error?.code === "CONFLICT", shown(refused));
     const { startSetupLocalStack } = await import("../src/commands/setup-start.js");
@@ -120,13 +199,13 @@ try {
     catch (error) { failure = error as typeof failure; }
     finally { process.argv[1] = original; }
     check("setup preserves the native child's confirmed CONFLICT", failure?.outcome === "refused" && failure.code === "CONFLICT", failure);
-    check("setup preserves the classified conflict diagnostic", failure?.message?.includes("another registration names this exact broker address") === true, failure);
+    check("setup preserves the named reservation in the conflict diagnostic", failure?.message?.includes(reservation) === true, failure);
     env.NODE_OPTIONS = `${host.NODE_OPTIONS ?? ""} --import=${pathToFileURL(connector).href}`;
     const setup = run(root, "setup", "--destination", "local", "--harness", "setup-smoke", "--project", root, "--space", "refused", "--start", "--detach", "--yes");
     check("public setup reports a confirmed refusal with preparation saved", setup.status === 4 && setup.receipt?.result?.startup?.state === "refused" && setup.receipt.result.startup.failure?.code === "CONFLICT", shown(setup));
-    check("public setup retains the actionable classified diagnostic", setup.receipt?.result?.startup?.failure?.message?.includes("another registration names this exact broker address") === true, shown(setup));
+    check("public setup retains the named reservation in the conflict diagnostic", setup.receipt?.result?.startup?.failure?.message?.includes(reservation) === true, shown(setup));
     const plain = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", "setup-smoke", "--project", root, "--space", "refused", "--start", "--detach", "--yes", "--plain"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
-    check("the human setup report names the classified conflict", plain.status === 4 && /Cause:?\s+CONFLICT/.test(plain.stdout) && plain.stdout.includes("another registration names this exact broker address"), plain.stdout);
+    check("the human setup report names the reservation and conflict code", plain.status === 4 && /Cause:?\s+CONFLICT/.test(plain.stdout) && plain.stdout.includes(reservation), plain.stdout);
     check("the human setup report distinguishes a confirmed refusal from an unknown command", plain.stdout.includes("Command refused") && !plain.stdout.includes("Command outcome unconfirmed"), plain.stdout);
     delete env.NODE_OPTIONS;
 
@@ -216,7 +295,7 @@ try {
   // attempt on that address is not mistaken for a request to stop a shared broker.
   run(home, "space", "forget", "held");
   for (const root of active.reverse()) {
-    const stopped = run(root, "down", "--yes");
+    const stopped = invoke(root, "down", "--yes");
     if (stopped.status !== 0) throw new Error(`cleanup did not confirm the owned stack stopped: ${JSON.stringify(shown(stopped))}`);
   }
   if (unconfirmed.size) throw new Error(`retained uncertain startup state at ${home}: ${[...unconfirmed].join(", ")}`);

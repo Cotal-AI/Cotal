@@ -6,13 +6,13 @@
  *  definitions, their instance records and the registration naming the folder are removed, so the
  *  space can start in another folder. */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, findMesh, getCurrent, identityRecord, isCommandFailure, loadMeshes, localMeshesForRoot, loopbackListeners, oneLine, presentationOf, processesNaming,
-  readProcessCommand, recordOperationSpace, removeMeshesByRoot, renderReport, writeResult, type Report,
+  preparedRootRemedy, projectRootProblem, projectRootProblemText, readProcessCommand, recordOperationSpace, removeMesh, removeMeshesByRoot, renderReport, writeResult, type MeshEntry, type Report,
 } from "@cotal-ai/workspace";
 import * as prompts from "../lib/prompts.js";
 import { cotalRoot } from "../lib/paths.js";
@@ -22,7 +22,7 @@ import { observeServiceProcess, serviceInstances, serviceInstanceStore, type Ser
 import { assertNoServiceUnitAttempts, pruneEmptyServiceSpace, removeInstanceSidecars, removeServiceLogs } from "../lib/service-process.js";
 import { removeCustodyCapability } from "../lib/service-custody-win32.js";
 import { refuseRecordedSupervisor } from "../lib/service-supervision.js";
-import { STACK_DEFINITION, goneStackRoot, processGone, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
+import { STACK_DEFINITION, knownStackRecoveryHost, stackRecoveryHost, goneStackRoot, processGone, runningStackRoles, stackDefinitionsAt, type StackRole } from "../lib/stack-journal.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 /** How long a member has to exit after SIGTERM. The manager first stops its agents by its default policy. */
@@ -31,6 +31,15 @@ const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 interface Member { role: StackRole; definition: ServiceDefinitionSnapshot; instance: ServiceInstanceSnapshot; pid: number | null; live: boolean }
 interface Stopped { role: StackRole; definition: string; instanceId: string; pid: number | null; result: "stopped" | "already-stopped"; signal?: "SIGTERM"; observedAt?: string }
+
+/** A project that denies traversal cannot be treated as gone or used as a retry location. */
+export function refuseInaccessibleDownRoot(root: string, space: string): void {
+  const problem = projectRootProblem(root);
+  if (problem !== "inaccessible") return;
+  throw new CommandFailure("refused", "PERMISSION_DENIED", `the project folder at ${oneLine(root)} ${projectRootProblemText(problem)}; nothing was stopped or changed`, {
+    target: { root, space }, remedy: preparedRootRemedy(space, problem),
+  });
+}
 
 /** The space and gone folder a whole-stack `down` names: `--space`, or else the space registered for
  *  this folder, or else, when this folder holds no `.cotal` of its own, the selected space. Undefined
@@ -49,9 +58,9 @@ export function goneRootDown(values: ParsedArgs["values"]): { space: string; roo
   return space !== undefined && root !== undefined ? { space, root } : undefined;
 }
 
-/** A locally started retained stack whose process records and broker configuration went away. */
-export function goneLegacyRoot(space: string): string | undefined {
-  const mesh = findMesh(space);
+/** A locally started retained stack whose process records and broker configuration went away.
+ *  Use the caller's registration when supplied. Otherwise read the registry strictly. */
+export function goneLegacyRoot(space: string, mesh: MeshEntry | undefined = findMesh(space)): string | undefined {
   if (!mesh || mesh.origin === "manual" || mesh.origin === "catalog") return undefined;
   if (stackDefinitionsAt(space, mesh.root).length) return undefined;
   if (existsSync(mesh.root) && !existsSync(join(mesh.root, ".cotal", "nats"))) return undefined;
@@ -59,10 +68,12 @@ export function goneLegacyRoot(space: string): string | undefined {
 }
 
 /** Find only this account's retained children with exact launch arguments and the registered cwd.
- *  An address alone never authorizes a signal, and a creation pin is rechecked before each stop. */
-export function goneLegacyMembers(space: string, root: string): { role: StackRole; pid: number; token: string }[] {
+ *  An address alone never authorizes a signal, and a creation pin is rechecked before each stop.
+ *  Pass the already-read record when the caller holds it, so another space's damaged record does
+ *  not block the lookup; otherwise the record is read here, as `down` does. */
+export function goneLegacyMembers(space: string, root: string, recorded?: MeshEntry): { role: StackRole; pid: number; token: string }[] {
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "finding a retained stack after its folder is deleted requires Linux process arguments and working directories; nothing was stopped");
-  const mesh = findMesh(space);
+  const mesh = recorded ?? findMesh(space);
   if (!mesh || mesh.root !== root) throw new CommandFailure("refused", "CONFLICT", "the deleted stack's registration changed; nothing was stopped");
   const found = processesNaming("");
   if (found.kind !== "pids") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `could not inspect the deleted stack's processes (${found.why}); its registration was kept`);
@@ -126,9 +137,12 @@ async function goneLegacyDown(space: string, root: string, values: ParsedArgs["v
  *  went with it, and `down --space` stops the stack it left running. Any other refusal as it is. */
 export function goneStackRefusal(failure: CommandFailure): CommandFailure {
   const { space, root } = (failure.target ?? {}) as { space?: unknown; root?: unknown };
-  if (failure.code !== "DEPENDENCY_UNAVAILABLE" || typeof space !== "string" || typeof root !== "string") return failure;
+  if (!["DEPENDENCY_UNAVAILABLE", "TARGET_UNAVAILABLE"].includes(failure.code) || typeof space !== "string" || typeof root !== "string") return failure;
   const gone = goneStackRoot(space);
   if (gone === undefined || canonicalRoot(gone) !== canonicalRoot(root)) return failure;
+  const native = findMesh(space);
+  const nativeRunning = native?.nativeHost !== undefined && native.nativeHost === knownStackRecoveryHost() && native.nativeMembers?.some((member) => assertRecordIdentity(member.process).kind === "match");
+  if (!nativeRunning && runningStackRoles(space).length === 0) return failure;
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `space "${space}" started in ${root}, and that folder is gone with the seed it held, so no credential for its stack can be made here`, {
     target: failure.target, remedy: `stop the stack it left running and free its name with \`cotal down --space ${space} --yes\``,
   });
@@ -231,8 +245,46 @@ function releaseDefinitions(space: string, root: string): string[] {
 export async function goneRootStackDown(space: string, root: string, values: ParsedArgs["values"]): Promise<void> {
   validateGoneRootDownArguments(values);
   recordOperationSpace(space);
-  if (!stackDefinitionsAt(space, root).length) return goneLegacyDown(space, root, values);
+  refuseInaccessibleDownRoot(root, space);
   const presentation = presentationOf(values), target = { space, root };
+  if (!stackDefinitionsAt(space, root).length) {
+    const native = findMesh(space);
+    // Only pre-pin registrations use process discovery. Never fall back around a recorded pin.
+    if (native?.origin !== "up" || (native.nativeHost === undefined && native.nativeMembers === undefined)) return goneLegacyDown(space, root, values);
+    if (native.nativeHost !== stackRecoveryHost()) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the native stack registration does not pin this machine, boot and account; no process was stopped", { target, remedy: "restore the project folder, then stop its stack from the launching machine and account" });
+    const members = native.nativeMembers;
+    if (!members?.length) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the stack's folder is gone and its registration has no creation-pinned members; no process was stopped", { target, remedy: "restore the project folder to its recorded path, then run `cotal down --yes` there" });
+    for (const member of members) {
+      const identity = assertRecordIdentity(member.process).kind;
+      if (identity !== "match" && identity !== "gone" && identity !== "mismatch") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the ${member.role}'s recorded process identity cannot be checked; nothing was stopped`, { target });
+    }
+    const stopped: { role: StackRole; pid: number; result: "stopped" | "already-stopped" }[] = [];
+    if (values["dry-run"] !== true) {
+      if (!values.yes) throw new ConfirmationRequired("stopping the creation-pinned members of a missing folder requires --yes", { target, remedy: `run \`cotal down --space ${space} --yes\`` });
+      for (const member of [...members].sort((a, b) => STOP_ORDER.indexOf(a.role) - STOP_ORDER.indexOf(b.role))) {
+        const before = assertRecordIdentity(member.process).kind;
+        if (before === "gone" || before === "mismatch") {
+          stopped.push({ role: member.role, pid: member.process.pid, result: "already-stopped" });
+          continue;
+        }
+        if (before !== "match") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the ${member.role}'s process identity became unavailable; later members were not stopped`, { target });
+        try { process.kill(member.process.pid, "SIGTERM"); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `SIGTERM to the ${member.role} was not confirmed; later members were not stopped`, { target }); }
+        const deadline = Date.now() + EXIT_WINDOW_MS[member.role];
+        while (assertRecordIdentity(member.process).kind === "match" && Date.now() < deadline) await delay(100);
+        const after = assertRecordIdentity(member.process).kind;
+        if (after !== "gone" && after !== "mismatch") throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the ${member.role}'s exit after SIGTERM was not confirmed; later members were not stopped`, { target });
+        stopped.push({ role: member.role, pid: member.process.pid, result: "stopped" });
+      }
+      removeMesh(space);
+    }
+    const preview = values["dry-run"] === true;
+    const result = preview
+      ? { kind: "gone-root-stack-stop-preview", ...target, members }
+      : { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: [] };
+    writeResult(presentation, { command: "down", target, result, noOp: preview }, () => ({ space, sections: [{ title: values["dry-run"] ? "Missing-folder stack preview" : "Stack stopped; its folder was gone", blocks: [{ kind: "lines", lines: [root, ...members.map((member) => `${member.role}: pid ${member.process.pid}`)] }] }] }));
+    return;
+  }
   const members = readMembers(space, root);
   if (values["dry-run"] === true) {
     writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop-preview", ...target, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, pid: member.pid, process: member.live ? "running" : "gone" })) }, noOp: true }, () => {
@@ -264,17 +316,26 @@ export async function goneRootStackDown(space: string, root: string, values: Par
   catch (error) {
     throw new CommandFailure("partial", "OPERATION_PARTIAL", `every member stopped, but removing the saved definitions or the registration did not confirm (${error instanceof Error ? error.message : String(error)})`, { target, changed: stopped, remedy: `run \`cotal down --space ${space} --yes\` again` });
   }
-  writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: released } }, (): Report => ({ space, sections: [
-    { title: "Stack stopped; its folder was gone", blocks: [
-      { kind: "fields", rows: [["Space", space], ["Folder", `${root} · gone`]] },
-      { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "pid", label: "Pid" }, { key: "state", label: "Result" }], rows: stopped.map((row) => ({ role: row.role, instance: row.instanceId, pid: row.pid === null ? "none" : String(row.pid), state: { text: row.result === "stopped" ? "stopped by SIGTERM" : "already stopped", tone: "ok" } })) },
-      { kind: "lines", lines: [`Removed the saved definitions ${released.join(", ") || "(none were saved)"} and the registration naming the folder.${existsSync(root) ? ` The broker wrote ${root} back while it ran; that folder was left as it is.` : ""}`] },
-    ] },
-    // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
-    // where it is now keeps its history, as `up` run there names.
-    { title: "Next", blocks: [{ kind: "commands", items: [
-      { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
-      { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
-    ] }] },
-  ] }));
+  writeResult(presentation, { command: "down", target, result: { kind: "gone-root-stack-stop", ...target, members: stopped, releasedDefinitions: released } }, (): Report => {
+    let entry: Stats | undefined;
+    try { entry = lstatSync(root, { throwIfNoEntry: false }); }
+    catch { /* An unreadable path does not change the stop result. */ }
+    const folder = !entry ? "gone" : entry.isFile() ? "occupied by a file" : entry.isDirectory() ? "directory present" : "not a directory";
+    const left = entry?.isFile()
+      ? " A file occupies the recorded project path. It was left untouched. To restart at that path, move the file aside and restore the original project folder."
+      : entry ? " The entry at the recorded project path was left untouched." : "";
+    return { space, sections: [
+      { title: "Stack stopped; its folder was gone", blocks: [
+        { kind: "fields", rows: [["Space", space], ["Folder", `${root} · ${folder}`]] },
+        { kind: "table", columns: [{ key: "role", label: "Member" }, { key: "instance", label: "Full instance" }, { key: "pid", label: "Pid" }, { key: "state", label: "Result" }], rows: stopped.map((row) => ({ role: row.role, instance: row.instanceId, pid: row.pid === null ? "none" : String(row.pid), state: { text: row.result === "stopped" ? "stopped by SIGTERM" : "already stopped", tone: "ok" } })) },
+        { kind: "lines", lines: [`Removed the saved definitions ${released.join(", ") || "(none were saved)"} and the registration naming the folder.${left}`] },
+      ] },
+      // A folder moved or renamed with its records keeps the journal, store and trust, and adopting them
+      // where it is now keeps its history, as `up` run there names.
+      { title: "Next", blocks: [{ kind: "commands", items: [
+        { command: `cotal space create ${space} --adopt --root <folder>`, description: "If the folder was moved or renamed, adopt its records where it is now, which keeps its history, then run `cotal up` there" },
+        { command: `cotal space create ${space}`, description: "Otherwise prepare the space in another folder, then run `cotal up` there" },
+      ] }] },
+    ] };
+  });
 }

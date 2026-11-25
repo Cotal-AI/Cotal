@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, cotalToolSpecs, EventWal } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, cotalToolSpecs, DeltaMergedSource, EventWal } from "@cotal-ai/connector-core";
 import { z } from "zod";
 import { jcodeConnector, listJcodeModels, JCODE_READINESS_TIMEOUT_MS } from "../src/index.js";
 import { createJcodeMapper } from "../src/agui-map.js";
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
 const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
-import { initializeJcodeEventBoundary, JcodeJournalSource } from "../src/agui-source.js";
+import { initializeJcodeEventBoundary, JcodeJournalSource, positionedJcodeJournalSource } from "../src/agui-source.js";
 
 let pass = 0;
 let fail = 0;
@@ -34,15 +34,6 @@ const throws = (name: string, fn: () => unknown, match: RegExp): void => {
     fail++;
     console.error(`  ✗ ${name}: ${(error as Error).message}`);
   }
-};
-const catalogRefusesWithoutHome = (name: string, home: string, fn: () => unknown, match: RegExp): void => {
-  let message = "";
-  try {
-    fn();
-  } catch (error) {
-    message = (error as Error).message;
-  }
-  check(name, match.test(message) && !message.includes(home), message);
 };
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-jcodeargs-"));
@@ -74,6 +65,7 @@ try {
   const here = dirname(fileURLToPath(import.meta.url));
   const extensionSrc = readFileSync(join(here, "../src/extension.ts"), "utf8");
   const hostSrc = readFileSync(join(here, "../src/host.ts"), "utf8");
+  const hostSupportSrc = readFileSync(join(here, "../src/host-support.ts"), "utf8");
   check(
     "the manager window is the exported bound, not a second literal",
     /readinessTimeoutMs:\s*JCODE_READINESS_TIMEOUT_MS/.test(extensionSrc) && !/\b180_000\b/.test(extensionSrc),
@@ -81,47 +73,46 @@ try {
   );
   check(
     "the host default bound is that same export, not a second literal",
-    /return JCODE_READINESS_TIMEOUT_MS/.test(hostSrc) && !/\b180_000\b/.test(hostSrc),
-    hostSrc.match(/readinessTurnTimeoutMs[\s\S]{0,200}/)?.[0],
+    /return JCODE_READINESS_TIMEOUT_MS/.test(hostSupportSrc) && !/\b180_000\b/.test(hostSrc + hostSupportSrc),
+    hostSupportSrc.match(/readinessTurnTimeoutMs[\s\S]{0,200}/)?.[0],
   );
-  check("feeds the declared catalog into the connector hook", jcodeConnector.listModels === listJcodeModels);
-  const realJcodeHome = process.env.JCODE_HOME;
-  const catalogHome = join(dir, "catalog-home");
-  mkdirSync(catalogHome);
-  writeFileSync(
-    join(catalogHome, "config.toml"),
-    `[providers.cliproxy]\nmodel_catalog = true\n\n[[providers.cliproxy.models]]\nid = "opus-5"\nreasoning_efforts = ["low", "max"]\n\n[[providers.cliproxy.models]]\nid = "plain"\n`,
+  check("feeds the jcode binary's catalog into the connector hook", jcodeConnector.listModels === listJcodeModels);
+  // Stand-ins for the jcode binary, each a script that records how it was run. The recording is a
+  // real `jcode model list --json` from jcode 0.99.1 with two named OpenAI-compatible profiles.
+  const recording = join(here, "fixtures/jcode-model-list.json");
+  const fakeJcode = (name: string, body: string): string => {
+    const path = join(dir, name);
+    writeFileSync(path, `#!/bin/sh\necho "$*" > '${path}.argv'\nenv > '${path}.env'\n${body}\n`, { mode: 0o700 });
+    return path;
+  };
+  const listFrom = (bin: string) => listJcodeModels({ resolvedBinaries: { jcode: bin } });
+  const rejection = async (catalog: Promise<unknown>): Promise<string> => catalog.then(() => "", (error: Error) => error.message);
+  const listing = fakeJcode("jcode-lists", `cat '${recording}'`);
+  const catalog = await listFrom(listing);
+  const byId = new Map(catalog.models.map((model) => [model.id, model]));
+  check("runs the binary a spawn will run as `jcode model list --json --no-update`", readFileSync(`${listing}.argv`, "utf8").trim() === "model list --json --no-update");
+  const listingEnv = readFileSync(`${listing}.env`, "utf8");
+  check("runs jcode in the environment a seat's host gets", listingEnv.includes(`HOME=${process.env.HOME}\n`) && !listingEnv.includes("UNRELATED_JCODE_ENV_CANARY"));
+  check("names the binary as the catalog source", catalog.source === "jcode model list --json", catalog.source);
+  check(
+    "lists every model jcode reports with an available route, in jcode's order",
+    catalog.models.length === 183 && catalog.models.slice(0, 3).map((model) => model.id).join(",") === "gpt-5.6-pro[web],minimax-m2.7,kimi-k2.5",
+    catalog.models.slice(0, 3),
   );
-  process.env.JCODE_HOME = catalogHome;
-  try {
-    rmSync(join(catalogHome, "config.toml"));
-    catalogRefusesWithoutHome("unreadable catalog failure hides the Jcode home", catalogHome, () => listJcodeModels(), /could not read Jcode config: unreadable \(ENOENT\)/);
-    writeFileSync(join(catalogHome, "config.toml"), `this = [is not valid TOML`);
-    catalogRefusesWithoutHome("malformed TOML failure hides the Jcode home", catalogHome, () => listJcodeModels(), /could not parse Jcode config: malformed TOML/);
-    writeFileSync(join(catalogHome, "config.toml"), `unrelated = true\n`);
-    catalogRefusesWithoutHome("missing providers failure hides the Jcode home", catalogHome, () => listJcodeModels(), /has no \[providers\] table/);
-    writeFileSync(
-      join(catalogHome, "config.toml"),
-      `[providers.cliproxy]\nmodel_catalog = true\n\n[[providers.cliproxy.models]]\nid = "opus-5"\nreasoning_efforts = ["low", "max"]\n\n[[providers.cliproxy.models]]\nid = "plain"\n`,
-    );
-    const catalog = listJcodeModels();
-    check("exposes Jcode's declared config catalog", catalog.models.map((m) => m.id).join(",") === "opus-5,plain", catalog);
-    check("attributes every model to its declared provider", catalog.models.every((m) => m.provider === "cliproxy"), catalog);
-    check("labels declared reasoning efforts as non-authoritative", catalog.models[0]?.variants?.map((v) => `${v.name}:${v.options?.authoritative}`).join(",") === "low:false,max:false", catalog.models[0]);
-    check("names the declared config source without duplicating the per-tier caveat", catalog.source === "declared Jcode config", catalog.source);
-
-    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = false\n`);
-    catalogRefusesWithoutHome("no enabled provider failure hides the Jcode home", catalogHome, () => listJcodeModels(), /no provider with model_catalog = true/);
-    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\n`);
-    throws("fails loud when an enabled provider declares no model entries", () => listJcodeModels(), /has no \[\[providers\.cliproxy\.models\]\] entries/);
-    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\nmodels = []\n`);
-    catalogRefusesWithoutHome("empty enabled catalog failure hides the Jcode home", catalogHome, () => listJcodeModels(), /enabled 1 provider\(s\).*declared no models/);
-    writeFileSync(join(catalogHome, "config.toml"), `[providers.cliproxy]\nmodel_catalog = true\n[[providers.cliproxy.models]]\nid = "broken"\nreasoning_efforts = "high"\n`);
-    throws("fails loud on malformed declared effort metadata", () => listJcodeModels(), /reasoning_efforts must be an array/);
-  } finally {
-    if (realJcodeHome === undefined) delete process.env.JCODE_HOME;
-    else process.env.JCODE_HOME = realJcodeHome;
-  }
+  check("drops a model whose every route jcode reports unavailable", !byId.has("claude-opus-5-5") && !byId.has("gpt-6.1-sol"));
+  check("attributes a model to jcode's selected provider when that provider carries it", byId.get("gpt-5.4")?.provider === "fakeprov", byId.get("gpt-5.4"));
+  check("attributes a model to the only provider that carries it", byId.get("fake-gamma")?.provider === "fakeprov2", byId.get("fake-gamma"));
+  check("leaves a model unattributed when several other providers carry it", byId.has("glm-4.7") && byId.get("glm-4.7")?.provider === undefined, byId.get("glm-4.7"));
+  check("offers no effort variants, because jcode reports none per model", catalog.models.every((model) => model.variants === undefined));
+  const loggedOut = fakeJcode("jcode-logged-out", `cat > /dev/null\necho "No credentials found. Let's log in!" >&2\nprintf "Enter 1-52, provider name, or Enter=skip: Error: Login skipped. Run \\\`jcode login\\\` when you're ready to authenticate.\\n" >&2\nexit 1`);
+  const loggedOutMessage = await rejection(listFrom(loggedOut));
+  check(
+    "ends stdin so jcode's login prompt exits, and names jcode's own reason",
+    loggedOutMessage === "jcode model list failed: Error: Login skipped. Run `jcode login` when you're ready to authenticate.",
+    loggedOutMessage,
+  );
+  const unexpected = await rejection(listFrom(fakeJcode("jcode-unexpected", `echo '{"provider":"p","models":"m","routes":[]}'`)));
+  check("refuses output that is not jcode's model list", unexpected === "jcode model list --json printed an unexpected shape", unexpected);
   check("forwards mesh identity", base.env?.COTAL_SPACE === "space" && base.env?.COTAL_NAME === "seat");
   check("pins private state to the launch directory", base.env?.COTAL_JCODE_HOME === process.cwd());
   check("drops ordinary operator env unless explicitly allowed", base.env?.UNRELATED_JCODE_ENV_CANARY === undefined);
@@ -228,7 +219,7 @@ try {
     ] },
   };
   const mapper = createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-1", now: () => 7 });
-  const mapped = unitOf(mapper.map(mapperRecord));
+  const mapped = unitOf(mapper.map({ harness: mapperRecord }));
   check(
     "maps durable Jcode message blocks into one native AG-UI run",
     mapped?.runId === "run-1" &&
@@ -239,9 +230,9 @@ try {
   mapper.forgetOpenRun("run-1");
   check(
     "a closed Jcode run opens a fresh run for later durable output",
-    unitOf(mapper.map({ cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } }))?.events[0]?.type === "RUN_STARTED",
+    unitOf(mapper.map({ harness: { cursor: "journal:cursor:2", record: { append_messages: [{ role: "assistant", content: [{ type: "text", text: "next" }] }] } } }))?.events[0]?.type === "RUN_STARTED",
   );
-  const restartedMapped = unitOf(createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map(mapperRecord));
+  const restartedMapped = unitOf(createJcodeMapper({ threadId: "session-1", mintRunId: () => "run-2", now: () => 8 }).map({ harness: mapperRecord }));
   const messageIds = (result: typeof mapped) => result?.events.flatMap((event) => "messageId" in event ? [event.messageId] : []) ?? [];
   check(
     "durable Jcode record positions keep message ids stable across mapper restarts",
@@ -255,15 +246,18 @@ try {
     { role: "user", content: [{ type: "tool_result", tool_use_id: "orientation-1", content: "ready" }] },
   ] })}\n`);
   const wal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
-  const boundary = await initializeJcodeEventBoundary(journal, wal);
+  const deltaPath = join(dir, "restart.deltas.jsonl");
+  writeFileSync(deltaPath, "", { mode: 0o600 });
+  const merged = new DeltaMergedSource(positionedJcodeJournalSource(new JcodeJournalSource(journal)), deltaPath);
+  const boundary = await initializeJcodeEventBoundary(journal, wal, merged);
   appendFileSync(journal, `${JSON.stringify({ append_messages: [{ role: "assistant", content: [{ type: "text", text: "requested answer" }] }] })}\n`);
   const restartedWal = await EventWal.open(walPath, { space: "space", threadId: "session-restart", principal: "owner:actor", subjectMayExist: false });
-  const acknowledged = await initializeJcodeEventBoundary(journal, restartedWal);
+  const acknowledged = await initializeJcodeEventBoundary(journal, restartedWal, merged);
   const source = new JcodeJournalSource(journal);
-  const recovered = await source.read(acknowledged);
+  const recovered = await source.read(merged.harnessOf(acknowledged));
   const restartFrames = recovered.records.flatMap((record) =>
     unitOf(createJcodeMapper({ threadId: "session-restart", mintRunId: () => "run-requested", now: () => 9 })
-      .map({ cursor: record.cursor, record: record.value }))?.events.map((event) => event.type) ?? []
+      .map({ harness: { cursor: record.cursor, record: record.value } }))?.events.map((event) => event.type) ?? []
   );
   check(
     "the persisted Jcode boundary excludes readiness and replays a post-boundary record after restart",

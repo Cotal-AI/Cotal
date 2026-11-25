@@ -34,7 +34,7 @@ async function fixture(count = 2) {
   return { dirs, manifests, cleanup };
 }
 
-test('real public metadata plus 48 or 72 original archives, explicit recovery selectors and controlled latest', { timeout: 180000 }, async t => {
+test('real public metadata plus 50 or 75 original archives, explicit recovery selectors and controlled latest', { timeout: 180000 }, async t => {
   const { dirs, manifests, cleanup } = await fixture(3);
   // The composed registry deliberately refuses local upstreams. This is a real
   // public npm metadata test, not an offline network substitute or native proof.

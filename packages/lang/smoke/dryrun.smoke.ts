@@ -125,6 +125,36 @@ const realMs = Date.now() - realStart;
   ok("and an unscripted effect still throws: that dry run did not complete", (gap as { code?: string })?.code === "L6001", String(gap).slice(0, 80));
 }
 
+{
+  const source = `
+try {
+  await race({ a: () => log("branch a"), b: () => log("branch b") }, { name: "first" });
+} catch (fault) {
+  log(fault.code, fault.kind, fault.message);
+}
+`;
+  const report = await dryRun(source, { faults: [{ at: "race:first#0", kind: "scripted", message: "race refused" }] });
+  ok("a short race key targets the race even when all branches are pure",
+    JSON.stringify(report.log.map((line) => line.values)) === '[["L4002","scripted","race refused"]]', report.log);
+  ok("a caught race fault is recorded on the race itself",
+    report.effects.length === 1 && report.effects[0]?.step === "/race:first#0" && report.effects[0].status === "failed", report.effects);
+}
+
+{
+  const source = `
+const seats = [{ id: "missing-first" }, { id: "missing-second" }];
+await fanOut(seats, async (seat) => { return await spawn(seat.id, { name: "member" }); }, { name: "seats" });
+`;
+  const step = "/fanOut:seats#0";
+  const message = "test agent unavailable";
+  const outcome = await dryRunOutcome(source, { faults: [{ at: step, kind: "unavailable", code: "L4002", message }] });
+  ok("a scripted fan-out fault is reported with its code and message",
+    "fault" in outcome && outcome.fault.code === "L4002" && outcome.fault.message === message, outcome.effects);
+  ok("the fan-out itself fails without running either branch",
+    outcome.effects.length === 1 && outcome.effects[0]?.step === step && outcome.effects[0].status === "failed" &&
+      outcome.agents.length === 0, outcome.effects);
+}
+
 // ---- 4) the plan is the run: checked against a real execution, not against an expectation --------
 
 /**

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
@@ -67,8 +67,8 @@ if (process.platform !== "linux") {
   const loader = fileURLToPath(new URL("../../../node_modules/tsx/dist/loader.mjs", import.meta.url));
   const entry = fileURLToPath(new URL("./join-user-entry.fixture.ts", import.meta.url));
   const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
-  function launch(values: Record<string, unknown>): Worker {
-    const command = [process.execPath, "--import", loader, entry].map(quote).join(" ");
+  function launch(values: Record<string, unknown>, stdout?: string): Worker {
+    const command = [process.execPath, "--import", loader, entry].map(quote).join(" ") + (stdout ? ` > ${quote(stdout)}` : "");
     const child = spawn("script", ["-qefc", command, "/dev/null"], { cwd: root, env: { ...env, JOIN_VALUES: JSON.stringify(values) }, stdio: ["pipe", "pipe", "pipe"] });
     const worker: Worker = { child, output: "", closed: false };
     child.stdout.on("data", (b: Buffer) => { worker.output += b.toString(); });
@@ -87,6 +87,14 @@ if (process.platform !== "linux") {
     const sentinel = join(stateDir, "sentinel.creds");
     writeFileSync(sentinel, a.sentinelCreds, { mode: 0o600 });
     recordMesh({ space: a.space, server: fx.servers, root, mode: "user", origin: "manual", policy: { events: "required" }, userAuth: { provider: "cotal", remote: true, idp: { url: `${origin}/api/auth`, issuer: origin, audience: origin }, endpoints: { url: service.publicUrl! }, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });
+    for (const [flag, value] of [["expires-in", "60"], ["expires-at", String(Math.floor(Date.now() / 1000) + 60)]] as const) {
+      const expiry = launch({ space: a.space, [flag]: value });
+      const closed = await until(() => expiry.closed);
+      check(`user join without login refuses --${flag} as usage: ${expiry.output}`, closed &&
+        expiry.code === 1 && /USAGE_INVALID/.test(expiry.output) && /drop the flag/.test(expiry.output) && !/cotal login/.test(expiry.output));
+    }
+    const unsigned = launch({ space: a.space });
+    check("user join without expiry still requires login", await until(() => unsigned.closed) && unsigned.code === 2 && /AUTH_REQUIRED/.test(unsigned.output));
     saveIdpSession(home, `${origin}/api/auth`, { token: "join-user-private-session", expiresAt: Math.floor(Date.now() / 1000) + 600, sub: "human" });
     prov = new CotalEndpoint({ space: a.space, servers: fx.servers, creds, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { name: "provisioner", kind: "endpoint" } });
     prov.on("error", () => {});
@@ -141,6 +149,16 @@ if (process.platform !== "linux") {
     human.child.stdin.write("/quit\n");
     check("quit drains the resident session", await until(() => human.closed));
     loginRevoked = false;
+    const transcript = join(fx.dir, "join.log");
+    const mixed = launch({ space: a.space, name: "mixed-join" }, transcript);
+    check("the prompt stays on the terminal with stdout redirected", await until(() => mixed.output.includes("mixed-join> ")));
+    mixed.child.stdin.write("/who\n");
+    check("the first redirected prompt accepts a command", await until(() => readFileSync(transcript, "utf8").includes("Roster:")));
+    await sender.multicast("redirected-channel-post", { channel: "general" });
+    check("the redirected transcript receives the channel post", await until(() => readFileSync(transcript, "utf8").includes(": redirected-channel-post")));
+    mixed.child.stdin.write("/quit\n");
+    check("redirected join stays interactive and exits cleanly", await until(() => mixed.closed) && mixed.code === 0);
+    check("the transcript contains no cursor controls or prompt", !/\x1b|mixed-join> /.test(readFileSync(transcript, "utf8")));
     const trusted = findMesh(a.space)!;
     const { policy: _policy, ...unrestricted } = trusted;
     recordMesh({ ...unrestricted, policyCheckedAt: new Date().toISOString() });

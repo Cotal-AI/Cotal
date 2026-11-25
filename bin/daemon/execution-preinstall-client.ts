@@ -11,7 +11,8 @@ export interface ExecutionPreinstallReceipt {
   readonly installedEntry: string;
   readonly daemon?: { pid: number; start: string };
   readonly hostedSpaces: readonly string[];
-  readonly occupied: number | null;
+  /** The count released updaters validate: the admission's, or 0 when the admission's is unknown. */
+  readonly occupied: number;
   readonly admission: UpdateAdmission;
 }
 
@@ -48,7 +49,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   const receipt = JSON.parse(receipts[0]!.slice("COTAL_PREINSTALL_RESULT ".length)) as ExecutionPreinstallReceipt;
   if (receipt.v !== 1 || receipt.nonce !== request.nonce || receipt.installedEntry !== installedEntry ||
       !Array.isArray(receipt.hostedSpaces) || receipt.hostedSpaces.some(space => typeof space !== "string") ||
-      !validUpdateAdmission(receipt.admission) || receipt.occupied !== receipt.admission.occupied || JSON.stringify(receipt.hostedSpaces) !== JSON.stringify(receipt.admission.hostedSpaces) ||
+      !validUpdateAdmission(receipt.admission) || receipt.occupied !== (receipt.admission.occupied ?? 0) || JSON.stringify(receipt.hostedSpaces) !== JSON.stringify(receipt.admission.hostedSpaces) ||
       receipt.daemon !== undefined && (!Number.isSafeInteger(receipt.daemon.pid) || receipt.daemon.pid <= 0 || typeof receipt.daemon.start !== "string" || !receipt.daemon.start))
     throw new Error("target pre-install checks returned invalid evidence");
   return receipt;

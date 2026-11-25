@@ -32,8 +32,8 @@ export async function prepareOtherHomeAuth(context) {
   const other = { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.data'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), TMPDIR: join(home, 'tmp') };
   delete other.COTAL_SPACE; delete other.COTAL_CREDS; delete other.COTAL_SERVER; delete other.COTAL_SERVERS;
   const scope = { env: other, cwd: project }, updater = { env, cwd: context.project };
-  const run = (label, argv) => call(label, process.execPath, [cli, ...argv], undefined, scope);
-  const e = report.otherHomeAuth = { mode: 'second-private-home-static-auth', home, updaterHome: env.HOME, project, space: 'other-home-proof', sourceVersion: report.source, installedRoot: realpathSync(pkg) };
+  const e = report.otherHomeAuth = { mode: 'second-private-home-static-auth', home, updaterHome: env.HOME, project, space: 'other-home-proof', sourceVersion: report.source, installedRoot: realpathSync(pkg), nodePath: process.execPath };
+  const run = (label, argv) => call(label, e.nodePath, [cli, ...argv], undefined, scope);
   let started = false, startupAttempted = false;
   const cleanup = async () => {
     if (!started) {
@@ -88,7 +88,7 @@ export async function prepareOtherHomeAuth(context) {
       assert.deepEqual(connectorsBeforeReads, e.before.connectorGraph);
       ok(await run('other home Manager after', ['ps', '--space', e.space, '--json']));
       e.after = await snapshot();
-      const assertions = verifyOtherHomeAuthEvidence({ report, cell: { otherHomeAuth: true, platform: process.platform, sourceVersion: report.source }, requireCleanup: false });
+      const assertions = verifyOtherHomeAuthEvidence({ report, cell: { otherHomeAuth: true, platform: process.platform, sourceVersion: report.source }, requireCleanup: false, expectedNodePath: process.execPath });
       for (const [name, passed] of Object.entries(assertions)) if (name !== 'other-home-cleanup') context.check(name, passed, { space: e.space, instance: e.before.instanceId });
     },
   });

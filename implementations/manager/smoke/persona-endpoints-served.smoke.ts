@@ -411,7 +411,7 @@ try {
   const other = classInstance.instanceId;
   // The endpoint's two class caches: the full discovery handle a describe stores, and the
   // command-specific handle an unpinned invoke stores. A pinned call reads and writes neither.
-  const caches = helperEp as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }>; resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string } }>> };
+  const caches = (helperEp as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string } }>; resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string } }>> } }).controlPlane;
   const cached = () => ({ full: caches.resolvedServices.get(ORDERS)?.responder.instanceId, list: caches.resolvedCommandServices.get(ORDERS)?.get("list")?.responder.instanceId });
   const refusedByBroker = (text: string) => /no caller grant|permission-denied|REFUSED BY THE BROKER/.test(text);
 

@@ -37,6 +37,10 @@ This scaffold registers the connector but refuses every launch until you impleme
 For a complete implementation, read the [OpenCode connector](../extensions/connector-opencode/src/extension.ts).
 
 In `buildLaunch(opts)`, return a `LaunchSpec` containing the child command, arguments, and extra environment variables.
+Set `supportsLaunchValidation: true` if `buildLaunch` can validate arguments without writing files or changing session state.
+When `opts.validateOnly` is true, run the same argument checks but create no launch files or session state.
+Return `{ command: "", args: [] }` after validation. The CLI uses this mode before provisioning
+and when previewing a direct launch. The returned spec is not executed.
 The resulting process must connect to the broker with the supplied identity and expose the mesh integration inside the agent application.
 Starting an ordinary application process alone does not join it to the mesh.
 
@@ -60,6 +64,15 @@ Declare only the features your connector implements:
 - Set `supportsPrompt`, `supportsModelVariant`, or `supportsResume` only when the application can honor that request.
   Unsupported requests are refused before provisioning.
   Resume creates a new session from the source transcript and leaves the source unchanged.
+- Set `supportsAskPermissions` when the connector can launch the application in its mode that asks before it uses a tool.
+  The launch then carries `askPermissions: true`, and the session reads `config.askPermissions` from its launch material.
+  Serve the application's prompts on the agent endpoint and declare `prompts` as well, so a client can answer them.
+- Set `supportsReasoningEvents` when the connector's event mapper can publish the model's reasoning as `REASONING_*` events.
+  The session reads `config.reasoningEvents` and publishes reasoning only when it is true.
+- Set `interruptKey` to the bytes of the key that stops the application's live turn, such as `"\x1b"` for Escape.
+  The manager's `interrupt` command writes it into the seat's terminal. Declare it only after a live check shows the key ending a turn.
+- Declare nothing for the agent endpoint's `interrupt`, `turn`, images and `usage`.
+  Each seat's presence says which of them it serves now, derived from the dispatcher its session hands `MeshAgent` ([agent commands](connector-runtime-reference.mdx#agent-commands)).
 - Use `supportsSessionContinuation` for recovery of the same meshed session after a process restart.
   Use `supportsSessionReopen` only when an existing named session can be reopened without creating a replacement.
   Set `supportsFreshStart` when a launch without a session handle creates a new session.
@@ -69,6 +82,8 @@ Declare only the features your connector implements:
 - List external executables in `requires` so preflight can report a missing command before launch.
 - Implement `listModels` if the application provides a model catalog.
   If an installation cannot provide one, return a catalog with `models: []` and an `unavailable` reason.
+  The Manager passes the boot `resolvedBinaries` and the `spawn.env` names a launch would receive as `envAllow`.
+  A read that runs the application builds its environment from them as `buildLaunch` does, so it lists the models a seat reaches.
 - Use `setup` and `pluginRoot` for connector-owned installation support when needed.
   Use `launchHint` to describe what an operator sees after a direct foreground launch.
 - Set a positive safe-integer `readinessTimeoutMs` if bootstrap needs a different bound from the manager's default.
@@ -110,7 +125,8 @@ A refusal before any process starts permits immediate removal.
 On POSIX systems, managed runtimes and direct foreground launches use `reclaimWithChild`.
 It starts a watcher and replaces the shell with the child process.
 The watcher removes the files after the child exits, even if the launcher was killed.
-It retries failed removal every five seconds.
+It looks up `sleep` and `rm` on the system's default utility path and leaves the child's `PATH` unchanged.
+It retries failed removal every five seconds, but exits if it cannot run a utility or sleep fails.
 
 The in-process PTY runtime reports exit to the manager.
 For runtimes without streamed exit events, including tmux, cmux, Orca, and Herdr, the manager also polls for exit proof.
@@ -219,6 +235,13 @@ A client waits at most 1 second from connect for the server's proof. A server dr
 has not sent a proven request within 5 seconds of accept. Once a client has sent its request, a
 missing or unproven reply means the server may have handled it. The hook relay says so whether the
 connection closed, failed, or reached the relay's 2-second deadline. Nothing is sent twice.
+
+A hook entry can mark an event as held with `runHookRelay`'s `holds` option, as the Claude Code hook
+marks `PermissionRequest`. The 2-second deadline still covers the dial and the server's proof of a
+held event, and it ends once the request reached a proven server, so the reply can come whenever
+someone answers. While a handler runs, the server passes it `{ signal }`, which aborts when the hook's
+connection closes. A handler that holds an event uses it to stop waiting for an answer that can no
+longer reach the hook.
 
 A client and a server of different versions refuse each other: the version is in the hello, the
 challenge and every MAC, and nothing is negotiated. A launch whose material carries a key without a

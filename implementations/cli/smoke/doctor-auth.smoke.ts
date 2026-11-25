@@ -30,10 +30,12 @@ import {
   mintLifecycleUid,
   mintMembershipObserverCreds,
   newIdentity,
+  revokeAccountUser,
 } from "@cotal-ai/core";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { agentCredsDir, authDir, isCommandFailure, readRenewalRecord, recordMesh, saveSpaceAuth, spaceMaterialDir, type CommandFailure } from "@cotal-ai/workspace";
 import { doctor } from "../src/commands/doctor.js";
+import { credentialExportStore, recordCredentialExport } from "../src/lib/credential-exports.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -97,6 +99,7 @@ interface Envelope {
   result: {
     findings: number;
     items: Item[];
+    exported: { path: string; state: string; repair: string | null }[];
     repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean; reminted: boolean; reason: string | null }[] };
     renewal: { authority: string | null };
   };
@@ -175,6 +178,21 @@ try {
   // --fix: the daemon files are re-signed offline for their own nkeys; the agent finding stays.
   // The evictor is staged first, as the rotation the finding names would leave it.
   writeFileSync(join(material, "connection-evictor.creds"), sysEvictor, { mode: 0o600 });
+  for (const file of ["membership-observer.creds", "connection-evictor.creds"]) {
+    const path = join(material, file);
+    const before = readFileSync(path);
+    try {
+      for (const malformed of [Buffer.from("-----BEGIN NATS USER JWT-----\neyJ0eXAiOi"), Buffer.from([0xff, 0xfe])]) {
+        writeFileSync(path, malformed);
+        const { envelope, code } = await runDoctor({ json: true });
+        assert.equal(item(envelope!, file)?.state, "unreadable", `${file}: truncated JWT and invalid UTF-8 are per-file findings`);
+        assert.match(item(envelope!, file)?.repair ?? "", /up --rotate-sys/, `${file}: retains system rotation guidance`);
+        assert.ok(envelope!.result.items.length >= 5, "an unreadable system credential does not hide other rows");
+        assert.equal(code, 5, "local findings still fail the diagnosis");
+        assert.deepEqual(readFileSync(path), malformed, "read-only diagnosis leaves the file unchanged");
+      }
+    } finally { writeFileSync(path, before); }
+  }
   {
     const { envelope, code } = await runDoctor({ json: true, fix: true });
     const report = envelope!;
@@ -260,7 +278,9 @@ try {
     assert.match(usage.message, /doctor auth/, "it names doctor auth");
     const unknown = await refusal({ space: "nope" }, ["auth"]);
     assert.equal(unknown.code, "AUTH_REQUIRED", "an unknown --space refuses");
-    assert.equal(unknown.remedy, "run `cotal doctor auth --space nope` in that space's root folder; `cotal space` lists each space's root", "and names a space's root, which cotal space lists");
+    assert.equal(unknown.remedy, 'Unknown space "nope". Run `cotal space` to check the name. For a new local space, run `cotal space create nope` in its project folder, then run `cotal up` there.');
+    const unusable = await refusal({ space: "not a token" }, ["auth"]);
+    assert.equal(unusable.remedy, 'Unknown space "not a token". Run `cotal space` to check the name.', "a name space create refuses is not put in a command");
     // A space registered at another root keeps its trust there: this root reads none of it, and the
     // step names the folder where the same command runs.
     const elsewhere = join(root, "elsewhere");
@@ -269,6 +289,68 @@ try {
     const remote = await refusal({ space: "remote" }, ["auth"]);
     assert.equal(remote.code, "AUTH_REQUIRED", "a --space registered at another root refuses here");
     assert.equal(remote.remedy, `run \`cotal doctor auth --space remote\` in the folder space remote is registered at: ${elsewhere}`, "its step names that root");
+
+    // Legacy export records have no provisioning field. New records preserve it for both
+    // same-key and fresh-key repairs without adding provisioning to legacy files.
+    const exported = join(root, "exported files");
+    mkdirSync(exported, { mode: 0o700 });
+    const exportId = newIdentity();
+    const expiredExport = await mintCreds(auth, exportId, "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 10 });
+    const exportPath = join(exported, "alice's file.creds");
+    writeFileSync(exportPath, expiredExport, { mode: 0o600 });
+    recordCredentialExport(SPACE, { label: "exported", profile: "agent", path: exportPath, root, identity: exportId.id, provisioned: true });
+    const oldPath = join(exported, "old.creds");
+    writeFileSync(oldPath, expiredExport, { mode: 0o600 });
+    recordCredentialExport(SPACE, { label: "old_export", profile: "agent", path: oldPath, root, identity: exportId.id });
+    assert.equal(credentialExportStore(SPACE).list().find((entry) => entry.record.value.path === oldPath)?.record.value.provisioned, undefined, "old export records remain readable without a provisioning field");
+    const exportsReport = (await runDoctor({ json: true })).envelope!;
+    const repair = exportsReport.result.exported.find((entry) => entry.path === exportPath)?.repair ?? "";
+    assert.match(repair, /auth mint exported --provision --identity/, "expired provisioned export repair keeps --provision");
+    assert.ok(repair.includes("alice'\\''s file.creds'"), "repair shell-quotes an apostrophe in the exported path");
+    assert.ok(!exportsReport.result.exported.find((entry) => entry.path === oldPath)?.repair?.includes("--provision"), "legacy records do not infer provisioning");
+    const foreignAuth = await createSpaceAuth("foreign-export");
+    writeFileSync(exportPath, await mintCreds(foreignAuth, exportId, "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 10 }), { mode: 0o600 });
+    const foreignReport = (await runDoctor({ json: true })).envelope!;
+    const foreignRow = foreignReport.result.exported.find((entry) => entry.path === exportPath);
+    assert.equal(foreignRow?.state, "other-account", "changed-account exports ask for a fresh key");
+    assert.match(foreignRow?.repair ?? "", /auth mint exported --provision/, "fresh-key repair keeps --provision too");
+    writeFileSync(exportPath, expiredExport, { mode: 0o600 });
+    const revokedAuth = await revokeAccountUser(auth, exportId.id, Math.floor(Date.now() / 1000));
+    saveSpaceAuth(authDir(root), revokedAuth);
+    const revokedReport = (await runDoctor({ json: true })).envelope!;
+    const revokedRow = revokedReport.result.exported.find((entry) => entry.path === exportPath);
+    assert.equal(revokedRow?.state, "revoked", "revoked exports ask for a new key rather than re-signing it");
+    assert.match(revokedRow?.repair ?? "", /auth mint exported --provision/, "revoked-key repair also keeps --provision");
+    saveSpaceAuth(authDir(root), auth);
+
+    writeFileSync(exportPath, "");
+    const emptyExport = await runDoctor({ json: true });
+    const emptyRow = emptyExport.envelope!.result.exported.find((row) => row.path === exportPath);
+    assert.equal(emptyRow?.state, "unreadable", "the empty exported file stays unreadable");
+    assert.equal(emptyExport.envelope!.outcome, "ok", "the unreadable export leaves the diagnostic outcome unchanged");
+    assert.equal(emptyExport.envelope!.result.findings, 0, "the unreadable export is not a managed finding");
+    assert.equal(emptyExport.code, 0, "the unreadable export leaves exit 0");
+    assert.match(emptyRow?.repair ?? "", /original grants cannot be determined.*Restore the complete credential file.*confirm the intended grants.*`(?:pnpm )?cotal auth mint`.*mint a replacement to a new private path/);
+    assert.doesNotMatch(emptyRow?.repair ?? "", /--(?:identity|allow-subscribe|allow-publish|role)|auth mint exported/);
+    const plainEmptyExport = await runDoctor({ plain: true });
+    assert.equal(plainEmptyExport.code, 0, "the plain report leaves exit 0");
+    assert.ok(plainEmptyExport.text.includes(`exported: ${emptyRow?.repair}`), "plain output includes the same export guidance");
+
+    // #7542: if a root is registered as open even while leftover .cotal/auth files exist on disk,
+    // doctor auth (with or without --fix) reports the open-space no-op rather than Mode: static or CONFLICT.
+    writeFileSync(join(material, "membership-rw.creds"), "", { mode: 0o600 });
+    recordMesh({ space: SPACE, server: "nats://127.0.0.1:8", root, mode: "open", ts: new Date().toISOString(), origin: "up" });
+    const openCases: Record<string, string | boolean>[] = [{ json: true }, { json: true, fix: true }];
+    for (const values of openCases) {
+      const openRun = await runDoctor(values);
+      const openEnv = openRun.envelope as unknown as { outcome: string; result: { space: string | null; credentialScope?: string; mode?: string } };
+      assert.equal(openEnv.outcome, "no-op", "doctor auth on a root registered as open is a no-op");
+      assert.equal(openEnv.result.space, SPACE, "names the open space");
+      assert.equal(openEnv.result.credentialScope, "open-space", "reports open-space scope rather than static mode");
+      assert.ok(openRun.code === undefined || openRun.code === 0, "exits 0");
+    }
+    const openText = await runDoctor({});
+    assert.match(openText.text, /Mode:\s+open, as registered/, "text report shows open, as registered");
     rmSync(elsewhere, { recursive: true });
     for (const fix of [false, true]) {
       const missing = await refusal({ space: "remote", fix }, ["auth"]);

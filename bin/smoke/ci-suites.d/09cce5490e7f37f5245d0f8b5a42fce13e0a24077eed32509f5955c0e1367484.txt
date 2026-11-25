@@ -1,0 +1,2 @@
+# What stopping, exiting and retiring a seat must do, driven through the manager over fake handles.
+smoke:seat-stop-guarantees

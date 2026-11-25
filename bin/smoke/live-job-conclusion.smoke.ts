@@ -12,14 +12,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyLiveConclusion, inspectLiveConclusion } from "../../scripts/live-job-conclusion.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const workflow = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
-let pass = 0, fail = 0;
-function check(name: string, condition: boolean, extra?: unknown): void {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-}
+const { check, finish, passed, failed } = createSuite();
 
 console.log("A. the conclusion classifier separates the three cancellation causes");
 check("a job at the deadline is an explicit self-timeout",
@@ -106,6 +103,7 @@ check("Gate fails unless all six direct needs succeed",
   requiredNeeds.every((n) => gateBody.includes(`[ "\${{ needs.${n}.result }}" = "success" ]`)),
   gateBody);
 
-console.log(`\n${fail === 0 ? "LIVE JOB CONCLUSION SMOKE OK ✅" : "LIVE JOB CONCLUSION SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "LIVE JOB CONCLUSION SMOKE OK ✅" : "LIVE JOB CONCLUSION SMOKE FAILED ❌"}  (${passed()} passed, ${failed()} failed)`);
+console.log(`SUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

@@ -4,6 +4,7 @@ import { IdpSessionRejectedError, withIdpSessionDir } from "@cotal-ai/auth";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { checkDir } from "./endpoint.js";
 import { bindManagerCleanup } from "./manager-cleanup.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 // Reports are observational. Teardown still obtains authority directly after its parent leaves.
 function report(frame: object): void {
@@ -44,7 +45,8 @@ const command: Command = {
       }
     };
     const { "session-directory": _, ...values } = args.values;
-    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true } }));
+    const machineSetup = typeof values.space === "string" ? daemonCommandCopy("setup", home, [["--space", values.space]]) : undefined;
+    await withIdpSessionDir(home, () => stock.run({ ...args, values: { ...values, "machine-parent": true, "machine-setup-command": machineSetup } }));
   },
 };
 registry.register(command);

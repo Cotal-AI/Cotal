@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "an unknown supervise key is skipped",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-shared.ts",
       "find": "      throw new Error(`spawn(${persona}): supervise.${key} is not a restart policy this host enforces; it takes restarts and window, and a policy it cannot enforce is refused rather than ignored`);",
       "replace": "      continue;",
       "expectRed": "an unknown supervise key is refused, never accepted and ignored",
@@ -21,7 +21,7 @@
     },
     {
       "name": "a string restarts is coerced",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-shared.ts",
       "find": "      if (typeof value !== \"number\" || !Number.isInteger(value) || value < 1)\n        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);\n      restarts = value;",
       "replace": "      if (typeof value === \"string\" && /^[0-9]+$/.test(value)) restarts = Number(value);\n      else if (typeof value !== \"number\" || !Number.isInteger(value) || value < 1)\n        throw new Error(`spawn(${persona}): supervise.restarts must be a positive integer, got ${JSON.stringify(value)}`);\n      else restarts = value;",
       "expectRed": "a string restarts is refused",
@@ -29,7 +29,7 @@
     },
     {
       "name": "an omitted window is not the 10m default",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-handler-shared.ts",
       "find": "  return { restarts, windowMs: windowMs ?? parseDuration(\"10m\") };",
       "replace": "  return { restarts, windowMs: windowMs ?? parseDuration(\"1m\") };",
       "expectRed": "an omitted window defaults to 10m",
@@ -37,7 +37,7 @@
     },
     {
       "name": "spawnArgs drops supervise",
-      "file": "implementations/runtime/src/mesh-handler.ts",
+      "file": "implementations/runtime/src/mesh-spawn.ts",
       "find": "    ...(req.supervise !== undefined ? { supervise: readSupervise(req.supervise, req.persona) } : {}),",
       "replace": "    ...(false ? { supervise: readSupervise(req.supervise, req.persona) } : {}),",
       "expectRed": "spawnArgs carries restarts and windowMs",

@@ -125,11 +125,11 @@ try {
   release.resolve();
   const result = await Promise.race([renewalResult.promise, wait(5000).then(() => { throw new Error("Manager renewal did not finish after contention"); })]);
   assert.equal(result.ok, true, `ordinary mint must survive benign contention: ${result.error}`);
-  const installed = manager as unknown as { serviceServe?: { creds?: string } };
+  const installed = manager as unknown as { servePlane: { serviceServe?: { creds?: string }; } };
   const adoptionDeadline = Date.now() + 5000;
-  while (installed.serviceServe?.creds !== renewedServe && Date.now() < adoptionDeadline) await wait(20);
+  while (installed.servePlane.serviceServe?.creds !== renewedServe && Date.now() < adoptionDeadline) await wait(20);
   assert.ok(renewedServe);
-  assert.equal(installed.serviceServe?.creds, renewedServe, "Manager must adopt the renewed serving credential");
+  assert.equal(installed.servePlane.serviceServe?.creds, renewedServe, "Manager must adopt the renewed serving credential");
   record("contention-renewal-adopted");
   // Independent real mint retries with the same held identity and grant, spanning >1 second.
   for (const delay of [0, 1200, 1200]) {

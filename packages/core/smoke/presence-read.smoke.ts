@@ -119,7 +119,7 @@ try {
 
     // The bucket's max_age drops bob's key; a peer an earlier read saw stays on the roster as offline.
     await wait(6_000 + 1_500);
-    const keys = (await lastKvEntries((ada as unknown as { kv: KV }).kv)).map((e) => e.key);
+    const keys = (await lastKvEntries((ada as unknown as { conn: { kv: KV } }).conn.kv)).map((e) => e.key);
     check("control: bob's key has left the bucket", !keys.includes(bob.card.id) && keys.includes(ada.card.id), keys);
     const gone = await ada.readPresence();
     check("a peer whose key left the bucket stays in the roster as offline", byName(gone, "bob")?.status === "offline" && byName(gone, "ada")?.status === "idle", gone.map((p) => [p.card.name, p.status]));
