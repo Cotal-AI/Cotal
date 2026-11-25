@@ -132,6 +132,9 @@ function checkConfigScope(live: string): void {
   const preparedBefore = readFileSync(record);
   const show = () => run(["space", "show", space, "--plain"]);
   const who = () => json(["who", "--space", space]);
+  const startupFlags = ["--open", "--no-manager", "--server", DEAD];
+  const explicitUp = ["up", ...startupFlags, "--root", project];
+  const prepareAdvice = "prepare it with `cotal space create <space> --root <dir>`, then retry with that root";
   const startup = (launcher: string) => `start it with \`${launcher} up\` in ${project}`;
   const recovery = (text: string) => text.includes(`cotal space forget ${space}`) &&
     text.includes(`cotal space create ${space} --root <dir>`) && !text.includes("cotal up");
@@ -152,6 +155,11 @@ function checkConfigScope(live: string): void {
           denied.status === 0 && denied.env?.result?.rootMissing === true &&
             deniedTarget.status === 2 && deniedTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
             deniedTarget.env.error.remedy.includes("restore access") && !deniedTarget.env.error.remedy.includes("cotal up"), [denied, deniedTarget].map(shown));
+        const deniedUp = json(explicitUp);
+        check("explicit up asks to restore access to the project rather than prepare it",
+          deniedUp.status === 2 && deniedUp.env?.error?.code === "TARGET_UNAVAILABLE" && deniedUp.env.target?.root === project &&
+          deniedUp.env.error.message.includes(`${project} could not be accessed`) && deniedUp.env.error.remedy.includes("restore access") &&
+          !deniedUp.env.error.remedy.includes("space create"), shown(deniedUp));
         const deniedDelete = json(["space", "delete", space, "--dry-run"]);
         const asksForAccess = (r: ReturnType<typeof json>, code: string) => r.status === 2 && r.env?.error?.code === code &&
           r.env.error.message.includes(`${project} could not be accessed`) && r.env.error.remedy.includes("restore access") &&
@@ -170,6 +178,10 @@ function checkConfigScope(live: string): void {
       missingTarget.status === 2 && missingTarget.env?.error?.code === "TARGET_UNAVAILABLE" &&
       missingTarget.env.error.message.includes(`${project}, which no longer exists`) && recovery(missingTarget.env.error.remedy),
     [missing, missingTarget].map(shown));
+  const missingExplicit = json(explicitUp);
+  check("explicit up names the missing prepared root and offers recovery",
+    missingExplicit.status === 2 && missingExplicit.env?.error?.code === "TARGET_UNAVAILABLE" &&
+    missingExplicit.env.error.message.includes(`${project} no longer exists`) && recovery(missingExplicit.env.error.remedy), shown(missingExplicit));
   const bareProject = mkdtempSync(join(home, "bare-up-"));
   mkdirSync(join(bareProject, ".cotal"), { mode: 0o700 });
   // If target resolution admits startup, runtime preflight still prevents a launch.
@@ -205,6 +217,25 @@ function checkConfigScope(live: string): void {
   const selected = run(["use", space, "--plain"]);
   check("selecting the preparation does not offer startup at a file", selected.status === 0 && selected.stdout.includes(fileMessage) && recovery(selected.stdout), shown(selected));
   const elsewhere = mkdtempSync(join(home, "elsewhere-"));
+  const unpreparedUp = json(["up", ...startupFlags, "--root", elsewhere]);
+  check("explicit up keeps preparation advice for an existing unprepared directory",
+    unpreparedUp.status === 2 && unpreparedUp.env?.error?.code === "TARGET_UNAVAILABLE" &&
+    unpreparedUp.env.error.remedy === prepareAdvice && readdirSync(elsewhere).length === 0, shown(unpreparedUp));
+  const unrelated = join(elsewhere, "unrelated-file");
+  writeFileSync(unrelated, replacement);
+  const unrelatedUp = json(["up", ...startupFlags, "--root", unrelated]);
+  check("explicit up does not suggest forgetting a different preparation for an unrecorded file",
+    unrelatedUp.status === 2 && unrelatedUp.env?.error?.code === "TARGET_UNAVAILABLE" &&
+    unrelatedUp.env.error.message.includes(`${unrelated} is not a directory`) &&
+    unrelatedUp.env.error.remedy === "pass the path to an existing prepared project directory", shown(unrelatedUp));
+  if (process.platform !== "win32") {
+    const alias = join(elsewhere, "alias-to-obstruction");
+    symlinkSync(project, alias);
+    const aliasUp = json(["up", ...startupFlags, "--root", alias]);
+    check("an unrecorded link to an obstruction does not offer to forget its destination's preparation",
+      aliasUp.status === 2 && aliasUp.env?.error?.code === "TARGET_UNAVAILABLE" &&
+      aliasUp.env.error.message.includes(`${alias} is not a directory`) && !aliasUp.env.error.remedy.includes("space forget"), shown(aliasUp));
+  }
   const create = json(["space", "create", space, "--root", elsewhere]);
   check("preparing the name elsewhere refuses with recovery advice", create.status === 2 && create.env?.error?.code === "CONFLICT" &&
     create.env.error.message.includes(fileMessage) && recovery(create.env.error.remedy), shown(create));
@@ -218,14 +249,18 @@ function checkConfigScope(live: string): void {
   check("auth diagnostics do not direct the operator to the invalid prepared root", diagnostic.status === 2 && diagnostic.env?.error?.code === "AUTH_REQUIRED" &&
     diagnostic.env.error.remedy.includes(fileMessage) && recovery(diagnostic.env.error.remedy), shown(diagnostic));
   const up = ["up", "--foreground", "--no-manager", "--open", ...at];
-  const explicit = run([...up, "--root", project], {}, elsewhere);
-  check("explicit up --root still refuses a file without starting anything", explicit.status === 2 &&
-    explicit.stderr.includes("TARGET_UNAVAILABLE") && explicit.stderr.includes("--root must name an existing prepared local project"), shown(explicit));
+  const explicit = run(["up", "--foreground", ...startupFlags, "--root", project], {}, elsewhere);
+  check("explicit foreground up diagnoses the obstruction and offers recovery without starting anything", explicit.status === 2 && explicit.stdout === "" &&
+    explicit.stderr.includes("TARGET_UNAVAILABLE") && explicit.stderr.includes(`${project} is not a directory`) &&
+    explicit.stderr.includes("no ancestor or other space was selected") && explicit.stderr.includes("move the obstructing entry aside") &&
+    explicit.stderr.includes("restore the original project folder") && explicit.stderr.includes("different directory") &&
+    recovery(explicit.stderr) && !explicit.stderr.includes(prepareAdvice), shown(explicit));
   const namedUp = run(up, {}, elsewhere);
   check("named up from another folder refuses without offering startup at a file", namedUp.status === 2 &&
     namedUp.stderr.includes("TARGET_UNAVAILABLE") && namedUp.stderr.includes(fileMessage) && recovery(namedUp.stderr), shown(namedUp));
   check("inspection and refusal leave the replacement file and prepared record intact",
-    readFileSync(project, "utf8") === replacement && readFileSync(record).equals(preparedBefore) && readdirSync(join(elsewhere, ".cotal")).length === 0);
+    readFileSync(project, "utf8") === replacement && existsSync(join(`${project}.saved`, ".cotal")) &&
+    readFileSync(record).equals(preparedBefore) && readdirSync(join(elsewhere, ".cotal")).length === 0);
   const forgot = json(["space", "forget", space]);
   check("the stale preparation can be forgotten without touching the replacement file",
     forgot.status === 0 && !existsSync(record) && readFileSync(project, "utf8") === replacement, shown(forgot));
