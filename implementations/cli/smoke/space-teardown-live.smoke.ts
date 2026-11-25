@@ -77,7 +77,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -936,6 +936,34 @@ try {
       { restarted: shown(restarted), history: shown(history) });
     const last = cli(root, "down", "--yes", "--json");
     check("the reopened open stack stops cleanly", last.status === 0, shown(last));
+  }
+
+  // A stopped project's original path can be occupied by a file after the folder is moved.
+  {
+    const space = "root-obstructed";
+    const root = folder(space), outside = folder(`${space}-caller`);
+    const created = cli(root, "space", "create", space, "--json");
+    anchor(root);
+    const started = cli(root, "up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--json");
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("the open stack starts and stops before the project moves",
+      created.status === 0 && started.status === 0 && stopped.status === 0, [created, started, stopped].map(shown));
+
+    const moved = join(outside, "original-project");
+    renameSync(root, moved);
+    anchors.delete(root);
+    const contents = "must remain intact\n";
+    writeFileSync(root, contents, { flag: "wx" });
+    anchor(outside);
+    const released = cli(outside, "down", "--space", space, "--yes", "--plain");
+    anchors.delete(outside);
+    check("named down releases the stopped stack and explains how to restore the occupied project path",
+      released.status === 0 && released.stdout.includes(`${root} - occupied by a file`)
+        && released.stdout.includes("already stopped") && released.stdout.includes("Removed the saved definitions stack-broker, stack-manager")
+        && released.stdout.includes("It was left untouched.") && !released.stdout.includes("The broker wrote")
+        && released.stdout.includes("move the file aside and restore the original project folder"), shown(released));
+    check("named down preserves the file and the moved project's journal",
+      lstatSync(root).isFile() && readFileSync(root, "utf8") === contents && existsSync(journalOf(moved)));
   }
 } finally {
   for (const root of roots) if (anchors.has(root)) cli(root, "down", "--yes", "--json");

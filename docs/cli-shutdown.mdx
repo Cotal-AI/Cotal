@@ -241,6 +241,8 @@ and trust with it. Its Next names `cotal space create <space> --adopt --root <fo
 adopts those records where the folder is now and keeps its history, then
 `cotal space create <space>` for another folder. Outside a terminal it needs `--yes`, and
 `--dry-run` lists each member with its pid and process.
+If a file occupies the recorded project path, the stop receipt reports it and leaves it untouched.
+To restart at that path, move the file aside and restore the original project folder.
 `cotal status` marks such a project folder as gone, with `selected.rootGone` set to `true` in its
 JSON, and its Next names `cotal down --space <space> --yes`. From another folder, its connection
 state is `root-gone`, rather than an authentication failure. `cotal space show <space>` also names
