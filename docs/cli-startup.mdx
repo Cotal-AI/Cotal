@@ -243,7 +243,7 @@ terminal can also stop the stack. A controller `up` releases the startup lock be
 completed startup receipt. On a controller stack, the foreground
 `up` sees the completed stop or preserve, prints `Foreground stack released` and exits 0. The same
 applies when `cotal down --space <space> --yes` confirms the stop after the project folder is moved
-or deleted. On a retained stack, a clean broker exit after `down` makes `up` exit 0 without a crash diagnostic.
+or deleted. On a retained stack, a confirmed `down` makes foreground `up` exit 0 without a crash diagnostic, including on Windows. An unexpected broker exit still fails.
 If a controller stack's broker crashes, foreground `up` reports the exit and exits 5. It keeps
 the stack records and releases the foreground hold. Run the repair command printed by `up` to
 restart the same stack. For a broker-only stack, that command includes `--no-manager`.
