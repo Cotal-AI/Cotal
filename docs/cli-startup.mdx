@@ -78,9 +78,10 @@ For a manifest, use `cotal team boot <file> --foreground` in its prepared projec
 to preview terminal custody without starting the stack. The preview retry from `up` keeps `--json`
 or `--plain` when requested. If the filename starts with `-`, the retry puts `./` before it,
 as in `cotal team boot ./-mesh.yaml --foreground --dry-run --json`.
-`team boot` takes its broker address from the manifest and does not accept `--server`. To preview
-the address passed to `up -f --server`, copy the manifest beside the original, set `broker.servers`
-in the copy to that address, and run the foreground dry run with the copy.
+`team boot` takes its broker address from the manifest and does not accept `--server`. To use
+the address passed to `up -f --server`, copy the manifest beside the original and set
+`broker.servers` in the copy to that address. Run `cotal team boot <manifest-copy> --foreground`
+with the copy. Add `--dry-run` to preview it instead.
 
 `--open` with `--service-endpoints` or any public exchange flag refuses `USAGE_INVALID` (exit 1)
 before startup. Remove those flags for an open space, or use them with `--user-auth` instead of `--open`.
