@@ -20,11 +20,12 @@
  *      ALREADY_RUNNING, and that squatter receives 0 bytes from a client, which refuses
  *      PEER_NOT_LOCK_OWNER;
  *  W4  a daemon home whose DACL grants Everyone access is refused DIR_WRONG_MODE.
+ *  W5  built CLI guidance distinguishes a missing home and an uninstalled scheduled task.
  * Cells for another platform are listed as not run on this one, never counted as passed.
  *
  * Run: tsx bin/smoke/daemon-transport.smoke.ts
  */
-import { closeSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -231,8 +232,36 @@ try {
       check("W4 instrument: Everyone was granted read", grant.status === 0, grant.stderr);
       check("W4 a daemon home whose DACL grants Everyone is refused DIR_WRONG_MODE", (await refusalCode(Promise.resolve().then(() => checkDir(d)))) === "DIR_WRONG_MODE");
     }
+    {
+      const home = realpathSync(privateDir("daemon state"));
+      const run = (verb: string, path: string, ...flags: string[]) => spawnSync(process.execPath, [
+        join(import.meta.dirname, "..", "dist", "cotal.js"),
+        "daemon", verb, "--daemon-home", path, "--plain", ...flags,
+      ], { cwd: root, env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 30_000 });
+      for (const verb of ["status", "start"]) {
+        const child = run(verb, home);
+        const text = child.stdout + child.stderr;
+        const matchesCommand = (op: string) => ["cotal", "pnpm cotal"].some((cli) => text.includes(`\`${cli} daemon ${op} --daemon-home "${home}"\``));
+        const code = verb === "status" ? "TARGET_UNAVAILABLE" : "TARGET_NOT_FOUND";
+        check(`W5 ${verb} names install and foreground serve for the same uninstalled home`, child.status === 2 && text.includes(code)
+          && text.includes("no scheduled task installation is recorded") && matchesCommand("install") && matchesCommand("serve")
+          && !text.includes("nothing was removed") && !matchesCommand("start"), text);
+      }
+      writeFileSync(join(home, "service-unit.json"), JSON.stringify({
+        v: 1, mechanism: "scheduled-task", daemonHome: home, unit: "fixture", unitPath: join(home, "service-task.xml"), unitSha256: "0".repeat(64), installedAt: "2026-11-25T00:00:00Z",
+      }));
+      const recorded = run("status", home);
+      const advice = recorded.stdout + recorded.stderr;
+      check("W5 status distinguishes a recorded task without asserting that it is registered", recorded.status === 2
+        && advice.includes("if the recorded task is still registered") && advice.includes(`daemon start --daemon-home "${home}"`)
+        && advice.includes("daemon.log") && advice.includes("Task Scheduler"), advice);
+      const missing = run("install", join(root, "missing daemon state"), "--dry-run");
+      const text = missing.stdout + missing.stderr;
+      check("W5 install preview explains the ACL for a missing Windows home", missing.status === 2 && text.includes("TARGET_NOT_FOUND")
+        && text.includes("Windows ACL") && text.includes("Disable inheritance") && !text.includes("0700"), text);
+    }
   } else {
-    notRun.push("W1", "W2", "W3", "W4");
+    notRun.push("W1", "W2", "W3", "W4", "W5");
   }
 } catch (e) {
   fail++;

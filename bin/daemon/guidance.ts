@@ -16,6 +16,20 @@ export function foreignDaemonUpdateReport(entry: string): string {
   return `machine daemon: the background service belongs to another Cotal installation (${entry}). This update did not start or stop it.`;
 }
 
+export const windowsDaemonHomeAccess = "its owner must be you, SYSTEM or Administrators, and its Windows ACL may grant access only to those accounts";
+
+/** Windows terminals share double quoting for ordinary local paths. For paths with shell-specific
+ *  metacharacters, tell the user to quote the same home in their own shell. */
+export function windowsDaemonRemedy(op: "install" | "serve" | "start", home?: string): string {
+  if (home === undefined) return codeSpan(`cotal daemon ${op}`);
+  if (/[\x00-\x1f"$`%!]|\\\\/.test(home)) return `the daemon's ${codeSpan(op)} subcommand, passing the same ${codeSpan("--daemon-home")} path quoted for your shell`;
+  return codeSpan(`cotal daemon ${op} --daemon-home "${home}"`);
+}
+
+export function windowsDaemonFirstStart(home?: string): string {
+  return `install a scheduled task with ${windowsDaemonRemedy("install", home)}, or run the daemon in this terminal with ${windowsDaemonRemedy("serve", home)}`;
+}
+
 /** A copyable command for this daemon. Tuples keep option values distinct from boolean flags;
  *  leading-hyphen values need `=` even when shell-quoted. Windows copy targets PowerShell. */
 export function daemonCommandCopy(op: string, home?: string, args: readonly (string | readonly [string, string])[] = []): string {
