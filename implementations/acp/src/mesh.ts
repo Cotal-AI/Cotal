@@ -225,6 +225,10 @@ export interface Mesh {
   /** Change the name the seat shows with its agent endpoint's `set-name`, as the seat's owner. Resolves
    *  with the name its card now carries; rejects, naming why, when the space or the agent refuses. */
   rename(seat: SeatRef, name: string): Promise<string>;
+  /** Set the label the seat shows in place of its name with its agent endpoint's `set-label`, as the
+   *  seat's owner. Its name stays. Resolves with the label its card now carries; rejects, naming why,
+   *  when the space or the agent refuses. */
+  relabel(seat: SeatRef, label: string): Promise<string>;
   /** Why the manager would refuse `name` for a new seat on this space, or undefined when it would not. */
   spawnNameError(name: string): string | undefined;
   /** Type `text` into the seat's terminal and press Enter, through its manager's `input` command, so

@@ -6,6 +6,7 @@
  */
 import { hostname } from "node:os";
 import {
+  AGENT_CMD_SET_LABEL,
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
   AGENT_ENDPOINT,
@@ -30,6 +31,7 @@ import {
   type ManagerInstanceListing,
   type Presence,
   type Profile,
+  type SetLabelIO,
   type SetNameIO,
 } from "@cotal-ai/core";
 import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
@@ -479,7 +481,7 @@ function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "
 }
 
 /** The agent list and the commands sent to one agent. */
-function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "spawnNameError"> {
+function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: ReturnType<typeof agentCalls>): Pick<Mesh, "seats" | "despawn" | "interrupt" | "input" | "rename" | "relabel" | "spawnNameError"> {
   const { started, observer, target } = c;
   const { ctx, client, ask, seatCommand, yourManagers } = p;
   return {
@@ -556,6 +558,11 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
     async rename(seat: SeatRef, name: string) {
       if (!started) throw new Error("renaming a running agent needs a space where people sign in, where the agent serves `set-name`");
       return ((await agent.agentCall(seat, AGENT_CMD_SET_NAME, { name })) as SetNameIO).name;
+    },
+
+    async relabel(seat: SeatRef, label: string) {
+      if (!started) throw new Error("labelling a running agent needs a space where people sign in, where the agent serves `set-label`");
+      return ((await agent.agentCall(seat, AGENT_CMD_SET_LABEL, { label })) as SetLabelIO).label;
     },
 
     spawnNameError(name: string) {

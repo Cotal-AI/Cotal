@@ -27,8 +27,8 @@
  *
  * A thread's title is the name its seat shows. It is sent when the thread binds the seat, and again
  * whenever the seat's presence shows another name. Where the client lists its own thread server
- * (`thread-title.ts`), the bridge also sets the client's title there, and a title the person gave the
- * thread in the client since the bridge last saw it renames the seat before the next prompt reaches it.
+ * (`titles.ts`), the bridge also sets the client's title there, and a title the person gave the
+ * thread in the client since the bridge last saw it labels the seat before the next prompt reaches it.
  */
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
@@ -38,7 +38,8 @@ import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
-import { ClientTitle, findThreadTitles } from "./thread-title.js";
+import type { ClientTitle } from "./thread-title.js";
+import { Titles } from "./titles.js";
 import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, type Offer, type Selection } from "./options.js";
 
@@ -95,6 +96,8 @@ export interface HiddenSessions {
 export interface ThreadLink {
   readonly thread: string;
   readonly lifecycleUid: string;
+  /** The title the client's own thread carried when the bridge last wrote or read it there. */
+  readonly title?: string;
 }
 
 /** The links threads stored in each space, in the order they were stored. A thread's last link is the
@@ -149,14 +152,14 @@ interface Turn {
   timer?: ReturnType<typeof setInterval>;
 }
 
-interface Session {
+export interface Session {
   readonly id: string;
   /** The name the thread's next spawn gives its seat, as `/name` set it. Absent: the session's id. */
   name?: string;
   cwd: string;
   offer: Offer;
   selection: Selection;
-  seat?: SeatRef;
+  seat?: SeatRef & Pick<SeatRow, "display">;
   /** The first prompt's spawn, while the manager has not answered it. */
   spawning?: Promise<SeatRef>;
   mapper: FrameMapper;
@@ -178,6 +181,8 @@ interface Session {
   readonly mcpServers: readonly McpServer[];
   /** The client's thread server, looked for once the session first binds a seat. */
   clientTitle?: ClientTitle;
+  /** The last sync of the thread's title with its agent's name, which the next one waits for. */
+  titled?: Promise<void>;
 }
 
 /** The application a session's seat runs, as its model choice names it. */
@@ -185,14 +190,19 @@ const harnessOf = (session: Session): string => parseModel(session.selection.mod
 
 const principal = (p: { owner: string; actor: string }): string => `${p.owner}.${p.actor}`;
 
-/** Each thread's current run, and the thread each run is linked from, of the links in one space. */
-function linksIn(store: ThreadLinks, space: string): { byThread: Map<string, string>; byRun: Map<string, string> } {
+/** Each thread's current run and the title its last link stored, and the thread each run is linked
+ *  from, of the links in one space. */
+function linksIn(store: ThreadLinks, space: string): { byThread: Map<string, string>; titles: Map<string, string | undefined>; byRun: Map<string, string> } {
   const links = store.read(space);
   const byThread = new Map<string, string>();
-  for (const link of links) byThread.set(link.thread, link.lifecycleUid);
+  const titles = new Map<string, string | undefined>();
+  for (const link of links) {
+    byThread.set(link.thread, link.lifecycleUid);
+    titles.set(link.thread, link.title);
+  }
   const byRun = new Map<string, string>();
   for (const link of links) if (byThread.get(link.thread) === link.lifecycleUid) byRun.set(link.lifecycleUid, link.thread);
-  return { byThread, byRun };
+  return { byThread, titles, byRun };
 }
 
 /** The seats a thread id names: the run its link names, else the seats listed under that name. */
@@ -231,14 +241,15 @@ interface Bridge {
   readonly sessions: Map<string, Session>;
   readonly send: (session: Session, update: SessionUpdate, replay?: boolean) => Promise<void>;
   readonly mesh: () => Promise<Mesh>;
-  /** Drive `seat` from the session and title the thread with the name it shows. */
-  readonly bind: (session: Session, seat: SeatRef & Pick<SeatRow, "display">, m: Mesh) => void;
+  /** Drive `seat` from the session and title the thread with the name it shows, or label the seat
+   *  with the title the person gave the thread in the client. `stored` is the title the thread's link
+   *  stored. */
+  readonly bind: (session: Session, seat: SeatRef & Pick<SeatRow, "display">, m: Mesh, stored?: string) => void;
   readonly unbind: (session: Session) => void;
   /** The session here that holds a seat, if any. */
   readonly holder: (seat: SeatRef) => Session | undefined;
   readonly sessionOf: (id: string) => Session;
-  /** Title the thread with `name` unless it already has that title. Undefined keeps the title. */
-  readonly retitle: (session: Session, name: string | undefined) => void;
+  readonly titles: Titles;
   readonly announce: (session: Session) => Promise<void>;
   /** Send the seat's context usage, when its connector reports it. Resolves once it is sent, or
    *  after {@link USAGE_MS} while it is still being read; never rejects. */
@@ -247,35 +258,6 @@ interface Bridge {
   readonly client: { capabilities?: ClientCapabilities };
   /** Fails the running prompts and closes the space, once the client disconnected. */
   readonly close: () => Promise<void>;
-}
-
-/** Say `line` in the session's thread. A failure to send it is logged. */
-function sayIn(send: Bridge["send"], log: (line: string) => void, session: Session, line: string): Promise<void> {
-  return send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } }).catch((e: Error) => log(`session ${session.id}: update not sent: ${e.message}`));
-}
-
-/** A thread's title is the name its agent shows (SPEC 13.22): its label, else its name. */
-function titles(sessions: ReadonlyMap<string, Session>, send: Bridge["send"], options: Pick<CotalAgentOptions, "log" | "version">) {
-  const { log } = options;
-  /** Send `name` as the session's title unless it is the title last sent, through ACP and the
-   *  client's thread server. An undefined name, as of a seat the roster does not show now, keeps the
-   *  title. */
-  const retitle = (session: Session, name: string | undefined): void => {
-    if (name === undefined || name === session.title) return;
-    session.title = name;
-    void send(session, { sessionUpdate: "session_info_update", title: name }).catch((e: Error) => log(`session ${session.id}: title not sent: ${e.message}`));
-    session.clientTitle ??= new ClientTitle(findThreadTitles(session.mcpServers, options.version, (line) => log(`session ${session.id}: ${line}`)));
-    session.clientTitle.push(name).catch((e: Error) => {
-      log(`session ${session.id}: the client's title not set: ${e.message}`);
-      void sayIn(send, log, session, `Could not set this thread's title in the client: ${e.message}`);
-    });
-  };
-  /** Retitle each thread whose agent shows another name, as a label it takes, `/name` or a rename made
-   *  elsewhere changes it. Returns a function that stops following. */
-  const follow = (m: Mesh): (() => void) => m.followRoster(() => {
-    for (const session of sessions.values()) if (session.seat) retitle(session, m.shownName(session.seat));
-  });
-  return { retitle, follow };
 }
 
 function bridge(options: CotalAgentOptions): Bridge {
@@ -288,7 +270,7 @@ function bridge(options: CotalAgentOptions): Bridge {
 
   const send = (session: Session, update: SessionUpdate, replay = false): Promise<void> =>
     session.client.notify(methods.client.session.update, { sessionId: session.id, update, ...(replay ? { _meta: { isReplay: true } } : {}) });
-  const { retitle, follow } = titles(sessions, send, options);
+  const titles = new Titles(sessions, send, options);
 
   const route = (frame: SeatFrame): void => {
     const key = principal(frame);
@@ -336,7 +318,7 @@ function bridge(options: CotalAgentOptions): Bridge {
 
   const mesh = (): Promise<Mesh> => {
     opened ??= options.mesh().then((m) => {
-      following.push(m.followFrames(route), follow(m));
+      following.push(m.followFrames(route), titles.follow(m));
       return m;
     });
     return opened.catch((e: Error) => {
@@ -345,9 +327,9 @@ function bridge(options: CotalAgentOptions): Bridge {
     });
   };
 
-  const bind: Bridge["bind"] = (session, seat, m) => {
+  const bind: Bridge["bind"] = (session, seat, m, stored) => {
     session.seat = seat;
-    retitle(session, m.shownName(seat) ?? seat.display ?? seat.name);
+    void titles.sync(session, m, stored);
     session.prompts?.stop();
     if (m.agentEndpoints) {
       const ask = (p: AgentPrompt) => askPrompt({ options, send, client }, session, m, p);
@@ -367,7 +349,7 @@ function bridge(options: CotalAgentOptions): Bridge {
       session.turn.stop("cancelled");
     }
     if (session.seat) byPrincipal.delete(principal(session.seat));
-    session.seat = undefined;
+    session.seat = session.title = undefined;
     session.mapper = new FrameMapper();
     session.open = new Map();
     session.prompts?.stop();
@@ -426,7 +408,7 @@ function bridge(options: CotalAgentOptions): Bridge {
     }
     if (opened) await (await opened.catch(() => undefined))?.close();
   };
-  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, retitle, announce, reportUsage, close, client };
+  return { options, sessions, send, mesh, bind, unbind, holder, sessionOf, titles, announce, reportUsage, close, client };
 }
 
 function launchOffers(options: CotalAgentOptions) {
@@ -746,7 +728,7 @@ function nameCommand(b: Bridge) {
     }
     try {
       const shown = await m.rename(seat, want);
-      b.retitle(session, shown);
+      b.titles.retitle(session, m, shown);
       return `${seat.name} now shows as ${shown}.`;
     } catch (e) {
       b.options.log(`session ${session.id}: rename refused: ${(e as Error).message}`);
@@ -810,32 +792,6 @@ function openCommand(b: Bridge, offers: Offers) {
   };
 }
 
-/** Rename the session's agent to a title the person gave the thread in the client since the bridge
- *  last saw it, before the prompt reaches the agent. A failed read or a refused rename is said in the
- *  thread and logged, and the prompt runs either way. A refused title is set back to the agent's name,
- *  so the two stay one value. */
-async function followClientTitle(b: Bridge, session: Session, m: Mesh): Promise<void> {
-  const seat = session.seat;
-  if (!seat || !session.clientTitle) return;
-  const { log } = b.options;
-  let title: string | undefined;
-  try {
-    title = await session.clientTitle.pull();
-  } catch (e) {
-    log(`session ${session.id}: the client's title not read: ${(e as Error).message}`);
-    return sayIn(b.send, log, session, `Could not read this thread's title from the client: ${(e as Error).message}`);
-  }
-  const shown = m.shownName(seat) ?? seat.name;
-  if (title === undefined || title === shown) return;
-  try {
-    b.retitle(session, await m.rename(seat, title));
-  } catch (e) {
-    log(`session ${session.id}: rename to the client's title refused: ${(e as Error).message}`);
-    await sayIn(b.send, log, session, `Could not rename ${seat.name} to "${title}": ${(e as Error).message}`);
-    await session.clientTitle.push(shown).catch((err: Error) => log(`session ${session.id}: the client's title not set back: ${err.message}`));
-  }
-}
-
 /** The handlers that open a thread, change its options and run its prompts. */
 function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof turnRunner>, slash: ReturnType<typeof slashCommands>, newName: () => string) {
   const { options, sessions, mesh, bind, sessionOf, announce, reportUsage } = b;
@@ -887,7 +843,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (session.turn) throw RequestError.invalidRequest(undefined, "a prompt is already running in this session");
       const { text, images } = promptParts(params.prompt);
       const m = await mesh();
-      await followClientTitle(b, session, m);
+      await b.titles.sync(session, m);
       const handled = images.length ? undefined : await slash(session, m, text);
       if (handled) return { stopReason: handled };
       if (!text && !images.length) throw RequestError.invalidParams(undefined, "the prompt is empty");
@@ -983,7 +939,9 @@ function historyHandlers(b: Bridge, offers: Offers) {
         for (const update of updates) await send(session, update, true);
       }
       for (const update of session.mapper.closeOpen("completed")) await send(session, update, true);
-      bind(session, row, m);
+      // The title the client's thread carried when a bridge last saw it, when the link names this run.
+      const linked = linksIn(options.links, m.space);
+      bind(session, row, m, linked.byThread.get(params.sessionId) === row.lifecycleUid ? linked.titles.get(params.sessionId) : undefined);
       setImmediate(() => {
         void announce(session).catch(() => {});
         void reportUsage(session, m);
