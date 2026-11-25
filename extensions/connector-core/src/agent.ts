@@ -226,7 +226,10 @@ export class MeshAgent extends EventEmitter {
         events: this,
         owner: this.ep.principal.owner,
         request: options.naming.request,
-        settle: (label) => this.inOrder(() => this.ep.setCardMeta({ [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: label() })),
+        settle: (label) => this.inOrder(() => {
+          const took = label();
+          return this.ep.setCardMeta(took === undefined ? { [AGENT_NAMING_META_KEY]: undefined } : { [AGENT_NAMING_META_KEY]: undefined, [AGENT_LABEL_META_KEY]: took });
+        }),
         log: (msg) => this.log(msg),
       });
     else if (config.autoName)
