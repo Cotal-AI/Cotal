@@ -506,7 +506,7 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
   // An endpoint no run lives under is named, with the endpoints that hold runs.
   const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await runHost.list(planes, {})) } : undefined;
-  printRunList(planes.space, rows, values, unmatched);
+  printRunList(planes.space, rows, values, unmatched, planes.connection.mode === "open");
 }
 
 async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
