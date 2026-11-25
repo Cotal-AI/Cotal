@@ -42,11 +42,9 @@ export function isBundledDesktopRuntime(): boolean {
  */
 
 /**
- * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
- * behind. Every caller links this host's peer into the extension (`bindExtensionPeers`) before the
- * import, so the copy that failed is nameable — path and version — and rankable against the extension.
- * Prescribing `cotal ext add` without ranking them tells the operator to reinstall whichever side is
- * CURRENT, and no reinstall of an extension can add an export to an older core.
+ * Identify the missing export and the peer linked by `bindExtensionPeers` before import.
+ * Recommend replacing one side only when its version or the extension's peer range establishes
+ * which side is behind.
  */
 function importFailure(pkg: string, version: string, e: unknown, remedy: string, meta: InstalledExtensionPackage): Error {
   const message = e instanceof Error ? e.message : String(e);
@@ -74,8 +72,8 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
       );
     case "same-version":
       return new Error(
-        `${head}, and ${at}. Same version, different build (${skew.because}): the installed ${peer} predates this ` +
-          `extension's source - rebuild or reinstall the cotal that owns ${skew.peerPath}.`,
+        `${head}, and ${at}. Both packages report ${skew.peerVersion}. ` +
+          `Check the extension's import and the exports of the linked peer before replacing either build.`,
       );
     case "extension-behind":
       return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${remedy}`);
