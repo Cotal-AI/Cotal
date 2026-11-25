@@ -357,7 +357,10 @@ Use `service add <name> --preset <preset> --help` for that preset's option flags
 help and completion derive those flags from the adapter's closed schema. Boolean options have
 positive and negative forms; a pair refuses. A boolean whose schema admits only true, such as an
 explicit intent, has only the positive form. Numeric and complex options use JSON syntax.
-Use `cotal service start <preset> --help` for start options. Use `--no-open` with
+Use `cotal service start <preset> --help` for start options. To keep flags from an existing
+start command, pass its words after `cotal help --`, for example
+`cotal help -- service start broker --config ./nats.conf`.
+Use `--no-open` with
 `cotal service start web` or when starting a dashboard saved under a custom name.
 A preset no registered or installed provider declares refuses by name; for `web` the refusal
 names `cotal ext add @cotal-ai/web`.

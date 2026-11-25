@@ -347,6 +347,10 @@ try {
     brokerStartHelp.status === 0 && brokerHelpCommand.status === 0 && brokerStartHelp.stdout === brokerHelpCommand.stdout
     && !/--foreground\b|--new-instance\b/.test(brokerStartHelp.stdout) && /^  --config <file>/m.test(brokerStartHelp.stdout)
     && examplePreview?.status === 0, { help: out(brokerStartHelp), preview: examplePreview && out(examplePreview) });
+  const brokerHelpWithOptions = cotal(["help", "--", "service", "start", "broker", "--config", "./nats.conf"]);
+  check("explicit broker start help keeps preset options when passed startup flags",
+    brokerHelpWithOptions.status === 0 && brokerHelpWithOptions.stderr === "" && brokerHelpWithOptions.stdout === brokerStartHelp.stdout,
+    out(brokerHelpWithOptions));
   const genericStartHelp = cotal(["service", "start", "--help"]);
   check("generic service start help still lists --foreground",
     genericStartHelp.status === 0 && /^  --foreground\b/m.test(genericStartHelp.stdout), out(genericStartHelp));
