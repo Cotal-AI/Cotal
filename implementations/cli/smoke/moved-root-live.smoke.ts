@@ -2,10 +2,10 @@
  * Run: pnpm smoke:moved-root:live
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { codeSpan, setAdoptedCurrent, shellPath } from "@cotal-ai/workspace";
+import { codeSpan, setAdoptedCurrent, shellPath, spaceKey, spaceSegment } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const tree = resolve(import.meta.dirname, "../../..");
@@ -40,6 +40,26 @@ check("adopting an empty folder refuses and leaves the folder untouched",
   emptyAdoption.stderr.includes("without --adopt") && readdirSync(empty).length === 0);
 
 const space = "movedroot";
+const outsideAnchor = recordSmokeSandbox({ root: other, cotalHome, xdgConfigHome: config });
+const definitionPath = (space: string) => join(cotalHome, "services", spaceKey(space), "definitions", `${spaceKey("stack-broker")}.json`);
+
+function checkInaccessibleDown(project: string, space: string, records: string[]): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const before = records.map((path) => readFileSync(path));
+  chmodSync(project, 0o000);
+  try {
+    for (const mode of ["--yes", "--dry-run"]) {
+      const args = ["down", "--space", space, mode, "--json"];
+      assertSmokeSandboxDown(outsideAnchor, args, { cwd: other, env });
+      const result = cli(other, ...args);
+      const error = (JSON.parse(result.stdout) as Envelope).error;
+      check(`${mode} refuses an inaccessible project and advises restoring access`, result.status === 2 && error?.code === "PERMISSION_DENIED" &&
+        error.message?.includes(`${project} could not be accessed`) === true && error.remedy === "restore access to the original project folder, then try again");
+    }
+  } finally { chmodSync(project, 0o700); }
+  check("the inaccessible project retains its records unchanged", records.every((path, i) => existsSync(path) && readFileSync(path).equals(before[i]!)));
+}
+
 function checkImplicitComponents(server: string): void {
   const previousHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = cotalHome;
@@ -68,6 +88,7 @@ try {
   const healthyShow = json(other, "space", "show", space);
   check("before the move, status connects and the registered root is intact", healthy.status === 0 && healthy.envelope.result?.selected?.connection === "ok" && healthy.envelope.result.selected.rootGone === false);
   check("before the move, space show does not diagnose a missing root", healthyShow.status === 0 && healthyShow.envelope.result?.rootGone !== true);
+  checkInaccessibleDown(root, space, [join(cotalHome, "meshes", `${spaceSegment(space)}.json`), definitionPath(space)]);
   const nested = join(root, "nested"), copy = join(scratch, "copy");
   mkdirSync(nested);
   check("clear the selection while the controller stack is running", cli(other, "use", "--clear").status === 0);
@@ -212,6 +233,7 @@ for (const open of [false, true]) {
   } finally {
     stop(project);
   }
+  checkInaccessibleDown(project, space, [join(cotalHome, "prepared", `${spaceSegment(space)}.json`), definitionPath(space)]);
   cpSync(project, copy, { recursive: true });
   const copiedUp = cli(copy, "up", "--plain");
   const copiedOutput = `${copiedUp.stdout}${copiedUp.stderr}`;
@@ -298,5 +320,12 @@ for (const open of [false, true]) {
   const preview = json(renamed, "reset", "store", space, "--dry-run");
   check("reset store previews the adopted store after a completed stop in the renamed root",
     preview.status === 0 && preview.envelope.result?.inspectedStorePath === join(renamed, ".cotal", "nats") && preview.envelope.result.applyVerdict?.offered === true);
+  check("the stopped project still has a broker definition before deletion", existsSync(definitionPath(space)));
+  rmSync(renamed, { recursive: true });
+  const args = ["down", "--space", space, "--yes"];
+  assertSmokeSandboxDown(outsideAnchor, args, { cwd: other, env });
+  const recovered = cli(other, ...args);
+  check("a deleted controller project still recovers and releases its broker definition", recovered.status === 0 &&
+    recovered.stdout.includes("Stack stopped; its folder was gone") && !existsSync(definitionPath(space)));
 }
 finish();

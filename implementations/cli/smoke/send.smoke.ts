@@ -62,7 +62,7 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { execWords } from "../src/lib/exec-words.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 119;
+const EXPECTED = 120;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -605,6 +605,13 @@ try {
         && receipt.target?.space === space && receipt.result?.destination === "general" && receipt.result?.stored === true
         && receipt.result.bodySource === (body === "-" ? "stdin" : "argument"), { refused, retried });
   }
+  const verboseDash = await run(["send", "-c", "general", "--space", space, "--server", servers, "--plain", "--verbose", "-"]);
+  const verboseCommand = /run `(?:pnpm )?cotal (send [^`]+)`/.exec(verboseDash.stderr)?.[1];
+  const verboseRetry = verboseCommand ? await piped(execWords(verboseCommand), (stdin) => stdin.end("verbose-stdin")) : undefined;
+  check("the plain stdin retry stores the message and keeps the verbose sender details",
+    verboseDash.code === 1 && /Code: +USAGE_INVALID/.test(verboseDash.stderr) && verboseRetry?.code === 0
+      && verboseRetry.stdout.includes("Message stored") && /To: +#general/.test(verboseRetry.stdout)
+      && /^ +Sending principal: +\S+/m.test(verboseRetry.stdout) && /^ +Sender kind: +endpoint$/m.test(verboseRetry.stdout), { verboseDash, verboseRetry });
   const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
     stdin.write("first half, ");
     setTimeout(() => stdin.end("second half after a pause"), 5_000);

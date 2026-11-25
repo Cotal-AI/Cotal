@@ -40,7 +40,7 @@ import * as prompts from "../lib/prompts.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { presenceFacts } from "../ui.js";
 import { cliControl, onInstance, onFlag, onRerun, refuseControlCreds } from "../lib/control.js";
-import { AgentManagerUnsettled, managerPin, noLiveManager } from "../lib/manager-choice.js";
+import { AgentManagerUnsettled, managerPin, managerRosterHint, noLiveManager } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { attachSeat as attachSeatWith, detachKey, type AttachTarget, type AttachVerdict } from "@cotal-ai/workspace/attach";
 import { completingFlagValue } from "../lib/completion.js";
@@ -115,7 +115,7 @@ export function managedTarget(args: ParsedArgs, operation: "stop" | "attach", al
   }
   const options = operation === "stop" ? stopRetryWords(v) : v["no-reconnect"] ? ["--no-reconnect"] : [];
   const verb = `cotal ${operation}`;
-  if (typeof on === "string") onInstance(on, name === undefined ? onRerun(`${verb} <name>`, v, options) : onRemedyVerb(verb, { ...v, name }, options));
+  if (typeof on === "string") onInstance(on, name === undefined ? onRerun(`${verb} <name>`, v, options) : onRemedyVerb(verb, { ...v, name }, options), managerRosterHint(v));
   const pin = typeof on === "string" ? ["--on", on] : [];
   const needsName = operation === "stop" ? !name?.trim() : name === undefined && allowPicker && !canPrompt();
   if (needsName && typeof on === "string" && !instanceIdShaped(on)) {
@@ -674,7 +674,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
       const cause = isConnectRefusal(e) ? e.cause : e;
-      const writeProblem = isWorkspaceTargetError(cause) && cause.code === "not-started" && preparedNeverStarted(cause.details) ? preparedRootWriteProblem(parts.restartRoot) : undefined;
+      const writeProblem = isWorkspaceTargetError(cause) && cause.code === "not-started" && (cause.details.stopped || preparedNeverStarted(cause.details)) ? preparedRootWriteProblem(parts.restartRoot) : undefined;
       const block = writeProblem ?? channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
         ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`)
         : isWorkspaceTargetError(e) && e.details.stopped && e.details.space !== undefined
@@ -1173,7 +1173,7 @@ export function inputArguments(args: ParsedArgs): { name: string; text: string }
   const text = positionalText ?? values.text;
   if (!name?.trim() || /[\u0000-\u001f\u007f]/u.test(name)) throw new CommandFailure("refused", "USAGE_INVALID", "input needs one concrete agent name without terminal control characters");
   if (!text) throw new CommandFailure("refused", "USAGE_INVALID", "input needs nonempty text; use --text for a value beginning with a dash");
-  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values["no-enter"])));
+  if (values.on !== undefined) onInstance(values.on, onRemedyVerb("cotal input", { ...values, name }, inputRetryWords(text, values["no-enter"])), managerRosterHint(values));
   return { name, text };
 }
 

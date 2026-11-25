@@ -827,6 +827,11 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       target: { space: t.space },
       remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
     });
+  if (command === "run-start" && t.mode === "open")
+    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission", {
+      target: { space: t.space },
+      remedy: "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });

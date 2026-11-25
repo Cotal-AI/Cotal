@@ -88,8 +88,8 @@ role and model request separately from any provider acceptance claim. When the h
 agent other read or post channels than it asked for, as a host that narrows a request to your grant
 does, the receipt adds a `Granted` line with the channels it got and the ones it asked for, and
 `--json` carries both as `acl.requested` and `acl.effective`. Its Next section names the actual agent, space and accepting manager
-in attach/status commands when their tokens are safe shell words; it otherwise retains
-placeholders beside the full identity fields.
+in the `attach` and `status` commands when their tokens are safe shell words. Otherwise, it retains
+placeholders beside the full identity fields. Both commands keep `--server` when you pass it to `spawn`.
 
 A manager on a runtime that streams no terminal, which is `tmux`, `cmux`, `orca` and `herdr`,
 answers with that fact and the launch stops there: no attach is asked for, nothing is partial, and

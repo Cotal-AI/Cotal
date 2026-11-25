@@ -1152,7 +1152,7 @@ require('node:module').syncBuiltinESMExports();`);
     JSON.parse(mismatch.stdout).error?.code === "CONFLICT", shown(mismatch));
   const cases: [string, string, string[]][] = [
     ["a tab indent", `${head}channels:\n\tops: {}\n`, ["m.yaml:6:1: Tabs are not allowed as indentation at line 6, column 1"]],
-    ["a misspelt key", `${head}chanels: {}\n`, ["m.yaml:5:", 'unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],
+    ["a misspelt key", `${head}chanels:\n  ops: {}\n`, ['m.yaml:5:1: unknown key "chanels": did you mean "channels", which is required?', "has a problem,"]],
     ["an alias bomb", `${head}channels: {}\na: &a [x,x,x,x,x,x,x,x,x]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]\nd: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]\ne: [*d,*d,*d,*d,*d,*d,*d,*d,*d]\n`, ["m.yaml: Excessive alias count indicates a resource exhaustion attack"]],
     ["an undeclared subscriber", `${head}channels:\n  ops:\n    subscribe: [ghost]\n`, ["has a problem,", 'm.yaml:7:17: "ghost" is not declared in agents: (at channels.ops.subscribe.0)']],
     ["a persona with invalid frontmatter", `${head}agents:\n  sec: agents/sec.md\nchannels:\n  ops:\n    subscribe: [sec]\n`, ["m.yaml: agent file ", "sec.md: invalid YAML frontmatter; Flow sequence in block collection must be sufficiently indented and end with a ] at line 2, column 24 (at agents.sec)"]],

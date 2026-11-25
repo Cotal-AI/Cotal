@@ -76,7 +76,7 @@ From inside the moved project, the same refusal and listener observation apply w
 For a moved open stack, the broker row reports `refused` and preserves reachability when known.
 An open mesh needs no delivery daemon, so its absence does not fail the check.
 An observed store write failure or full store makes the broker `not-serving` even when its listener answers.
-On a stopped local stack, `status` and `ps` name an unwritable store and its permission repair before recommending a restart.
+On a stopped local stack, `status` and `ps` report when the project's `.cotal` directory needs write and search access or the broker store is unwritable. They give the permission repair instead of recommending a restart.
 `status` also checks the stopped project in the current folder when it reports a different selected space.
 If the manager exits while a local controller stack's broker still runs, `status` and `ps` check `.cotal/channels.json` before recommending a restart.
 Fix or remove an invalid seed file while the broker is still running.

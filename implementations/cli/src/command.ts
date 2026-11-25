@@ -813,7 +813,7 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
 }
 
 /** A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
- *  Preset details can enrich a duplicate refusal but cannot replace it. */
+ *  Preset details can enrich a global flag refusal but cannot replace it. */
 async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
   try {
@@ -829,18 +829,18 @@ async function serviceSurface(found: Command | undefined, words: string[], forRe
 }
 
 /** Recover the command and output mode for a malformed leading global without dispatching it. */
-function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): never {
+async function unknownInvocationExit(commands: readonly Command[], word: string, args: string[], output: string[], beforeSeparator: boolean): Promise<never> {
   const equals = word.indexOf("=");
   const flag = equals === -1 ? undefined : word.slice(0, equals);
   if (!beforeSeparator || !flag || !GLOBAL_FLAG_WORDS.has(flag)) usageExit(unknownCommandMessage(commands, word));
-  const retry = leadingInvocation(args);
+  const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
-  const cmd = takesWordsRaw(found) ? undefined : found;
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
-  const end = words.indexOf("--");
-  const plain = (end === -1 ? words : words.slice(0, end)).includes("--plain");
+  const { cmd, rest } = await serviceSurface(takesWordsRaw(found) ? undefined : found, words, true);
+  const end = rest.indexOf("--");
+  const plain = (end === -1 ? rest : rest.slice(0, end)).includes("--plain");
   const { message, remedy } = globalFlagValueRefusal(flag);
-  usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, words), plain, remedy, words);
+  return usageExit(message, cmd, cmd !== undefined && asksForJson(cmd, rest), plain, remedy, rest);
 }
 
 /**
@@ -1001,7 +1001,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
     jsonFlag, { name: "help", short: "h", type: "boolean" }, { name: "version", short: "V", type: "boolean" },
   ]);
   if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
-  if (!cmd && !awaitingSeed) unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
+  if (!cmd && !awaitingSeed) return unknownInvocationExit(commands, word, args, output, argv[leading.length] !== "--");
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed

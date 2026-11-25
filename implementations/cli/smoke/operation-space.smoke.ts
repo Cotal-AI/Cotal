@@ -48,7 +48,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -235,6 +235,14 @@ check("an empty slot pin names the JSON manager lookup and a separate JSON slot 
 const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
 check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
   && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
+for (const [verb, ...args] of [["stop", "target"], ["attach", "target"], ["status", "target"], ["input", "target", "review"]] as const) {
+  for (const pin of ["", "local.U123"]) {
+    const server = "nats://127.0.0.1:39200";
+    const refused = cotal(verb, ...args, "--on", pin, "--space", "elsewhere", "--server", server);
+    check(`${verb} keeps the selected space and broker on the manager lookup for ${pin || "an empty pin"}`,
+      refused.status === 1 && refused.stderr.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !refused.stderr.includes("`cotal ps`"), shown(refused));
+  }
+}
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
@@ -375,10 +383,10 @@ if (process.getuid && process.getuid() !== 0) {
 }
 const prefix = join(env.XDG_CONFIG_HOME, "cotal", "extensions");
 mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
-const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
+const previewExtensions = ["connector-claude-code", "connector-opencode", "pi"].map((pkg) => {
   const source = join(import.meta.dirname, "..", "..", "..", "extensions", pkg);
   symlinkSync(source, join(prefix, "node_modules", "@cotal-ai", pkg), "dir");
-  const name = pkg === "connector-claude-code" ? "claude" : "opencode";
+  const name = pkg === "connector-claude-code" ? "claude" : pkg === "connector-opencode" ? "opencode" : "pi";
   return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
 });
 writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
@@ -544,9 +552,10 @@ check("the opening Agent files example previews with Claude and validates its mo
 
 const variantPersona = join(root, "variant-persona.md");
 const previewVariant = (...flags: string[]) => cotal("spawn", "--file", variantPersona, "--dry-run", ...flags);
-const claudePersona = "---\nname: variant_check\nagent: claude\n";
+// pi takes no model variant, so a persona's variant is refused there.
+const piPersona = "---\nname: variant_check\nagent: pi\n";
 const removeVariantField = `remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`;
-writeFileSync(variantPersona, `${claudePersona}variant: high\n---\n`);
+writeFileSync(variantPersona, `${piPersona}variant: high\n---\n`);
 for (const [flags, remedy] of [[[], removeVariantField], [["--variant", "high"], `omit \`--variant\` and ${removeVariantField}`]] as const) {
   const denied = previewVariant("--json", ...flags);
   check(`direct preview names ${flags.length ? "both variant inputs" : "the persona variant field"} in its remedy`,
@@ -557,7 +566,7 @@ const variantPlain = previewVariant("--plain");
 check("plain preview prints the persona variant remedy as Next",
   variantPlain.status === 1 && variantPlain.stderr.split("\nNext\n")[1]?.includes("remove the `variant:` field") === true
     && variantPlain.stderr.split("\nNext\n")[1]?.includes(JSON.stringify(variantPersona)) === true, shown(variantPlain));
-writeFileSync(variantPersona, `${claudePersona}---\n`);
+writeFileSync(variantPersona, `${piPersona}---\n`);
 const noVariant = previewVariant("--json");
 const noVariantResult = (noVariant.envelope as { result?: Preview } | undefined)?.result;
 check("direct preview passes connector validation after removing the persona variant",
@@ -676,5 +685,6 @@ for (const mode of [["--dry-run"], []]) {
     auto.status === 1 && auto.envelope?.error?.code === "USAGE_INVALID" && auto.envelope.error.message === "--runtime auto chooses a manager's own runtime, not the runtime of one seat", shown(auto));
 }
 
+check("the fixture does not create a reporting identity", !existsSync(join(home, ".cotal", "telemetry.json")));
 finish();
 process.exit(process.exitCode ?? 0);

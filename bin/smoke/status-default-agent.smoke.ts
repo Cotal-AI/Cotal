@@ -21,9 +21,13 @@ const env = {
 };
 const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
 const { check, finish } = createSuite();
-function cli(args: string[], extra: NodeJS.ProcessEnv = {}, warnings: string[] = [], timeout = 30_000) {
+function invoke(args: string[], extra: NodeJS.ProcessEnv = {}, timeout = 30_000) {
   const result = spawnSync(process.execPath, [bin, ...args], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout });
   assert.equal(result.error, undefined);
+  return result;
+}
+function cli(args: string[], extra: NodeJS.ProcessEnv = {}, warnings: string[] = [], timeout = 30_000) {
+  const result = invoke(args, extra, timeout);
   assert.equal(result.status, warnings.length ? 4 : 0, `${args.join(" ")}: ${result.stderr}\n${result.stdout}`);
   if (args[0] === "status" && args.includes("--json")) {
     assert.deepEqual(JSON.parse(result.stdout).warnings.map((warning: { code: string }) => warning.code).sort(), [...warnings].sort());
@@ -34,6 +38,18 @@ function selection(extra: NodeJS.ProcessEnv = {}) {
   const status = JSON.parse(cli(["status", "--json"], extra));
   const preview = JSON.parse(cli(["spawn", "--dry-run", "--json"], extra));
   return { defaults: status.result.machine.defaults, harness: preview.result.harness };
+}
+
+function checkPersonaReference(label: string, ref: string, path: string, harness: string) {
+  cli(["config", "set", "persona", ref, "--space", "defaults", "--plain"]);
+  const preview = JSON.parse(cli(["spawn", "--dry-run", "--space", "defaults", "--json"])).result;
+  const result = invoke(["status", "--space", "defaults", "--json"]);
+  const status = JSON.parse(result.stdout);
+  const defaults = status.result.machine.defaults;
+  check(`${label}: status and spawn agree on the saved persona and its harness`,
+    preview.persona.path === path && preview.harness === harness && result.status === 0 && status.completeness === "complete" &&
+    status.warnings.length === 0 && defaults.persona === ref && defaults.harness === harness,
+    { statusExit: result.status, completeness: status.completeness, warnings: status.warnings, defaults, previewPath: preview.persona.path, previewHarness: preview.harness });
 }
 
 const port = await freePort();
@@ -71,6 +87,13 @@ try {
   cli(["config", "set", "persona", "pinned", "--space", "defaults"]);
   const scoped = selection();
   check("the space's persona preference supplies its pin", scoped.defaults.harness === "opencode" && scoped.harness === "opencode", scoped);
+  const catalogSuffix = join(project, ".cotal", "agents", "suffix.md.md");
+  const projectSuffix = join(project, "suffix.md");
+  writeFileSync(catalogSuffix, "---\nname: catalog-suffix\nagent: opencode\n---\nCatalog persona.\n");
+  checkPersonaReference("catalog name ending in .md", "suffix.md", catalogSuffix, "opencode");
+  writeFileSync(projectSuffix, "---\nname: root-suffix\nagent: jcode\n---\nProject persona.\n");
+  checkPersonaReference("same-named project file", "suffix.md", catalogSuffix, "opencode");
+  checkPersonaReference("explicit relative path", "./suffix.md", projectSuffix, "jcode");
   cli(["config", "unset", "persona", "--space", "defaults"]);
   cli(["config", "set", "persona", join(project, ".cotal", "agents", "pinned.md")]);
   const path = selection();

@@ -1353,7 +1353,7 @@ async function runUp(args: ParsedArgs, invokedFrom: string, inheritedLock?: Main
         }
       }
     }
-    if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
+    if (!resumeAttempt) values["store-dir"] = assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"]);
     // A start interrupted after it published its broker's pid and before it registered the space left
     // that broker running on this root's store. No broker starts beside it, at its address or at
     // another one, and it is not reported as a broker started elsewhere (#7123).
