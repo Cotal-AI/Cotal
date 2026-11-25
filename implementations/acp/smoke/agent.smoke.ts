@@ -13,7 +13,12 @@
  *  - the first prompt spawns the seat in the session's folder with that prompt, every update of the
  *    turn reaches the client before the prompt answers, frames that beat the spawn reply are kept,
  *    and a tool call left open is closed;
- *  - a failed run fails the prompt with the seat's message;
+ *  - an application whose catalog lists a model with id `default` spawns naming that model, with the
+ *    chosen variant; without one, `<agent>/default` spawns naming no model;
+ *  - a failed run fails the prompt with the seat's message; with each connector's failure condition,
+ *    one that arrives after the run's error too, the error carries the harness's own text and kind,
+ *    and with none it still says the turn failed; a condition from before the prompt or an approval
+ *    condition is not the turn's failure;
  *  - a later prompt is a direct message, and answers once the seat stopped working and the runs it
  *    started ended, or once the seat did not start on it in time;
  *  - a cancel interrupts the seat through its manager and answers `cancelled` however the run ends,
@@ -25,9 +30,16 @@
  *    while one did not answer is not called missing, and deleting it fails;
  *  - a running seat whose application's models the manager could not read loads and opens on its
  *    model, and after `/despawn` the thread still refuses to start that application;
- *  - with no manager of the person's on this machine, a new session has no machine: the Machine
- *    option offers the other computers, also only one, and a prompt before one is chosen fails with
- *    one line and spawns nothing;
+ *  - with no manager registered, list, load, /open and delete say so, start none, and list nothing
+ *    in its place;
+ *  - with only another computer's manager live, a new session starts this machine's manager and
+ *    defaults to it, and uses the other computer only when Machine names it; a failed start, or one
+ *    whose manager is still not listed here, fails the session;
+ *  - the selects hold the chosen machine's applications: choosing a machine whose manager reports an
+ *    application unavailable offers it in neither select, moves the selection to that machine's
+ *    default, refuses the application with the manager's reason, and a prompt starts the default;
+ *  - `cotal manager status` output names the native instance of this machine's running manager
+ *    service, and names none when it is gone, never started or refused;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
  *  - a persona catalog or channel list longer than a client select offers a short select holding the
  *    caller's own personas, or the described and busiest channels, and `/persona` and `/join` pick
@@ -35,8 +47,8 @@
  *  - `/name` before the first prompt names the seat the thread spawns, refuses a name the manager
  *    would refuse, and on a running seat changes the name it shows or says why not;
  *  - `/open` drives a running seat found by its name or shown name from a thread with no agent,
- *    replays what the space retains, and stores the thread's link; it refuses in a thread that
- *    already drives one, and names the choices when two seats match;
+ *    replays what the space retains, sends the seat's options, and stores the thread's link; it
+ *    refuses in a thread that already drives one, and names the choices when two seats match;
  *  - a linked thread is listed under its own id with the seat's shown name, and loads and deletes
  *    through its link;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
@@ -45,6 +57,11 @@
  *    asked once; a prompt opened while the thread runs no turn is asked on its next prompt, whose
  *    turn stays open until the client answers; the seat's commands and skills are offered and run through
  *    `command`, and a refused one is said in the thread. Where they do not, nothing calls it;
+ *  - on a running thread, choosing a model or a reasoning variant of the seat's application switches
+ *    the seat through its `set-model`, and the options show the choice; the seat's refusal fails the
+ *    choice with its reason; another application and an option that applies at spawn are refused
+ *    naming `/despawn`, and so is a seat whose connector cannot switch, naming its harness and the
+ *    cause the seat gives, or nothing is called when the seat predates `set-model`;
  *  - a prompt or seat command the seat queues behind work the thread did not start answers once its
  *    own run ends, however long it waited. Cancelled while still queued, it leaves the queue through
  *    `command-cancel` and the other work is not interrupted; cancelled once taken, its run is; its
@@ -60,7 +77,8 @@ import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type Prompt
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { MAX_CHOICES } from "../src/options.js";
 import { promptParts } from "../src/turns.js";
-import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
+import { recordedInstance, startFailure, startLine } from "../src/manager-start.js";
+import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
@@ -78,6 +96,9 @@ const CATALOGS: AgentCatalog[] = [
   { agent: "claude", available: true, eventPlane: true, models: [{ id: "opus", variants: ["high", "low"] }, { id: "sonnet", variants: ["low"] }, { id: "haiku", variants: [] }] },
   { agent: "pi", available: true, eventPlane: true, models: [] },
 ];
+
+/** A presence condition (SPEC §6) as a connector writes it. */
+type Condition = { code: string; source?: string; message?: string; since?: number };
 
 /** A space held in memory. A test scripts what a seat publishes with `script`. */
 class FakeMesh implements Mesh {
@@ -118,6 +139,10 @@ class FakeMesh implements Mesh {
   serving: AgentEndpointServes | undefined;
   /** Frames a spawned seat publishes: `before` ahead of the spawn reply, `after` once it answered. */
   script: { before: AguiEventLike[][]; after: AguiEventLike[][] } = { before: [], after: [] };
+  /** The condition each seat's presence carries, by actor, with when this process saw it arrive. */
+  conditions = new Map<string, { condition: Condition; at: number }>();
+  /** A condition a spawned seat's presence takes `ms` after its spawn reply. */
+  failWith: { condition: Condition; ms: number } | undefined;
   private listeners: ((f: SeatFrame) => void)[] = [];
   private seq = 0;
 
@@ -144,9 +169,23 @@ class FakeMesh implements Mesh {
   }
   /** Why no manager may start a new agent, when none may. */
   noLaunch: string | undefined;
+  managersRead = 0;
   async managers() {
+    this.managersRead++;
     if (this.noLaunch) throw new NoLaunchManager(this.noLaunch);
     return this.managerList;
+  }
+  /** How many times this machine's manager was started, and what a start does. A throw is its refusal. */
+  starts = 0;
+  onStart: () => string = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: no start scripted"); };
+  async startManager() {
+    this.starts++;
+    return this.onStart();
+  }
+  /** Why this machine's identity could not be read, when it could not. */
+  unreadable: string | undefined;
+  machineUnreadable() {
+    return this.unreadable;
   }
   /** Each manager holds its own persona catalog. */
   personasAsked: (string | undefined)[] = [];
@@ -163,6 +202,8 @@ class FakeMesh implements Mesh {
     for (const e of this.script.before) this.emit(seat, e);
     const after = this.script.after;
     setTimeout(() => { for (const e of after) this.emit(seat, e); }, 10);
+    const failWith = this.failWith;
+    if (failWith) setTimeout(() => this.conditions.set(seat.actor, { condition: failWith.condition, at: Date.now() }), failWith.ms);
     return seat;
   }
   async seats() { return { rows: this.rows, silent: this.silent, removable: this.removable }; }
@@ -192,6 +233,10 @@ class FakeMesh implements Mesh {
   followFrames(on: (f: SeatFrame) => void) { this.listeners.push(on); return () => (this.listeners = this.listeners.filter((l) => l !== on)); }
   async frameHistory(seat: SeatRef) { return this.history.get(seat.name) ?? []; }
   presence(seat: SeatRef) { return this.present.get(seat.actor); }
+  condition(seat: SeatRef, since: number) {
+    const held = this.conditions.get(seat.actor);
+    return held && held.at >= since ? held.condition : undefined;
+  }
   async roster() { return [{ name: "alice", status: "idle", role: "reviewer" }]; }
   async channels() { return [{ channel: "general", messages: 3 }, { channel: "ops", messages: 1 }]; }
   async close() { this.closed = true; }
@@ -236,8 +281,8 @@ function connect(open: () => Promise<Mesh>, terminal = true, canSignIn = async (
   const init = conn.agent.request(methods.agent.initialize, { protocolVersion: PROTOCOL_VERSION, clientCapabilities: terminal ? { auth: { terminal: true } } : {} });
   return { agent: conn.agent, conn, updates, hidden, links, init, asked, answers, logs };
 }
-const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string } | undefined> => {
-  try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string }; }
+const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: string; data?: unknown } | undefined> => {
+  try { await p; return undefined; } catch (e) { return e as { code?: number; message?: string; data?: unknown }; }
 };
 
 // initialize and sign-in
@@ -265,6 +310,192 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const d = await errorOf(down.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
   check("any other failure to open is an internal error naming it", d?.code === -32603 && d.message?.includes("broker down") === true, d);
   down.conn.close();
+}
+
+// Remote live, no local: only another computer's manager is live, so a new thread starts this
+// machine's manager and defaults to it, and the other computer is used only when Machine names it.
+{
+  const space = new FakeMesh();
+  const line = "Started this machine's manager for fake. It stops itself after 10 minutes with no agents.";
+  const far: ManagerChoice = { instanceId: "m2", host: "there", local: false, live: true };
+  const near: ManagerChoice = { instanceId: "m1", host: "here", local: true, live: true };
+  space.managerList = [far];
+  space.onStart = () => { space.managerList = [near, far]; return line; };
+  const c = connect(async () => space);
+  await c.init;
+  const chunks = (sessionId: string) => c.updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text);
+  const machineIn = (r: { configOptions?: unknown[] | null } | undefined) => {
+    const o = r?.configOptions?.find((x) => (x as { id: string }).id === "machine") as { currentValue?: string; options?: { value: string }[] } | undefined;
+    return { current: o?.currentValue, choices: (o?.options ?? []).map((x) => x.value) };
+  };
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch((e: unknown) => e as undefined);
+  await tick();
+  check("remote live, no local: a new thread starts this machine's manager before it offers anything", space.starts === 1 && space.catalogsAsked[0] === "m1", { starts: space.starts, asked: space.catalogsAsked });
+  check("and defaults to it, with the other computer as a Machine choice", JSON.stringify(machineIn(opened)) === JSON.stringify({ current: "m1", choices: ["m1", "m2"] }), machineIn(opened));
+  const sid = (opened as { sessionId?: string } | undefined)?.sessionId ?? "none";
+  // A client may drop a line sent outside a turn, as T3 Code keeps one only in a loaded thread's history.
+  check("and says nothing before its first prompt", opened !== undefined && chunks(sid).length === 0, chunks(sid));
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "TEXT_MESSAGE_START", messageId: "a", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "a", delta: "hi" }, { type: "TEXT_MESSAGE_END", messageId: "a" }, { type: "RUN_FINISHED", runId: "r1" }]] };
+  const before = c.updates.length;
+  const here = await within(c.agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("its first prompt spawns on this machine's manager", here?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m1", { here, pins: space.spawned.map((r) => r.managerInstanceId) });
+  const turn = c.updates.slice(before).filter((u) => u.sessionId === sid && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text);
+  check("and its turn says in one line that it started the manager, before the reply, and only there",
+    JSON.stringify(turn) === JSON.stringify([`${line}\n\n`, "hi"]) && JSON.stringify(chunks(sid)) === JSON.stringify(turn), { turn, all: chunks(sid) });
+  const other = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await c.agent.request(methods.agent.session.setConfigOption, { sessionId: other.sessionId, configId: "machine", value: "m2" });
+  // This machine's manager stopped itself, and the thread's Machine names the other computer.
+  space.managerList = [far];
+  const starts = space.starts;
+  const there = await within(c.agent.request(methods.agent.session.prompt, { sessionId: other.sessionId, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("a thread whose Machine names another computer spawns there and starts no manager here", there?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m2" && space.starts === starts, { there, starts: space.starts - starts, pins: space.spawned.map((r) => r.managerInstanceId) });
+  // A start after which the space still lists no manager of this machine's fails the thread.
+  space.onStart = () => line;
+  const unlisted = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("a start whose manager the space does not list here fails the new thread, saying so", unlisted?.code === -32603 && unlisted.message === "Started this machine's manager for fake, but the space does not list it as running here yet. Open the thread again in a moment.", unlisted);
+  space.onStart = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: the manager did not start: boom"); };
+  const failed = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("remote live, no local: a failed start fails the new thread with the start's reason", failed?.code === -32603 && failed.message === "Could not start this machine's manager for fake: the manager did not start: boom", failed);
+  c.conn.close();
+}
+// This machine's identity could not be read, as in a container with no /etc/machine-id: no manager is
+// known to run here. A new thread offers the listed managers with none chosen and starts none, a
+// prompt with none chosen says why, and a thread whose Machine names one runs there.
+{
+  const space = new FakeMesh();
+  const why = "ENOENT: no such file or directory, open '/etc/machine-id'";
+  const linux = process.platform === "linux";
+  space.unreadable = why;
+  space.managerList = [{ instanceId: "m2", host: "there", local: false, live: true }];
+  const c = connect(async () => space);
+  await c.init;
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch((e: Error) => e);
+  const machine = opened instanceof Error ? undefined : opened.configOptions?.find((o) => o.id === "machine") as { currentValue?: string; options?: { value: string }[] } | undefined;
+  check("with this machine's identity unread, a new thread opens with no Machine chosen and starts no manager",
+    space.starts === 0 && machine?.currentValue === "none" && JSON.stringify(machine.options?.map((o) => o.value)) === JSON.stringify(["none", "m2"]), { starts: space.starts, opened: opened instanceof Error ? opened.message : machine });
+  const sid = opened instanceof Error ? "none" : opened.sessionId;
+  const unchosen = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "go" }] }));
+  check("and its prompt with none chosen fails with the reason and starts none", space.starts === 0 && space.spawned.length === 0 && unchosen?.code === -32602 && unchosen.message === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or choose a machine in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here. Choose a machine in the Machine option."), { starts: space.starts, unchosen });
+  await c.agent.request(methods.agent.session.setConfigOption, { sessionId: sid, configId: "machine", value: "m2" }).catch(() => undefined);
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const there = await within(c.agent.request(methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("a thread whose Machine names a manager runs there without this machine's identity", there?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m2" && space.starts === 0, { there, starts: space.starts });
+  space.managerList = [];
+  const none = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("with no manager listed, a new thread fails with the reason and starts none", space.starts === 0 && none?.code === -32603 && none.message === (linux
+    ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or start a manager with `cotal manager start --space fake` and choose it in the Machine option."
+    : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Start a manager with `cotal manager start --space fake` and choose it in the Machine option."), { starts: space.starts, none });
+  c.conn.close();
+}
+// Each manager reports its own applications. OpenCode runs on m1, and m2's status row says it is not
+// installed there. A thread that chooses m2 offers only what m2 can run and starts there on m2's
+// default, and choosing m1 again offers OpenCode again.
+{
+  const missing = "opencode harness needs opencode on PATH - not found";
+  const space = new FakeMesh();
+  space.managerList = [{ instanceId: "m1", host: "here", local: true, live: true }, { instanceId: "m2", host: "there", local: false, live: true }];
+  const byManager = new Map<string | undefined, AgentCatalog[]>([
+    ["m1", [...CATALOGS, { agent: "opencode", available: true, eventPlane: true, models: [{ id: "gpt", variants: ["high"] }] }]],
+    ["m2", [...CATALOGS, { agent: "opencode", available: false, eventPlane: true, reason: missing, models: [] }]],
+  ]);
+  space.catalogs = async (instanceId?: string) => { space.catalogsAsked.push(instanceId); return byManager.get(instanceId) ?? []; };
+  const c = connect(async () => space);
+  await c.init;
+  type Opts = readonly { id: string; currentValue?: unknown; options?: unknown }[] | null | undefined;
+  const offered = (o: Opts) => {
+    const model = o?.find((x) => x.id === "model") as { currentValue?: string; options?: { group: string; options: { value: string }[] }[] } | undefined;
+    const agent = o?.find((x) => x.id === "agent") as { options?: { value: string }[] } | undefined;
+    const variant = o?.find((x) => x.id === "variant") as { currentValue?: string } | undefined;
+    return { model: model?.currentValue, variant: variant?.currentValue, groups: (model?.options ?? []).map((g) => g.group), harnesses: (agent?.options ?? []).map((x) => x.value) };
+  };
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const set = (configId: string, value: string) => c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId, value });
+  check("on a machine that runs OpenCode, the selects offer it", offered(s.configOptions).groups.includes("opencode") && offered(s.configOptions).harnesses.includes("opencode"), offered(s.configOptions));
+  await set("model", "opencode/gpt");
+  await set("variant", "high");
+  const moved = await set("machine", "m2");
+  check("choosing a machine whose manager says OpenCode is unavailable offers it in neither select", !offered(moved.configOptions).groups.includes("opencode") && !offered(moved.configOptions).harnesses.includes("opencode"), offered(moved.configOptions));
+  check("and the selection moves to that machine's default", offered(moved.configOptions).model === "claude/default" && offered(moved.configOptions).variant === "default", offered(moved.configOptions));
+  const refused = await errorOf(set("model", "opencode/default"));
+  check("choosing OpenCode there is refused with the manager's reason", refused?.code === -32602 && refused.message?.includes(missing) === true, refused);
+  const back = await set("machine", "m1");
+  check("choosing the first machine again offers OpenCode again", offered(back.configOptions).groups.includes("opencode") && offered(back.configOptions).harnesses.includes("opencode"), offered(back.configOptions));
+  await set("model", "opencode/gpt");
+  await set("machine", "m2");
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const ran = await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("a prompt there starts that machine's default, not OpenCode", ran?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m2" && space.spawned.at(-1)?.agent === "claude", { ran, spawned: space.spawned.at(-1) });
+  c.conn.close();
+}
+// a thread no manager may start starts this machine's manager
+{
+  const space = new FakeMesh();
+  const line = "Started this machine's manager for fake. It stops itself after 10 minutes with no agents.";
+  space.noLaunch = "the space lists no live manager for you";
+  space.onStart = () => { space.noLaunch = undefined; return line; };
+  const c = connect(async () => space);
+  await c.init;
+  const chunks = (sessionId: string) => c.updates.filter((u) => u.sessionId === sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text);
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  check("a new thread no manager may start starts this machine's manager, then reads the managers again", space.starts === 1 && space.managersRead === 2, { starts: space.starts, reads: space.managersRead });
+  check("the thread opens on it with its lists", space.catalogsAsked.at(-1) === "m1" && opened.configOptions?.some((o) => o.id === "model") === true, space.catalogsAsked);
+  check("and says nothing before its first prompt", chunks(opened.sessionId).length === 0, chunks(opened.sessionId));
+  const plain = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  check("a new thread while a manager is live starts none and says nothing", space.starts === 1 && chunks(plain.sessionId).length === 0, space.starts);
+  // The manager stopped itself while the thread waited for its first prompt.
+  space.noLaunch = "the space lists no live manager for you";
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const reply = await within(c.agent.request(methods.agent.session.prompt, { sessionId: plain.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  check("a first prompt after the manager stopped starts it again before the spawn", space.starts === 2 && space.spawned.length === 1 && reply?.stopReason === "end_turn", { starts: space.starts, spawned: space.spawned.length, reply });
+  check("and the turn says so in one line, kept clear of the reply", chunks(plain.sessionId).includes(`${line}\n\n`), chunks(plain.sessionId));
+  const reads = space.managersRead;
+  space.noLaunch = "none of your managers is live (m9: offline)";
+  space.onStart = () => { throw new NoLaunchManager("Could not start this machine's manager for fake: the manager did not start: boom"); };
+  const failed = await errorOf(c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("a failed start fails the new thread with the start's reason", failed?.code === -32603 && failed.message === "Could not start this machine's manager for fake: the manager did not start: boom", failed);
+  check("and nothing is read or started after it", space.starts === 3 && space.managersRead === reads + 1, { starts: space.starts, reads: space.managersRead - reads });
+  c.conn.close();
+}
+// With no manager registered, as once the last one stopped itself, list and load say so. Neither starts
+// a manager, and the list is not answered empty in place of the refusal.
+{
+  const space = new FakeMesh();
+  space.seats = async () => { throw new NoManagerRegistered("fake"); };
+  const c = connect(async () => space);
+  await c.init;
+  const listed = await errorOf(c.agent.request(methods.agent.session.list, { cwd: dir }));
+  check("with no manager registered, session/list refuses, saying so and that a new thread starts this machine's manager",
+    listed?.code === -32603 && listed.message === "No live manager is registered for fake, so no thread is listed. A new thread starts this machine's manager.", listed);
+  const loaded = await errorOf(c.agent.request(methods.agent.session.load, { sessionId: "kept", cwd: dir, mcpServers: [] }));
+  check("and session/load refuses the same way, naming the thread",
+    loaded?.code === -32603 && loaded.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", loaded);
+  const opened = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const open = await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: opened.sessionId, prompt: [{ type: "text", text: "/open kept" }] }));
+  check("/open refuses the same way, naming the agent it asked for",
+    open?.code === -32603 && open.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", open);
+  const deleted = await errorOf(c.agent.request(methods.agent.session.delete, { sessionId: "kept" }));
+  check("deleting a thread that is not open refuses the same way, naming it",
+    deleted?.code === -32603 && deleted.message === "kept is not listed, because no live manager is registered for fake. A new thread starts this machine's manager.", deleted);
+  check("none of them starts a manager", space.starts === 0, space.starts);
+  c.conn.close();
+}
+{
+  const refused = JSON.stringify({ outcome: "refused", error: { code: "TARGET_NOT_FOUND", message: "no space named \"x\" is registered here", remedy: "see `cotal space`" } });
+  check("a refused start's reason is its own message and remedy", startFailure(2, refused, "") === "no space named \"x\" is registered here; see `cotal space`", startFailure(2, refused, ""));
+  check("a start that printed no result is named by its last stderr line", startFailure(1, "", "starting\n✗ the manager did not start: boom\n") === "✗ the manager did not start: boom");
+  check("a start that printed nothing is named by its exit code", startFailure(null, "", "") === "it exited with code null");
+  check("a start that launched the manager says it started it", startLine("x", JSON.stringify({ outcome: "ok" })) === "Started this machine's manager for x. It stops itself after 10 minutes with no agents.");
+  check("a start that found it already running, as a second thread's does, says it is running", startLine("x", JSON.stringify({ outcome: "no-op" })) === "This machine's manager for x is running. It stops itself after 10 minutes with no agents.");
+  const status = (result: unknown) => JSON.stringify({ outcome: "ok", result });
+  check("a manager status whose recorded process runs names its native instance", recordedInstance(status({ kind: "service-status", observedProcess: "running", nativeEndpoint: { instanceId: "abc" } })) === "abc");
+  check("one whose process is gone names none", recordedInstance(status({ kind: "service-status", observedProcess: "gone", nativeEndpoint: { instanceId: "abc" } })) === undefined);
+  check("one never started names none", recordedInstance(status({ kind: "service-status", instanceId: null, recordedState: "not started" })) === undefined);
+  check("a refused status names none", recordedInstance(refused) === undefined);
+  check("output that is not a result names none", recordedInstance("") === undefined);
 }
 
 // An application whose models the manager could not read is refused with the read's reason.
@@ -324,6 +555,27 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   const said = both.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
   check("/open drives such a seat too", opened === undefined && said.includes("now drives reader"), opened ?? said);
   both.conn.close();
+}
+
+// `/open` sends the opened seat's options, so the client's selects show its model.
+{
+  const unread: AgentCatalog = { agent: "opencode", available: true, eventPlane: true, models: [], modelsUnread: "Database is not empty and has no session table" };
+  const space = new FakeMesh();
+  space.catalogList = [{ agent: "claude-code", available: true, eventPlane: true, models: [{ id: "sonnet", name: "Claude Sonnet", variants: [] }] }, unread];
+  space.rows = [{ name: "coder", owner: "local", actor: "c1", lifecycleUid: "life-c", managerInstanceId: "m1", agent: "opencode", model: "anthropic/claude-opus-4-6", cwd: dir, status: "running" }];
+  const c = connect(async () => space);
+  await c.init;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  await tick();
+  c.updates.length = 0;
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "/open coder" }] }));
+  const kinds = c.updates.filter((u) => u.sessionId === s.sessionId).map((u) => u.update.sessionUpdate);
+  const update = c.updates.find((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "config_option_update")?.update as { configOptions?: unknown[] } | undefined;
+  const model = update?.configOptions?.find((o) => (o as { id: string }).id === "model") as { currentValue?: string; options?: { group: string; options: { value: string }[] }[] } | undefined;
+  check("/open sends the opened seat's options: its model, beside the models a new agent can start on",
+    model?.currentValue === "opencode/anthropic/claude-opus-4-6" && JSON.stringify(model.options?.map((g) => [g.group, g.options.map((o) => o.value)])) === JSON.stringify([["claude-code", ["claude-code/default", "claude-code/sonnet"]], ["opencode", ["opencode/anthropic/claude-opus-4-6"]]]),
+    { kinds, model });
+  c.conn.close();
 }
 
 // session/new, options, delete of an unspawned session
@@ -621,7 +873,8 @@ await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, m
 check("it loads while no manager may start a new agent, its lists read from the manager that holds it", heldFailed === undefined && mesh.catalogsAsked.slice(asked).every((m) => m === "m3") && mesh.catalogsAsked.length > asked, heldFailed ?? mesh.catalogsAsked.slice(asked));
 check("and its personas are read from that manager too", mesh.personasAsked.slice(personasAsked).every((m) => m === "m3") && mesh.personasAsked.length > personasAsked, mesh.personasAsked.slice(personasAsked));
 const noNew = await errorOf(agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
-check("a new thread is refused with the reason in the message", noNew?.code === -32603 && noNew.message === "none of your managers is live", noNew);
+check("a new thread whose manager start fails is refused with the start's reason in the message", noNew?.code === -32603 && noNew.message === "Could not start this machine's manager for fake: no start scripted", noNew);
+check("loading an agent its manager holds starts no manager", mesh.starts === 1, mesh.starts);
 mesh.noLaunch = undefined;
 // After /despawn the loaded thread may choose another machine and come back to the one that held it.
 await agent.request(methods.agent.session.load, { sessionId: "held", cwd: dir, mcpServers: [] });
@@ -662,11 +915,6 @@ let goneFailed: unknown;
 const awayFromGone = await agent.request(methods.agent.session.setConfigOption, { sessionId: "held", configId: "machine", value: "m1" }).catch((e: unknown) => { goneFailed = e; return undefined; });
 check("after the held manager stops, choosing the other machine reads its lists and keeps the held one as described at the load", goneFailed === undefined && machineOf(awayFromGone).current === "m1" && JSON.stringify(labels(awayFromGone)) === JSON.stringify(["here (this machine)", "elsewhere"]) && mesh.catalogsAsked.slice(askedGone).every((m) => m === "m1"), goneFailed ?? { machine: machineOf(awayFromGone), labels: labels(awayFromGone) });
 mesh.gone.clear();
-// A registration whose computer is gone stays listed, so a new thread with no machine chosen shows the
-// lists of a manager whose presence is current.
-mesh.managerList = [{ instanceId: "m1", host: "gone", local: false, live: false }, { instanceId: "m2", host: "there", local: false, live: true }];
-const preferLive = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
-check("with none on this machine, a new thread chooses no machine and shows a live manager's lists before the first listed", machineOf(preferLive).current === "none" && mesh.catalogsAsked.at(-1) === "m2", { machine: machineOf(preferLive), asked: mesh.catalogsAsked.at(-1) });
 mesh.managerList = [{ instanceId: "m1", host: "there", local: false, live: true }, { instanceId: "m2", host: "here", local: true, live: true }];
 const preferLocal = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch(() => undefined);
 check("this machine's manager comes before another live one listed first", machineOf(preferLocal).current === "m2", machineOf(preferLocal));
@@ -680,6 +928,65 @@ updates.length = 0;
 const failed = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: second.sessionId, prompt: [{ type: "text", text: "go" }] })));
 check("a failed run fails the prompt with the seat's message", failed?.code === -32603 && failed.message?.includes("rate limited") === true, failed);
 check("its open tool call is closed as failed", updates.some((u) => u.update.sessionUpdate === "tool_call_update" && (u.update as { status: string }).status === "failed"), updates);
+
+// A failed run with the harness's own error. Every connector publishes RUN_ERROR with only the fixed
+// text "run failed"; the harness's text and kind are on the seat's presence condition, written as each
+// connector's failure-condition code writes it, sometimes after the RUN_ERROR arrives.
+const failedTurn = async (failWith: FakeMesh["failWith"], replyFirst?: string) => {
+  const s = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const reply = replyFirst ? [[{ type: "TEXT_MESSAGE_START", messageId: "e", role: "assistant" }, { type: "TEXT_MESSAGE_CONTENT", messageId: "e", delta: replyFirst }, { type: "TEXT_MESSAGE_END", messageId: "e" }]] : [];
+  mesh.script = { before: [], after: [[{ type: "RUN_STARTED", runId: "r1" }], ...reply, [{ type: "RUN_ERROR", message: "run failed" }]] };
+  mesh.failWith = failWith;
+  updates.length = 0;
+  const error = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })));
+  mesh.failWith = undefined;
+  return { seat: s.sessionId, error, said: updates.filter((u) => u.sessionId === s.sessionId).map((u) => JSON.stringify(u.update)).join("\n") };
+};
+const conditionOf = (error: { data?: unknown } | undefined) => (error?.data as { condition?: Condition } | undefined)?.condition;
+const usage = "You've hit your usage limit. Upgrade to Pro or try again at Nov 28th, 2026 9:00 AM.";
+const harnesses: { name: string; condition: Condition; ms: number }[] = [
+  // codexCondition: the app-server's turn error, its codexErrorInfo as the source.
+  { name: "Codex", condition: { code: "billing", source: "usageLimitExceeded", message: usage }, ms: 300 },
+  // Claude Code's StopFailure hook: `error` as the source, `error_details` as the message.
+  { name: "Claude Code", condition: { code: "rate_limit", source: "rate_limit", message: "API Error: 429 rate_limit_error: This request would exceed your rate limit." }, ms: 0 },
+  // OpenCode 1.x `session.error`: its error name and `data.message`.
+  { name: "OpenCode 1.x", condition: { code: "auth", source: "ProviderAuthError", message: "Invalid API key for provider anthropic" }, ms: 150 },
+  // OpenCode 2.x `session.execution.failed`: its error type and message.
+  { name: "OpenCode 2.x", condition: { code: "auth", source: "provider.auth", message: "Missing API key" }, ms: 150 },
+  // Pi: the assistant message's errorMessage, under its stop reason.
+  { name: "Pi", condition: { code: "failed", source: "error", message: "No API key found for anthropic" }, ms: 50 },
+  // Jcode: the Harness API error's code and message.
+  { name: "Jcode", condition: { code: "rate_limit", source: "rate_limit", message: "provider returned 429 Too Many Requests" }, ms: 50 },
+];
+for (const h of harnesses) {
+  const { seat, error } = await failedTurn({ condition: { ...h.condition, since: Date.now() }, ms: h.ms });
+  const kept = conditionOf(error);
+  check(`${h.name}: a failed turn fails the prompt with the harness's own text and kind, not "run failed"`,
+    error?.code === -32603 && error.message === `${seat}'s turn failed: ${h.condition.message} (${h.condition.source})`, error);
+  check(`${h.name}: the error's data carries the condition's code, source and message`,
+    kept?.code === h.condition.code && kept.source === h.condition.source && kept.message === h.condition.message, error?.data);
+}
+{
+  // Hermes writes no condition. The gateway's own error reply arrives as the agent's text, and the
+  // failure still says the turn failed, without the fixed "run failed".
+  const { seat, error, said } = await failedTurn(undefined, "API call failed after 3 retries: HTTP 402 insufficient credits");
+  check("Hermes: the gateway's own error reply reaches the thread as the agent's text", said.includes("insufficient credits"), said);
+  check("a failed turn with no text from the harness still says it failed, without \"run failed\"",
+    error?.code === -32603 && error.message === `${seat}'s turn failed` && error.data === undefined, error);
+}
+{
+  // A condition the seat showed before the prompt is not this turn's.
+  const s = await agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  mesh.conditions.set(`actor-${s.sessionId}`, { condition: { code: "auth", source: "old", message: "an earlier failure" }, at: Date.now() - 1000 });
+  mesh.script = { before: [], after: [[{ type: "RUN_STARTED", runId: "r1" }], [{ type: "RUN_ERROR", message: "run failed" }]] };
+  const error = await errorOf(within(agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })));
+  check("a condition from before the prompt is not given as the turn's failure", error?.message === `${s.sessionId}'s turn failed`, error);
+}
+{
+  // A seat waiting on an approval is not failing for that reason.
+  const { seat, error } = await failedTurn({ condition: { code: "approval", message: "Allow Bash?" }, ms: 0 });
+  check("an approval condition is not given as the turn's failure", error?.message === `${seat}'s turn failed`, error);
+}
 
 // cancel
 const cancel = (sessionId: string) => conn.agent.notify(methods.agent.session.cancel, { sessionId });
@@ -768,33 +1075,6 @@ await tick(20);
 check("closing the client closes the space", mesh.closed);
 check("a thread's agent name is a valid user-mode actor token", (() => { try { return assertValidOwnerToken(defaultName()) !== ""; } catch { return false; } })());
 
-// With no manager of the person's on this machine, as on a computer whose manager is not running while
-// another computer's is, a new thread has no machine. Another computer cannot use this machine's
-// folder, and an unpinned spawn would let the space's exchange pick any manager.
-for (const others of [["m2"], ["m2", "m3"]]) {
-  const away = new FakeMesh();
-  away.managerList = others.map((instanceId) => ({ instanceId, host: `host-${instanceId}`, local: false, live: true }));
-  const c = connect(async () => away);
-  await c.init;
-  const n = `${others.length} other ${others.length === 1 ? "computer" : "computers"}`;
-  let failed: unknown;
-  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }).catch((e: unknown) => { failed = e; return undefined; });
-  const machineIn = (r: { configOptions?: unknown[] | null } | undefined) => {
-    const o = r?.configOptions?.find((x) => (x as { id: string }).id === "machine") as { currentValue?: string; options?: { value: string }[] } | undefined;
-    return { current: o?.currentValue, choices: (o?.options ?? []).map((x) => x.value) };
-  };
-  check(`with ${n} and none here, session/new reads a named manager's lists`, s !== undefined && away.catalogsAsked[0] === "m2", failed ?? away.catalogsAsked);
-  check(`and offers the Machine option with no machine chosen, listing ${n}`, JSON.stringify(machineIn(s)) === JSON.stringify({ current: "none", choices: ["none", ...others] }), machineIn(s));
-  away.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
-  const refused = s ? await errorOf(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })) : undefined;
-  check("a prompt before a Machine is chosen fails with one line saying none of yours runs here, and spawns nothing",
-    refused?.code === -32602 && refused.message === "No manager of yours runs on this machine. Start one with `cotal manager start --space fake`, or choose another computer in the Machine option." && away.spawned.length === 0, { refused, spawned: away.spawned });
-  const chosen = s ? await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "machine", value: "m2" }).catch(() => undefined) : undefined;
-  check("choosing a computer makes it the Machine, and the list keeps it", JSON.stringify(machineIn(chosen)) === JSON.stringify({ current: "m2", choices: others }), machineIn(chosen));
-  const first = s ? await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] })) : undefined;
-  check("then the prompt spawns pinned to the chosen computer and answers", first?.stopReason === "end_turn" && away.spawned.length === 1 && away.spawned[0]?.managerInstanceId === "m2", { first, pins: away.spawned.map((r) => r.managerInstanceId) });
-  c.conn.close();
-}
 // The opt-in launch fields: asked for where the manager says the connector takes them.
 {
   const fields = new FakeMesh();
@@ -821,6 +1101,32 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   const refused = await errorOf(start("pi/default"));
   check("the manager's refusal of a launch field fails the prompt with its reason as is", refused?.message?.includes("does not support asking before tool use (askPermissions)") === true, refused);
   fields.spawn = spawn;
+  c.conn.close();
+}
+// A catalog model whose id is `default`, as a custom endpoint serving one under that id lists it, is
+// a model the spawn names. Without one, `<agent>/default` leaves the model to the application.
+{
+  const space = new FakeMesh();
+  space.catalogList = [
+    { agent: "hermes", available: true, eventPlane: true, models: [{ id: "default", variants: ["none", "low", "high"] }] },
+    { agent: "claude", available: true, eventPlane: true, models: [{ id: "opus", variants: ["high"] }] },
+  ];
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const c = connect(async () => space);
+  await c.init;
+  const start = async (model: string, variant?: string): Promise<SpawnRequest | undefined> => {
+    const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+    await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: model });
+    if (variant) await c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "variant", value: variant });
+    const before = space.spawned.length;
+    await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+    return space.spawned.length > before ? space.spawned.at(-1) : undefined;
+  };
+  const listed = await start("hermes/default", "high");
+  check("an application whose catalog lists a model with id default spawns naming that model, with the chosen variant",
+    listed?.agent === "hermes" && listed.model === "default" && listed.variant === "high", listed);
+  const own = await start("claude/default");
+  check("an application whose catalog lists no default spawns naming no model", own?.agent === "claude" && !("model" in own) && !("variant" in own), own);
   c.conn.close();
 }
 // The seat's agent endpoint: the prompts its harness opens and the commands it runs.
@@ -1076,6 +1382,67 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   await tick(300);
   space.present.set(seat.actor, "idle");
   check("once answered, the answer goes back and the turn ends", (await next)?.stopReason === "end_turn" && callsOf("prompt-answer").length === 1 && callsOf("prompt-answer")[0]!.args.option === "yes", { next: await next, answers: callsOf("prompt-answer") });
+  c.conn.close();
+}
+// On a running thread, the model and reasoning choices switch the seat through its `set-model`.
+{
+  const space = new FakeMesh();
+  const shown = { interrupt: true, turn: true, images: true, usage: true, setModel: true };
+  space.serving = shown;
+  let refusal: AgentCallFailed | undefined;
+  space.onAgentCall = (_seat, command, args) => {
+    switch (command) {
+      case "prompts": return { runtime: { id: "rt", startedAt: 1 }, seq: 0, open: [], closed: [] };
+      case "commands": return { supported: false };
+      case "usage": return { supported: false };
+      case "set-model":
+        if (refusal) throw refusal;
+        return { model: args.model, ...(args.variant !== undefined ? { variant: args.variant } : {}) };
+    }
+    throw new AgentCallFailed(`unexpected ${command}`, "unimplemented");
+  };
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const c = connect(async () => space);
+  await c.init;
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const set = (configId: string, value: string) => c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId, value });
+  const current = (r: { configOptions?: readonly { id: string }[] | null } | undefined, id: string) => (r?.configOptions?.find((o) => o.id === id) as { currentValue?: string } | undefined)?.currentValue;
+  const calls = () => space.agentCalls.filter((x) => x.command === "set-model").map((x) => x.args);
+  await set("model", "claude/opus");
+  space.counters.set(`actor-${s.sessionId}`, { runtime: "rt", open: 0, seq: 0 });
+  await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
+  let failed: unknown;
+  const switched = await set("model", "claude/sonnet").catch((e: unknown) => { failed = e; return undefined; });
+  check("choosing another model of the seat's application on a running thread switches the seat through set-model, and the options show it",
+    JSON.stringify(calls()) === '[{"model":"sonnet"}]' && current(switched, "model") === "claude/sonnet", failed ?? { calls: calls(), options: switched?.configOptions });
+  failed = undefined;
+  const effort = await set("variant", "low").catch((e: unknown) => { failed = e; return undefined; });
+  check("choosing a reasoning variant there switches it with the model it runs, and the options show it",
+    JSON.stringify(calls().at(-1)) === '{"model":"sonnet","variant":"low"}' && current(effort, "variant") === "low", failed ?? { calls: calls(), options: effort?.configOptions });
+  const before = calls().length;
+  const harness = await errorOf(set("model", "pi/default"));
+  check("a model of another application is refused there, naming /despawn, and switches nothing", harness?.code === -32602 && String(harness.message).includes("/despawn") && calls().length === before, harness);
+  refusal = new AgentCallFailed("the harness has no model gpt-x", "failed-precondition");
+  const refusedSwitch = await errorOf(set("model", "claude/haiku"));
+  check("the seat's refusal fails the choice with its reason and keeps the model it runs",
+    refusedSwitch?.code === -32602 && String(refusedSwitch.message).includes("has no model gpt-x"), refusedSwitch);
+  refusal = undefined;
+  const kept = await set("variant", "default").catch(() => undefined);
+  check("...and keeps the model it runs: the model default variant switches that model",
+    JSON.stringify(calls().at(-1)) === '{"model":"sonnet"}' && current(kept, "model") === "claude/sonnet" && current(kept, "variant") === "default", { calls: calls(), options: kept?.configOptions });
+  const persona = await errorOf(set("persona", "reviewer"));
+  check("an option that applies only at spawn is still refused on a running thread", persona?.code === -32602 && String(persona.message).includes("/despawn"), persona);
+  space.serving = { ...shown, setModel: false };
+  refusal = new AgentCallFailed("this agent's connector cannot switch its model now: the command mod is not running in this Claude Code session", "unimplemented");
+  const unsupported = await errorOf(set("model", "claude/haiku"));
+  check("a seat that shows it cannot switch now is refused with the harness, the seat's own cause and /despawn",
+    unsupported?.code === -32602 && String(unsupported.message).includes("claude: this agent's connector cannot switch its model now: the command mod is not running") && String(unsupported.message).includes("/despawn"), unsupported);
+  refusal = undefined;
+  space.serving = { interrupt: true, turn: true, images: true, usage: true };
+  const called = calls().length;
+  const older = await errorOf(set("model", "claude/haiku"));
+  check("a seat that predates set-model is refused with the harness named and /despawn, and nothing is called",
+    older?.code === -32602 && String(older.message).includes("whose connector cannot switch") && String(older.message).includes("/despawn") && calls().length === called, older);
   c.conn.close();
 }
 // /name, /open and the thread links.

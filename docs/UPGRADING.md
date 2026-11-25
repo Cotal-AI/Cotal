@@ -15,6 +15,35 @@ Do not copy the stored headers, sender or message ID. For custom receivers, core
 `hasStoredOrigin(headers)` to identify these reserved names. Do not apply it to answers to
 storage reads your client initiated, such as a roster lookup.
 
+## Switching a running agent's model
+
+The `agent` cluster advances to revision 6 with `set-model`, which the owner
+calls to switch a running agent's model and variant. The auth callout grants it, so update and
+restart every member of the callout queue, then reconnect each person's clients. A connect that an
+old member answers gets no `set-model` permission. An agent whose connector predates `set-model`
+omits `setModel` from its presence `agentEndpoint`, and a client reads that as not served.
+
+Presence `agentEndpoint` gains the optional boolean `setModel`. A reader older than this accepts the
+field, because it checks only the four flags it knows.
+
+A Manager keeps a switch the agent's presence shows and starts the agent on it when it restarts or
+resumes it. An older Manager starts it on its launch model. The Manager and `cotal spawn` also tell
+an agent whose role `modelPolicy` governs, through `COTAL_MODEL_POLICY`, so it refuses every switch.
+An agent launched by an older Manager or CLI is not told, so on a space whose cotal config sets
+`modelPolicy`, update the Manager and the CLI with the connectors.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. A Manager service that an older release started on this machine keeps
+running after `cotal update --self` and names no machine. `cotal acp` still recognises it as
+running here, by the native instance that `cotal manager status` shows for the space, and starts no
+second Manager. Any other Manager that names no machine counts as another computer's until it runs
+the new version.
+
 ## The agent endpoint on every space
 
 Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where

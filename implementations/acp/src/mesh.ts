@@ -27,12 +27,13 @@ export interface AgentCatalog {
 }
 
 /** Which `agent` endpoint commands a seat serves now, as its presence `agentEndpoint` field says
- *  (SPEC §6). */
+ *  (SPEC §6). A seat older than `set-model` omits `setModel`. */
 export interface AgentEndpointServes {
   readonly interrupt: boolean;
   readonly turn: boolean;
   readonly images: boolean;
   readonly usage: boolean;
+  readonly setModel?: boolean;
 }
 
 export interface CatalogModel {
@@ -59,8 +60,11 @@ export interface ChannelRow {
 /** A manager the bridge can spawn through. */
 export interface ManagerChoice {
   readonly instanceId: string;
+  /** The host name it reported, shown and never compared. */
   readonly host?: string;
-  /** The manager runs on the host this process runs on. */
+  /** The manager runs on this process's machine: it names this machine's id (`managerMachineId`),
+   *  or it names none, as one an older release started, and this machine's manager service record
+   *  says it runs here. */
   readonly local: boolean;
   /** The manager's presence is current, or, with no presence row to read, it answered for its host.
    *  A registration whose computer is gone can stay listed. */
@@ -145,6 +149,14 @@ export interface PromptCounter {
   readonly seq: number;
 }
 
+/** A seat's presence condition (SPEC §6), as its connector relays the harness's own report: the code,
+ *  the harness's native kind as `source`, and its text. */
+export interface SeatCondition {
+  readonly code: string;
+  readonly source?: string;
+  readonly message?: string;
+}
+
 export interface RosterEntry {
   readonly name: string;
   readonly status: string;
@@ -167,6 +179,15 @@ export class LaunchListsRefused extends Error {
  *  live. The agents they have stay listed and controllable. The message says why. */
 export class NoLaunchManager extends Error {
   override readonly name = "NoLaunchManager";
+}
+
+/** No live manager is registered for the space, as once the last one stopped itself, so none runs
+ *  there to list the agents. */
+export class NoManagerRegistered extends Error {
+  override readonly name = "NoManagerRegistered";
+  constructor(readonly space: string) {
+    super(`No live manager is registered for ${space}`);
+  }
 }
 
 /** What a person on a space where people sign in can do about a registered manager that does not
@@ -195,6 +216,13 @@ export interface Mesh {
   /** The managers this caller can spawn through. On a space where people sign in, rejects with
    *  {@link NoLaunchManager} when none may. */
   managers(): Promise<ManagerChoice[]>;
+  /** Start this machine's manager for the space, for a new agent that no manager may start. It stops
+   *  itself after a while with no agents. Resolves with the line the thread shows; rejects with
+   *  {@link NoLaunchManager} naming the start's reason. */
+  startManager(): Promise<string>;
+  /** Why this machine's identity could not be read, undefined when it could. Without it no manager
+   *  reads as this machine's, so a thread neither defaults to one nor starts one. */
+  machineUnreadable(): string | undefined;
   /** One manager as a choice, described from its presence, or from its own answer when its presence
    *  row is not found. */
   manager(instanceId: string): Promise<ManagerChoice>;
@@ -203,7 +231,8 @@ export interface Mesh {
   personas(managerInstanceId?: string): Promise<PersonaRow[]>;
   /** Launch a seat and wait until the manager confirms it joined. */
   spawn(request: SpawnRequest): Promise<SeatRef>;
-  /** Every managed seat the caller can see. */
+  /** Every managed seat the caller can see. Rejects with {@link NoManagerRegistered} when no live
+   *  manager is registered for the space. */
   seats(): Promise<SeatList>;
   /** Stop one seat through the manager that holds it. */
   despawn(seat: SeatRef): Promise<void>;
@@ -235,6 +264,10 @@ export interface Mesh {
   /** A seat's presence status (`idle`, `working`, `waiting`), or undefined when it is not on the
    *  roster. */
   presence(seat: SeatRef): string | undefined;
+  /** The condition the seat's presence carries now, when this process saw it arrive at or after
+   *  `since`, its own clock in epoch ms; undefined otherwise. A failed turn's text is here: the run's
+   *  `RUN_ERROR` carries only a fixed message. */
+  condition(seat: SeatRef, since: number): SeatCondition | undefined;
   roster(): Promise<RosterEntry[]>;
   /** The space's channels, by name, without the agents' event channels. */
   channels(): Promise<ChannelRow[]>;
