@@ -1,31 +1,51 @@
 import { randomBytes } from "node:crypto";
-import { renameSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, lstatSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { globalConfigDir, globalConfigPath, readCotalConfigFile, type McpServerSpec } from "@cotal-ai/core";
 import { acquireLock } from "./advisory-lock.js";
+import { shellPath } from "./local-record-source.js";
 
-/** Why the operator config folder can hold nothing, or undefined when it is a folder or not made yet.
- *  A file at it, or at a folder above it, fails every read and write of the preferences, the config
- *  file and the extensions there; the result names that path and how to clear it. */
-export function globalConfigDirProblem(): { readonly message: string; readonly remedy: string } | undefined {
-  const dir = globalConfigDir();
+/** The obstructing component of a directory path, if it cannot be traversed. */
+export function directoryReadProblem(dir: string): { readonly path: string; readonly message: string; readonly remedy: string; readonly blockedByFile?: true } | undefined {
   for (let path = dir; ; path = dirname(path)) {
+    const parent = dirname(path);
     let stat;
-    try {
-      stat = statSync(path, { throwIfNoEntry: false });
-    } catch {
-      return undefined;
+    try { stat = lstatSync(path, { throwIfNoEntry: false }); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (parent === path || !["ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(code ?? "")) {
+        return { path, message: `${path} cannot be inspected: ${error instanceof Error ? error.message : String(error)}`,
+          remedy: `check that ${path} is an accessible folder before retrying` };
+      }
+      continue;
     }
     if (stat) {
-      if (stat.isDirectory()) return undefined;
-      const what = `${path} is ${stat.isFile() ? "a file, not a folder" : "not a folder"}`;
-      return {
-        message: path === dir ? `the Cotal config folder ${what}` : `the Cotal config folder ${dir} cannot be made: ${what}`,
-        remedy: `move ${path} aside, for example \`mv ${path} ${path}.old\`; Cotal makes the folder when it next saves there`,
-      };
+      try {
+        const target = stat.isSymbolicLink() ? statSync(path) : stat;
+        if (target.isDirectory()) { accessSync(path, constants.X_OK); return undefined; }
+        const what = target.isFile() ? "a file, not a folder" : "not a folder";
+        return { path, message: `${path} is ${what}`, remedy: `move ${path} aside, for example \`mv ${shellPath(path)} ${shellPath(`${path}.old`)}\`; Cotal makes the folder when it next saves there`,
+          ...(target.isFile() ? { blockedByFile: true } : {}) };
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EACCES" || code === "EPERM") {
+          return { path, message: `${path} cannot be searched by this account (${code})`, remedy: `restore search access to ${path}, for example with \`chmod u+x ${shellPath(path)}\` if you own it` };
+        }
+        return { path, message: `${path} cannot be resolved as a folder: ${error instanceof Error ? error.message : String(error)}`,
+          remedy: `restore the folder or correct the link at ${path} before retrying` };
+      }
     }
-    if (dirname(path) === path) return undefined;
+    if (parent === path) return undefined;
   }
+}
+
+/** Name the path that blocks access to the operator config, if any. */
+export function globalConfigDirProblem(): { readonly message: string; readonly remedy: string; readonly blockedByFile?: true } | undefined {
+  const dir = globalConfigDir();
+  const problem = directoryReadProblem(dir);
+  if (!problem) return;
+  const { path, message, ...detail } = problem;
+  return { message: path === dir ? `the Cotal config folder ${message}` : `the Cotal config folder ${dir} cannot be made: ${message}`, ...detail };
 }
 
 /** Record `servers` as what `connector` shares, in the operator-level cotal config, unless that file

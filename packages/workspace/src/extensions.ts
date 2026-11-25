@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { connectorConfigDir } from "./connector-retention.js";
 import { inspectLock } from "./advisory-lock.js";
-import { globalConfigDirProblem } from "./cotal-config.js";
+import { directoryReadProblem } from "./cotal-config.js";
 import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
 import type { ServicePreset } from "./service-preset.js";
 import { serviceAdapterDeclaration } from "./service-adapter.js";
@@ -146,10 +146,8 @@ export class CorruptExtensionsManifestError extends Error {
   }
 }
 
-/** Load the manifest. Missing file → no extensions, and so is a config folder that is a file, which
- *  can hold none (every command that would use that folder is refused, naming it). A CORRUPT or
- *  unreachable file is a loud error (never treat installed extensions as absent — commands would
- *  silently vanish from help). */
+/** An absent manifest in a usable path means no extensions. Corrupt or unreachable inventory
+ *  must not silently shrink the command surface. */
 export function loadExtensionsManifest(p = extensionsManifestPath()): ExtensionsManifest {
   let parsed: unknown;
   try {
@@ -162,8 +160,11 @@ export function loadExtensionsManifest(p = extensionsManifestPath()): Extensions
       closeSync(fd);
     }
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) return { extensions: [] };
-    if ((e as NodeJS.ErrnoException).code === "ENOTDIR" && globalConfigDirProblem()) return { extensions: [] };
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(p, { throwIfNoEntry: false })) {
+      const problem = directoryReadProblem(dirname(p));
+      if (!problem) return { extensions: [] };
+      throw new Error(`the extension inventory path is blocked: ${problem.message}`);
+    }
     throw new CorruptExtensionsManifestError(p, (e as Error).message);
   }
   const m = parsed as ExtensionsManifest | null;

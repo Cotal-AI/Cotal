@@ -53,6 +53,11 @@ if (!["linux", "darwin"].includes(process.platform)) {
     assert.equal(blockedText.stdout.split("\n", 1)[0], `cotal-ai ${originalVersion}`);
     assert.ok(blockedText.stderr.includes(receipt.error.remedy), blockedText.stderr);
     assert.doesNotMatch(blockedText.stderr, /ext seed --repair/);
+    const identityProbe = spawnSync(process.execPath, [entry, "--version"], {
+      env: { ...cleanEnv, HOME: scratch, COTAL_HOME: join(scratch, "home"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" }, cwd: scratch, encoding: "utf8", timeout: 15_000,
+    });
+    assert.equal(identityProbe.status, 0, identityProbe.stderr);
+    assert.equal(identityProbe.stdout, `cotal-ai ${originalVersion}\n`);
     const blockedWatch = withConfig(xdg, "watch", "--json");
     assert.equal(blockedWatch.status, 1, blockedWatch.stdout + blockedWatch.stderr);
     assert.equal(blockedWatch.stderr, "");
@@ -99,6 +104,13 @@ if (!["linux", "darwin"].includes(process.platform)) {
     assert.equal(legacyReport.result.reconciliation.source, "promotion");
     assert.match(legacyReport.warnings[0].message, /extension promotion is unfinished/);
     assert.equal(readFileSync(legacyJournal, "utf8"), "interrupted journal\n");
+    rmSync(legacyJournal);
+    symlinkSync("missing-extensions", join(legacy, "cotal", "extensions"));
+    const danglingPrefix = withConfig(legacy, "version", "--json");
+    assert.equal(danglingPrefix.status, 4, danglingPrefix.stdout + danglingPrefix.stderr);
+    const prefixReport = JSON.parse(danglingPrefix.stdout);
+    assert.equal(prefixReport.result.reconciliation.source, "prefix");
+    assert.match(prefixReport.error.remedy, /correct the link/);
     writeExecutionDescriptor(installed, descriptor);
     writeFileSync(join(installed, "package.json"), JSON.stringify({ ...JSON.parse(originalManifest), version: "99.0.0" }));
     const publishing = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });

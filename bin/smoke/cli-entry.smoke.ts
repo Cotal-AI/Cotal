@@ -32,7 +32,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -490,6 +490,38 @@ const envelopes = (r: Run) => {
     check("rig: create a writerless manifest FIFO", fifo.status === 0, fifo.error);
     partialVersion("version --json reports a writerless manifest FIFO without waiting", ["version", "--json"], /not a regular file/);
     rmSync(manifest, { force: true });
+
+    symlinkSync("missing-journal.json", journal);
+    partialVersion("version --json rejects a dangling promotion journal", ["version", "--json"], /extension promotion journal .* is not a regular file/);
+    const recovery = versionRun(["ext", "list"]);
+    check("ext list also refuses a dangling promotion journal", recovery.status === 1 && recovery.stdout === ""
+      && /extension promotion journal .* is not a regular file/.test(recovery.stderr) && readlinkSync(journal) === "missing-journal.json", shown(recovery));
+    rmSync(journal);
+
+    const prefix = dirname(manifest);
+    rmdirSync(prefix);
+    symlinkSync("missing-prefix", prefix);
+    partialVersion("version --json distinguishes a dangling prefix from an empty installation", ["version", "--json"], /cannot be resolved as a folder/);
+    const unreachable = versionRun(["--version"]);
+    check("text version names the dangling prefix and leaves the link unchanged", unreachable.status === 4
+      && unreachable.stdout === damagedText.stdout && unreachable.stderr.includes(prefix) && unreachable.stderr.includes("correct the link")
+      && !unreachable.stderr.includes("ext seed --repair") && readlinkSync(prefix) === "missing-prefix", shown(unreachable));
+    rmSync(prefix);
+
+    const configFolder = dirname(prefix);
+    chmodSync(configFolder, 0);
+    try {
+      if (process.getuid?.() !== 0) {
+        partialVersion("version --json reports denied config search access rather than a promotion", ["version", "--json"], /cannot be searched by this account \(EACCES\)/);
+        const denied = versionRun(["--version"]);
+        check("text version gives a path-specific search permission remedy", denied.status === 4 && denied.stderr.includes(`chmod u+x ${configFolder}`)
+          && !denied.stderr.includes("promotion"), shown(denied));
+      }
+    } finally { chmodSync(configFolder, 0o700); }
+    rmdirSync(configFolder);
+    symlinkSync("missing-config", configFolder);
+    partialVersion("version --json distinguishes a dangling config folder from absence", ["version", "--json"], /cannot be resolved as a folder/);
+    check("version does not change a dangling config link", readlinkSync(configFolder) === "missing-config");
   }
 
   // Under --json the envelope alone reports a refusal: its message is the reason, and stderr stays empty.

@@ -4,7 +4,7 @@ import { dirname, isAbsolute } from "node:path";
 import { setFlagsFromString } from "node:v8";
 import { ensureSupportedNode } from "./cotal.js";
 
-// The updater probes this form. Leave usage and invalid-home diagnostics to the dispatcher.
+// Leave usage and invalid-home diagnostics to the dispatcher.
 async function runVersionFlag(): Promise<boolean> {
   if (process.argv.length !== 3 || (process.argv[2] !== "--version" && process.argv[2] !== "-V")) return false;
   const { cotalHomeProblem } = await import("@cotal-ai/workspace");
@@ -12,11 +12,13 @@ async function runVersionFlag(): Promise<boolean> {
   if ((home && !isAbsolute(home)) || cotalHomeProblem()) return false;
   const { completeFileWrites, stdoutError } = await import("@cotal-ai/cli/dispatch");
   const { cliVersion, reportVersion } = await import("@cotal-ai/cli/version");
-  (await import("./update-notice.js")).installUpdateNotice(process.argv.slice(2), cliVersion());
+  // Existing daemon and installer probes check execution identity before they reconcile extensions.
+  const identityProbe = process.argv[2] === "--version" && !process.stdout.isTTY && process.env.COTAL_SKIP_CONNECTOR_SEED === "1";
+  if (!identityProbe) (await import("./update-notice.js")).installUpdateNotice(process.argv.slice(2), cliVersion());
   process.stdout.on("error", stdoutError);
   completeFileWrites();
   await (await import("./startup-interrupt.js")).releaseStartupInterrupt();
-  reportVersion("plain");
+  reportVersion("plain", { identityProbe });
   return true;
 }
 

@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { cachedUpdateSummary, CorruptExtensionsManifestError, EXTENSION_PROMOTION_JOURNAL, extensionProvides, extensionsManifestPath, globalConfigDirProblem, loadExtensionsManifest, logicalExecutionEntry, UnreadableConnectorSelection, writeResult } from "@cotal-ai/workspace";
+import { cachedUpdateSummary, CorruptExtensionsManifestError, directoryReadProblem, EXTENSION_PROMOTION_JOURNAL, extensionProvides, extensionsManifestPath, globalConfigDirProblem, hasExtensionPromotionJournal, isCommandFailure, loadExtensionsManifest, logicalExecutionEntry, UnreadableConnectorSelection, writeResult } from "@cotal-ai/workspace";
 import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 import { manifestRepair, readUpdatePending } from "./update-pending.js";
@@ -98,46 +98,69 @@ export function printVersion(exts = extensionVersions()): void {
 }
 
 interface VersionInventoryProblem {
-  readonly source: "config" | "selection" | "promotion" | "manifest";
+  readonly source: "config" | "selection" | "promotion" | "prefix" | "manifest";
   readonly error: string;
   readonly diagnosis?: string;
   readonly instruction?: string;
   readonly unreadableSelection?: true;
+  readonly probeCanProceed?: true;
 }
 
-function versionInventory(): { versions: ExtensionVersion[]; problem?: VersionInventoryProblem } {
+type VersionInventory = { versions: ExtensionVersion[]; problem?: VersionInventoryProblem };
+
+function manifestInventory(manifest: string): VersionInventory {
+  const { versions, unreadable, diagnosis } = readExtensionVersions(manifest);
+  return unreadable === undefined ? { versions } : { versions, problem: { source: "manifest", error: unreadable, diagnosis, instruction: manifestRepair } };
+}
+
+function versionInventory(identityProbe: boolean): VersionInventory {
   const config = globalConfigDirProblem();
-  if (config) return { versions: [], problem: { source: "config", error: config.message, instruction: config.remedy } };
+  if (config) return { versions: [], problem: { source: "config", error: config.message, instruction: config.remedy,
+    ...(config.blockedByFile ? { probeCanProceed: true } : {}) } };
   let manifest: string;
   try { manifest = extensionsManifestPath(); }
   catch (error) {
     return { versions: [], problem: { source: "selection", error: error instanceof Error ? error.message : String(error),
-      ...(error instanceof UnreadableConnectorSelection ? { unreadableSelection: true, instruction: "Run `cotal ext seed --repair` to repair the connectors." } : {}) } };
+      ...(error instanceof UnreadableConnectorSelection ? { unreadableSelection: true, instruction: "Run `cotal ext seed --repair` to repair the connectors." } :
+        isCommandFailure(error) ? { instruction: error.remedy } : {}) } };
   }
   const prefix = dirname(manifest);
+  const blocked = directoryReadProblem(prefix);
+  if (blocked) return { versions: [], problem: { source: "prefix", error: blocked.message, instruction: blocked.remedy } };
   const journal = join(dirname(prefix), EXTENSION_PROMOTION_JOURNAL);
   const prefixIdentity = () => {
     const stat = lstatSync(prefix, { throwIfNoEntry: false, bigint: true });
     return stat && `${stat.dev}:${stat.ino}`;
   };
-  const promotion = () => lstatSync(journal, { throwIfNoEntry: false });
+  const promotion = () => hasExtensionPromotionJournal(journal);
   try {
     const before = prefixIdentity();
-    const inventory = promotion() ? undefined : readExtensionVersions(manifest);
-    if (!inventory || promotion() || before !== prefixIdentity()) {
+    const beforePromotion = promotion();
+    const inventory = !beforePromotion || identityProbe ? manifestInventory(manifest) : undefined;
+    if (identityProbe && inventory?.problem) return inventory;
+    if (!inventory || beforePromotion || promotion() || before !== prefixIdentity()) {
       return { versions: [], problem: { source: "promotion", error: `extension promotion is unfinished or changed during the inventory read (${journal})`,
-        instruction: "Run `cotal ext list` with the installation that owns this inventory to check whether recovery can finish." } };
+        instruction: "Run `cotal ext list` with the installation that owns this inventory to check whether recovery can finish.", probeCanProceed: true } };
     }
-    const { versions, unreadable, diagnosis } = inventory;
-    return unreadable === undefined ? { versions } : { versions, problem: { source: "manifest", error: unreadable, diagnosis, instruction: manifestRepair } };
+    return inventory;
   } catch (error) {
-    return { versions: [], problem: { source: "promotion", error: `extension promotion state at ${journal} could not be checked: ${error instanceof Error ? error.message : String(error)}` } };
+    const config = globalConfigDirProblem();
+    if (config) return { versions: [], problem: { source: "config", error: config.message, instruction: config.remedy } };
+    const prefixProblem = directoryReadProblem(prefix);
+    if (prefixProblem) return { versions: [], problem: { source: "prefix", error: prefixProblem.message, instruction: prefixProblem.remedy } };
+    return { versions: [], problem: { source: "promotion", error: error instanceof Error ? error.message : String(error),
+      instruction: `inspect the extension promotion journal at ${journal} before retrying` } };
   }
 }
 
 /** Report the running version even when the extension inventory cannot be read. */
-export function reportVersion(format: "plain" | "json"): void {
-  const { versions, problem } = versionInventory();
+export function reportVersion(format: "plain" | "json", { identityProbe = false } = {}): void {
+  const { versions, problem } = versionInventory(identityProbe);
+  // A verified executable can leave config setup or promotion recovery to the next command.
+  if (identityProbe && problem?.probeCanProceed) {
+    console.log(`cotal-ai ${cliVersion()}`);
+    return;
+  }
   const { current, update, pending } = versionMetadata(problem ? null : versions);
   const reconciliation = problem && pending.kind === "none"
     ? { kind: "unreadable" as const, source: problem.source, error: problem.error, ...(problem.instruction && { instruction: problem.instruction }) } : pending;

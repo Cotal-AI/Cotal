@@ -36,7 +36,7 @@ try {
     const { old, stage, root: live } = JSON.parse(journalBytes.toString("utf8")) as { old: string; stage: string; root: string };
     const before = [old, stage, live].map(path => existsSync(path));
     for (const args of [["version"], ["--version"], ["-V"]]) {
-      const version = run(args);
+      const version = run(args, { COTAL_SKIP_CONNECTOR_SEED: "0" });
       check.equal(version.status, 4, version.stdout + version.stderr);
       check.match(version.stdout, /^cotal-ai \S+\n$/);
       check.match(version.stderr, /extension promotion.*\.extensions-promotion\.json/);
@@ -47,6 +47,10 @@ try {
     const report = JSON.parse(json.stdout);
     check.equal(report.completeness, "partial");
     check.equal(report.result.reconciliation.source, "promotion");
+    const probe = run(["--version"]);
+    check.equal(probe.status, 0, probe.stdout + probe.stderr);
+    check.equal(probe.stdout, `cotal-ai ${report.result.version}\n`);
+    check.equal(probe.stderr, "");
     check.deepEqual(readFileSync(journal), journalBytes);
     check.deepEqual([old, stage, live].map(path => existsSync(path)), before);
     chmodSync(join(old, "node_modules/promotion-crash-fixture"), 0o500);

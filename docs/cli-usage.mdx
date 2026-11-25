@@ -287,10 +287,15 @@ print the running CLI version to stdout. They report the inventory problem on st
 JSON output reports the same partial result with an `EXTENSIONS_UNREADABLE` warning. For a corrupt
 manifest, the repair instruction points to `cotal ext seed --repair`. If a file occupies the config
 folder and blocks the inventory read, the report names that file and tells you to move it aside
-instead. A pending extension promotion also leaves the inventory unverified. The version command
+instead. A broken link or missing search permission is reported with the path that blocks the read.
+A pending extension promotion also leaves the inventory unverified. The version command
 reports it as partial and leaves recovery to `cotal ext list` in the installation that owns it.
 A connector selection that belongs to another installation gets its own diagnostic. The version
 command does not repair or change extension state.
+
+The installer and daemon capture the output of standalone `--version` with
+`COTAL_SKIP_CONNECTOR_SEED=1` before reconciling extensions. That probe can confirm the binary
+version when configuration is blocked or an extension promotion is unfinished.
 
 | Field | Meaning |
 |---|---|

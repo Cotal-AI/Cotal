@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource, EXTENSION_PROMOTION_JOURNAL } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource, EXTENSION_PROMOTION_JOURNAL, hasExtensionPromotionJournal } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -21,8 +21,7 @@ function save(record: Promotion): void {
 }
 function checkedRecord(): Promotion | undefined {
   const path = journalPath();
-  if (!existsSync(path)) return undefined;
-  if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error("extension promotion journal is not a regular file");
+  if (!hasExtensionPromotionJournal(path)) return undefined;
   assertProtectedFileAccess();
   const source = readLocalRecordSource(path, 64 * 1024);
   if (!source) throw new Error("extension promotion journal disappeared");

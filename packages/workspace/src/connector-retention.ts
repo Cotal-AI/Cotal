@@ -389,6 +389,14 @@ function currentConfig(id: { entry: string; version: string; path: string }, pre
 
 export const EXTENSION_PROMOTION_JOURNAL = ".extensions-promotion.json";
 
+/** Inspect the journal name without following a link or opening the record. */
+export function hasExtensionPromotionJournal(path: string): boolean {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) return false;
+  if (!stat.isFile()) throw new Error(`extension promotion journal ${path} is not a regular file`);
+  return true;
+}
+
 /** Read selected, update snapshot, predecessor or legacy state, then the fresh installation's future root. */
 export function connectorConfigDir(): string {
   const id = identity();
@@ -397,8 +405,8 @@ export function connectorConfigDir(): string {
   if (selected) return selected;
   const legacy = globalConfigDir();
   // A journal still identifies the legacy prefix while neither version is at its live path.
-  const hasLegacyState = ["extensions", "seed"].some(name => existsSync(join(legacy, name))) ||
-    lstatSync(join(legacy, EXTENSION_PROMOTION_JOURNAL), { throwIfNoEntry: false }) !== undefined;
+  const hasLegacyState = existsSync(join(legacy, "seed")) || ["extensions", EXTENSION_PROMOTION_JOURNAL]
+    .some(name => lstatSync(join(legacy, name), { throwIfNoEntry: false }) !== undefined);
   return hasLegacyState ? legacy : join(id.path, "cotal");
 }
 

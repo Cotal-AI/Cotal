@@ -747,7 +747,7 @@ if (process.platform !== "win32") {
     && typeof version.envelope.result?.version === "string" && version.envelope.warnings[0]?.code === "EXTENSIONS_UNREADABLE"
     && version.envelope.warnings[0].message.includes(folder) && version.envelope.error?.remedy?.includes(`move ${folder} aside`) === true, shown(version));
   for (const word of ["version", "--version", "-V"]) {
-    const text = run([word], env);
+    const text = run([word], { ...env, COTAL_SKIP_CONNECTOR_SEED: "0" });
     check(`${word} names the same config blocker and repair step`, text.status === 4
       && text.stdout === `cotal-ai ${version.envelope?.result?.version}\n` && text.stderr.includes(`move ${folder} aside`)
       && !/ext seed --repair|ENOTDIR/.test(text.stderr), shown(text));
