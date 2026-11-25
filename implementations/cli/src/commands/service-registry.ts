@@ -144,7 +144,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     // A preset name reaches the stack member built on it. Starting that member by itself launches
     // its process and leaves the space unregistered, so it refuses before the start saves or launches.
     // A running member needs no start: the start reports it running, as for any running service.
-    // A restart of a running member names the stop and the `cotal up` that restart it (#7057).
+    // A running broker's restart preview points to a whole-stack stop preview.
     const member = resolved?.name ?? suppliedName!;
     if ((mode === "start" || mode === "restart") && isStackMember(space, member)) {
       const memberTarget = { space, name: member, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) };
@@ -159,7 +159,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
         const stopStep = member === STACK_DEFINITION.broker
           ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then review and stop the whole stack with \`cotal down\``
           : `stop it with ${codeSpan(`${stop} --space ${shellWord(space)}${instance}${withAgents} --yes`)}`;
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy: `${stopStep}, then run ${up} to start it again with its stack` });
+        const remedy = member === STACK_DEFINITION.broker && args.values["dry-run"]
+          ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then run ${codeSpan(`cotal down --dry-run${presentation === "rich" ? "" : ` --${presentation}`} --space ${shellWord(space)}`)}. This previews only the stop part of a restart.`
+          : `${stopStep}, then run ${up} to start it again with its stack`;
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy });
       }
       if (!live)
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: memberTarget, remedy: `start the stack with ${up}` });

@@ -64,6 +64,11 @@ stopped member refuses `LIFECYCLE_BLOCKED` before anything launches and names
 would leave its process running and the space unregistered. This restriction checks the saved
 adapter and the stack journal's membership. A process service you added with one of those names
 still uses its own `service start` and `service restart` commands.
+
+`service restart stack-broker --dry-run` refuses to restart a running controller broker on its own.
+It points to `cotal down --dry-run` in the stack's project folder and keeps `--json` or `--plain`
+if you requested it. That command previews only the stop part of a restart and changes nothing.
+
 When you pass `--space`, the service and manager commands that `service`, `service add` and
 `manager start` suggest name that space too, since a bare one run from another folder can act on
 another space.
