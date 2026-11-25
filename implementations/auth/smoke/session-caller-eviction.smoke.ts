@@ -204,11 +204,17 @@ async function main() {
       return createEvidence.call(this, key, ...args);
     };
     let recordWriteDenied = false;
+    const receiptLogs: string[] = [];
+    const logError = console.error;
+    console.error = (...args: unknown[]) => { receiptLogs.push(args.join(" ")); logError(...args); };
     try {
       try { const unexpected = await connect(reconnectOptions); await unexpected.close(); }
       catch (e) { recordWriteDenied = /authorization|authentication/i.test(String(e)); }
-    } finally { kvPrototype.create = createEvidence; }
+    } finally { console.error = logError; kvPrototype.create = createEvidence; }
     check("W3 failed session evidence write refuses the real broker connection", recordWriteDenied);
+    check("W4 receipt-write refusal logs the cause and the recovery step for the operator", receiptLogs.some((line) =>
+      line.includes("outcome=denied") && line.includes("fixture session evidence write refused") &&
+      line.includes("Restore auth-store writes and open a new terminal session")));
     const recoveredReconnect = await connect(reconnectOptions);
     check("W2 same-session reconnect recovers after receipt writes resume", !recoveredReconnect.isClosed());
     await recoveredReconnect.close();

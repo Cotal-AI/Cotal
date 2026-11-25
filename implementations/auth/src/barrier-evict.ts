@@ -19,7 +19,7 @@
  * already have; a dedicated narrow delivery-admin infra profile is the cleaner target once the
  * ledgered infra-mint family (#30) lands — migrate there, do not invent it here.
  */
-import { EVICT_PRINCIPALS_MAX, type EvictionResult } from "@cotal-ai/core";
+import { EVICT_PRINCIPALS_MAX, type EvictionResult, type KickTarget } from "@cotal-ai/core";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import type { ServiceKeys } from "./store.js";
 
@@ -68,6 +68,14 @@ function unreachableNote(e: unknown): string {
   return `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`;
 }
 
+function confirmsConnections(data: unknown, expected: readonly KickTarget[]): boolean {
+  const actual = (data as { connections?: unknown } | null)?.connections;
+  return Array.isArray(actual) && actual.length === expected.length && expected.every(({ serverId, cid }, i) => {
+    const target = actual[i] as Partial<KickTarget> | null | undefined;
+    return target?.serverId === serverId && target.cid === cid;
+  });
+}
+
 /**
  * Build the barrier executor's `evictPrincipal` capability over the delivery daemon's
  * `ctl.delivery-admin` rail. Per-call connection (an eviction is a rare, heavyweight barrier
@@ -79,15 +87,15 @@ export function makeDeliveryAdminEvictor(opts: {
   dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
-}): (principal: string, connections?: import("@cotal-ai/core").KickTarget[]) => Promise<EvictionResult> {
+}): (principal: string, connections?: KickTarget[]) => Promise<EvictionResult> {
   const failClosed = failClosedWith(opts);
-  return async (principal: string, connections?: import("@cotal-ai/core").KickTarget[]): Promise<EvictionResult> => {
+  return async (principal: string, connections?: KickTarget[]): Promise<EvictionResult> => {
     try {
       return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
         const r = await ep.requestDeliveryAdmin(connections !== undefined ? "evictSessionConnections" : "evictPrincipal", { principal, ...(connections !== undefined ? { connections } : {}) }, 15_000);
-        if (connections !== undefined && JSON.stringify((r.data as { connections?: unknown } | undefined)?.connections) !== JSON.stringify(connections))
-          return failClosed(principal, "the delivery daemon did not confirm the exact connection filter");
         if (!r.ok) return failClosed(principal, `the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
+        if (connections !== undefined && !confirmsConnections(r.data, connections))
+          return failClosed(principal, "the delivery daemon did not confirm the exact connection filter");
         return checkedEviction(principal, r.data, failClosed);
       });
     } catch (e) {

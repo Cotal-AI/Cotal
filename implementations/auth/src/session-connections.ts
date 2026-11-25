@@ -56,7 +56,12 @@ export async function recordSessionConnection(kv: KV, issuance: NativeIssuance, 
   const state = sessionState(session.json(), row);
   if (state.state !== "active" || state.exp <= Date.now()) throw new Error("session connection requires an existing active session");
   const evidence: SignedSessionConnection = { v: 1, row, mac: signature(authority.secret, authority.space, key, row).toString("base64url") };
-  await kv.create(key, JSON.stringify(evidence));
+  try {
+    await kv.create(key, JSON.stringify(evidence));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`could not record the terminal session connection: ${reason}. Restore auth-store writes and open a new terminal session`, { cause: error });
+  }
 }
 
 /** Reconcile bounded leader reads. Invalid evidence is quarantined; transient failures retain rows and advance. */

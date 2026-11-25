@@ -161,15 +161,25 @@ try {
   } };
   let ignoredHookCalled = false;
   adminHandler.plane3 = { evictPrincipal: async (principal) => { ignoredHookCalled = true; return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true }; } };
-  const legacyReplies = legacyResponder.serveControl(core.CONTROL_DELIVERY_ADMIN, (request) => useHook ? adminHandler.handleDeliveryAdmin(request) : { ok: false, error: "unsupported operation" });
+  const refusal = "eviction executor unavailable; restart the delivery service";
+  const legacyReplies = legacyResponder.serveControl(core.CONTROL_DELIVERY_ADMIN, (request) => useHook ? adminHandler.handleDeliveryAdmin(request) : { ok: false, error: refusal });
   let adminCaller: core.CotalEndpoint | undefined;
   try {
+    const principal = legacy.row.holder.principal;
+    const coordinates = [legacy.issuance.connection!];
+    const diagnostics: string[] = [];
+    const reportEviction = makeDeliveryAdminEvictor({ server: fx.servers, space: a.space, dataAccount, log: (line) => diagnostics.push(line) });
+    const principalRefusal = await reportEviction(principal);
+    const targetedRefusal = await reportEviction(principal, coordinates);
+    console.log(JSON.stringify({ principalRefusal: principalRefusal.note, targetedRefusal: targetedRefusal.note }));
+    check("G12 the targeted caller preserves and logs the same daemon refusal as the principal caller",
+      !principalRefusal.verifiedGone && !targetedRefusal.verifiedGone && principalRefusal.note === targetedRefusal.note &&
+      diagnostics.length === 2 && diagnostics.every((line) => line.includes(refusal)));
     try { await sweep(); } catch { /* The legacy refusal must retain the receipt. */ }
     check("G13 older delivery refusal retains record and evicts nothing", (await kv.get(legacy.key))?.operation === "PUT" && !legacy.nc.isClosed());
     useHook = true;
     adminCaller = new core.CotalEndpoint({ space: a.space, servers: fx.servers, creds: await mintCreds(a.auth, newIdentity(), "supervisor"), card: { name: "exact-hook-fixture", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
     await adminCaller.start();
-    const coordinates = [legacy.issuance.connection!];
     const args = { principal: legacy.row.holder.principal, connections: coordinates };
     const request = (args: Record<string, unknown>, op = "evictSessionConnections") => adminCaller!.requestDeliveryAdmin(op, args);
     const ordinary = await request({ principal: args.principal }, "evictPrincipal");
@@ -186,7 +196,7 @@ try {
     let calls = 0;
     adminHandler.plane3.evictPrincipal = async (principal, connections) => {
       calls++;
-      return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, connections: connections?.map((row) => ({ ...row })) };
+      return { principal, kicked: 0, remaining: 0, verifiedGone: true, scanComplete: true, connections: connections?.map(({ cid, serverId }) => ({ cid, serverId })) };
     };
     const missingFilter = await request({ principal: args.principal });
     check("H5 a missing filter is refused before execution", !missingFilter.ok && missingFilter.error?.includes("send connections with the exact broker serverId and cid") === true && calls === 0);
@@ -196,6 +206,8 @@ try {
     check("H7 an invalid filter is refused before execution", !badFilter.ok && badFilter.error?.includes("send 1 to 256 exact serverId and positive cid pairs") === true && calls === 0);
     const acknowledged = await request(args);
     check("H2 an installed executor accepting and returning the corrected filter is accepted", acknowledged.ok && calls === 1);
+    const reordered = await reportEviction(principal, coordinates);
+    check("H8 the auth caller accepts an exact echo with fields in a different order", reordered.verifiedGone && calls === 2);
   } finally { await adminCaller?.stop(); legacyReplies.unsubscribe(); await legacyResponder.stop(); }
   delivery = await startDeliveryService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
   await sweep(); await wait(100);
