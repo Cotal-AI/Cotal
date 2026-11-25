@@ -116,9 +116,11 @@ owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header. With no agents it suggests `cotal spawn` for the space just listed, keeping any explicit
-broker address it can safely print. If `status` reports that no agent application is set up here,
-it suggests `cotal setup` instead.
+header. A populated single-manager report suggests `cotal attach <name>` and `cotal stop <name>`
+for the mesh just listed. The hints keep explicit broker addresses that are safe to print and
+include the manager instance when the read was pinned to it. With no agents, `ps` suggests
+`cotal spawn` for the mesh just listed, keeping any explicit broker address it can safely print.
+If `status` reports that no agent application is set up here, it suggests `cotal setup` instead.
 
 When `ps` asks every manager, it then asks each manager that answered for the host name in its own
 status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row

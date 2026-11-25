@@ -579,7 +579,7 @@ export interface PsResult {
  *  `status`'s reading that no agent application is set up here, so an empty list's Next agrees with
  *  the one `status` gives. `interactive` is whether a terminal is there to answer `setup`'s
  *  questions, as `status` reads it: without one, the Next points at `setup --help` instead. */
-export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string): Report {
+export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map(), noApplication = false, mode?: string, interactive = true, spawnCommand?: string, seatCommand?: (verb: "attach" | "stop") => string): Report {
   const empty = result.kind === "slots" ? "No active static slots." : "No managed agents.";
   const blocksFor = (rows: readonly unknown[]): Block[] =>
     !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
@@ -588,9 +588,9 @@ export function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<stri
   // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
   // Its instance id is still shown, with or without agents, because it is what `--on` takes.
   if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) {
-    const next = result.items.length ? [
-      { command: `${displayCmd()} attach <name>`, description: "Return to an agent's terminal" },
-      { command: `${displayCmd()} stop <name>`, description: "Stop one agent" },
+    const next = result.items.length ? seatCommand === undefined ? [] : [
+      { command: seatCommand("attach"), description: "Return to an agent's terminal" },
+      { command: seatCommand("stop"), description: "Stop one agent" },
     ] : noApplication ? [interactive ? { command: `${displayCmd()} setup`, description: "Set up an agent application" } : { command: `${displayCmd()} setup --help`, description: "See setup flags for scripts. Bare setup needs a terminal." }]
     : spawnCommand === undefined ? [] : [{ command: spawnCommand, description: "Launch your default agent" }];
     const sections: Section[] = [
@@ -694,9 +694,12 @@ export async function ps(args: ParsedArgs): Promise<void> {
     if (slots || on !== undefined || !failure || !(failure instanceof NoManagerAnswered || noLiveManager(failure))) throw e;
     return psFromPresence(v, presentation);
   }
-  const spawnCommand = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
-    : onRerun(`${displayCmd()} spawn`, { space: v.server === undefined ? census.target.space : v.space, server: v.server });
-  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt(), spawnCommand);
+  const scope = v.server !== undefined && brokerAddressForDisplay(v.server) !== v.server ? undefined
+    : { space: v.server === undefined ? census.target.space : v.space, server: v.server };
+  const spawnCommand = scope && onRerun(`${displayCmd()} spawn`, scope);
+  const manager = census.target.managerInstanceId;
+  const seatCommand = scope && ((verb: "attach" | "stop") => onRerun(`${displayCmd()} ${verb} <name>`, scope, manager ? ["--on", manager] : []));
+  const view = (result: PsResult): Report => psView(result, wide, census.rowsOf, !result.items.length && noApplicationHere(), census.mode, presentation === "rich" && canPrompt(), spawnCommand, seatCommand);
   writeResult(
     presentation,
     {
