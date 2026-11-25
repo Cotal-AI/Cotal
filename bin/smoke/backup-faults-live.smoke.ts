@@ -715,10 +715,11 @@ async function interruptedCreateScenario(): Promise<void> {
     const parked = join(root, "parked-backup");
     renameSync(destination, parked);
     try {
+      const empty = readdirSync(parked).length === 0;
       cpSync(parked, destination, { recursive: true });
       const replacement = run("backup", "verify", destination);
-      assert.equal(replacement.status, 1, replacement.stderr);
-      assert.match(replacement.stderr, /verify another intact copy/);
+      assert.equal(replacement.status, empty ? 2 : 1, replacement.stderr);
+      assert.match(replacement.stderr, empty ? /Code:\s+TARGET_NOT_FOUND/ : /verify another intact copy/);
       assert.doesNotMatch(replacement.stderr, /backup recover/);
     } finally {
       rmSync(destination, { recursive: true, force: true });
