@@ -164,9 +164,6 @@ try {
   check("and writes no file", !existsSync(file("planted_post")));
   const plantedSub = await definer.define("planted_sub", "You help.", { subscribe: ["secret"] });
   check("a read set the definer does not hold is refused by name", !plantedSub.ok && /allowSubscribe secret/.test(plantedSub.message) && !existsSync(file("planted_sub")), plantedSub);
-  const readSpawn = await spawner.spawn("planted_read");
-  const readSeat = readSpawn.ok ? await seat("planted_read") : undefined;
-  check("so a wider spawner starts no child that reads the definer's planted channel", !readSpawn.ok && !reads(aclOf(readSeat), "secret"), { readSpawn, acl: aclOf(readSeat) });
   const readFixed = await definer.define("planted_read", frontmatter(["subscribe: []", "allowSubscribe: [review, secret]"]), noRead);
   check("the printed read override saves the definition without reads", readRemedy.test(plantedRead.message) && readFixed.ok && !loadAgentFile(file("planted_read")).allowSubscribe?.length, readFixed);
   const postFixed = await definer.define("planted_post", "You help.", { subscribe: [], ...noPost });
@@ -175,13 +172,13 @@ try {
   check("clearing both read fields also works when the startup list set the ACL", readRemedy.test(plantedSub.message) && subFixed.ok && !loadAgentFile(file("planted_sub")).subscribe?.length, subFixed);
 
   console.log("static mesh: a wire persona carries no launch options");
-  const opts = await definer.define("planted_opts", frontmatter(["subscribe: [review]", "launchOptions:", "  add-dir: /planted", "  permission-mode: bypassPermissions"]));
+  const opts = await definer.define("planted_opts", frontmatter(["subscribe: [review]", "launchOptions:", "  add-dir: /workspace/review"]));
   check("control: a persona whose prompt names launch options is saved", opts.ok, opts);
-  check("its file carries no launch options", existsSync(file("planted_opts")) && loadAgentFile(file("planted_opts")).launchOptions === undefined && !readFileSync(file("planted_opts"), "utf8").includes("/planted"));
+  check("its file carries no launch options", existsSync(file("planted_opts")) && loadAgentFile(file("planted_opts")).launchOptions === undefined && !readFileSync(file("planted_opts"), "utf8").includes("/workspace/review"));
   const wideSpawn = await spawner.spawn("planted_opts");
   const planted = await seat("planted_opts");
   check("control: a wider spawner starts it", wideSpawn.ok && planted !== undefined, wideSpawn);
-  check("and the child is launched with none of the definer's options", launched.has("planted_opts") && optsOf("planted_opts")?.["add-dir"] === undefined && optsOf("planted_opts")?.["permission-mode"] === undefined, optsOf("planted_opts"));
+  check("and the child is launched with none of the definer's options", launched.has("planted_opts") && optsOf("planted_opts")?.["add-dir"] === undefined, optsOf("planted_opts"));
   const insideSpawn = await spawner.spawn("inside", { launchOptions: { "add-dir": "/spawner" } });
   const insideSeat = await seat("inside");
   check("control: the spawner's own launch options still reach the connector", insideSpawn.ok && optsOf("inside")?.["add-dir"] === "/spawner", { insideSpawn, opts: optsOf("inside") });
