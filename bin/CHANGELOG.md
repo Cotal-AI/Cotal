@@ -1,5 +1,81 @@
 # cotal-ai
 
+## 0.177.0
+
+### Patch Changes
+
+- f35ff3d: The local workflow list on an open mesh keeps the journal shortcut and suggests offline simulation instead of starting a hosted run.
+- 997a401: Self-update uses the compatible Node.js that asdf selects for the current project, including when a symlink points to a version-named executable, and keeps using it for npm during connector reconciliation.
+- e54ad42: Self-update can run npm when a relative PATH entry points to the only Node executable and its directory name contains a colon.
+- 744e2b3: When `cotal update --self` makes an owned `node_modules` directory writable, it removes abandoned installation staging in the same run.
+- Updated dependencies [3ee534f]
+- Updated dependencies [dbc91ac]
+- Updated dependencies [d913e8e]
+- Updated dependencies [3c1d11f]
+- Updated dependencies [1927f75]
+- Updated dependencies [e3d4091]
+- Updated dependencies [a322bd7]
+- Updated dependencies [d03e96f]
+- Updated dependencies [6622074]
+- Updated dependencies [78d57ec]
+- Updated dependencies [068fc9c]
+- Updated dependencies [d649b5f]
+- Updated dependencies [7b7518b]
+- Updated dependencies [3b325e3]
+- Updated dependencies [14b6da7]
+- Updated dependencies [f21c228]
+- Updated dependencies [0bb3186]
+- Updated dependencies [4f253b5]
+- Updated dependencies [b51ddf7]
+- Updated dependencies [e7ad60e]
+- Updated dependencies [f35ff3d]
+- Updated dependencies [64438d7]
+- Updated dependencies [dc37dd9]
+- Updated dependencies [2ea3b21]
+- Updated dependencies [fca2d4d]
+- Updated dependencies [708df55]
+- Updated dependencies [eb9d25f]
+- Updated dependencies [97e1a38]
+- Updated dependencies [67328f6]
+- Updated dependencies [731c903]
+- Updated dependencies [d8723ea]
+- Updated dependencies [8ea5491]
+- Updated dependencies [34fb386]
+- Updated dependencies [8aa785c]
+- Updated dependencies [997a401]
+- Updated dependencies [81c5426]
+- Updated dependencies [e892942]
+- Updated dependencies [d274aca]
+- Updated dependencies [a450399]
+- Updated dependencies [e54ad42]
+- Updated dependencies [e823fc8]
+- Updated dependencies [ea285af]
+- Updated dependencies [cbc08ad]
+- Updated dependencies [b55ae03]
+- Updated dependencies [c528cfe]
+- Updated dependencies [27d8f41]
+- Updated dependencies [ff66e76]
+- Updated dependencies [aefcd66]
+- Updated dependencies [c9e6ab0]
+- Updated dependencies [37be6e1]
+- Updated dependencies [6ec3ddc]
+- Updated dependencies [a746982]
+- Updated dependencies [3fd0417]
+- Updated dependencies [b68d521]
+- Updated dependencies [086bf0e]
+- Updated dependencies [4717a9a]
+- Updated dependencies [24c84fe]
+  - @cotal-ai/cli@0.177.0
+  - @cotal-ai/core@0.177.0
+  - @cotal-ai/workspace@0.177.0
+  - @cotal-ai/connector-core@0.177.0
+  - @cotal-ai/manager@0.177.0
+  - @cotal-ai/runtime@0.177.0
+  - @cotal-ai/auth@0.177.0
+  - @cotal-ai/delivery@0.177.0
+  - @cotal-ai/registry@0.177.0
+  - @cotal-ai/seat@0.177.0
+
 ## 0.176.6
 
 ### Patch Changes
