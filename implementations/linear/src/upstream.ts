@@ -496,7 +496,7 @@ export class LinearUpstream {
   /** Forward `tools/call`. `inventoryDigest`, when given, must match the live inventory. */
   async callTool(req: { name: string; arguments?: Json; inventoryDigest?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<UpstreamReply> {
     if (this.allowedTools !== undefined && !this.allowedTools.has(req.name))
-      return { kind: "refused", reason: "tool-not-allowed", detail: `the tool "${req.name}" is not allowed by the Linear account's allowedTools`, outcome: "not-executed" };
+      return { kind: "refused", reason: "tool-not-allowed", detail: "This Linear account does not allow the requested tool. Ask the account operator to add its name to `allowedTools` in the account record, then retry. For endpoint calls, the operator must restart the Linear service first.", outcome: "not-executed" };
     return this.forward(req, (inv) => {
       if (!inv.tools.some((t) => t.name === req.name)) return `the tool "${req.name}" is not in the current inventory`;
     }, { method: "tools/call", params: { name: req.name, ...(req.arguments !== undefined ? { arguments: req.arguments } : {}) } }, CallToolResultSchema);

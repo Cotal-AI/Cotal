@@ -1,5 +1,5 @@
 ---
-"@cotal-ai/linear": patch
+"@cotal-ai/linear": minor
 ---
 
-Linear accounts can restrict tool calls with an optional allowedTools list in their existing account record. Unlisted tools are refused before dispatch. An absent list retains access to all tools permitted by the upstream account and mode. OAuth callbacks with a mismatched state are refused without ending the pending login. Re-adding an account over an invalid record is refused with a remedy that preserves the intended tool policy.
+Linear now refuses calls to tools omitted from an account's `allowedTools` list and credential replacement on invalid account records, so ask the account operator to update the list or repair the record before retrying.

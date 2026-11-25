@@ -57,7 +57,9 @@ remove the field from the record. Restart a running Linear service after editing
 
 This policy applies to both direct `linear call` and endpoint `call-tool` requests. An unlisted
 tool is refused before credential access or upstream dispatch, with reason `tool-not-allowed`,
-endpoint code `permission-denied`, outcome `not-executed` and direct CLI exit 2. Inventory remains
+CLI code `PERMISSION_DENIED` (exit 2), endpoint code `permission-denied` and native outcome
+`not-executed`. To allow the call, have the account operator add the tool name to the list and
+restart any running Linear service for that account before retrying. Inventory remains
 complete and unfiltered. Resource reads, prompts and completions are not tool calls and are not
 restricted by this list. The Linear token and mode still bound every operation.
 

@@ -1,5 +1,23 @@
 # Upgrading a running deployment
 
+## Linear account tool restrictions
+
+An upgraded Linear extension enforces `allowedTools` in `<cotal-home>/linear/<name>.json` for
+both `linear call` and endpoint `call-tool`. An empty list refuses every tool. If a tool should
+be callable, have the account operator add its case-sensitive name to the list, for example
+`"allowedTools": ["list_issues", "get_issue"]`. Restart any running Linear service for that
+account and retry the call. If the account has no `allowedTools` field, upstream permissions still
+decide what it can call. Inventory still lists tools the upstream advertises.
+
+If `linear account add` or `linear account login` refuses an invalid record, repair the named JSON
+file before rerunning the same command. Set `name` to the account name and `mode` to `write` or
+`readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the private token
+file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct nonempty tool
+names without whitespace at either end or terminal controls.
+
+A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
+the authorization URL printed by that login and finish there.
+
 ## The agent endpoint on every space
 
 Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where

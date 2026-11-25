@@ -18,7 +18,7 @@ import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
-import { assertAccountWritable, assertPrivateFile, linearDir, oauthStatePath, readAccountToken, saveAccount, type LinearAccount } from "./account.js";
+import { AccountRecordError, assertAccountWritable, assertPrivateFile, linearDir, oauthStatePath, readAccountToken, saveAccount, type LinearAccount } from "./account.js";
 import { LINEAR_MCP_ORIGIN, linearMcpUrl, OriginRefusedError, ResponseTooLargeError, type LinearMode } from "./origin.js";
 
 /** How an upstream session gets its bearer. `prepare` runs before discovery and before dispatch. */
@@ -81,10 +81,14 @@ async function boundedBody(res: Response): Promise<Uint8Array> {
 
 class FileOAuthProvider implements OAuthClientProvider {
   private expectedState?: string;
+  private loginState?: OAuthState;
 
-  constructor(private readonly name: string, private readonly redirect: string | undefined, private readonly scope: string) {}
+  constructor(private readonly name: string, private readonly redirect: string | undefined, private readonly scope: string) {
+    if (redirect !== undefined) this.loginState = {};
+  }
 
   load(): OAuthState {
+    if (this.loginState !== undefined) return this.loginState;
     const path = oauthStatePath(this.name);
     if (!existsSync(path)) return {};
     assertPrivateFile(path);
@@ -92,14 +96,15 @@ class FileOAuthProvider implements OAuthClientProvider {
   }
 
   private store(patch: Partial<OAuthState>): void {
+    const state = { ...this.load(), ...patch };
+    if (this.loginState !== undefined) { this.loginState = state; return; }
     mkSecretDir(linearDir());
-    writeSecretFileAtomic(oauthStatePath(this.name), `${JSON.stringify({ ...this.load(), ...patch }, null, 2)}\n`);
+    writeSecretFileAtomic(oauthStatePath(this.name), `${JSON.stringify(state, null, 2)}\n`);
   }
 
-  /** Start a login from nothing: a new redirect port means a new client registration. */
-  reset(): void {
-    mkSecretDir(linearDir());
-    writeSecretFileAtomic(oauthStatePath(this.name), "{}\n");
+  /** Publish the private state after the validated account save. */
+  persistLogin(): void {
+    writeSecretFileAtomic(oauthStatePath(this.name), `${JSON.stringify(this.loginState, null, 2)}\n`);
   }
 
   get redirectUrl(): string | undefined {
@@ -139,7 +144,6 @@ class FileOAuthProvider implements OAuthClientProvider {
   }
 
   saveTokens(tokens: OAuthTokens): void {
-    if (this.redirect !== undefined) assertAccountWritable(this.name);
     this.store({ tokens, obtainedAt: Date.now() });
   }
 
@@ -168,7 +172,7 @@ class FileOAuthProvider implements OAuthClientProvider {
 }
 
 /** Interactive login: loopback redirect, PKCE, dynamic registration. Saves an `oauth` account. */
-export async function loginAccount(name: string, mode: LinearMode): Promise<void> {
+export async function loginAccount(name: string, mode: LinearMode): Promise<LinearAccount> {
   assertAccountWritable(name);
   const serverUrl = linearMcpUrl(mode);
   const scope = scopeFor(mode);
@@ -180,7 +184,6 @@ export async function loginAccount(name: string, mode: LinearMode): Promise<void
   try {
     const port = (http.address() as AddressInfo).port;
     const provider = new FileOAuthProvider(name, `http://127.0.0.1:${port}/callback`, scope);
-    provider.reset();
     let timer: NodeJS.Timeout | undefined;
     const code = new Promise<string>((ok, bad) => {
       timer = setTimeout(() => bad(new Error("no authorization arrived within 5 minutes")), LOGIN_TIMEOUT_MS);
@@ -192,7 +195,7 @@ export async function loginAccount(name: string, mode: LinearMode): Promise<void
         }
         const expected = provider.stateFor();
         if (!expected || u.searchParams.get("state") !== expected) {
-          res.writeHead(400).end("state mismatch");
+          res.writeHead(400, { "content-type": "text/plain" }).end("This callback does not match the pending Linear login. Return to the authorization URL printed by that login and finish there.");
           return;
         }
         const error = u.searchParams.get("error");
@@ -200,6 +203,12 @@ export async function loginAccount(name: string, mode: LinearMode): Promise<void
         if (error || !got) {
           res.writeHead(400).end("authorization failed");
           bad(new Error(`Linear refused the authorization: ${error ?? "no code"}`));
+          return;
+        }
+        try { assertAccountWritable(name); }
+        catch (recordError) {
+          res.writeHead(400, { "content-type": "text/plain" }).end("The local Linear account record is invalid. Repair it as described by the login command, then start login again.");
+          bad(recordError);
           return;
         }
         res.writeHead(200, { "content-type": "text/plain" }).end("Linear authorization received. You can close this tab.");
@@ -218,7 +227,14 @@ export async function loginAccount(name: string, mode: LinearMode): Promise<void
       clearTimeout(timer);
     }
     if (!provider.tokens()?.access_token) throw new Error("Linear issued no access token");
-    saveAccount({ name, mode, auth: "oauth" });
+    let saved: LinearAccount;
+    try { saved = saveAccount({ name, mode, auth: "oauth" }); }
+    catch (error) {
+      if (!(error instanceof AccountRecordError)) throw error;
+      throw new Error("Linear issued a token, but the account record could not be saved", { cause: error });
+    }
+    provider.persistLogin();
+    return saved;
   } finally {
     http.close();
   }

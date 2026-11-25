@@ -11,7 +11,7 @@
  * `linear/<name>.token` when `--token-stdin` stored the token, or `linear/<name>.oauth.json` for an
  * OAuth login. All 0600.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { homeCotalDir } from "@cotal-ai/workspace";
@@ -56,28 +56,46 @@ export function assertPrivateFile(path: string): void {
   if (process.platform !== "win32" && (st.mode & 0o077) !== 0) throw new Error(`${path} is readable by other users (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
 }
 
+const TOOL_LIST_FORMAT = "allowedTools must be an array of distinct nonempty tool names without surrounding whitespace or terminal controls";
+
 function allowedTools(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some(name => typeof name !== "string" || !name.length || name.trim() !== name || /[\u0000-\u001f\u007f]/u.test(name)) || new Set(value).size !== value.length)
-    throw new Error("allowedTools must be an array of distinct nonempty tool names without surrounding whitespace or terminal controls");
+  if (!Array.isArray(value) || value.some(name => typeof name !== "string" || !name.length || name.trim() !== name || /[\u0000-\u001f\u007f-\u009f]/u.test(name)) || new Set(value).size !== value.length)
+    throw new Error(TOOL_LIST_FORMAT);
   return [...value] as string[];
 }
 
 export class AccountRecordError extends Error {
+  readonly remedy: string;
+
   constructor(readonly path: string, reason: string) {
-    super(`${path}: ${reason}. Repair this record while preserving the intended allowedTools policy, then repeat the account add or login`);
+    super(`${path}: ${reason}`);
+    this.remedy = `repair the record at ${JSON.stringify(path)} while preserving its intended \`allowedTools\` list, then repeat the command`;
+  }
+}
+
+function existingAccount(name: string): LinearAccount | undefined {
+  const path = accountPath(name);
+  try { lstatSync(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new AccountRecordError(path, "account record cannot be accessed");
+  }
+  try { return loadAccount(name); }
+  catch (error) {
+    if (accountMissing(error)) throw new AccountRecordError(path, "account record cannot be read");
+    throw error;
   }
 }
 
 /** Validate an existing record before any credential replacement or OAuth authorization. */
 export function assertAccountWritable(name: string): void {
-  if (existsSync(accountPath(name))) loadAccount(name);
+  existingAccount(name);
 }
 
-export function saveAccount(account: LinearAccount, token?: string): void {
-  assertAccountName(account.name);
-  assertAccountWritable(account.name);
-  const tools = allowedTools(account.allowedTools) ?? (existsSync(accountPath(account.name)) ? loadAccount(account.name).allowedTools : undefined);
+export function saveAccount(account: LinearAccount, token?: string): LinearAccount {
+  const existing = existingAccount(account.name);
+  const tools = allowedTools(account.allowedTools) ?? existing?.allowedTools;
   const saved = { ...account, ...(tools === undefined ? {} : { allowedTools: tools }) };
   if (!isLinearMode(account.mode)) throw new Error(`mode must be "write" or "readonly"`);
   mkSecretDir(linearDir());
@@ -90,6 +108,7 @@ export function saveAccount(account: LinearAccount, token?: string): void {
     assertPrivateFile(account.tokenFile);
   } else if (token !== undefined) throw new Error("an oauth account takes no token");
   writeSecretFileAtomic(accountPath(account.name), `${JSON.stringify(saved, null, 2)}\n`);
+  return saved;
 }
 
 export function loadAccount(name: string): LinearAccount {
@@ -107,7 +126,7 @@ export function loadAccount(name: string): LinearAccount {
   if (a.name !== name || !isLinearMode(a.mode)) throw new AccountRecordError(path, "invalid name or mode in account record");
   let tools: string[] | undefined;
   try { tools = allowedTools(a.allowedTools); }
-  catch { throw new AccountRecordError(path, "allowedTools must be an array of distinct nonempty tool names without surrounding whitespace or terminal controls"); }
+  catch { throw new AccountRecordError(path, TOOL_LIST_FORMAT); }
   const policy = tools === undefined ? {} : { allowedTools: tools };
   if (a.auth === "token" && typeof a.tokenFile === "string") return { name, mode: a.mode, auth: "token", tokenFile: a.tokenFile, ...policy };
   if (a.auth === "oauth") return { name, mode: a.mode, auth: "oauth", ...policy };

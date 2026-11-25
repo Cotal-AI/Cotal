@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { acquireLock, credsClaims, resolveAuthProvider, writeSecretFileCreateOnly, type ParsedArgs, type SpaceAuth } from "@cotal-ai/core";
 import { CommandFailure, recordOperationSpace, assertExternalCredentialExport, getSpaceAuth, hasUserAuthState, inputDisabledByFlag, isCommandFailure, presentationOf, protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource, resolveMeshTarget, resolveNativeServiceTarget, userAuthStateDir, workspaceSecretStore, writeResult, type MeshTarget, type Report } from "@cotal-ai/workspace";
-import { AccountRecordError, accountMissing, assertAccountName, assertAccountWritable, loadAccount, saveAccount, storedTokenPath } from "./account.js";
+import { AccountRecordError, accountMissing, assertAccountName, assertAccountWritable, loadAccount, saveAccount, storedTokenPath, type LinearAccount } from "./account.js";
 import { loginAccount } from "./oauth.js";
 import { isLinearMode } from "./origin.js";
 import { DEFAULT_LIMITS, LinearUpstream } from "./upstream.js";
@@ -80,8 +80,13 @@ export function accountForRead(name: string) {
   try { return loadAccount(name); }
   catch (error) {
     if (accountMissing(error)) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no Linear account with this name is recorded; nothing was opened or sent", { target: { account: name }, remedy: `record it first with \`cotal linear account add ${name} --mode <write|readonly> --token-file <path>\`, or \`cotal linear account login ${name} --mode <write|readonly>\`` });
+    if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the selected Linear account metadata could not be read; no token or account-file contents were printed", { target: { account: name } });
   }
+}
+
+function accountRecordRefusal(name: string, error: AccountRecordError): CommandFailure {
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error.message, { target: { account: name, path: error.path }, remedy: error.remedy });
 }
 
 function emitAccount(args: ParsedArgs, account: ReturnType<typeof loadAccount>, saved: boolean): void {
@@ -296,16 +301,21 @@ export async function linear(args: ParsedArgs): Promise<void> {
       if (action === "login" || action === "add") {
         try { assertAccountWritable(name); }
         catch (error) {
-          if (error instanceof AccountRecordError) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", error.message, { target: { account: name, path: error.path }, remedy: "repair the named account record while preserving its intended allowedTools policy, then repeat the account operation" });
+          if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
           throw error;
         }
       }
       if (action === "login") {
         const mode = v.mode;
         if (!isLinearMode(mode)) fail("--mode must be write or readonly");
-        try { await loginAccount(name, mode); }
-        catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native Linear OAuth did not confirm its final local save; authorization or private state may have changed. Login was not retried", { target: { account: name } }); }
-        emitAccount(args, loadAccount(name), true);
+        let saved: LinearAccount;
+        try { saved = await loginAccount(name, mode); }
+        catch (error) {
+          if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
+          const recordError = error instanceof Error && error.cause instanceof AccountRecordError ? error.cause : undefined;
+          throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "native Linear OAuth did not confirm its final local save; authorization or private state may have changed. Login was not retried", { target: { account: name }, ...(recordError && { remedy: recordError.remedy }) });
+        }
+        emitAccount(args, saved, true);
         return;
       }
       if (action !== "add") fail(USAGE);
@@ -314,9 +324,13 @@ export async function linear(args: ParsedArgs): Promise<void> {
       if (Boolean(v["token-stdin"]) === (v["token-file"] !== undefined)) fail("give exactly one of --token-stdin or --token-file");
       const account = { name, mode, auth: "token" as const, tokenFile: v["token-stdin"] ? storedTokenPath(name) : resolve(String(v["token-file"])) };
       const token = v["token-stdin"] ? await readStdin() : undefined;
-      try { saveAccount(account, token); }
-      catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native Linear account save did not confirm completion; a private token or record may have changed. The save was not retried", { target: { account: name } }); }
-      emitAccount(args, loadAccount(name), true);
+      let saved: LinearAccount;
+      try { saved = saveAccount(account, token); }
+      catch (error) {
+        if (error instanceof AccountRecordError) throw accountRecordRefusal(name, error);
+        throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native Linear account save did not confirm completion; a private token or record may have changed. The save was not retried", { target: { account: name } });
+      }
+      emitAccount(args, saved, true);
       return;
     }
     case "inventory": {
