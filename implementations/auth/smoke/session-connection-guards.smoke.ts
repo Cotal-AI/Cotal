@@ -9,7 +9,7 @@ import { EP_AUTH_MARKER_TTL_MS, epAuthBucket, sessionsBucket, sessionLedgerKey, 
 import { recordSessionConnection, reconcileSessionConnections } from "../src/session-connections.js";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { makeDeliveryAdminEvictor } from "../src/barrier-evict.js";
-import { startAuthService } from "../src/service.js";
+import { startAuthService } from "../src/service-host.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { startDeliveryService } from "../../delivery/src/index.js";
 import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } from "@cotal-ai/workspace";
