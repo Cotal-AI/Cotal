@@ -2,13 +2,15 @@
  * The OpenCode 2.x dispatcher on the `agent` endpoint (SPEC 13.22): its commands and skills,
  * interrupt, the owner's turns with images, and usage. A turn goes out as a prompt, each image a file
  * attached by its data URL, and `usage` reads the session and its last model step the way T3 Code's
- * OpenCode 2 provider does, as measured on 2.0.24.
+ * OpenCode 2 provider does, as measured on 2.0.24. An owner's `set-model` sets the session's model
+ * (model-switch.ts).
  */
 import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
 import { COMMAND_ROUTES, LISTS_LOAD_MS, readCommandLists } from "./command-routes.js";
 import { OpenCodeHttpError, type OpenCodeApi } from "./opencode2-http.js";
+import { opencode2ModelSwitch } from "./model-switch.js";
 
 const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
 
@@ -37,17 +39,22 @@ export interface Commands2Deps {
   primed(): void;
   /** Aborted when teardown begins. */
   signal: AbortSignal;
+  /** The model the launch pinned, absent when it pinned none. */
+  launchModel?: string;
 }
 
 export interface Commands2 {
   readonly dispatcher: CommandDispatcher;
   /** Each event the plugin's event loop reads: a list's `loaded` event ends the first list's wait. */
   event(type: string): void;
+  /** OpenCode's `model.request` hook named the model a primary request runs on. */
+  modelRan(model: string): void;
 }
 
 export function opencode2Commands(deps: Commands2Deps): Commands2 {
   // Each model's context window. A window does not change while the server runs.
   const windows = new Map<string, number | undefined>();
+  const models = opencode2ModelSwitch({ api: deps.api, ensureSession: deps.ensureSession, launchModel: deps.launchModel });
 
   /** The owner's words as the user's own prompt. The route answers once OpenCode stored it. */
   async function turn({ text, images }: AgentTurn): Promise<void> {
@@ -157,9 +164,11 @@ export function opencode2Commands(deps: Commands2Deps): Commands2 {
     turn,
     images: true,
     usage,
+    setModel: models.setModel,
   };
   return {
     dispatcher,
+    modelRan: models.ran,
     event(type) {
       if (listsLoading.delete(type) && listsLoading.size === 0) markListsLoaded();
     },

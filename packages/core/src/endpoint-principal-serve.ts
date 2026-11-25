@@ -198,16 +198,17 @@ export class EndpointPrincipalServe {
   /**
    * Set this process's `agentEndpoint` presence field (SPEC §6): the `agent` endpoint commands it
    * serves now. It shows under the same gate as `prompts`, and presence is written at once when the
-   * value changed. Throws when the `agent` endpoint is not served, and a TypeError for a flag that is
-   * not a boolean.
+   * value changed. An absent `setModel` is written as false. Throws when the `agent` endpoint is not
+   * served, and a TypeError for a flag that is not a boolean.
    */
   async setAgentEndpointPresence(served: PresenceAgentEndpoint): Promise<void> {
     for (const k of ["interrupt", "turn", "images", "usage"] as const)
       if (typeof served?.[k] !== "boolean") throw new TypeError(`agentEndpoint.${k} must be a boolean`);
+    if (served.setModel !== undefined && typeof served.setModel !== "boolean") throw new TypeError("agentEndpoint.setModel must be a boolean");
     if (!this.delivery.principalServes.has(AGENT_ENDPOINT))
       throw new Error(`the agentEndpoint presence field belongs to a served "${AGENT_ENDPOINT}" endpoint: call servePrincipal first (SPEC §6)`);
     const was = this.agentEndpointPresence;
-    const next = { interrupt: served.interrupt, turn: served.turn, images: served.images, usage: served.usage };
+    const next = { interrupt: served.interrupt, turn: served.turn, images: served.images, usage: served.usage, setModel: served.setModel ?? false };
     if (was && (Object.keys(next) as (keyof PresenceAgentEndpoint)[]).every((k) => was[k] === next[k])) return;
     this.agentEndpointPresence = next;
     await this.publishPresence();
