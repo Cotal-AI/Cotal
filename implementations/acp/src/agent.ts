@@ -301,6 +301,16 @@ async function runFailure(opened: Promise<Mesh> | undefined, session: Session, t
   return turnFailure(seat?.name ?? session.id, condition, said);
 }
 
+/** The seat's own commands as ACP offers them. A skill is named with a leading `$`, which clients
+ *  such as T3 Code show as a skill. */
+function seatCommands(session: Session): AvailableCommand[] {
+  return (session.agentCommands ?? []).map((c) => ({
+    name: c.target === "skill" ? "$" + c.name : c.name,
+    description: c.description ?? (c.target === "skill" ? `${c.name} skill` : `/${c.name}`),
+    ...(c.inputHint ? { input: { hint: c.inputHint } } : {}),
+  }));
+}
+
 function bridge(options: CotalAgentOptions): Bridge {
   const sessions = new Map<string, Session>();
   const byPrincipal = new Map<string, Session>();
@@ -361,7 +371,6 @@ function bridge(options: CotalAgentOptions): Bridge {
     } else if (turn.until === "run" && run.runId === turn.runId) turn.stop("end_turn");
   };
 
-
   const mesh = (): Promise<Mesh> => {
     opened ??= options.mesh().then((m) => {
       following.push(m.followFrames(route), titles.follow(m));
@@ -409,9 +418,8 @@ function bridge(options: CotalAgentOptions): Bridge {
     return s;
   };
 
-  /** Offer the session's commands, and the seat's own where it serves them. A skill is named with a
-   *  leading `$`, which clients such as T3 Code show as a skill. A seat command that shares a name
-   *  with a session command is not offered. */
+  /** Offer the session's commands, and the seat's own where it serves them ({@link seatCommands}). A
+   *  seat command that shares a name with a session command is not offered. */
   const announce = async (session: Session): Promise<void> => {
     const seat = session.seat;
     const m = seat ? await opened?.catch(() => undefined) : undefined;
@@ -424,13 +432,8 @@ function bridge(options: CotalAgentOptions): Bridge {
         options.log(`session ${session.id}: ${seat.name}'s commands not read: ${(e as Error).message}`);
       }
     }
-    const theirs: AvailableCommand[] = (session.agentCommands ?? []).map((c) => ({
-      name: c.target === "skill" ? "$" + c.name : c.name,
-      description: c.description ?? (c.target === "skill" ? `${c.name} skill` : `/${c.name}`),
-      ...(c.inputHint ? { input: { hint: c.inputHint } } : {}),
-    }));
     const launch = launchCommands(session).map(({ name, description, input }) => ({ name, description, input }));
-    await send(session, { sessionUpdate: "available_commands_update", availableCommands: [...COMMANDS.map((c) => ({ ...c })), ...launch, ...theirs] });
+    await send(session, { sessionUpdate: "available_commands_update", availableCommands: [...COMMANDS.map((c) => ({ ...c })), ...launch, ...seatCommands(session)] });
   };
 
   const reportUsage = async (session: Session, m: Mesh): Promise<void> => {
