@@ -20,7 +20,7 @@
  *
  * Run: pnpm smoke:runtime-run-command   (needs nats-server on PATH; part of smoke:ci)
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,8 +31,9 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
   revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
+  activateRun, lastActivation, writeRunStatus, findCommand, parseCommandArgs, registry, type Command, type RunStatusView,
 } from "@cotal-ai/core";
-import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, clearCurrent, exitCode, isCommandFailure, recordMesh, recordPreparedSpace, saveSpaceAuth, setCurrent, shellPath } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
@@ -79,15 +80,15 @@ let takeovers = 100;
 // per read, pinned to the one run and the one takeover it replays. An admin credential holds no
 // records read row on this mesh, so the suite cannot ride one; the command mints its own for every
 // verb.
-const asOperator = async <T>(runId: string, use: (planes: { nc: Awaited<ReturnType<typeof connect>>; runId: string; takeoverId: string }) => Promise<T>): Promise<T> => {
+const asOperator = async <T>(runId: string, use: (planes: { nc: Awaited<ReturnType<typeof connect>>; runId: string; takeoverId: string }) => Promise<T>, endpoint = EP): Promise<T> => {
   const takeoverId = `t${(takeovers += 1)}`;
-  const creds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, runId, takeoverId } });
+  const creds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint, runId, takeoverId } });
   const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try { return await use({ nc, runId, takeoverId }); } finally { await nc.drain().catch(() => {}); }
 };
 const record = (runId: string) => asOperator(runId, async ({ nc }) => readRunRecord(await openRecordsBucket(nc, SPACE), EP, runId));
-const journal = (runId: string) => asOperator(runId, async ({ nc, takeoverId }) =>
-  replayRunJournal(jetstream(nc), await jetstreamManager(nc), SPACE, runId, takeoverId));
+const journal = (runId: string, endpoint = EP) => asOperator(runId, async ({ nc, takeoverId }) =>
+  replayRunJournal(jetstream(nc), await jetstreamManager(nc), SPACE, runId, takeoverId), endpoint);
 /** A revocation marker written RAW, under the same one-shot `run-admitter` profile `revoke` mints.
  *  The exported writer validates what it writes, so a marker the reader cannot read has to be
  *  created past it. The marker key is create-only and never removed (SPEC 14.8), so it stays. */
@@ -137,15 +138,16 @@ const rendered = (...cells: string[]) => lines().some((l) => {
  *  The ceilings are `start` flags, and the run grammar refuses them on any other verb. */
 const wf = (positionals: string[], values: Record<string, string | boolean | undefined> = {}) =>
   runWorkflow({ values: { server: servers, space: SPACE, local: true, ...(positionals[0] === "start" ? { "admit-read": "none", "admit-publish": "none" } : {}), ...values }, positionals, raw: [] });
-/** The same invocation with `--json`: the envelope it writes straight to stdout, parsed. The full
- *  journal and each listed run's revocation are in the JSON result, not the rendered tables. */
-const envelopeOf = async (positionals: string[], values: Record<string, string> = {}): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
+/** Capture the JSON envelope a command writes straight to stdout. */
+const readEnvelope = async (run: () => Promise<void>): Promise<{ result?: unknown; warnings?: Array<{ code?: string; message?: string; target?: { run?: string } }> } | undefined> => {
   const chunks: string[] = [];
   const write = process.stdout.write;
   process.stdout.write = ((chunk: string | Uint8Array) => { chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")); return true; }) as typeof process.stdout.write;
-  try { await wf(positionals, { json: true, ...values }); } finally { process.stdout.write = write; }
+  try { await run(); } finally { process.stdout.write = write; }
   try { return JSON.parse(chunks.join("")); } catch { return undefined; }
 };
+const envelopeOf = (positionals: string[], values: Record<string, string> = {}) =>
+  readEnvelope(() => wf(positionals, { json: true, ...values }));
 type JournalRowJson = { step?: string; schema?: unknown; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
 type RunRowJson = { runId?: string; endpoint?: string; state?: string; programHash?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
 
@@ -161,15 +163,15 @@ writeFileSync(ASKING, 'const a = { agent: "dev#u", persona: "dev" };\nconst v = 
 
 /** Start the checkpoint program and wait for its pause to open, so the run's record genuinely reads
  *  `running` while a cell reads it. The drive comes back unsettled: the caller answers it. */
-const holdAtCheckpoint = async (): Promise<{ rid: string; open: boolean; driven: Promise<unknown> }> => {
-  const driven = wf(["start"], { file: CHECKPOINT }).catch(() => undefined);
+const holdAtCheckpoint = async (endpoint = EP): Promise<{ rid: string; open: boolean; driven: Promise<unknown> }> => {
+  const driven = wf(["start"], { file: CHECKPOINT, endpoint }).catch(() => undefined);
   let R: string | undefined;
   for (let i = 0; i < 100 && R === undefined; i += 1) { await wait(50); R = startedId(); }
   const rid = R ?? "";
   let open = false;
   for (let i = 0; i < 100 && !open; i += 1) {
     await wait(200);
-    const back = await journal(rid).catch(() => undefined);
+    const back = await journal(rid, endpoint).catch(() => undefined);
     for (const r of back?.records ?? []) {
       if (r.record.kind !== "step") continue;
       const e = r.record.entry as JournalEntry;
@@ -278,11 +280,55 @@ let P = "";
     !Object.hasOwn(journalStepRow(1, { ...pending, external: { asks: "Old?", schema: CHECKPOINT_SCHEMA }, hold: { asks: "New?" } }), "schema"));
 }
 
-// ── 4) resume: a completed run replays to the same completion ────────────────────────────────
-{
+// A terminal resume changes neither the recorded holder nor the journal and emits no program output.
+const checkTerminalResume = async (runId: string, state: "completed" | "failed") => {
+  const before = (await record(runId))?.status;
+  const entries = (await journal(runId)).records;
   reset();
-  await wf(["resume", P], { file: PURE });
-  c("resume replays a completed run to completed", captured().includes(`run ${P}: completed`), captured());
+  const refused = await wf(["resume", runId]).then(() => undefined, (e: Error) => e);
+  c(`local resume refuses a ${state} run without running its program`,
+    before?.value.state === state && isCommandFailure(refused) && refused.outcome === "refused"
+      && refused.code === "LIFECYCLE_BLOCKED" && refused.message.includes(`already ${state}`) && captured() === "", { refused, output: captured() });
+  c(`local resume leaves the ${state} run's holder and journal unchanged`,
+    JSON.stringify((await record(runId))?.status) === JSON.stringify(before)
+      && JSON.stringify((await journal(runId)).records) === JSON.stringify(entries));
+};
+await checkTerminalResume(P, "completed");
+
+// For the takeover fixtures, pure code records no effects. Put its status back at the point where
+// the holder stopped before recording completion, with the existing activation and pins intact.
+const interruptedPureRun = async (runId: string) => {
+  const { revision, value } = (await record(runId))!.status!;
+  const pin = { endpoint: EP, runId, takeoverId: `t${(takeovers += 1)}`, instanceId: mintLifecycleUid(), epoch: value.epoch };
+  const creds = await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: pin });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await writeRunStatus(await openRecordsBucket(nc, SPACE), EP, runId, { ...value, state: "running" }, revision);
+  } finally { await nc.close(); }
+  return value;
+};
+
+reset();
+await wf(["start"], { file: PURE });
+const takeoverRun = startedId()!;
+
+// An attempt can activate and stop before its first status note. The command must advance past
+// that durable fence, not reuse the status token under a different holder.
+{
+  const before = await interruptedPureRun(takeoverRun);
+  const takeoverId = `t${(takeovers += 1)}`;
+  const creds = await mintCreds(auth, newIdentity(), "run-driver", { runDriver: { endpoint: EP, runId: takeoverRun, takeoverId, instanceId: mintLifecycleUid(), epoch: before.epoch + 1 } });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    await activateRun(jetstream(nc), await jetstreamManager(nc), { space: SPACE, runId: takeoverRun, holder: "stopped-before-note", epoch: before.epoch + 1, fencingToken: before.fencingToken + 1, takeoverId, at: Date.now(), expect: "existing" });
+  } finally { await nc.close(); }
+  c("interrupted activation leaves the status token behind", (await record(takeoverRun))?.status?.value.fencingToken === before.fencingToken);
+  reset();
+  await wf(["resume", takeoverRun]);
+  const after = (await record(takeoverRun))!.status!.value;
+  c("local resume advances beyond the unnoted activation and completes", captured().includes(`run ${takeoverRun}: completed`) && after.fencingToken === before.fencingToken + 2 && after.epoch === before.epoch + 2, { output: captured(), after });
+  c("the resumed holder matches the authoritative journal fence", lastActivation((await journal(takeoverRun)).records)?.holder === after.holder);
+  await checkTerminalResume(takeoverRun, "completed");
 }
 
 // The refusal block that once sat here (a `worktree` spawn held on the not-yet-durable seam) went
@@ -523,6 +569,12 @@ let P = "";
   c("...and its start fails OPERATION_FAILED with only the first line, so no newline reaches the one-line report",
     isCommandFailure(refused) && refused.code === "OPERATION_FAILED" && refused.message.endsWith("erste Zeile") && !refused.message.includes("\n") && !refused.message.includes("zweite"),
     refused?.message);
+  reset();
+  await wf(["show", tid], { plain: true });
+  c("a local read of a failure outside any step points to the driving process, not manager logs",
+    captured().includes("zweite Zeile") && captured().includes("check the driving process's output")
+      && !captured().includes("cotal service logs stack-manager"), captured());
+  await checkTerminalResume(tid, "failed");
 }
 
 // ── 6b) a parked run survives its driver dying: a fresh holder's resume attaches and completes ─
@@ -585,13 +637,16 @@ let P = "";
 // (higher token) while a shared token is impossible by design.
 {
   reset();
+  await wf(["start"], { file: PURE });
+  const runId = startedId()!;
   for (let k = 0; k < 5; k += 1) {
+    await interruptedPureRun(runId);
     await Promise.allSettled([
-      wf(["resume", P], { file: PURE }).catch(() => undefined),
-      wf(["resume", P], { file: PURE }).catch(() => undefined),
+      wf(["resume", runId], { file: PURE }).catch(() => undefined),
+      wf(["resume", runId], { file: PURE }).catch(() => undefined),
     ]);
   }
-  const back = await journal(P);
+  const back = await journal(runId);
   const tokens = back.records
     .filter((r) => r.record.kind === "activation")
     .map((r) => (r.record as { fencingToken: number }).fencingToken);
@@ -616,6 +671,17 @@ let P = "";
   const { rid, open: openPause } = await holdAtCheckpoint();
   c("the run to be revoked is open and held, so the control below reads a live record", openPause && rid !== "", captured());
 
+  const revokeArgs = { endpoint: EP, by: "smoke-operator", reason: "broker outage" };
+  const missingId = await wf(["revoke"], revokeArgs).then(() => undefined, (e: unknown) => e);
+  c("revoke without an ID asks to add it to the original command",
+    isCommandFailure(missingId) && exitCode(missingId.outcome, missingId.code) === 1
+      && missingId.remedy?.startsWith("add a run ID after `run revoke` in the original command") === true, missingId);
+  reset();
+  const refusal = await wf(["revoke", rid], { ...revokeArgs, json: true }).then(() => undefined, (e: unknown) => e);
+  c("revoke with --json asks to remove only that flag from the original invocation",
+    isCommandFailure(refusal) && exitCode(refusal.outcome, refusal.code) === 1
+      && refusal.remedy === "remove --json from the original command and rerun it", refusal);
+
   // THE CONTROL, and it is what makes the cell after it mean anything: the same run, the same
   // table, one read before the marker exists.
   reset();
@@ -624,8 +690,8 @@ let P = "";
   c("ps prints running for the run before it is revoked", stateOf(before) === "running", before);
 
   reset();
-  await wf(["revoke", rid], { by: "smoke-operator", reason: "broker outage" });
-  c("revoke acknowledges with the revoker and the reason",
+  await wf(["revoke", rid], revokeArgs);
+  c("adding the run ID to the original revoke records the supplied revoker and reason",
     captured().includes("revoked by smoke-operator (broker outage)"), captured());
   c("...and says what the table will now show, so the two surfaces cannot drift apart unnoticed",
     captured().includes(`cotal run now lists ${rid} as revoked`), captured());
@@ -730,7 +796,8 @@ let P = "";
 // grammar refuses them as usage and the writer refuses them again before the create.
 {
   reset();
-  await wf(["start"], { file: PURE });
+  const endpoint = "revoke-smoke";
+  await wf(["start"], { file: PURE, endpoint });
   const eid = startedId() ?? "";
   const refused = await wf(["revoke", eid], { by: "", reason: "" }).then(() => undefined, (e: Error) => e);
   // The run grammar refuses the empty fields before any connection, so the command never reaches
@@ -751,21 +818,28 @@ let P = "";
   // A run ID nothing admitted used to get its marker written and then a refusal citing the spec,
   // exit 1. It is refused as not found before anything is written, so no marker exists afterwards.
   const unadmitted = "run-0123456789abcdef0123456789abcdef";
-  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop" }).then(() => undefined, (e: Error) => e);
+  const unknownRevoke = await wf(["revoke", unadmitted], { by: "smoke-operator", reason: "nothing to stop", endpoint }).then(() => undefined, (e: Error) => e);
   const markerAfter = await (async () => {
-    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId: unadmitted } });
+    const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint, runId: unadmitted } });
     const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
-    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(EP, unadmitted)); } finally { await nc.drain().catch(() => {}); }
+    try { return await (await new Kvm(nc).open(admissionBucket(SPACE))).get(revocationKey(endpoint, unadmitted)); } finally { await nc.drain().catch(() => {}); }
   })();
-  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, and no marker is written",
+  c("a revoke of a run ID nothing admitted is refused TARGET_NOT_FOUND, exit 2, and no marker is written",
     isCommandFailure(unknownRevoke) && unknownRevoke.code === "TARGET_NOT_FOUND"
-      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${EP}, so there is nothing to revoke; nothing was written`
+      && exitCode(unknownRevoke.outcome, unknownRevoke.code) === 2
+      && unknownRevoke.message === `run ${unadmitted} has no admission on endpoint ${endpoint}, so there is nothing to revoke; nothing was written`
       && markerAfter === null, { refused: unknownRevoke?.message, markerAfter });
 
+  const remedy = isCommandFailure(unknownRevoke) ? unknownRevoke.remedy : undefined;
+  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  const [, alias, ...args] = remedy === `list the recorded runs with \`${next}\``
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${next}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+    : [];
+  const run = alias && findCommand(registry.all<Command>("command"), alias);
   reset();
-  await withStderr(() => wf(["ps"])).catch(() => undefined);
-  c("...and writes no marker, so ps lists that run by its record and never as revoked",
-    stateOf(psRow(eid)) === "completed", psRow(eid));
+  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+  c("the revoke remedy lists the same broker without a manager and finds the existing completed run",
+    listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(eid)) === "completed", { remedy, out: captured() });
 }
 
 // ── 12) migrate: the check over an edited program, read-only, through the command ────────────
@@ -832,23 +906,32 @@ let P = "";
   const filed2 = await asOperator(rid2, async ({ nc }) => listRunMigrations(await new Kvm(nc).open(recordsBucket(SPACE)), EP, rid2)).catch(() => undefined);
   c("...and the refused check filed nothing either", filed2 !== undefined && filed2.length === 0, filed2);
 
-  // A commit-side override is refused BY NAME, before any read of the run; the sentinel from the
-  // head of this block converts the gate's exit into the value graded here, and `withStderr`
-  // captures the sentence the way block 10 captures a ps diagnostic.
+  // A commit-side override is refused by the early structured grammar before any read.
   reset();
   const override = await withStderr(() => wf(["migrate", rid2], { file: DROP, "discard-approvals": true })).then(() => undefined, (e: Error) => e);
   c("a commit-side override is refused by name",
-    override instanceof Exited && ERRS.some((l) => l.includes("--discard-approvals") && l.includes("only checks")),
+    isCommandFailure(override) && override.code === "USAGE_INVALID" && override.message.includes("--discard-approvals") && override.message.includes("only checks"),
     override instanceof Error ? override.message.slice(0, 160) : ERRS);
 
   // A run ID nothing records is refused as `run show` refuses it: by code, with the list as Next.
   const unrecorded = "run-0123456789abcdef0123456789abcdef";
-  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT }).then(() => undefined, (e: Error) => e);
-  c("a check of a run ID nothing records is refused TARGET_NOT_FOUND, exit 2, with the run list as its Next",
+  const endpoint = "check-only";
+  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT, endpoint }).then(() => undefined, (e: Error) => e);
+  const remedy = isCommandFailure(unknownCheck) ? unknownCheck.remedy : undefined;
+  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  const command = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+  const [, alias, ...args] = command === next
+    ? execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+    : [];
+  const run = alias && findCommand(registry.all<Command>("command"), alias);
+  reset();
+  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+  c("a missing run check refuses with exit 2 and its remedy lists the same endpoint without a manager",
     isCommandFailure(unknownCheck) && unknownCheck.code === "TARGET_NOT_FOUND" && exitCode(unknownCheck.outcome, unknownCheck.code) === 2
-      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${EP}; a run that was never started cannot be checked`
-      && unknownCheck.remedy === "list the recorded runs with `cotal run`",
-    unknownCheck instanceof Error ? unknownCheck.message : unknownCheck);
+      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`
+      && remedy === `list the recorded runs with \`${next}\``
+      && listed === true && (process.exitCode ?? 0) === 0 && captured().includes("No workflow runs in this authorized record view."),
+    { error: unknownCheck, remedy, out: captured() });
   } finally { process.exit = origExit; }
 }
 
@@ -873,9 +956,21 @@ let P = "";
   reset();
   await wf(["start"], { file: PURE, endpoint });
   const rid = startedId() ?? "";
-  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: { endpoint?: string; programHash?: string; status?: { state?: string } } } | undefined;
+  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: RunStatusView } | undefined;
   c("a dotted-endpoint run starts and completes through the command",
     rid !== "" && detail?.view?.endpoint === endpoint && detail.view.status?.state === "completed", detail);
+  reset();
+  await wf(["show", rid], { endpoint, server: undefined, plain: true, limit: "1" });
+  const next = lines().find((line) => line.startsWith("  cotal r show "))?.trim().split(/ {2,}/)[0];
+  // These fixture arguments are all single shell words. Parse the printed command without adding
+  // the routing flags `wf` normally supplies, then use the real local broker to read the journal.
+  const [, alias, ...args] = next?.split(" ") ?? [];
+  const run = findCommand(registry.all<Command>("command"), alias);
+  const copied = run && await readEnvelope(() => runWorkflow(parseCommandArgs(run, args))).catch((error: Error) => error);
+  const copiedView = copied && !(copied instanceof Error) ? (copied.result as { view?: RunStatusView } | undefined)?.view : undefined;
+  c("the journal's printed JSON command reads all rows from the same local endpoint without a manager",
+    copiedView?.runId === rid && copiedView.endpoint === endpoint
+      && copiedView.journal.length === detail?.view?.journal.length, { next, copied });
   const all = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
   const row = all?.items?.find((r) => r.runId === rid);
   c("batched ps reports the dotted endpoint name and the recorded program hash",
@@ -884,6 +979,46 @@ let P = "";
   const filtered = (await envelopeOf(["ps"], { endpoint }))?.result as { items?: RunRowJson[] } | undefined;
   c("ps filters dotted endpoints by their name rather than their wire token",
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
+
+  const listCommand = `run list --local --space ${SPACE} --server ${shellPath(servers)} --endpoint ${endpoint}`;
+  const replaceId = "Then replace only the run ID in the original command";
+  for (const [kind, positionals, flags, correction] of [
+    ["missing", ["resume"], { file: PURE, timeout: "5m" }, "Then add a run ID after `run resume` in the original command"],
+    ["malformed", ["resume", "bad/id"], { file: PURE, timeout: "5m" }, replaceId],
+    ["malformed", ["answer", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+    ["malformed", ["amend", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+  ] as const) {
+    const refusal = await wf([...positionals], { endpoint, ...flags }).then(() => undefined, (e: Error) => e);
+    const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
+    const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+    const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand}`)
+      ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
+    reset();
+    const listed = run && listArgs.length > 0 && await runWorkflow(parseCommandArgs(run, listArgs)).then(() => true, () => false);
+    c(`a ${kind} local ${positionals[0]} ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager`,
+      isCommandFailure(refusal) && refusal.code === "USAGE_INVALID" && exitCode(refusal.outcome, refusal.code) === 1
+        && remedy?.endsWith(correction) === true
+        && listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(rid)) === "completed", { refusal, remedy, out: captured() });
+  }
+
+  const origin = join(home, "origin");
+  mkdirSync(origin);
+  recordPreparedSpace({ space: "origin", root: origin, ts: new Date().toISOString() });
+  setCurrent("origin");
+  try {
+    reset();
+    await wf(["list"], { endpoint, plain: true });
+    const hint = lines().map((line) => line.trim().split(/ {2,}/)[0]).find((line) => line?.includes(" r show <run-id>"));
+    const expected = `r show <run-id> --local --endpoint ${endpoint} --space ${SPACE} --server ${shellPath(servers)}`;
+    const command = ["cotal", "pnpm cotal"].some((cli) => hint === `${cli} ${expected}`)
+      ? hint!.replace(/^.*? r /, "r ").replace("<run-id>", rid) : undefined;
+    const [, ...showArgs] = command === undefined ? [] : execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1);
+    const replay = run && command !== undefined
+      ? await readEnvelope(() => runWorkflow(parseCommandArgs(run, [...showArgs, "--json"]))).catch((error: Error) => error) : undefined;
+    const view = replay && !(replay instanceof Error) ? (replay.result as { view?: RunStatusView } | undefined)?.view : undefined;
+    c("the local list's printed show command reads the same journal despite a different selected space",
+      view?.runId === rid && view.endpoint === endpoint && view.journal.length === detail?.view?.journal.length, { hint, replay });
+  } finally { clearCurrent(); }
 
   reset();
   await wf(["revoke", rid], { endpoint, by: "smoke-operator", reason: "dotted endpoint control" });
@@ -910,6 +1045,38 @@ let P = "";
   const other = (await envelopeOf(["ps"], { endpoint: EP }))?.result as { items?: RunRowJson[] } | undefined;
   c("the manager endpoint filter excludes both dotted-endpoint runs",
     !!other?.items?.some((r) => r.runId === P) && other.items.every((r) => r.runId !== rid && r.runId !== unreadId), other);
+}
+
+{
+  const endpoint = "local-review";
+  const step = "/checkpoint:approve#0";
+  reset();
+  const { rid, open, driven } = await holdAtCheckpoint(endpoint);
+  const next = (verb: string) => lines().find((line) => line.startsWith(`  cotal r ${verb} `))?.trim().split(/ {2,}/)[0];
+  const copied = (command: string) => {
+    // The fixture's only quoted arguments are single shell words with no embedded quotes.
+    const words = command.match(/'[^']*'|\S+/g)?.map((word) => word.replace(/^'|'$/g, "")) ?? [];
+    const run = findCommand(registry.all<Command>("command"), "r")!;
+    return runWorkflow(parseCommandArgs(run, words.slice(2)));
+  };
+  const route = ` --local --endpoint ${endpoint} --space ${SPACE} --server '${servers}'`;
+  await wf(["show", rid], { endpoint, plain: true });
+  const answer = next("answer");
+  c("the local checkpoint offers an answer with its explicit route and required answerer",
+    open && answer === `cotal r answer ${rid} '<step-key>' --value '<json>'${route} --by '<who>'`, answer);
+  if (answer !== undefined) await copied(answer.replace("<step-key>", step).replace("<json>", "true").replace("<who>", "reviewer"));
+  const outcome = await Promise.race([driven.then(() => "completed"), wait(15_000).then(() => "still-paused")]);
+  c("the printed answer settles the checkpoint and the local drive completes",
+    outcome === "completed" && captured().includes(`run ${rid}: completed`), captured());
+  reset();
+  await wf(["amend", rid, step], { endpoint, by: "reviewer", value: "false", plain: true });
+  const show = next("show");
+  c("the amendment receipt offers a read from the same local route", show === `cotal r show ${rid}${route}`, show);
+  reset();
+  if (show !== undefined) await copied(show);
+  c("the printed show reads the original answer and amendment from that endpoint",
+    /^ +Endpoint: +local-review$/m.test(captured()) && lines().some((line) => line.includes(step) && /answered +true +reviewer/.test(line)) &&
+      lines().some((line) => line.includes(step) && /amended +false +reviewer/.test(line)), captured());
 }
 
 // ── 15) batching preserves record validation, deleted values and failed marker reads ─────────
@@ -998,7 +1165,7 @@ let P = "";
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 120;
+const DECLARED = 141;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

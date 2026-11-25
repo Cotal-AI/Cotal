@@ -41,7 +41,7 @@ try {
       const identity = newIdentity();
       const ep = new CotalEndpoint({ space, servers, card: { id: identity.id, name: kind, kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false });
       ep.on("error", () => {});
-      const pending = () => (ep as unknown as { requestsAwaitingReply: Map<unknown, Set<unknown>> }).requestsAwaitingReply;
+      const pending = () => (ep as unknown as { conn: { requestsAwaitingReply: Map<unknown, Set<unknown>> } }).conn.requestsAwaitingReply;
       const waiterCount = () => [...pending().values()].reduce((n, set) => n + set.size, 0);
       const subject = kind === "liveness" ? livenessSubject(space, "manager", DEV_OWNER, identity.id)
         : controlServiceSubject(space, kind === "control" ? "probe" : kind === "admin" ? CONTROL_DELIVERY_ADMIN : CONTROL_DELIVERY, DEV_OWNER, identity.id);

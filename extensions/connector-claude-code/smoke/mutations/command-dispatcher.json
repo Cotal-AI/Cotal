@@ -1,0 +1,183 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/command-dispatcher.smoke.ts"
+  ],
+  "guard": "a Claude seat's agent commands name why no mod serves them, map every mod answer to its state, bound a start a panel holds, start only on an idle seat, and end the turn a remote interrupt stopped",
+  "command": "pnpm exec tsx extensions/connector-claude-code/smoke/command-dispatcher.smoke.ts",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/command-dispatcher.json",
+  "why": [
+    "D1 to D12 break the dispatcher and its queue in src/commands.ts, which the suite runs from source.",
+    "D13 to D15 break the hooks' turn ends that the queue and a remote interrupt rely on.",
+    "D16 to D18 break the lane in connector-core, which the suite loads from its build, so each builds connector-core first and again after the restore."
+  ],
+  "mutations": [
+    {
+      "name": "D1 the list drops Claude's argument hint",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "inputHint: c.argumentHint",
+      "replace": "inputHint: undefined",
+      "expectRed": "the list carries each entry as a command, with its description and its hint as inputHint",
+      "cell": "the list carries each entry as a command, with its description and its hint as inputHint",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D2 an unknown command is refused as a precondition",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "answer.outcome === \"not-found\" ? \"not-found\" : \"failed-precondition\"",
+      "replace": "\"failed-precondition\"",
+      "expectRed": "an unknown command reads refused, not-found",
+      "cell": "an unknown command reads refused, not-found",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D3 a policy refusal reads as not-found",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "answer.outcome === \"not-found\" ? \"not-found\" : \"failed-precondition\"",
+      "replace": "\"not-found\"",
+      "expectRed": "a run the mod's policy refuses reads refused, failed-precondition, with its reason",
+      "cell": "a run the mod's policy refuses reads refused, failed-precondition, with its reason",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D4 a run has no start bound",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "await within(served().request({ op: \"run\", command: name, args }), bounds.runMs, late)",
+      "replace": "await served().request({ op: \"run\", command: name, args })",
+      "expectRed": "a run a panel holds past the start bound reads unknown, naming the bound and the panel",
+      "cell": "a run a panel holds past the start bound reads unknown, naming the bound and the panel",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D5 an interrupt leaves the stopped turn open",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "      if (answer.outcome === \"interrupted\") await stopped?.();\n",
+      "replace": "",
+      "expectRed": "an interrupt the mod made answers interrupted and ends the seat's turn",
+      "cell": "an interrupt the mod made answers interrupted and ends the seat's turn",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D6 an idle interrupt ends a turn",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "if (answer.outcome === \"interrupted\") await stopped?.();",
+      "replace": "await stopped?.();",
+      "expectRed": "with no turn running it answers idle and ends nothing",
+      "cell": "with no turn running it answers idle and ends nothing",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D7 the dispatcher never names a cause",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "    return feed ? feed.unsupported() : NO_FEED;\n",
+      "replace": "    return feed ? undefined : NO_FEED;\n",
+      "expectRed": "with no reader, commands answers supported: false",
+      "cell": "with no reader, commands answers supported: false",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D8 a run skips the check that a mod serves the session",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "served().request({ op: \"run\", command: name, args })",
+      "replace": "o.feed()!.request({ op: \"run\", command: name, args })",
+      "expectRed": "a command queued while the mod served and taken after it left reads refused, failed-precondition, naming the cause",
+      "cell": "a command queued while the mod served and taken after it left reads refused, failed-precondition, naming the cause",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D9 an interrupt has no bound",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "await within(feed.request({ op: \"interrupt\" }), bounds.interruptMs, late)",
+      "replace": "await feed.request({ op: \"interrupt\" })",
+      "expectRed": "an interrupt with no answer within its bound is internal, outcome unknown",
+      "cell": "an interrupt with no answer within its bound is internal, outcome unknown",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D10 the queue takes a command while the seat runs a turn",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": " || seat.status === \"working\"",
+      "replace": "",
+      "expectRed": "a seat running a turn takes no command",
+      "cell": "a seat running a turn takes no command",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D11 the queue takes a command while a dialog waits",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": " || seat.status === \"waiting\"",
+      "replace": "",
+      "expectRed": "a seat waiting on a dialog takes no command",
+      "cell": "a seat waiting on a dialog takes no command",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D12 the queue does not wait for a started command's turn to show",
+      "file": "extensions/connector-claude-code/src/commands.ts",
+      "find": "outcome === \"dispatched\" ? TURN_SHOWS_MS : 0",
+      "replace": "0",
+      "expectRed": "the next command waits while the one before it starts its turn",
+      "cell": "the next command waits while the one before it starts its turn",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D13 a turn's Stop does not tell the queue",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "          if (agent.pendingWake() > 0) agent.requestWake();\n          deps.idle?.();\n",
+      "replace": "          if (agent.pendingWake() > 0) agent.requestWake();\n",
+      "expectRed": "a turn's Stop tells the queue",
+      "cell": "a turn's Stop tells the queue",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D14 a remote interrupt's end does not tell the queue",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    if (agent.pendingWake() > 0) agent.requestWake();\n    deps.idle?.();\n  };",
+      "replace": "    if (agent.pendingWake() > 0) agent.requestWake();\n  };",
+      "expectRed": "a remote interrupt ends the hooks' open turn: the seat reads idle and the queue is told",
+      "cell": "a remote interrupt ends the hooks' open turn: the seat reads idle and the queue is told",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D15 a remote interrupt ends whatever turn is open",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "turnOpen && mark === turn ?",
+      "replace": "turnOpen ?",
+      "expectRed": "an interrupt's end leaves a turn that opened after it working",
+      "cell": "an interrupt's end leaves a turn that opened after it working",
+      "completionMarker": "command-dispatcher.smoke: done"
+    },
+    {
+      "name": "D16 the lane lists a harness that names a cause",
+      "file": "extensions/connector-core/src/agent-commands.ts",
+      "find": "    if (!dispatcher || dispatcher.unsupported?.() !== undefined) return { supported: false };\n",
+      "replace": "    if (!dispatcher) return { supported: false };\n",
+      "expectRed": "with no reader, commands answers supported: false",
+      "cell": "with no reader, commands answers supported: false",
+      "completionMarker": "command-dispatcher.smoke: done",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm exec tsx extensions/connector-claude-code/smoke/command-dispatcher.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "D17 the lane queues a command for a harness that names a cause",
+      "file": "extensions/connector-core/src/agent-commands.ts",
+      "find": "    if (cause !== undefined) throw refused(\"unimplemented\", `this agent's connector runs no commands now: ${cause}`);\n",
+      "replace": "    void cause;\n",
+      "expectRed": "...command is unimplemented, naming the missing mod, the 2.1.330 floor and what turns mods off",
+      "cell": "...command is unimplemented, naming the missing mod, the 2.1.330 floor and what turns mods off",
+      "completionMarker": "command-dispatcher.smoke: done",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm exec tsx extensions/connector-claude-code/smoke/command-dispatcher.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "D18 the lane asks a harness that names a cause to interrupt",
+      "file": "extensions/connector-core/src/agent-commands.ts",
+      "find": "    if (cause !== undefined) throw refused(\"unimplemented\", `this agent's connector cannot interrupt a turn now: ${cause}`);\n",
+      "replace": "    void cause;\n",
+      "expectRed": "...and interrupt is unimplemented with the same cause",
+      "cell": "...and interrupt is unimplemented with the same cause",
+      "completionMarker": "command-dispatcher.smoke: done",
+      "command": "pnpm --filter @cotal-ai/connector-core build && pnpm exec tsx extensions/connector-claude-code/smoke/command-dispatcher.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    }
+  ]
+}

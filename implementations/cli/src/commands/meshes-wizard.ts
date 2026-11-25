@@ -3,18 +3,19 @@ import { findMesh, findPreparedSpace, inputDisabledByFlag, type MeshEntry } from
 import { bold, brand, brandBold, dim, ok } from "../lib/theme.js";
 import { abortIfCancel } from "../lib/cancel.js";
 import { readFileSync } from "node:fs";
-import { listSpaces } from "@cotal-ai/core";
 import {
   candidateTarget,
   checkDialPolicy,
   checkEnforcement,
   checkMode,
+  checkOpenSpace,
   checkRoot,
   checkServer,
   checkSpaceName,
   checkTrust,
   checkUserBundle,
   isDir,
+  openSpaceNames,
   persistRemoteUserEntry,
   probeEnforcement,
   spacesAtRoot,
@@ -355,7 +356,7 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
   let served: string[] = [];
   if (!space && enforces === "open") {
     try {
-      served = (await listSpaces({ servers: server as string })).map((info) => info.space).filter((name) => !accounts.includes(name));
+      served = (await openSpaceNames(server as string, tlsFor(server as string))).filter((name) => !accounts.includes(name));
     } catch {
       io.log.warn(`${server} answered, but the spaces it serves could not be read`);
     }
@@ -437,8 +438,9 @@ export async function addWizard(seed: WizardSeed, cwd: string, io: WizardIO = cl
     const target = candidateTarget(space, server as string, root, mode, trust.value, tlsFor(server as string));
     const spin = io.spinner();
     spin.start(mode === "auth" ? `Checking this folder's credentials for "${space}"` : `Checking the connection to "${space}"`);
-    const verified = await verifyTarget(target);
-    spin.stop(verified.ok ? `${ok("✓")} ${mode === "auth" ? "Credentials accepted" : "Connected"}` : "Could not connect");
+    const connected = await verifyTarget(target);
+    const verified = connected.ok && mode === "open" ? await checkOpenSpace(target.server, space, Boolean(target.tlsRequired)) : connected;
+    spin.stop(verified.ok ? `${ok("✓")} ${mode === "auth" ? "Credentials accepted" : "Space found"}` : "Could not verify the space");
     if (!verified.ok) {
       io.log.error(verified.message);
       const next = await io.select({

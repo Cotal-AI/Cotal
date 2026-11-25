@@ -36,7 +36,7 @@
  * Run: pnpm smoke:up-adopt-resume-lock:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
@@ -49,8 +49,7 @@ const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: confi
 process.env.COTAL_HOME = home;
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
-const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+const CLI = join(WT, "bin", "dist", "cotal.js");
 const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
 const resumeDocPath = join(root, ".cotal", "maintenance", "v1", "resume.json");
 const openConfPath = join(root, ".cotal", "server-open.conf");
@@ -104,7 +103,7 @@ function runSync(args: string[], extraEnv: Record<string, string> = {}) {
     timeout: 240_000,
   };
   assertSmokeSandboxDown(sandbox, args, options);
-  return spawnSync(TSX, [CLI, ...args], options);
+  return spawnSync(process.execPath, [CLI, ...args], options);
 }
 
 type Journal = {
@@ -177,8 +176,10 @@ try {
   // Stop the resume right after the manager commit. The listener it spawned is detached, so it
   // outlives this interrupted driver - which is precisely what makes the next `up` ADOPT rather
   // than spawn a competitor over the same store.
+  const detachedSeed = join(root, "detached-channels.json");
+  writeFileSync(detachedSeed, JSON.stringify({ channels: { railprobe: { instructions: "Seeded on detached resume" } } }));
   const interrupted = runSync(
-    ["up", "--detach", "--server", server, "--space", space],
+    ["up", "--detach", "--server", server, "--space", space, "--channels", detachedSeed],
     { COTAL_SMOKE_EXIT_AFTER_RESUME_COMMIT: "1" },
   );
   ok("the resume stopped at the commit boundary (exit 89)", interrupted.status === 89,
@@ -193,11 +194,13 @@ try {
   ok("the bare resume re-renders the preserved store cap", openConfJetStream() === cappedBlock, openConfJetStream());
 
   const attemptId = committed.ordinaryResume?.attemptId;
-  let pausedLog: string | undefined;
   if (process.platform === "win32") {
-    console.log("  SKIP: the listener INFO timeout control needs POSIX SIGSTOP/SIGCONT");
+    console.log("  SKIP: the paused listener control needs POSIX SIGSTOP/SIGCONT");
   } else {
     ok("the journal holds an ordinary attempt and no restore", typeof attemptId === "string" && !("restore" in committed));
+    const committedBytes = readFileSync(journalPath, "utf8");
+    const pidfile = join(root, ".cotal", "nats.pid");
+    const pinned = readFileSync(`${pidfile}.identity`, "utf8");
     // Pause only the listener this interrupted resume owns. Restore it before any assertion or
     // teardown, then use the existing successful recovery below as the positive control.
     process.kill(boundPid!, "SIGSTOP");
@@ -207,15 +210,28 @@ try {
     } finally {
       process.kill(boundPid!, "SIGCONT");
     }
-    pausedLog = `${paused.stdout ?? ""}${paused.stderr ?? ""}`;
-    ok("the paused listener refuses at its INFO timeout with outcome unknown",
-      paused.status === 3 && pausedLog.includes("OPERATION_UNKNOWN") && pausedLog.includes("listener INFO timed out"),
-      { status: paused.status, log: pausedLog });
-    ok("the failed read leaves the ordinary journal committed", journal().state === "resume-committed");
+    const pausedLog = `${paused.stdout ?? ""}${paused.stderr ?? ""}`;
+    if (process.platform === "linux" || process.platform === "darwin") {
+      ok("up refuses the suspended broker by PID and names how to resume it without starting another broker",
+        paused.status === 2 && /^\s*Code:\s+TARGET_UNAVAILABLE$/m.test(pausedLog) &&
+          pausedLog.includes(`the stack's broker, pid ${boundPid}, is suspended and cannot answer; no broker was launched`) &&
+          ["cotal", "pnpm cotal"].some((launcher) => pausedLog.trimEnd().endsWith(`\nNext\n  resume it with \`kill -CONT ${boundPid}\` and run \`${launcher} up\` again`)),
+        { status: paused.status, log: pausedLog });
+    } else {
+      ok("without stopped-process detection, the INFO timeout names the ordinary resume attempt and its unknown outcome",
+        paused.status === 3 && pausedLog.includes("OPERATION_UNKNOWN") &&
+          pausedLog.includes(`resume attempt ${attemptId} listener INFO timed out`) && !pausedLog.includes("restore listener"),
+        { status: paused.status, log: pausedLog });
+    }
+    ok("the refusal leaves the committed journal and original broker pin unchanged",
+      readFileSync(journalPath, "utf8") === committedBytes && alive(boundPid) &&
+        Number(readFileSync(pidfile, "utf8")) === boundPid && readFileSync(`${pidfile}.identity`, "utf8") === pinned);
   }
 
   console.log("\n2) SUBJECT: the recovering `cotal up` ADOPTS that live listener under the inherited lock");
-  const recovered = runSync(["up", "--detach", "--server", server, "--space", space]);
+  const adoptSeed = join(root, "adopt-channels.json");
+  writeFileSync(adoptSeed, JSON.stringify({ channels: { railprobe: { description: "Seeded on adoption" } } }));
+  const recovered = runSync(["up", "--detach", "--server", server, "--space", space, "--channels", adoptSeed]);
   const log = `${recovered.stdout ?? ""}${recovered.stderr ?? ""}`;
   // Assert the refusal by NAME. A bare non-zero check would also go red for an unrelated reason and
   // would report this finding for something that is not it.
@@ -223,15 +239,24 @@ try {
     !/held by a live owner|holds this root|recovery is already in progress|maintenance lock/i.test(log),
     { status: recovered.status, log: log.slice(-2000) });
   ok("the adopting resume exited 0", recovered.status === 0, { status: recovered.status, log: log.slice(-2000) });
+  ok("the adopting resume keeps the original broker", alive(boundPid) && Number(readFileSync(join(root, ".cotal", "nats.pid"), "utf8")) === boundPid);
   ok("…and the finalized resume consumed its maintenance journal", !existsSync(journalPath), journal());
   ok("the adopted mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
   ok("…and the attach host and the session ceiling", recorded(space)?.attachHost === "127.0.0.1" && recorded(space)?.maxSessions === 7, recorded(space));
+  const seeded = runSync(["channel", "show", "railprobe", "--plain", "--space", space]);
+  ok("both detached resume and adopted recovery apply their explicit channel seed fields",
+    seeded.status === 0 && seeded.stdout.includes("Seeded on detached resume") && seeded.stdout.includes("Seeded on adoption"), `${seeded.stdout}${seeded.stderr}`);
 
-  if (pausedLog !== undefined) {
-    ok("the INFO failure names the ordinary resume attempt, not a restore",
-      pausedLog.includes(`resume attempt ${attemptId} listener INFO timed out`) && !pausedLog.includes("restore listener"),
-      pausedLog);
-  }
+  const restoreCut = runSync(["down", "--preserve-state"]);
+  ok("the resumed mesh can be preserved again", restoreCut.status === 0, `${restoreCut.stdout}${restoreCut.stderr}`);
+  const artifact = join(root, "cap-backup");
+  const backup = runSync(["backup", "create", artifact]);
+  ok("the preserved mesh can be backed up", backup.status === 0, `${backup.stdout}${backup.stderr}`);
+  const restored = runSync(["backup", "restore", artifact]);
+  ok("canonical backup restore succeeds without a cap flag", restored.status === 0, `${restored.stdout}${restored.stderr}`);
+  ok("backup restore renders the preserved store cap", openConfJetStream() === cappedBlock, openConfJetStream());
+  ok("the restored mesh record keeps the store cap", recordedCap(space) === CAP, recordedCap(space));
+
   runSync(["down", "--yes"]);
   console.log(`\nUP ADOPT RESUME LOCK SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {

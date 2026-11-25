@@ -5,13 +5,13 @@
  *  Run: pnpm smoke:up-interrupt:live */
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { assertRecordIdentity, canonicalLocalProcessPath, MANAGER_PIDFILE, readPidfile } from "@cotal-ai/workspace";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, writeFileSync } from "node:fs";
+import { assertRecordIdentity, canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_PIDFILE, MANAGER_SPARE_CAPABILITY, readPidfile, verifyIdentityPin } from "@cotal-ai/workspace";
 import { serviceInstances } from "../src/lib/service-instances.js";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const entry = join(repo, "bin/cotal.ts");
@@ -27,8 +27,9 @@ const listening = (port: number) => new Promise<boolean>((done) => {
   socket.setTimeout(200, () => { socket.destroy(); done(false); });
 });
 const failures: string[] = [];
+let passed = 0;
 const check = (name: string, action: () => void) => {
-  try { action(); console.log(`PASS ${name}`); }
+  try { action(); passed += 1; console.log(`PASS ${name}`); }
   catch (error) { failures.push(name); console.error(`FAIL ${name}: ${String(error)}`); }
 };
 
@@ -159,15 +160,20 @@ for (const [name, signal, code, format, noManager] of [
         if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
       }, name === "early-timeout" ? 20000 : 4000);
       try {
-        stopped = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
-          const down = spawn(process.execPath, ["--import", loader, entry, "down", "--yes", "--json"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
-          let out = "", err = "";
-          down.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
-          down.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
-          const watchdog = setTimeout(() => down.kill("SIGKILL"), 180_000);
-          down.once("error", () => { clearTimeout(watchdog); done({ status: null, stdout: out, stderr: err }); });
-          down.once("close", (status) => { clearTimeout(watchdog); done({ status, stdout: out, stderr: err }); });
-        });
+        const stop = (args: string[]) => {
+          const options = { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+          assertSmokeSandboxDown(sandbox, args, options);
+          const down = spawn(process.execPath, ["--import", loader, entry, ...args], options);
+          return new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
+            let out = "", err = "";
+            down.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+            down.stderr.on("data", (chunk: Buffer) => { err += chunk.toString(); });
+            const watchdog = setTimeout(() => down.kill("SIGKILL"), 180_000);
+            down.once("error", () => { clearTimeout(watchdog); done({ status: null, stdout: out, stderr: err }); });
+            down.once("close", (status) => { clearTimeout(watchdog); done({ status, stdout: out, stderr: err }); });
+          });
+        };
+        stopped = await stop(["down", "--yes", "--json"]);
       } finally {
         clearTimeout(resume);
         if (assertRecordIdentity(pinned).kind === "match") process.kill(pinned.pid, "SIGCONT");
@@ -206,13 +212,33 @@ for (const [name, signal, code, format, noManager] of [
     assertSmokeSandboxDown(sandbox, args, options);
     return spawnSync(process.execPath, ["--import", loader, entry, ...args], options);
   };
-  const port = await freePort();
-  const start = ["up", "--server", `nats://127.0.0.1:${port}`, "--space", `legacy-interrupt-${process.pid}`, "--open", "--no-manager"];
+  const port = await freePort(), space = `legacy-interrupt-${process.pid}`;
+  const startAt = (port: number) => ["up", "--server", `nats://127.0.0.1:${port}`, "--space", space, "--open", "--no-manager"];
+  const start = startAt(port);
   const pidPath = join(root, ".cotal", "nats.pid");
   let orphan: number | undefined;
   try {
     assert.equal(cli(...start).status, 0, "legacy broker-only start");
+    const registry = join(home, "meshes");
+    const records = readdirSync(registry).filter((name) => name.endsWith(".json"));
+    assert.equal(records.length, 1);
     assert.equal(cli("down", "--yes").status, 0, "legacy stop");
+    // A directory at this invocation's temporary filename makes the registration write fail.
+    const writer = spawn(process.execPath, ["--import", loader, entry, ...start], { cwd: root, env, stdio: ["ignore", "ignore", "pipe"] });
+    let diagnostic = "";
+    writer.stderr.setEncoding("utf8").on("data", (chunk: string) => { diagnostic += chunk; });
+    const exited = new Promise<number | null>((done) => writer.once("close", done));
+    const blocked = join(registry, `${records[0]}.${writer.pid}.tmp`);
+    mkdirSync(blocked, { mode: 0o700 });
+    const code = await exited;
+    const stillListening = await listening(port);
+    check("failed registration reports the write error and stops its broker", () => {
+      assert.ok(code !== null && code !== 0 && diagnostic.includes(blocked), diagnostic);
+      assert.equal(existsSync(join(registry, records[0]!)), false);
+      assert.equal(existsSync(pidPath), false);
+      assert.equal(stillListening, false);
+    });
+    rmdirSync(blocked);
     const child = spawn(process.execPath, ["--import", loader, entry, ...start], { cwd: root, env, stdio: "ignore" });
     const closed = new Promise<void>((done) => child.once("close", () => done()));
     const until = Date.now() + 90_000;
@@ -226,12 +252,13 @@ for (const [name, signal, code, format, noManager] of [
     const orphanPid = Number(readPidfile(pidPath));
     orphan = orphanPid;
     const refusal = /the broker this folder started for "legacy-interrupt-\d+" still runs at nats:\/\/127\.0\.0\.1:\d+ \(pid (\d+)\)/;
-    for (const [label, args] of [["same flags", start], ["no --server", start.filter((arg, i) => arg !== "--server" && start[i - 1] !== "--server")]] as const) {
+    const nextPort = await freePort(), retry = startAt(nextPort);
+    for (const [label, args] of [["same flags", start], ["no --server", start.filter((arg, i) => arg !== "--server" && start[i - 1] !== "--server")], ["a different --server", retry]] as const) {
       const again = cli(...args);
       check(`legacy interrupt: up with ${label} refuses beside the broker it left`, () => {
         assert.equal(again.status, 2, again.stderr);
         assert.equal(Number(refusal.exec(again.stderr)?.[1]), orphanPid);
-        assert.match(again.stderr, /stop it with `cotal down`, then run `cotal up` again/);
+        assert.match(again.stderr, /stop it with `cotal down`, then repeat your startup command with the same options from this folder/);
         assert.equal(readPidfile(pidPath), String(orphanPid), "no other broker was recorded");
       });
     }
@@ -241,10 +268,15 @@ for (const [name, signal, code, format, noManager] of [
       assert.equal(existsSync(pidPath), false);
       assert.throws(() => process.kill(orphanPid, 0));
     });
-    check("legacy interrupt: the next start and stop succeed", () => {
-      assert.equal(cli(...start).status, 0);
-      assert.equal(cli("down", "--yes").status, 0);
+    const restarted = cli(...retry);
+    const oldListening = await listening(port), newListening = await listening(nextPort);
+    check("legacy interrupt: repeating the refused command serves the requested port without a manager", () => {
+      assert.equal(restarted.status, 0, restarted.stderr);
+      assert.equal(oldListening, false);
+      assert.equal(newListening, true);
+      assert.equal(existsSync(canonicalLocalProcessPath(MANAGER_PIDFILE, { root, space })), false);
     });
+    check("legacy interrupt: down stops the retried stack", () => assert.equal(cli("down", "--yes").status, 0));
   } finally {
     if (readPidfile(pidPath)) cli("down", "--yes");
     // A stop that failed must not leave the broker this cell's interrupted start spawned. Its record
@@ -255,4 +287,92 @@ for (const [name, signal, code, format, noManager] of [
     assert.equal(await listening(port), false, "legacy broker still listens after cleanup");
   }
 }
+
+if (process.platform !== "win32") {
+  for (const phase of ["connector seed", "manager startup"] as const) {
+    const home = mkdtempSync(join(base, "legacy-start-home-"));
+    const root = mkdtempSync(join(base, "legacy-start-root-"));
+    const config = join(home, "xdg");
+    mkdirSync(config, { mode: 0o700 });
+    mkdirSync(join(root, ".cotal"), { mode: 0o700 });
+    const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
+    const env = { ...inherited, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: config,
+      COTAL_SKIP_CONNECTOR_SEED: phase === "connector seed" ? "0" : "1", COTAL_ALLOW_CHECKOUT_SEED: "1", NO_COLOR: "1" };
+    const bin = join(repo, "bin/dist/cotal.js");
+    const start = (args: string[]) => {
+      const options = { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] as const };
+      assertSmokeSandboxDown(sandbox, args, options);
+      const child = spawn(process.execPath, [bin, ...args], { ...options, stdio: [...options.stdio] });
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+      const exited = new Promise<number | null>((done) => child.once("close", done));
+      return { child, exited, output: () => output };
+    };
+    const port = await freePort();
+    const space = phase === "connector seed" ? "legacy-seed-race" : "legacy-manager-race";
+    const context = { root, space };
+    const brokerPath = join(root, ".cotal", "nats.pid");
+    const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, context);
+    const capability = canonicalLocalProcessPath(MANAGER_SPARE_CAPABILITY, context);
+    const deliveryPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, context);
+    const upArgs = ["up", "--foreground", "--space", space, "--server", `nats://127.0.0.1:${port}`, ...(phase === "connector seed" ? ["--open"] : [])];
+    let up = start(upArgs), manager: ReturnType<typeof verifyIdentityPin> | undefined;
+    const until = async (ready: () => boolean) => {
+      const deadline = Date.now() + 120_000;
+      while (!ready()) {
+        assert.equal(up.child.exitCode, null, up.output());
+        assert.ok(Date.now() < deadline, `startup did not reach ${phase}`);
+        await sleep(10);
+      }
+    };
+    try {
+      if (phase === "connector seed") {
+        await until(() => up.output().includes("Reconciling built-in"));
+        assert.equal(up.child.kill("SIGSTOP"), true);
+        assert.equal(existsSync(brokerPath), false, up.output());
+        const down = start(["down", "--yes"]);
+        assert.equal(await down.exited, 2, down.output());
+        assert.match(down.output(), /still starting this stack/);
+        assert.match(down.output(), /Ctrl-C.*cotal down --yes/);
+        assert.equal(existsSync(brokerPath), false);
+        up.child.kill("SIGCONT");
+        await until(() => existsSync(capability));
+      } else {
+        await until(() => existsSync(capability));
+        assert.equal(await start(["down", "--yes"]).exited, 0);
+        await up.exited;
+        up = start(upArgs);
+        await until(() => (manager = verifyIdentityPin(managerPath)).kind === "match");
+        assert.equal(manager?.kind, "match");
+        if (manager?.kind !== "match") throw new Error("manager start identity was not recorded");
+        process.kill(manager.record.pid, "SIGSTOP");
+        assert.equal(existsSync(capability), false, "manager had already published readiness");
+        const delivery = verifyIdentityPin(deliveryPath);
+        assert.equal(delivery.kind, "match");
+        const down = start(["down", "--yes"]);
+        await sleep(13_000);
+        assert.equal(down.child.exitCode, null, down.output());
+        assert.deepEqual(verifyIdentityPin(deliveryPath), delivery, "delivery was not stopped while manager startup was pending");
+        process.kill(manager.record.pid, "SIGCONT");
+        manager = undefined;
+        assert.equal(await down.exited, 0, down.output());
+        assert.doesNotMatch(down.output(), /with-agents|could not list managed agents/);
+      }
+      if (phase === "connector seed") assert.equal(await start(["down", "--yes"]).exited, 0);
+      await up.exited;
+      assert.equal(await listening(port), false);
+      passed += 1;
+      console.log(`PASS legacy down during ${phase}`);
+    } finally {
+      if (manager?.kind === "match" && assertRecordIdentity(manager.record).kind === "match") process.kill(manager.record.pid, "SIGCONT");
+      up.child.kill("SIGCONT");
+      if (up.child.exitCode === null && up.child.signalCode === null) {
+        up.child.kill("SIGTERM");
+        await start(["down", "--yes"]).exited;
+      }
+    }
+  }
+}
+emitSentinel({ passed, failed: failures.length });
 assert.deepEqual(failures, [], "interrupted up regressions");

@@ -28,7 +28,7 @@
  * Run: pnpm smoke:setup-destination
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join, relative } from "node:path";
@@ -68,7 +68,7 @@ symlinkSync(natsServer, join(bin, process.platform === "win32" ? "nats-server.ex
 // Do not expose ambient POSIX tools: `/usr/bin/orca` can be the GNOME screen reader.
 if (process.platform !== "win32") {
   symlinkSync(process.execPath, join(bin, "node"));
-  for (const name of ["npm", "sh", "ps"]) {
+  for (const name of ["npm", "sh", "ps", "mkdir", ...(process.platform === "linux" ? ["getent", "python3"] : [])]) {
     const executable = resolveOnPath(name);
     if (!executable) throw new Error(`setup fixture requires ${name} on the host PATH`);
     symlinkSync(executable, join(bin, name));
@@ -86,6 +86,9 @@ const args = process.argv.slice(2);
 const state = path.join(process.env.HOME, ".codex-fixture.json");
 const saved = fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, "utf8")) : {};
 if (args.join(" ") === "plugin marketplace list") console.log(saved.market ? "cotal-mesh" : "");
+else if (args.join(" ") === "plugin marketplace list --json") {
+  console.log(JSON.stringify({ marketplaces: saved.market ? [{ name: "cotal-mesh", root: saved.market }] : [] }));
+}
 else if (args.slice(0, 3).join(" ") === "plugin marketplace add") {
   saved.market = args[3]; fs.writeFileSync(state, JSON.stringify(saved));
 } else if (args.join(" ") === "plugin add cotal@cotal-mesh") {
@@ -195,11 +198,25 @@ if (seeded.status !== 0) {
   process.exit(1);
 }
 
+// Status qualifies the interactive command and points scripts to setup help.
+{
+  const state = join(home, ".codex-fixture.json");
+  for (const label of ["not installed", "stale"]) {
+    if (label === "stale") writeFileSync(state, JSON.stringify({ version: "0.0.0+fixture" }));
+    const status = await run(["status", "--plain"]);
+    const row = status.stdout.split("\n").find(line => line.startsWith("  Codex plugin:"));
+    check(`headless status points a ${label} Codex plugin to scripted setup help`, status.status === 0 &&
+      row?.trim().replace(/\s+/g, " ") === `Codex plugin: ${label} - run \`cotal setup\` in a terminal, or see \`cotal setup --help\` for scripted setup`, row ?? shown(status));
+  }
+  rmSync(state);
+}
+
 // A stand-in npm registry serving the official tmux and herdr runtimes, packed from this checkout,
 // at this cotal's version, beside a newer `latest` that has no tarball, so an install that resolves
 // to the newest fails. Every other package is not found. Set after the seed, so only the runtime
 // installs read it.
 const REPO = join(import.meta.dirname, "..", "..", "..");
+const installationDocs = readFileSync(join(REPO, "docs", "cli-installation.mdx"), "utf8");
 const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
 const NEWER = "99.0.0";
 const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
@@ -249,6 +266,19 @@ const installed = (pkg: string) => loadExtensionsManifest().extensions.find((e) 
 
 const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--destination", "local", "--harness", harness, "--project", dir, "--space", space];
 
+if (process.getuid && process.getuid() !== 0) {
+  const dir = project("p-readonly");
+  chmodSync(dir, 0o500);
+  try {
+    const setup = await json([...FULL("readonly-test", dir), "--yes"], dir);
+    check("setup recommends --project for a writable destination", refused(setup, 2, "PERMISSION_DENIED")
+      && setup.env?.error?.remedy?.endsWith("pass --project <dir>") && !existsSync(join(dir, ".cotal")), shown(setup));
+    const create = await json(["space", "create", "readonly-test", "--root", dir], dir);
+    check("space create recommends --root for a writable destination", refused(create, 2, "PERMISSION_DENIED")
+      && create.env?.error?.remedy?.endsWith("pass --root <dir>") && !existsSync(join(dir, ".cotal")), shown(create));
+  } finally { chmodSync(dir, 0o700); }
+}
+
 // ── A script names every input, and a refusal writes nothing ──────────────────────────────────────
 {
   const dirs = { cloud: project("p-cloud"), mars: project("p-mars"), harness: project("p-harness"), name: project("p-name"), file: project("p-file"), runtime: project("p-runtime") };
@@ -256,6 +286,9 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
     refused(missing, 1, "USAGE_INVALID") && /--harness, --project, --space/.test(missing.env?.error?.message ?? "") && /--destination local --harness <connector> --project <dir> --space <name>/.test(missing.env?.error?.remedy ?? ""), shown(missing));
+  const emptyProject = await json([...FULL("empty-project", ""), "--configure-only", "--yes"], dirs.name);
+  check("an empty --project refuses before preparing the current directory",
+    refused(emptyProject, 1, "USAGE_INVALID") && /--project \./.test(emptyProject.env?.error?.remedy ?? "") && !existsSync(join(dirs.name, ".cotal")) && findPreparedSpace("empty-project") === undefined, shown(emptyProject));
   const missingHosted = await json(["setup", "--destination", "self-hosted", "--harness", "codex", "--space", "ok1"]);
   check("a self-hosted script missing --project gets the self-hosted form, with --connection-file",
     refused(missingHosted, 1, "USAGE_INVALID") && /pass --project$/.test(missingHosted.env?.error?.message ?? "")
@@ -324,8 +357,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const startedRoot = project("started-here");
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const started = await json(FULL("startedspace", startedRoot));
-  check("a space started here before is reported as started, and its next command is spawn",
-    started.status === 0 && started.env?.result.spaceState === "started" && started.env.result.next.command === `${commandPrefix} spawn --space startedspace` && findPreparedSpace("startedspace") === undefined, shown(started));
+  check("a past local registration with an offline broker is reported as stopped and kept",
+    started.status === 0 && started.env?.result.spaceState === "stopped" && started.env.result.next.command === `${commandPrefix} up` && started.env.result.next.cwd === startedRoot && findPreparedSpace("startedspace") === undefined, shown(started));
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
@@ -335,14 +368,50 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
 
+{
+  const dir = project("corrected-name");
+  const base = ["setup", "--destination", "local", "--harness", "codex", "--project", dir];
+  const bad = await json([...base, "--space=-my.space"]);
+  const remedy = bad.env?.error?.remedy;
+  check("a respelled local name does not start with a hyphen",
+    refused(bad, 1, "USAGE_INVALID") && remedy === "pass --space my_space, or another name of letters, digits, - and _", shown(bad));
+  const retry = await json([...base, "--space", /^pass --space ([^,]+),/.exec(remedy ?? "")?.[1] ?? "", "--yes"]);
+  check("the suggested name can be used as a flag value and prepared",
+    retry.status === 0 && retry.env?.result?.space === "my_space" && retry.env.result.spaceState === "created", shown(retry));
+  const long = await json([...base, `--space=${"a".repeat(64)}.`]);
+  check("setup does not suggest a concrete name too long for a local space",
+    refused(long, 1, "USAGE_INVALID") && /^choose a name/.test(long.env?.error?.remedy ?? ""), shown(long));
+}
+
+if (process.platform !== "win32") {
+  const original = project("workshop's original");
+  const other = project("workshop-other");
+  const setup = ["setup", "--destination", "local", "--harness", "codex", "--space", "workshop", "--yes", "--configure-only", "--plain"];
+  const prepared = await run([...setup, "--project", "."], original);
+  check("configure-only prepares the original project", prepared.status === 0, shown(prepared));
+  const mismatch = await run([...setup, "--project", "."], other);
+  const option = /rerun setup with `(--project [^`]+)`, or choose another --space name/.exec(mismatch.stderr)?.[1];
+  check("configure-only refuses another root without writing or suggesting startup or forget", mismatch.status === 2 && option !== undefined && !existsSync(join(other, ".cotal")) && !/cotal (?:up|space forget)/.test(mismatch.stderr), shown(mismatch));
+  if (option !== undefined) {
+    const retry = spawnSync("sh", ["-c", `exec "$@" ${option}`, "setup-retry", process.execPath, BIN, ...setup], { cwd: other, env, encoding: "utf8", timeout: 180_000 });
+    check("the printed project option works as written from the other directory", retry.status === 0 && /already prepared/.test(retry.stdout), shown(retry));
+  }
+}
+
 // A confirmed scripted local setup creates its explicitly named project folder.
 {
-  const dir = join(home, "new-project");
-  const created = await json([...FULL("new-project", dir), "--yes"]);
+  const parent = join(home, "new-project");
+  const dir = join(parent, "nested");
+  const previousUmask = process.umask(0o000);
+  const creating = json([...FULL("new-project", dir), "--yes"]);
+  process.umask(previousUmask);
+  const created = await creating;
   check("--yes creates a missing local project and prepares its default persona",
     created.status === 0 && findPreparedSpace("new-project")?.root === dir &&
       existsSync(join(dir, ".cotal", "agents", "default.md")) &&
       created.env?.result?.written?.some((w: { what: string }) => w.what === "project folder"), shown(created));
+  if (process.platform !== "win32")
+    check("setup makes each missing project directory private under umask 000", created.status === 0 && [parent, dir].every((path) => (statSync(path).mode & 0o777) === 0o700));
   const file = join(home, "project-file");
   writeFileSync(file, "keep");
   const rejected = await json([...FULL("project-file", file), "--yes"]);
@@ -351,6 +420,23 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 }
 
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
+if (process.platform !== "win32") {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("bash\n") && /^cotal setup --destination local .* --no-input$/m.test(block))
+    ?.slice("bash\n".length);
+  const dir = join(home, "scripted-research");
+  check("the documented local example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const runExample = spawnSync("sh", ["-ec", `node=$1; cli=$2
+cotal() { "$node" "$cli" "$@"; }
+${example.replaceAll("research", "scripted-research")}`, "setup-example", process.execPath, BIN],
+    { cwd: home, env, encoding: "utf8", timeout: 180_000 });
+    check("the documented local example creates its folder and saves preparation before reporting missing Claude",
+      runExample.status === 4 && /saved scripted-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
+}
+
 {
   const dir = project("p-claude");
   const partial = await json(FULL("claudespace", dir, "claude"));
@@ -364,6 +450,39 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
   check("missing application setup points to dependency repair before startup",
     partial.env?.result.next.command === "install or repair claude, then run the same setup again" && /Next\s+install or repair claude/.test(human.stdout), shown(human));
+  writeFileSync(join(more, "claude"), "#!/bin/sh\necho claude-banner\nexit 1\n", { mode: 0o755 });
+  writeFileSync(join(more, "claude.cmd"), "@echo claude-banner\r\n@exit /b 1\r\n");
+  const unhealthy = await run(FULL("claudespace", dir, "claude"), home, { PATH: [more, env.PATH].join(delimiter) });
+  check("a present but unhealthy application is unavailable, not missing from PATH",
+    unhealthy.status === 4 && /application:\s+claude · unavailable/.test(unhealthy.stdout) && !/claude not on PATH/.test(unhealthy.stdout), shown(unhealthy));
+  rmSync(join(more, "claude"));
+  rmSync(join(more, "claude.cmd"));
+}
+
+// Headless status uses the saved project and harness rather than a command that needs a terminal.
+if (process.platform !== "win32") {
+  const dir = project("headless pi project");
+  const headlessPath = project("headless-bin");
+  for (const name of ["node", "npm", "nats-server", "sh", "ps"])
+    symlinkSync(resolveOnPath(name, env)!, join(headlessPath, name));
+  const headless = { PATH: headlessPath };
+  const setup = await run(["setup", "--destination", "local", "--harness", "pi", "--project", ".", "--space", "headless-pi", "--configure-only", "--no-input"], dir, headless);
+  check("headless setup saves preparation when pi is missing", setup.status === 4 && harnessOf("headless-pi") === "pi", shown(setup));
+  const status = await run(["status"], dir, headless);
+  const command = status.stdout.split("\n").map((line) => line.trim()).find((line) => line.includes(" setup --destination local --harness pi "));
+  check("headless status gives the install guide and a complete setup command", status.status === 0 && command?.includes(`--project '${dir}' --space headless-pi --configure-only --no-input`) === true && status.stdout.includes("https://docs.cotal.ai/docs/connect-pi/"), shown(status));
+  if (command) {
+    const cotalBin = project("headless-launcher");
+    writeFileSync(join(cotalBin, "cotal"), `#!/bin/sh\nexec "${process.execPath}" "${BIN}" "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(cotalBin, "pnpm"), `#!/bin/sh\nexec "$@"\n`, { mode: 0o755 });
+    const follow = (path: string) => spawnSync("/bin/sh", ["-c", command], { cwd: dir, env: { ...env, PATH: [cotalBin, path].join(delimiter) }, encoding: "utf8", timeout: 60_000 });
+    const missing = follow(headlessPath);
+    check("following the printed command reaches application setup instead of refusing for missing flags", missing.status === 4 && /pi.*PATH/.test(missing.stderr), missing.stderr);
+    const piBin = project("headless-pi-bin");
+    writeFileSync(join(piBin, "pi"), "#!/bin/sh\necho 0.79.10\n", { mode: 0o755 });
+    const completed = follow([piBin, headlessPath].join(delimiter));
+    check("after installing pi the same command completes without starting the space", completed.status === 0 && /Configure only/.test(completed.stdout) && findPreparedSpace("headless-pi")?.root === dir, completed.stderr);
+  }
 }
 
 // ── A self-hosted space ───────────────────────────────────────────────────────────────────────────
@@ -374,7 +493,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const notTeam = project("not-team");
   const before = files();
   const elsewhere = await json(hosted("team", notTeam));
-  check("a project other than the registration's root is CONFLICT, naming the root", refused(elsewhere, 2, "CONFLICT") && elsewhere.env?.error?.remedy === `pass --project ${teamRoot}`, shown(elsewhere));
+  check("a project other than the registration's root is CONFLICT, naming the root", refused(elsewhere, 2, "CONFLICT") && elsewhere.env?.error?.remedy === `pass \`--project ${teamRoot}\``, shown(elsewhere));
   const unknown = await json(hosted("nobody", teamRoot));
   check("an unregistered space with no connection file is TARGET_NOT_FOUND", refused(unknown, 2, "TARGET_NOT_FOUND") && /--connection-file/.test(unknown.env?.error?.remedy ?? ""), shown(unknown));
   const local = await json(hosted("research", join(home, "research")));
@@ -412,7 +531,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const otherCatalogProject = project("catalog-project-other");
   const rebound = await json(hosted("catalog-team", otherCatalogProject));
   check("a discovered space already bound to another project refuses instead of moving again",
-    refused(rebound, 2, "CONFLICT") && rebound.env?.error?.remedy === `pass --project ${catalogProject}` && findMesh("catalog-team")?.root === catalogProject, shown(rebound));
+    refused(rebound, 2, "CONFLICT") && rebound.env?.error?.remedy === `pass \`--project ${catalogProject}\`` && findMesh("catalog-team")?.root === catalogProject, shown(rebound));
   const controlProject = join(process.env.COTAL_HOME!, "catalog-project");
   mkdirSync(controlProject, { recursive: true });
   recordMesh({ ...boundEntry!, space: "catalog-control", root: catalogCustodyRoot, catalogRoot: catalogCustodyRoot, catalogSlug: "catalog-control", userAuth: { ...boundEntry!.userAuth!, sentinelCredsPath } });
@@ -432,8 +551,15 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   writeFileSync(file, JSON.stringify(bundle));
   const wrongName = await json(hosted("other", userRoot, ["--connection-file", file]));
   check("a connection file for another space is CONFLICT", refused(wrongName, 2, "CONFLICT") && /"hosted"/.test(wrongName.env?.error?.message ?? "") && findMesh("other") === undefined, shown(wrongName));
-  const added = await json(hosted("hosted", userRoot, ["--connection-file", file]));
-  check("a connection file registers the space with the project as its root",
+  const help = await run(["setup", "--help"]);
+  check("setup help labels the self-hosted connection-file example as prompting in a terminal",
+    help.status === 0 && help.stdout.replace(/\s+/g, " ").includes("cotal setup --destination self-hosted --connection-file <bundle.json> asks for the remaining inputs in a terminal"), shown(help));
+  const example = /^cotal setup --destination self-hosted .*--connection-file .*$/m.exec(installationDocs)?.[0];
+  check("the installation docs show a scripted self-hosted connection-file example", example !== undefined, { example });
+  const substitutions: Record<string, string> = { claude: "codex", "~/research": userRoot, research: "hosted", "./research.json": file };
+  const exampleArgs = (example ?? "").trim().split(/\s+/).slice(1).map((word) => substitutions[word] ?? word);
+  const added = await json(exampleArgs);
+  check("the documented self-hosted example runs without a terminal and registers the space with the project as its root",
     added.status === 0 && added.env?.result.spaceState === "added" && findMesh("hosted")?.root === userRoot && findMesh("hosted")?.mode === "user" && added.env.result.written.some((w: { what: string }) => w.what === "space registration"), shown(added));
   check("and its persona lands where spawn reads for that space", existsSync(join(resolveMeshTarget(home, { space: "hosted" }).personaRoot, "default.md")));
   const again = await json(hosted("hosted", userRoot, ["--connection-file", file]));
@@ -447,7 +573,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 type Row = { name: string; state: string; selected: boolean; reachable: boolean | null; package: string | null; tool: { names: string[]; found: string | null } | null };
 const rows = (r: Awaited<ReturnType<typeof json>>): Row[] => r.env?.result?.runtimes ?? [];
 const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find((x) => x.name === name);
-{
+async function scriptedRuntimeInstalls() {
   const dir = project("rt");
   const added = await json([...FULL("rt", dir), "--runtime", "tmux"]);
   check("a named runtime is added at this cotal's version and its provider answers",
@@ -518,11 +644,34 @@ const SAVE = "Save it?";
 const START_LOCAL = "Start this local space and open the default agent?";
 const START_HOSTED = "Launch the default agent on the registered space's manager?";
 
+// Exercise the Quickstart's keys before the scripted checks install tmux in this home.
+if (process.platform !== "win32") {
+  const dir = project("pty-only");
+  const t = terminal(dir, ["--configure-only"]);
+  await t.answer(DESTINATION, ENTER);
+  await t.answer(APPLICATION, ENTER);
+  const checked = await t.at("◼ tmux (not set up · tmux found)");
+  const frame = t.s.text().slice(t.s.text().lastIndexOf(RUNTIMES));
+  check("only tmux starts checked when its tool is found but the extension is absent",
+    checked && !/[◻◼] pty\b/.test(frame) && frame.match(/◼ \w+/g)?.join() === "◼ tmux" && installed("@cotal-ai/tmux") === undefined, frame);
+  // The cursor starts on orca. Move to tmux and press Space before confirming.
+  await t.answer(RUNTIMES, DOWN + " " + ENTER);
+  await t.answer(PROJECT, ENTER);
+  await t.answer(SPACE_NAME, ENTER);
+  check("clearing every checked runtime with Space leaves only pty in the review",
+    (await t.at(SAVE)) && /^│  runtimes +pty +│$/m.test(t.s.text()), t.s.text().slice(-900));
+  await t.answer(SAVE, ENTER);
+  check("saving prepares the project without installing tmux",
+    (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-only")?.root === dir && installed("@cotal-ai/tmux") === undefined,
+    { code: t.s.code, out: t.s.text().slice(-900) });
+}
+await scriptedRuntimeInstalls();
+
 if (process.platform !== "win32") {
   {
     const dir = project("pty-cloud");
     const before = files();
-    const t = terminal(dir);
+    const t = terminal(dir, ["--configure-only"]);
     check("a terminal is asked where the space runs, with Cloud among the choices", (await t.at(DESTINATION)) && /○ Cloud/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
@@ -531,7 +680,7 @@ if (process.platform !== "win32") {
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
     check("Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in", /● Cloud \(sign in to Cotal Cloud and choose your space\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
     t.write("\x03");
-    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
+    check("Ctrl-C leaves setup before sign-in with exit 130 and saves nothing", (await t.exited()) && t.s.code === 130 && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
   }
   {
     const dir = project("pty-local");
@@ -677,6 +826,90 @@ if (process.platform !== "win32") {
   check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
   const none = await json(FULL("rt", dir));
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
+}
+
+{
+  const dir = project("blocked-persona");
+  const agents = join(dir, ".cotal", "agents");
+  mkdirSync(join(dir, ".cotal"), { mode: 0o700 });
+  writeFileSync(agents, "keep this file");
+  const args = [...FULL("blocked-persona", "."), "--configure-only", "--yes"];
+  const blocked = await json(args, dir);
+  const saved = findPreparedSpace("blocked-persona");
+  const writes = blocked.env?.changed;
+  check("a blocked persona directory reports the saved space as partial, with its write and a way to retry",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL"
+      && blocked.env.target?.space === "blocked-persona" && blocked.env.target?.path === agents
+      && blocked.env.error.message.includes('prepared space "blocked-persona" is saved')
+      && blocked.env.error.remedy === `move the file at ${agents} aside, then run the same setup again`
+      && saved?.root === dir && writes?.length === 1 && writes[0]?.what === "prepared space" && existsSync(writes[0].path)
+      && readFileSync(agents, "utf8") === "keep this file", shown(blocked));
+  renameSync(agents, `${agents}.saved`);
+  const retried = await json(args, dir);
+  check("rerunning configure-only after moving the file seeds the persona and keeps the prepared record",
+    retried.status === 0 && retried.env?.result?.spaceState === "prepared" && retried.env.result.startup?.state === "not-requested"
+      && saved !== undefined && findPreparedSpace("blocked-persona")?.ts === saved.ts && existsSync(join(agents, "default.md")), shown(retried));
+}
+
+{
+  const dir = project("blocked-demo");
+  const agents = join(dir, ".cotal", "agents");
+  const path = join(agents, "david.md");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, "keep"), "untouched");
+  const args = [...FULL("blocked-demo", "."), "--yes", "--demo"];
+  const blocked = await json(args, dir);
+  check("a directory blocking a demo persona refuses before writing space or personas",
+    refused(blocked, 2, "CONFLICT") && blocked.env?.target?.space === "blocked-demo" && blocked.env.target.path === path
+      && blocked.env.error.message.includes(path) && blocked.env.error.remedy === `move the directory at ${path} aside, then run the same setup again`
+      && findPreparedSpace("blocked-demo") === undefined && !existsSync(join(agents, "default.md"))
+      && readFileSync(join(path, "keep"), "utf8") === "untouched", shown(blocked));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup prepare the space and seed the demo team",
+    retried.status === 0 && findPreparedSpace("blocked-demo")?.root === dir
+      && ["default", "david", "sven", "me"].every((name) => existsSync(join(agents, `${name}.md`))), shown(retried));
+}
+
+{
+  const dir = project("blocked-log");
+  const path = join(dir, ".cotal", "setup.log");
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  const args = [...FULL("blocked-log", "."), "--configure-only", "--yes"];
+  const blocked = await json(args, dir);
+  const saved = findPreparedSpace("blocked-log");
+  check("a blocked setup log reports the saved preparation and the path to repair",
+    blocked.status === 4 && blocked.env?.outcome === "partial" && blocked.env.error?.code === "OPERATION_PARTIAL"
+      && blocked.env.target?.space === "blocked-log" && blocked.env.target.path === path
+      && blocked.env.error.remedy === `check and repair the log path ${path}, then run the same setup again`
+      && blocked.env.changed?.map((write: { what: string }) => write.what).join(", ") === "prepared space, default persona, harness preference of blocked-log"
+      && saved?.root === dir, shown(blocked));
+  const unchanged = await json(args, dir);
+  check("the same blocked log fails with no changes on a retry",
+    unchanged.status === 5 && unchanged.env?.outcome === "failed" && unchanged.env.error?.code === "OPERATION_FAILED"
+      && !unchanged.env.changed?.length, shown(unchanged));
+  renameSync(path, `${path}.saved`);
+  const retried = await json(args, dir);
+  check("moving the directory aside lets setup finish without replacing preparation",
+    retried.status === 0 && retried.env?.result?.spaceState === "prepared" && saved !== undefined
+      && findPreparedSpace("blocked-log")?.ts === saved.ts && existsSync(path), shown(retried));
+}
+
+if (process.platform !== "win32") {
+  const oldBin = project("old-bin");
+  const probed = join(oldBin, "nats-server.probed");
+  writeFileSync(join(oldBin, "nats-server"), `#!/bin/sh\nif [ "$1" != --version ]; then exit 1; fi\necho probed > "$0.probed"\necho 'nats-server: v2.9.0'\n`, { mode: 0o755 });
+  const path = { PATH: [oldBin, env.PATH].join(delimiter) };
+  const dir = project("brokerless");
+  const prepared = await json([...FULL("brokerless", dir), "--configure-only", "--yes"], dir, path);
+  check("configure-only saves the default persona without probing the old broker",
+    prepared.status === 0 && prepared.env?.result?.startup?.state === "not-requested" && !existsSync(probed)
+      && existsSync(join(dir, ".cotal", "agents", "default.md")), shown(prepared));
+  const startDir = project("broker-required");
+  const started = await json([...FULL("broker-required", startDir), "--start", "--detach", "--yes"], startDir, path);
+  check("explicit startup still refuses the old broker before writing the project",
+    refused(started, 2, "DEPENDENCY_UNAVAILABLE") && /reports version 2\.9\.0/.test(started.env?.error?.message ?? "")
+      && existsSync(probed) && !existsSync(join(startDir, ".cotal")), shown(started));
 }
 
 finish();

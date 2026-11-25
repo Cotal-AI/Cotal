@@ -63,6 +63,21 @@ check("the report names space create for this folder, not a bare up", plain.stdo
 const components = run(["status", "--components"]);
 check("status --components refuses the folder that names no space and probes no default broker", /target\s+refused · no-meshes/.test(components.stdout) && !components.stdout.includes("4222") && !components.stderr.includes("4222"), shown(components));
 
+const other = mkdtempSync(join(home, "other-"));
+const otherPrepared = run(["space", "create", "other", "--root", other]);
+check("rig: another project has a prepared space", otherPrepared.status === 0, shown(otherPrepared));
+const useOther = run(["use", "other"]);
+check("rig: the other space is selected", useOther.status === 0, shown(useOther));
+const selectedIdentity = run(["whoami", "--plain"]);
+check("whoami in the forgotten folder reports the saved selection", selectedIdentity.status === 0 && selectedIdentity.stdout.startsWith("Mesh: other\n"), shown(selectedIdentity));
+const clearSelection = run(["use", "--clear"]);
+check("rig: the selection is cleared", clearSelection.status === 0, shown(clearSelection));
+const forgottenIdentity = run(["whoami", "--json"]);
+check("whoami with neither a selection nor a named space refuses and names the forgotten folder",
+  forgottenIdentity.status === 2 && forgottenIdentity.envelope?.error?.code === "TARGET_NOT_FOUND" && forgottenIdentity.stdout.includes(realpathSync.native(root)), shown(forgottenIdentity));
+const namedIdentity = run(["whoami", "--space", "other", "--plain"]);
+check("whoami with a named space reports it even without a saved selection", namedIdentity.status === 0 && namedIdentity.stdout.startsWith("Mesh: other\n"), shown(namedIdentity));
+
 // An empty control directory does not create an implicit space for reads or launch previews.
 const fresh = mkdtempSync(join(home, "fresh-"));
 mkdirSync(join(fresh, ".cotal"));

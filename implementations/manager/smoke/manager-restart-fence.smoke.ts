@@ -29,24 +29,26 @@ import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
-import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
-// `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
-// the split is deliberate. The long-lived-client behaviour graded below lives in
-// `invokeService`, and a suite that imports `dist` cannot make a claim about `src`: a mutation of
-// the source leaves it green, which is a mutation surviving for the one reason that says nothing
-// about the test. Nothing is shared across the two copies — the client's only contact with the
-// manager (which reaches core through `dist`) is over NATS, and the goal helpers above operate on
-// the manager's own context, so no branded object crosses the boundary.
+// Core comes from its BUILT output, by path, and the same module is what the manager's own
+// `@cotal-ai/core` import resolves to, so the client and the manager share one copy. The
+// long-lived-client behaviour graded below lives in `invokeService` in core's source, so a
+// mutation of that source reaches this suite only through a build: the mutation config's command
+// builds core before it runs this file, and the path import is what lets the coverage check see
+// that the built output it loads comes from the mutated file.
+//
+// This import is static while the workspace and manager imports below stay dynamic. Those are
+// deferred so `COTAL_HOME` names the private home before any module that records a mesh loads.
+// Core reads no environment when it loads, so loading it first does not change that.
+import {
+  CotalEndpoint, probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER,
+  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
+  type ActionContext, type EpAttributedReply, type EpCaller, type EpEnvelopeError as EpEnvelopeErrorType,
+  type ParsedEpRequest, type Connector, type LaunchSpec,
+} from "../../../packages/core/dist/index.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-mrf-home-"));
 process.env.COTAL_HOME = home;
-const {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER,
-  bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
-} = await import("@cotal-ai/core");
-const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
 const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
@@ -65,7 +67,7 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-mrf-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 
 const kids: ChildProcess[] = [];
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext }; renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void>; ep: SourceCotalEndpoint };
+type MgrPriv = { managerInstanceId: string; lease: { renewLease: () => Promise<void>; renewLeaseAttempt: () => Promise<void> }; ep: CotalEndpoint; goalWriterComponent: { goalWriter?: { ctx: ActionContext }; }; servePlane: { serviceServe?: { grant: { epoch: number; instanceId: string } }; } };
 // THE FIXTURE'S HARNESS. `spawn` on the class rail needs a manager whose boot inventory holds an
 // AVAILABLE connector (#1724): a manager with none declines the class `one` rail for spawn/launch,
 // so an unpinned `manager.spawn` has no responder at all — `unavailable no responder` — and the
@@ -91,8 +93,8 @@ const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
 let mgr: InstanceType<typeof Manager> | undefined;
-let client: SourceCotalEndpoint | undefined;
-let reader: SourceCotalEndpoint | undefined;
+let client: CotalEndpoint | undefined;
+let reader: CotalEndpoint | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mrf-js-`))], { stdio: "ignore" });
   teardownOnSignal(broker);
@@ -104,15 +106,15 @@ try {
   mgr = await bootManager();
   const M1 = mgr as unknown as MgrPriv;
   const iid1 = M1.managerInstanceId;
-  const epoch1 = M1.serviceServe!.grant.epoch;
+  const epoch1 = M1.servePlane.serviceServe!.grant.epoch;
   check("incarnation 1 registered its persisted instanceId at epoch 0 (a FIRST registration)",
-    M1.serviceServe!.grant.instanceId === iid1 && epoch1 === 0, { iid1, epoch1 });
+    M1.servePlane.serviceServe!.grant.instanceId === iid1 && epoch1 === 0, { iid1, epoch1 });
   check("the logical instanceId is persisted on disk (.cotal manager-instance file)",
     loadManagerInstanceIdentity(workspaceRoot, SPACE)?.instanceId === iid1);
 
   // A goal ACCEPTED under epoch 0 and terminated by incarnation 1 before it dies. This is the
   // legitimate pre-restart winner: the work really ran and its outcome is already durable.
-  const gw1 = M1.goalWriter!.ctx;
+  const gw1 = M1.goalWriterComponent.goalWriter!.ctx;
   const ref1 = goalRefOf(reqFor("g-pre-restart"), "g-pre-restart");
   await bindGoal(gw1, ref1, "fp-pre-restart");
   await createGoal(gw1, ref1, {
@@ -138,11 +140,11 @@ try {
   });
   client.on("error", () => {});
   await client.start();
-  const cache = (client as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const cache = (client as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
   // Recovery drops the full handle and resolves only the command being retried.
-  const commandCache = (client as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const commandCache = (client as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const boundFor = (command: string) => (cache.get(MANAGER_ENDPOINT) ?? commandCache.get(MANAGER_ENDPOINT)?.get(command))?.responder;
-  const pubs = (): number => (client as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const pubs = (): number => (client as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
   await client.describeService(MANAGER_ENDPOINT);
   const warm = await client.invokeService(MANAGER_ENDPOINT, "ps");
   check("a long-lived client is bound to incarnation 1 before the restart",
@@ -157,10 +159,10 @@ try {
   });
   reader.on("error", () => {});
   await reader.start();
-  const readerCache = (reader as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
-  const readerCommandCache = (reader as unknown as { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> }).resolvedCommandServices;
+  const readerCache = (reader as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> } }).controlPlane.resolvedServices;
+  const readerCommandCache = (reader as unknown as { controlPlane: { resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string; epoch: number } }>> } }).controlPlane.resolvedCommandServices;
   const readerBound = () => (readerCache.get(MANAGER_ENDPOINT) ?? readerCommandCache.get(MANAGER_ENDPOINT)?.get("ps"))?.responder;
-  const readerPubs = (): number => (reader as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const readerPubs = (): number => (reader as unknown as { conn: { nc: { stats(): { outMsgs: number } } } }).conn.nc.stats().outMsgs;
   await reader.describeService(MANAGER_ENDPOINT);
   const readerWarm = await reader.invokeService(MANAGER_ENDPOINT, "ps");
   check("...and so is a second client, kept for the read arm",
@@ -228,7 +230,7 @@ try {
       return second - 1;
     } finally { renewDone(); }
   };
-  void M1.renewLease();
+  void M1.lease.renewLease();
   m1ep.renewManagerLease = async (info, revision) => {
     await released;
     return realRenew(info, revision);
@@ -236,7 +238,7 @@ try {
   // Fired here, BEFORE stop(): untracked (not through `renewLease()`'s entry fence, and not joined
   // by stop's `leaseRenewTask`), so stop cannot wait it out. Its broker call is gated above and does
   // not actually run until the release below has completed.
-  const lateRenewSettled = M1.renewLeaseAttempt();
+  const lateRenewSettled = M1.lease.renewLeaseAttempt();
   // stop() closes the endpoint last (`await this.ep.stop()`); keep it open until the late renew has
   // fully settled, so its verdict (gone, not unknown-from-a-closed-connection) is always reached.
   m1ep.stop = async () => { await lateRenewSettled.catch(() => {}); await realEpStop(); };
@@ -256,11 +258,11 @@ try {
 
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
-  const epoch2 = M2.serviceServe!.grant.epoch;
+  const epoch2 = M2.servePlane.serviceServe!.grant.epoch;
 
   check("the restart PRESERVED the logical instanceId (persisted, not a fresh mint)", iid2 === iid1, { iid1, iid2 });
   check("the restart ADVANCED the process epoch through the §13.1 gate (superseding the predecessor)",
-    epoch2 > epoch1 && M2.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
+    epoch2 > epoch1 && M2.servePlane.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
 
   // ── the long-lived client across the restart ──
   // WHAT A STALE-EPOCH CALL COSTS, AND WHY THAT CHANGED. A different instance answering is
@@ -351,7 +353,7 @@ try {
 
   // THE INVERSION, driven by a real restart. The advanced epoch does not hide the pre-restart fact
   // and does not license overwriting it: one goal has ONE terminal subject, and the first fact won.
-  const gw2 = M2.goalWriter!.ctx;
+  const gw2 = M2.goalWriterComponent.goalWriter!.ctx;
   const survived = await readGoalResult(gw2, ref1);
   check("the pre-restart terminal SURVIVES the restart and is exactly what the restarted incarnation reads",
     survived?.state === "failed" && (survived?.data as { by?: string })?.by === "pre-restart", survived);

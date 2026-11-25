@@ -104,8 +104,10 @@ try {
   // The manager's retirement broker phase, with each inventory it reads recorded and an optional step
   // run after that read and before the deprovisioner.
   const m = manager as unknown as {
-    deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<DeprovisionResourceAccounting>;
     lifecycleMembershipInventory(a: { id: string; lifecycleUid: string }): Promise<{ complete: boolean; channels: string[]; reason?: string }>;
+    retirement: {
+      deprovisionBroker(a: { id: string; name: string; lifecycleUid: string }): Promise<DeprovisionResourceAccounting>;
+    };
   };
   const readInventory = m.lifecycleMembershipInventory.bind(m);
   const listings = new Map<string, { complete: boolean; channels: string[]; fenced: boolean }>();
@@ -119,7 +121,7 @@ try {
     if (step) await step();
     return r;
   };
-  const retire = (s: Seat) => m.deprovisionBroker({ id: s.id.id, name: s.name, lifecycleUid: s.uid });
+  const retire = (s: Seat) => m.retirement.deprovisionBroker({ id: s.id.id, name: s.name, lifecycleUid: s.uid });
   const listedOnly = (s: Seat, channels: string[]) => {
     const l = listings.get(s.uid);
     return l !== undefined && l.complete && l.fenced && JSON.stringify(l.channels) === JSON.stringify(channels);
@@ -144,7 +146,7 @@ try {
     const t0 = Date.now();
     const a = await seat("prune-a");
     await a.ep.durableJoinChannel("lane.a");
-    const d = daemon.ep as unknown as { aclForAlias(p: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined>; retiringLifecycles: Map<string, Set<string>> };
+    const d = daemon.ep as unknown as { aclForAlias(p: string): Promise<{ allowSubscribe: string[]; lifecycleUid: string } | undefined>; deliveryPlane: { retiringLifecycles: Map<string, Set<string>> } };
     const lookup = d.aclForAlias.bind(d);
     const h = held();
     let armed = true;
@@ -160,7 +162,7 @@ try {
     // ACL row the deprovisioner retired.
     const a2 = await seat("prune-a", a.id);
     const a2Listing = await supervisor.requestDeliveryAdmin("lifecycleMemberships", { principal: a2.principal, lifecycleUid: a2.uid }, 30_000);
-    const markRemoved = a2Listing.ok && d.retiringLifecycles.get(a.principal)?.has(a.uid) === false;
+    const markRemoved = a2Listing.ok && d.deliveryPlane.retiringLifecycles.get(a.principal)?.has(a.uid) === false;
     h.release();
     const lateOutcome = await late;
     d.aclForAlias = lookup;
@@ -411,7 +413,7 @@ try {
       { listing, acl: acl?.record.allowSubscribe, members: accounting.members });
     check("SKEW: a late join on the same daemon process is refused by the lifecycle's in-memory mark", /is retiring/.test(lateOutcome), lateOutcome);
     check("SKEW: 0 rows of the retired lifecycle remain", left.length === 0, left);
-    const marks = (daemon.ep as unknown as { retiringLifecycles: Map<string, Set<string>> }).retiringLifecycles;
+    const marks = (daemon.ep as unknown as { deliveryPlane: { retiringLifecycles: Map<string, Set<string>> } }).deliveryPlane.retiringLifecycles;
     check("SKEW: the daemon keeps its mark for the lifecycle the unfenced inventory named (#4996)", marks.get(g.principal)?.has(g.uid) === true, [...marks.entries()].map(([p, s]) => [p, [...s]]));
     console.log(`SKEW_WITNESS narrowed=false inventoryListed=${channels.length} lateJoinAccepted=${lateOutcome === "accepted"} retainedRows=${left.length} ms=${Date.now() - t0}`);
   }
@@ -423,7 +425,7 @@ try {
     const t0 = Date.now();
     const f = await seat("fenced-f");
     await f.ep.durableJoinChannel("lane.a");
-    const marks = (daemon.ep as unknown as { retiringLifecycles: Map<string, Set<string>> }).retiringLifecycles;
+    const marks = (daemon.ep as unknown as { deliveryPlane: { retiringLifecycles: Map<string, Set<string>> } }).deliveryPlane.retiringLifecycles;
     const accounting = await retire(f);
     const marked = marks.get(f.principal)?.has(f.uid) === true;
     const lateOutcome = await outcome(f.ep.durableJoinChannel("lane.late"));

@@ -275,6 +275,7 @@ export function commandUsage(cmd: Command): string {
   const parts = [`cotal ${cmd.name}`];
   if (cmd.positionals) parts.push(cmd.positionals);
   for (const f of cmd.flags ?? []) {
+    if (cmd.flagNames && !cmd.flagNames.includes(f.name)) continue;
     const long = `--${f.name}`;
     const metavar = f.type === "string" ? ` ${f.value ?? "<value>"}` : "";
     parts.push(`[${f.short ? `-${f.short}|` : ""}${long}${metavar}]`);

@@ -6,19 +6,24 @@ import type { Socket } from "node:net";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 import type { DaemonStatus } from "./protocol.js";
 
-/** Validate one pinned repair acknowledgement without treating a refusal as proof of no effects. */
+/** A validated refusal names its cause without confirming the effects of preparation. */
 export function repairReplyResult(reply: unknown, id: string, op: string): DaemonStatus {
   const unacknowledged = () => new CommandFailure("unknown", "OPERATION_UNKNOWN", `the pinned daemon did not acknowledge ${op} during service repair`);
-  if (!reply || typeof reply !== "object" || Array.isArray(reply) || !("v" in reply) || reply.v !== DAEMON_PROTOCOL_VERSION || !("id" in reply) || reply.id !== id || "event" in reply || !("ok" in reply)) throw unacknowledged();
+  if (!reply || typeof reply !== "object" || Array.isArray(reply) || !("v" in reply) || reply.v !== DAEMON_PROTOCOL_VERSION
+    || !("id" in reply) || reply.id !== id || "event" in reply || !("ok" in reply)) throw unacknowledged();
   if (reply.ok === false) {
     const error = "error" in reply ? reply.error : undefined;
-    if (!error || typeof error !== "object" || Array.isArray(error) || !("code" in error) || typeof error.code !== "string" || !("message" in error) || typeof error.message !== "string" || ("remedy" in error && typeof error.remedy !== "string")) throw unacknowledged();
+    if (!error || typeof error !== "object" || Array.isArray(error) || !("code" in error) || typeof error.code !== "string"
+      || !("message" in error) || typeof error.message !== "string") throw unacknowledged();
+    const remedy = "remedy" in error ? error.remedy : undefined;
+    if ("remedy" in error && typeof remedy !== "string") throw unacknowledged();
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the pinned daemon refused ${op} during service repair: ${error.code}: ${error.message}`, {
       native: { code: error.code, detail: error.message },
-      ...("remedy" in error ? { remedy: error.remedy as string } : {}),
+      ...(typeof remedy === "string" ? { remedy } : {}),
     });
   }
-  if (reply.ok !== true || !("result" in reply) || !reply.result || typeof reply.result !== "object" || Array.isArray(reply.result) || !("version" in reply.result) || typeof reply.result.version !== "string") throw unacknowledged();
+  if (reply.ok !== true || !("result" in reply) || !reply.result || typeof reply.result !== "object" || Array.isArray(reply.result)
+    || !("version" in reply.result) || typeof reply.result.version !== "string") throw unacknowledged();
   return reply.result as DaemonStatus;
 }
 
@@ -86,7 +91,7 @@ export function readServiceRepair(state: string): ServiceRepairIntent | undefine
   if (value.v !== 1 || typeof value.enabled !== "boolean" || typeof value.previousSource !== "string" || typeof value.nextSource !== "string"
     || !Array.isArray(value.argv) || !value.argv.every(item => typeof item === "string") || typeof value.version !== "string"
     || !Array.isArray(value.hostedSpaces) || !value.hostedSpaces.every(item => typeof item === "string") || !["prepared", "published"].includes(value.phase)
-    || value.receipt?.v !== 1 || value.receipt.mechanism !== "launchd-agent" || typeof value.receipt.unitSha256 !== "string"
+    || value.receipt?.v !== 1 || ![undefined, "systemd-user", "launchd-agent"].includes(value.receipt.mechanism) || typeof value.receipt.unitSha256 !== "string"
     || typeof value.receipt.unit !== "string" || typeof value.receipt.unitPath !== "string" || typeof value.receipt.installedAt !== "string"
     || !isAbsolute(value.receipt.unitPath) || !/^[a-f0-9]{64}$/.test(value.receipt.unitSha256)
     || sourceDigest(value.previousSource) !== value.receipt.unitSha256) throw new Error("the daemon service repair intent is invalid; nothing was changed");

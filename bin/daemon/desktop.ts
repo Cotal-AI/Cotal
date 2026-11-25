@@ -1,4 +1,5 @@
 /** The desktop shell's bounded stdio adapter. It holds no login session or broker credentials. */
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { defaultComputerName } from "./computer-name.js";
 import { computerName } from "./name-validation.js";
@@ -20,7 +21,7 @@ export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
-  | { [K in "about" | "status" | "install"]: { readonly op: K } }["about" | "status" | "install"]
+  | { [K in "about" | "status" | "status-watch" | "install" | "log"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log"]
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
@@ -33,7 +34,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "install", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -54,7 +55,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "install" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -169,9 +170,33 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       const assets = release.assets.filter((asset: { name?: unknown; browser_download_url?: unknown }) => typeof asset.name === "string" && typeof asset.browser_download_url === "string").map((asset: { name: string; browser_download_url: string }) => ({ name: asset.name, url: asset.browser_download_url }));
       emit({ v: 1, event: "result", ok: true, result: { assets } }); return;
     }
-    if (req.op === "status" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
+    if (req.op === "status" || req.op === "status-watch" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     target = opts.resolveTarget();
     const { paths, home } = target;
+    if (req.op === "log") {
+      let fd: number | undefined;
+      let bytes = Buffer.alloc(0), truncated = false;
+      try {
+        try { fd = openSync(nativeDaemonLog(paths.state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        if (fd !== undefined) {
+          const stat = fstatSync(fd);
+          if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
+          const start = Math.max(0, stat.size - 8192);
+          truncated = start > 0;
+          bytes = Buffer.alloc(Math.min(8192, stat.size));
+          let length = 0;
+          while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
+          bytes = bytes.subarray(0, length);
+        }
+      } finally { if (fd !== undefined) closeSync(fd); }
+      const text = bytes.toString("utf8")
+        .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+        .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+        .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
+      emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
+      return;
+    }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") {
       const discovered = await discoverDesktopApplicationPath();
@@ -222,6 +247,134 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
+    }
+    if (req.op === "status-watch") {
+      const sock = await openVerified({ ...client, timeoutMs: 5000 });
+      type WatchOutcome =
+        | { readonly kind: "closed" }
+        | { readonly kind: "unknown-op" }
+        | { readonly kind: "refused"; readonly frame: Extract<DaemonResponse, { readonly ok: false }> }
+        | { readonly kind: "version-mismatch"; readonly status: import("./protocol.js").DaemonStatus };
+      let outcome: WatchOutcome;
+      try {
+        const id = randomUUID().replaceAll("-", "");
+        outcome = await new Promise<WatchOutcome>((resolve, reject) => {
+          let buf = "";
+          let seenFirst = false;
+          let settled = false;
+          const finish = (err?: Error, value?: WatchOutcome) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(initialTimer);
+            sock.removeAllListeners("data");
+            sock.removeAllListeners("end");
+            sock.removeAllListeners("close");
+            sock.removeAllListeners("error");
+            if (err) reject(err);
+            else resolve(value!);
+          };
+          const initialTimer = setTimeout(() => finish(new Error("timed out waiting for the daemon's reply")), 20_000);
+          sock.setEncoding("utf8");
+          sock.on("data", (chunk: string) => {
+            buf += chunk;
+            for (;;) {
+              const nl = buf.indexOf("\n");
+              if (nl === -1) {
+                if (Buffer.byteLength(buf, "utf8") > MAX_LINE_BYTES) finish(new Error("daemon reply exceeds the line limit"));
+                return;
+              }
+              const line = buf.slice(0, nl);
+              buf = buf.slice(nl + 1);
+              if (Buffer.byteLength(line, "utf8") + 1 > MAX_LINE_BYTES) {
+                finish(new Error("daemon reply exceeds the line limit"));
+                return;
+              }
+              let frame: DaemonResponse;
+              try { frame = JSON.parse(line) as DaemonResponse; }
+              catch (err) { finish(err as Error); return; }
+              if (frame.v !== DAEMON_PROTOCOL_VERSION || frame.id !== id) {
+                finish(new Error("mismatched daemon reply"));
+                return;
+              }
+              if (!seenFirst) {
+                seenFirst = true;
+                clearTimeout(initialTimer);
+                if (!frame.ok) {
+                  if (frame.error.code === "UNKNOWN_OP") finish(undefined, { kind: "unknown-op" });
+                  else finish(undefined, { kind: "refused", frame });
+                  return;
+                }
+              }
+              if (!frame.ok || !("event" in frame) || frame.event !== "status") {
+                finish(new Error("mismatched daemon status-watch event"));
+                return;
+              }
+              if (frame.result.version !== opts.version) {
+                finish(undefined, { kind: "version-mismatch", status: frame.result });
+                return;
+              }
+              emit({ v: 1, event: "status", ok: true, watchMode: "push", result: frame.result });
+            }
+          });
+          sock.once("end", () => finish(seenFirst ? undefined : new Error("daemon closed the connection without a reply"), { kind: "closed" }));
+          sock.once("close", () => finish(seenFirst ? undefined : new Error("daemon closed the connection without a reply"), { kind: "closed" }));
+          sock.once("error", (err) => finish(err));
+          sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "status-watch" }));
+        });
+      } finally {
+        sock.destroy();
+      }
+      if (outcome.kind === "unknown-op") {
+        let currentStatus: Awaited<ReturnType<typeof queryDaemon>> | undefined;
+        try { currentStatus = await queryDaemon(client); } catch {}
+        const daemonVersion = currentStatus?.ok ? currentStatus.result.version : undefined;
+        emit({
+          v: 1,
+          event: "result",
+          ok: false,
+          error: {
+            code: "VERSION_MISMATCH",
+            message: "The running daemon and this app have different versions. Update them together before making changes.",
+            native: {
+              code: "UNKNOWN_OP",
+              detail: {
+                watchMode: "refused-unknown-op",
+                appVersion: opts.version,
+                ...(daemonVersion !== undefined ? { daemonVersion } : {}),
+              },
+            },
+          },
+          ...(currentStatus?.ok ? { result: { status: currentStatus.result } } : {}),
+        });
+        return;
+      }
+      if (outcome.kind === "refused") {
+        emit({ ...outcome.frame, event: "result" });
+        return;
+      }
+      if (outcome.kind === "version-mismatch") {
+        emit({
+          v: 1,
+          event: "result",
+          ok: false,
+          error: {
+            code: "VERSION_MISMATCH",
+            message: "The running daemon and this app have different versions. Update them together before making changes.",
+            native: {
+              code: "VERSION_MISMATCH",
+              detail: {
+                watchMode: "version-mismatch",
+                appVersion: opts.version,
+                daemonVersion: outcome.status.version,
+              },
+            },
+          },
+          result: { status: outcome.status },
+        });
+        return;
+      }
+      emit({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } });
+      return;
     }
     const status = await queryDaemon(client);
     if (!status.ok) { emit({ ...status, event: "result" }); return; }

@@ -2,5 +2,4 @@
 "cotal-ai": patch
 ---
 
-macOS service repair now shows the Manager's refusal reason and available recovery guidance.
-Validated replies retain their native code and message in human and JSON output while the operation remains unconfirmed with exit 3.
+When the Manager refuses macOS service repair preparation, show its reason and any recovery step in human and JSON output while keeping exit 3.

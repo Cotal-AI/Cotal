@@ -321,15 +321,22 @@ try {
     B3.got.filter((g) => g.channel === "incident" && g.historical).length >= 1 && B3.got.filter((g) => g.channel === "log" && g.historical).length >= 2);
 
   // ---- native time-window backfill (Direct-Get start_time) ----
-  await seedChannelRegistry({ servers, space, file: { channels: { recent: { replay: true, replayWindow: "1s" }, archive: { replay: true, replayWindow: "1h" } } } });
+  // #7323: `ancient`'s window is too long to be a start time at all, and `epoch`'s reaches before 1970.
+  const tooLong = "999999999999999999999999999999999999999999999d";
+  await seedChannelRegistry({ servers, space, file: { channels: { recent: { replay: true, replayWindow: "1s" }, archive: { replay: true, replayWindow: "1h" }, ancient: { replay: true, replayWindow: tooLong }, epoch: { replay: true, replayWindow: "30000d" } } } });
   await A.multicast("recent-old", { channel: "recent" });
   await A.multicast("archive-old", { channel: "archive" });
+  await A.multicast("ancient-old", { channel: "ancient" });
+  await A.multicast("epoch-old", { channel: "epoch" });
   await sleep(1500); // age both past the 1s window
-  const W = recorder("W", "W_join", ["recent", "archive"]);
+  const W = recorder("W", "W_join", ["recent", "archive", "ancient", "epoch"]);
   await W.ep.start();
-  await until(() => W.got.filter((g) => g.channel === "archive" && g.historical).length === 1);
+  const replayed = (channel: string) => W.got.filter((g) => g.channel === channel && g.historical).length;
+  await until(() => replayed("archive") === 1 && replayed("ancient") === 1 && replayed("epoch") === 1);
   check("time window EXCLUDES messages older than it", has(W.got, "recent-old").length === 0);
-  check("wider window INCLUDES them", W.got.filter((g) => g.channel === "archive" && g.historical).length === 1);
+  check("wider window INCLUDES them", replayed("archive") === 1);
+  check("a window too long to be a start time replays the retained post rather than nothing (#7323)", replayed("ancient") === 1, W.got.filter((g) => g.channel === "ancient"));
+  check("a window reaching before 1970 replays the retained post", replayed("epoch") === 1, W.got.filter((g) => g.channel === "epoch"));
 
   // ---- wildcard subscription: [c, c.>] delivers the parent AND its subtree ----
   // Regression: `c.>` must not swallow bare `c` in the filter collapse (else the parent channel

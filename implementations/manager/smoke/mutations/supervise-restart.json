@@ -13,7 +13,7 @@
   "mutations": [
     {
       "name": "a supervised exit follows the ordinary terminal path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-stop.ts",
       "find": "      if (a.restart.policy !== undefined) {\n        this.recoverManagedSession(a);\n        return;\n      }",
       "replace": "      if (false) {\n        this.recoverManagedSession(a);\n        return;\n      }",
       "expectRed": "a supervised crash keeps the same managed row",
@@ -21,7 +21,7 @@
     },
     {
       "name": "the restart budget ignores the spawn policy",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/session-recovery.ts",
       "find": "    const limit = restart.policy?.restarts ?? SESSION_RESTART_LIMIT;\n    const windowMs = restart.policy?.windowMs ?? SESSION_RESTART_WINDOW_MS;",
       "replace": "    const limit = SESSION_RESTART_LIMIT;\n    const windowMs = SESSION_RESTART_WINDOW_MS;",
       "expectRed": "spending the restart budget starts no further replacement",
@@ -29,7 +29,7 @@
     },
     {
       "name": "user-mode accepts supervise",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      if (this.userMode)\n        return { ok: false, error: \"supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death\" };",
       "replace": "      if (false)\n        return { ok: false, error: \"supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death\" };",
       "expectRed": "user-mode refuses supervise at accept",
@@ -37,7 +37,7 @@
     },
     {
       "name": "a supervised restart treats stale presence as a join",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/readiness-wait.ts",
       "find": "        && p.lifecycleUid === a.lifecycleUid\n        && (opts.joinedAfter === undefined || p.ts >= opts.joinedAfter));",
       "replace": "        && p.lifecycleUid === a.lifecycleUid);",
       "expectRed": "a failed supervised relaunch retires the seat",

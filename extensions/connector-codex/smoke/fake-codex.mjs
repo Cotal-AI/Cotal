@@ -2,9 +2,15 @@
 // protocol to drive the host's turn loop, and journals everything it sees to
 // FAKE_CODEX_LOG (JSONL) so the smoke can assert on it. Turn behavior is scripted by
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
-// TOOLREC → also leave in the rollout the two records a real tool call leaves;
+// TOOLREC → also leave in the rollout the two records a real tool call leaves; PERMREQ → ask for
+// more permissions as the `request_permissions` tool does; ELICIT → ask for an MCP tool-call
+// approval and then an MCP server's form;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
+// THINK → stream a reasoning summary as summary deltas before saving it;
+// PLAN → set a plan from a code-mode exec script, which clients see only as turn/plan/updated;
+// NESTED → run a command from a code-mode exec script for ~1s, which the rollout records once it ends;
+// STREAM → stream the reply as agent-message deltas before saving it;
 // WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
 // Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
@@ -32,9 +38,25 @@ journal({ ev: "argv", argv, pid: process.pid });
 // env name rather than on argv), then sit here like a running UI until killed. The top-level
 // await also stops the app-server body below from running in this process.
 // FAKE_CODEX_TUI_EXIT=1 quits instead, driving the "operator closed the UI" path.
+const SEAT_ATTRIBUTION = new Set([
+  "COTAL_SPACE",
+  "COTAL_MANAGER_INSTANCE",
+  "COTAL_NAME",
+  "COTAL_ID",
+  "COTAL_LIFECYCLE_UID",
+  "COTAL_ACCEPTED_TOKEN",
+  "COTAL_HOME",
+]);
+
 if (argv[0] === "resume") {
   const tokenEnv = argv[argv.indexOf("--remote-auth-token-env") + 1];
-  journal({ ev: "tui", argv, tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null });
+  journal({
+    ev: "tui",
+    argv,
+    tokenFromEnv: tokenEnv ? (process.env[tokenEnv] ?? null) : null,
+    seatAttribution: Object.fromEntries(Object.entries(process.env).filter(([k]) => SEAT_ATTRIBUTION.has(k))),
+    cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== tokenEnv && !SEAT_ATTRIBUTION.has(k)),
+  });
   if (process.env.FAKE_CODEX_TUI_EXIT === "1") setTimeout(() => process.exit(0), 300);
   // FAKE_CODEX_TUI_CRASH=1: the UI dies of its own accord. Indistinguishable from a quit at the
   // process level except for the CODE, which is the whole point — read as a quit, an operator is
@@ -69,12 +91,13 @@ const cfgValue = (key) => {
 };
 const MCP_URL = cfgValue("mcp_servers.cotal.url");
 const MCP_TOKEN = process.env.COTAL_MCP_TOKEN;
-// Proves the env boundary in BOTH directions at once: the child gets the one capability it
-// needs and none of the agent's mesh identity.
+// Proves the env boundary in BOTH directions at once: the child gets the MCP token plus non-secret
+// seat attribution (`cotal stop --self`), and none of the host's private/material COTAL_* vars.
 journal({
   ev: "env",
   mcpTokenPresent: Boolean(MCP_TOKEN),
-  cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== "COTAL_MCP_TOKEN"),
+  seatAttribution: Object.fromEntries(Object.entries(process.env).filter(([k]) => SEAT_ATTRIBUTION.has(k))),
+  cotalLeak: Object.keys(process.env).filter((k) => k.startsWith("COTAL_") && k !== "COTAL_MCP_TOKEN" && !SEAT_ATTRIBUTION.has(k)),
 });
 
 /** The endpoint answers SSE (`data: {…}`) for a POSTed request; plain JSON otherwise. */
@@ -356,7 +379,31 @@ async function runTurn(text) {
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
   if (text.includes("APPROVAL")) {
-    await serverRequest("item/commandExecution/requestApproval", { threadId: THREAD, turnId, itemId: `cmd_${turnSeq}` });
+    // The legacy approval, which the prompt desk does not take: the host declines it in the same
+    // call whether or not the seat serves its desk.
+    await serverRequest("execCommandApproval", { conversationId: THREAD, callId: `cmd_${turnSeq}` });
+  }
+  if (text.includes("PERMREQ")) {
+    // The request codex 0.162 sends when the model calls its `request_permissions` tool.
+    const answer = await serverRequest("item/permissions/requestApproval", {
+      threadId: THREAD, turnId, itemId: `perm_${turnSeq}`, environmentId: "local", startedAtMs: Date.now(), cwd: process.cwd(),
+      reason: "fetch a page", permissions: { network: { enabled: true }, fileSystem: null },
+    });
+    journal({ ev: "permissionsAnswer", answer });
+  }
+  if (text.includes("ELICIT")) {
+    // What codex 0.162 sends when the model calls an MCP server's tool: the tool-call approval, then
+    // the form the server asks for while its tool runs.
+    const base = { threadId: THREAD, turnId, serverName: "elicit", mode: "form" };
+    const approval = await serverRequest("mcpServer/elicitation/request", {
+      ...base, message: 'Allow the elicit MCP server to run tool "pick_color"?', requestedSchema: { type: "object", properties: {} },
+      _meta: { codex_approval_kind: "mcp_tool_call", persist: ["session", "always"], tool_description: "Pick a color.", tool_params: {}, tool_params_display: [] },
+    });
+    journal({ ev: "elicitationAnswer", kind: "approval", answer: approval });
+    const form = await serverRequest("mcpServer/elicitation/request", {
+      ...base, _meta: null, message: "Which color?", requestedSchema: { type: "object", properties: { color: { type: "string", enum: ["red", "green"] } }, required: ["color"] },
+    });
+    journal({ ev: "elicitationAnswer", kind: "form", answer: form });
   }
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
@@ -404,6 +451,51 @@ async function runTurn(text) {
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
     return;
   }
+  // STREAM: the reply streams as agent-message deltas under the item id its saved record carries,
+  // one piece every 400 ms, as Codex sends them before it saves the message.
+  // THINK: a reasoning summary streams the same way, under its reasoning item's id, and is saved
+  // before the reply.
+  if (text.includes("THINK")) {
+    let summary = "";
+    for (const piece of [`weighing:${turnSeq}:`, "the ", "rivers"]) {
+      summary += piece;
+      notify("item/reasoning/summaryTextDelta", { threadId: THREAD, turnId, itemId: `rs_${turnSeq}`, summaryIndex: 0, delta: piece });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+    journal({ ev: "reasoningSaved", turnId, at: Date.now() });
+    rolloutRecord("response_item", { type: "reasoning", id: `rs_${turnSeq}`, summary: [{ type: "summary_text", text: summary }], encrypted_content: "opaque" });
+    notify("item/completed", { threadId: THREAD, turnId, item: { type: "reasoning", id: `rs_${turnSeq}`, summary: [summary], content: [] } });
+  }
+  // PLAN: the rollout records the script's call and its output, and nothing for the plan it sets.
+  if (text.includes("PLAN")) {
+    rolloutRecord("response_item", { type: "custom_tool_call", status: "completed", call_id: `exec_${turnSeq}`, name: "exec", input: "await tools.update_plan({ plan });" });
+    await new Promise((r) => setTimeout(r, 150));
+    notify("turn/plan/updated", { threadId: THREAD, turnId, explanation: null, plan: [{ step: "read", status: "completed" }, { step: `fix:${turnSeq}`, status: "inProgress" }] });
+    await new Promise((r) => setTimeout(r, 150));
+    rolloutRecord("response_item", { type: "custom_tool_call_output", call_id: `exec_${turnSeq}`, output: [{ type: "input_text", text: "Script completed" }] });
+  }
+  // NESTED: app-server reports the script's command as item/started when it starts, and the rollout
+  // records it only as an item_completed once it ends.
+  if (text.includes("NESTED")) {
+    const id = `exec-nested-${turnSeq}`;
+    rolloutRecord("response_item", { type: "custom_tool_call", status: "completed", call_id: `exec_${turnSeq}`, name: "exec", input: "await tools.exec_command({ cmd });" });
+    notify("item/started", { threadId: THREAD, turnId, item: { type: "commandExecution", id, command: "/bin/sh -lc 'sleep 1'", cwd: "/w", source: "unifiedExecStartup", status: "inProgress", aggregatedOutput: null, exitCode: null } });
+    await new Promise((r) => setTimeout(r, 1000));
+    journal({ ev: "nestedEnded", turnId, at: Date.now() });
+    rolloutRecord("event_msg", { type: "item_completed", thread_id: THREAD, turn_id: turnId, item: { type: "CommandExecution", id, command: ["/bin/sh", "-lc", "sleep 1"], cwd: "file:///w", status: "completed", aggregated_output: "", exit_code: 0 } });
+    notify("item/completed", { threadId: THREAD, turnId, item: { type: "commandExecution", id, command: "/bin/sh -lc 'sleep 1'", cwd: "/w", status: "completed", aggregatedOutput: "", exitCode: 0 } });
+    rolloutRecord("response_item", { type: "custom_tool_call_output", call_id: `exec_${turnSeq}`, output: [{ type: "input_text", text: "Script completed" }] });
+  }
+  let reply = `ok:${turnSeq}`;
+  if (text.includes("STREAM")) {
+    reply = "";
+    for (const piece of [`streamed:${turnSeq}:`, "one ", "two ", "three"]) {
+      reply += piece;
+      notify("item/agentMessage/delta", { threadId: THREAD, turnId, itemId: `msg_${turnSeq}`, delta: piece });
+      journal({ ev: "streamDelta", turnId, at: Date.now() });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
   if (text.includes("WAITEND")) {
     // Hold the turn open until FAKE_CODEX_END_MARK exists, so a smoke decides when it ends.
     while (!existsSync(process.env.FAKE_CODEX_END_MARK)) await new Promise((r) => setTimeout(r, 25));
@@ -438,11 +530,12 @@ async function runTurn(text) {
     journal({ ev: "died", turnId });
     process.exit(3);
   }
+  journal({ ev: "saved", turnId, at: Date.now() });
   rolloutRecord("response_item", {
     type: "message",
     role: "assistant",
     id: `msg_${turnSeq}`,
-    content: [{ type: "output_text", text: `ok:${turnSeq}` }],
+    content: [{ type: "output_text", text: reply }],
   });
   rolloutRecord("event_msg", { type: "task_complete", turn_id: turnId, completed_at: stamp(), error: null });
   // The SECOND turn is what materializes the file in `late` mode: the first turn's records are
@@ -451,7 +544,7 @@ async function runTurn(text) {
   notify("item/completed", {
     threadId: THREAD,
     turnId,
-    item: { type: "agentMessage", id: `msg_${turnSeq}`, text: `ok:${turnSeq}`, phase: "final_answer" },
+    item: { type: "agentMessage", id: `msg_${turnSeq}`, text: reply, phase: "final_answer" },
   });
   activeTurn = undefined;
   notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "completed" } });

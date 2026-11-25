@@ -34,6 +34,7 @@ import type {
 import { Cancelled, EffectError, askSchemaShape, conformsToAskSchema } from "./effects.js";
 import { parseDuration } from "./duration.js";
 import { stepKeyString } from "./keys.js";
+import { simScopeFaults } from "./sim-scope-faults.js";
 
 /** A scripted outcome: one value used for every occurrence, or one per occurrence in order. */
 export type Scripted<T> = T | readonly T[];
@@ -137,6 +138,7 @@ export class SimHandler implements EffectHandler {
   private virtualNow: number;
   private readonly occurrences = new Map<string, number>();
   private readonly consumed: Consumption[] = [];
+  private readonly injected = new Set<SimFault>();
   private readonly agents = new Map<string, AgentHandleValue>();
   private readonly parked: ParkedEvent[] = [];
   private parkSeq = 0;
@@ -145,6 +147,7 @@ export class SimHandler implements EffectHandler {
 
   constructor(readonly script: SimScript = {}) {
     this.virtualNow = script.clock?.start ?? 0;
+    if (script.faults?.length) simScopeFaults.set(this, (ctx) => this.checkFault(ctx));
   }
 
   now(): number {
@@ -245,6 +248,7 @@ export class SimHandler implements EffectHandler {
     const short = full.slice(full.lastIndexOf("/") + 1);
     const fault = this.script.faults?.find((f) => f.at === full || f.at === short);
     if (fault === undefined) return;
+    this.injected.add(fault);
     throw new EffectError(
       fault.code ?? "L4002",
       fault.kind,
@@ -320,10 +324,15 @@ export class SimHandler implements EffectHandler {
     return handle;
   }
 
-  async turn(_req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
+  async turn(req: TurnRequest, ctx: EffectContext): Promise<TurnResultValue> {
     const scripted = this.resolve("turns", this.script.turns, ctx);
     await ctx.bind({ simGoal: stepKeyString(ctx.key) });
-    await this.timedBy(this.script.clock?.turn, "5m", ctx);
+    const delayMs = parseDuration(this.script.clock?.turn ?? "5m");
+    const deadlineMs = req.deadline === undefined ? Infinity : parseDuration(req.deadline);
+    await this.timed(Math.min(delayMs, deadlineMs), ctx);
+    if (delayMs >= deadlineMs) {
+      throw new EffectError("L4003", "turn-deadline", `turn(${stepKeyString(ctx.key)}) deadline elapsed before a yield`);
+    }
     return { ...scripted, at: this.virtualNow };
   }
 
@@ -348,6 +357,8 @@ export class SimHandler implements EffectHandler {
       );
     }
     const attempts = req.attempts ?? 1;
+    const deadlineAt = req.deadline === undefined ? Infinity : this.virtualNow + parseDuration(req.deadline);
+    const delayMs = parseDuration(this.script.clock?.ask ?? "1m");
     let bound = false;
     for (let attempt = 1; ; attempt++) {
       const value = this.resolve("asks", this.script.asks, ctx);
@@ -355,7 +366,11 @@ export class SimHandler implements EffectHandler {
         await ctx.bind({ simGoal: stepKeyString(ctx.key) });
         bound = true;
       }
-      await this.timedBy(this.script.clock?.ask, "1m", ctx);
+      const remainingMs = Math.max(0, deadlineAt - this.virtualNow);
+      await this.timed(Math.min(delayMs, remainingMs), ctx);
+      if (delayMs >= remainingMs) {
+        throw new EffectError("L4006", "ask-deadline", `ask(${stepKeyString(ctx.key)}) produced no conforming record before its deadline`);
+      }
       if (conformsToAskSchema(value, shape)) return value;
       if (attempt >= attempts) {
         throw new EffectError(
@@ -372,10 +387,12 @@ export class SimHandler implements EffectHandler {
    * interpreter journals that and applies today's `onExpiry` afterwards. A simulator that decided
    * the disposition would bake it into the record exactly as a production handler would.
    */
-  async checkpoint(_req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
+  async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     const scripted = this.resolve("checkpoints", this.script.checkpoints, ctx);
     await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });
-    await this.timedBy(this.script.clock?.checkpoint, "1m", ctx);
+    // A scripted expiry happens at the request's timeout, where a live deadline fires.
+    if (scripted.status === "expired" && req.timeout !== undefined) await this.timed(parseDuration(req.timeout), ctx);
+    else await this.timedBy(this.script.clock?.checkpoint, "1m", ctx);
     if (scripted.status === "expired") return { outcome: "expired", at: this.virtualNow };
     return {
       outcome: "resolved",
@@ -395,10 +412,12 @@ export class SimHandler implements EffectHandler {
 
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     const value = this.resolve("events", this.script.events, ctx);
+    const timeout = req.timeout === undefined ? undefined : parseDuration(req.timeout);
     // A scripted null is a timeout, and a timeout consumes the whole timeout budget.
-    if (value === null && req.timeout !== undefined) await this.timed(parseDuration(req.timeout), ctx);
-    else await this.timedBy(this.script.clock?.wait, "1m", ctx);
-    return value;
+    const delay = value === null && timeout !== undefined ? timeout : parseDuration(this.script.clock?.wait ?? "1m");
+    const late = timeout !== undefined && delay > timeout;
+    await this.timed(late ? timeout : delay, ctx);
+    return late ? null : value;
   }
 
   /**
@@ -462,6 +481,11 @@ export class SimHandler implements EffectHandler {
       for (const name of Object.keys(t)) {
         if (!used.has(`${table}:${name}`)) out.push(`${table}.${name}`);
       }
+    }
+    // A fault whose step was never reached would otherwise turn a fault-injection case into a
+    // clean run with nothing to say about it.
+    for (const fault of this.script.faults ?? []) {
+      if (!this.injected.has(fault)) out.push(`faults.${fault.at}`);
     }
     return out;
   }

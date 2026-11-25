@@ -12,12 +12,16 @@
  * Run: pnpm smoke:control-reply
  */
 import { strict as assert } from "node:assert";
+import { rmSync } from "node:fs";
 import { connect } from "node:net";
-import { startControlServer, HANDOFF_RECEIPT, type ControlServerOpts } from "../src/control.js";
+import { clientExchange, type ControlEndpoint } from "@cotal-ai/core";
+import { startControlServer, type ControlServerOpts } from "../src/control.js";
 import { controlEndpoint } from "../src/runtime.js";
 import type { MeshAgent } from "../src/agent.js";
 
 const stubAgent = {} as MeshAgent;
+/** The control sockets' per-launch directories, removed at the end. */
+const artifacts: string[] = [];
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -28,39 +32,39 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const listening = (server: ReturnType<typeof startControlServer>): Promise<void> =>
   new Promise((resolve) => (server.listening ? resolve() : server.once("listening", () => resolve())));
 
-/** Send one frame and read whatever comes back. `handoff` clients answer the reply with a receipt,
- *  which is what lets the server half of that path settle. */
-function sendFrame(path: string, frame: unknown, receipt = false): Promise<string> {
+/** Send one request through the control exchange and read its proven reply ("" when there is none).
+ *  `handoff` clients answer the reply with a receipt, which is what lets the server half of that
+ *  path settle. */
+function sendFrame(ep: ControlEndpoint, frame: Record<string, unknown>, receipt = false): Promise<string> {
   return new Promise((resolve) => {
-    const sock = connect(path);
-    let reply = "";
+    const sock = connect(ep.path);
     let settled = false;
-    const finish = (): void => {
+    const finish = (reply = ""): void => {
       if (settled) return;
       settled = true;
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
+      setTimeout(() => sock.destroy(), receipt ? 50 : 0);
       resolve(reply);
     };
-    sock.setEncoding("utf8");
-    sock.on("connect", () => sock.write(JSON.stringify(frame) + "\n"));
-    sock.on("data", (d) => {
-      reply += d;
-      if (receipt && reply.includes("\n")) sock.write(HANDOFF_RECEIPT);
-    });
-    sock.on("end", finish);
-    sock.on("close", finish);
-    sock.on("error", finish);
-    setTimeout(finish, 2000);
+    sock.on("connect", () =>
+      clientExchange(
+        sock,
+        ep,
+        frame,
+        (result) => {
+          if (result.ok && receipt) sock.write(result.receipt);
+          finish(result.ok ? result.reply : "");
+        },
+        { maxReplyBytes: 1 << 20 },
+      ),
+    );
+    sock.on("error", () => finish());
+    setTimeout(() => finish(), 2000);
   });
 }
 
 /** One server per case: the endpoint path is token-derived, so cases never collide. */
 async function replyFor(label: string, opts: ControlServerOpts | undefined, handoff = false): Promise<string> {
-  const ep = controlEndpoint("ctlreply", label);
+  const ep = controlEndpoint("ctlreply", label, artifacts);
   let sawEvent = false;
   const server =
     opts === undefined
@@ -68,7 +72,7 @@ async function replyFor(label: string, opts: ControlServerOpts | undefined, hand
       : startControlServer(stubAgent, ep, async () => ((sawEvent = true), { handled: true }), opts);
   try {
     await listening(server);
-    const r = await sendFrame(ep.path, { token: ep.token, event: { hook_event_name: "SessionStart" }, ...(handoff ? { handoff: true } : {}) }, handoff);
+    const r = await sendFrame(ep, { event: { hook_event_name: "SessionStart" }, ...(handoff ? { handoff: true } : {}) }, handoff);
     // The handler running is NOT the property under test — it ran even while the reply was lost.
     check(`${label}: the handler ran`, sawEvent);
     return r.trim();
@@ -97,5 +101,6 @@ check("onReply still observes the delivery it no longer performs", observed === 
 
 check("handoff client with no onReply → reply returned", (await replyFor("handoff", {}, true)) === WANT);
 
+for (const dir of artifacts) rmSync(dir, { recursive: true, force: true });
 console.log(`\nCONTROL-REPLY TESTS PASSED ✅  (${pass} checks)`);
 process.exit(0);

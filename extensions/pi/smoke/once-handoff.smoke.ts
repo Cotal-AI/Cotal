@@ -127,7 +127,7 @@ class FakeHost implements PiHost {
 }
 const context = (): PiContextLike & { shutdowns: number } => {
   const value = {
-    shutdowns: 0, hasUI: false, ui: { notify() {} }, isIdle: () => true,
+    shutdowns: 0, hasUI: false, ui: { notify() {} }, isIdle: () => true, abort() {},
     shutdown() { value.shutdowns++; },
   };
   return value;

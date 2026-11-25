@@ -1,0 +1,3 @@
+# The first command a launch hands its agent, with no broker: the launch file is taken once, and the
+# command lane queues it first under the spawn's id, holds it until the harness runs commands, and refuses it with a cause.
+smoke:first-command

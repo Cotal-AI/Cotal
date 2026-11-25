@@ -34,17 +34,13 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { createSpaceAuth, isReachable, newIdentity, serverConfig, standaloneConnectOpts } from "@cotal-ai/core";
 import { createCalloutAuth, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = (s: string) => new TextEncoder().encode(s);
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const space = `callout-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
@@ -255,8 +251,8 @@ try {
   check("a failed held recorder denies only its own client and releases no JWT",
     !unrecorded.nc && !releasedPrincipals.has(`${owner}.held_record`) && calloutLog.some((line) => line.includes("fixture recorder refused")));
 
-  console.log(`\nauth-callout smoke: ${pass} passed, ${fail} failed`);
-  if (fail > 0) process.exitCode = 1;
+  console.log(`\nauth-callout smoke: ${passed()} passed, ${failed()} failed`);
+  finish();
 } catch (e) {
   console.error("auth-callout smoke: fatal:", e);
   process.exitCode = 1;

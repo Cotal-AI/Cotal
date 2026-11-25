@@ -96,7 +96,8 @@ export type RunHostOutcome =
  *  reaches no boundary until the pause settles, so a host that must stop sooner closes the
  *  connection under it and the journal is the recovery. */
 export interface RunHostDrive {
-  readonly done: Promise<RunHostOutcome>;
+  /** The internal recovery hint is not part of the public outcome in a cancellation receipt. */
+  readonly done: Promise<RunHostOutcome & { readonly brokerInterrupted?: true }>;
   release(reason: string): void;
   /** Cooperatively cancel the root and in-flight effect contexts after the host establishes authority. */
   cancel(reason: string): void;

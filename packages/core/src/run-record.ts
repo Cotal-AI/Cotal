@@ -22,6 +22,7 @@
  * write per append. Interior loss is the journal's own ordinal chain's.
  */
 import type { KV } from "@nats-io/kv";
+import { EpEnvelopeError } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS,
   createRecordEntry,
@@ -105,6 +106,45 @@ export interface RunFailure { readonly code?: string; readonly message: string }
 
 /** The longest failure message a run status records; a longer one is cut and marked. */
 export const RUN_FAILURE_MESSAGE_LIMIT = 4000;
+
+function runObject(raw: unknown, fields: readonly string[], key: string): Record<string, unknown> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(field => !fields.includes(field)))
+    throw new EpEnvelopeError("internal", `run record ${key} has an invalid closed shape`);
+  return raw as Record<string, unknown>;
+}
+
+const runUint = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/** Validate a stored run spec before a read-only observer relies on its terminal status. */
+export function parseRunSpec(raw: unknown, key: string): RunSpecValue {
+  const spec = runObject(raw, ["v", "run", "pins", "createdAt", "forkedFrom"], key);
+  const pins = runObject(spec.pins, ["seed", "startedAt", "yieldEvery", "stepBudget", "effectCeiling", "languageVersion"], key);
+  if (spec.v !== 1 || typeof spec.run !== "string" || !runUint(spec.createdAt) ||
+      typeof pins.seed !== "string" || typeof pins.languageVersion !== "string" ||
+      ![pins.startedAt, pins.yieldEvery, pins.stepBudget, pins.effectCeiling].every(runUint))
+    throw new EpEnvelopeError("internal", `run spec ${key} is malformed`);
+  if (spec.forkedFrom !== undefined) {
+    const fork = runObject(spec.forkedFrom, ["run", "step"], key);
+    if (typeof fork.run !== "string" || typeof fork.step !== "string")
+      throw new EpEnvelopeError("internal", `run spec ${key} has invalid fork lineage`);
+  }
+  return spec as unknown as RunSpecValue;
+}
+
+/** Validate the complete stored run status; a missing or malformed field never proves completion. */
+export function parseRunStatus(raw: unknown, key: string): RunStatusValue {
+  const status = runObject(raw, ["v", "observedSpecRevision", "state", "holder", "epoch", "fencingToken", "journalHigh", "at", "failure"], key);
+  if (status.v !== 1 || typeof status.state !== "string" || !["running", "released", "completed", "failed"].includes(status.state) ||
+      typeof status.holder !== "string" || ![status.observedSpecRevision, status.epoch, status.fencingToken, status.journalHigh, status.at].every(runUint))
+    throw new EpEnvelopeError("internal", `run status ${key} is malformed`);
+  if (status.failure !== undefined) {
+    const failure = runObject(status.failure, ["code", "message"], key);
+    if (status.state !== "failed" || typeof failure.message !== "string" || failure.message.length > RUN_FAILURE_MESSAGE_LIMIT ||
+        (failure.code !== undefined && (typeof failure.code !== "string" || !/^L\d{4}$/.test(failure.code))))
+      throw new EpEnvelopeError("internal", `run status ${key} has invalid failure details`);
+  }
+  return status as unknown as RunStatusValue;
+}
 
 /** The status record's view of an error a program failed with: an `L` code when it carries one, and
  *  its message, cut to the limit. */

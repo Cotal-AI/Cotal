@@ -10,7 +10,7 @@
   "mutations": [
     {
       "name": "fresh implicit startup keeps the reserved default",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-resume.ts",
       "find": "  return freshStackServer(host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER, host);",
       "replace": "  return host ? reconcileHostAndServer(host, undefined) : DEFAULT_SERVER;",
       "expectRed": "a fresh implicit startup avoids another registration's address",

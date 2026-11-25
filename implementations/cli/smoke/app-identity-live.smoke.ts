@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -111,14 +111,16 @@ async function runMeshes(positionals: string[], values: Record<string, unknown>)
   return code;
 }
 
-interface Held { dir: string; space: string; id: string; lifecycleUid: string; owner: number; session?: string; alias?: string }
-/** This suite's identity directories on `space`, with their records. */
-const records = (space: string): Held[] => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
+interface Held { dir: string; space: string; id: string; lifecycleUid: string; owner: number; ownerStart?: string; session?: string; alias?: string }
+/** Where provision makes identity directories: the account's Cotal folder, which a reboot keeps. */
+const recordRoot = join(home, "app-identities");
+/** This suite's identity directories on `space`, with their records, wherever provision made them. */
+const records = (space: string): Held[] => [recordRoot, tmpdir()].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((n) => n.startsWith("cotal-app-identity-")).flatMap((n) => {
   try {
-    const record = JSON.parse(readFileSync(join(tmpdir(), n, "identity.json"), "utf8")) as Omit<Held, "dir">;
-    return record.space === space ? [{ dir: join(tmpdir(), n), ...record }] : [];
+    const record = JSON.parse(readFileSync(join(parent, n, "identity.json"), "utf8")) as Omit<Held, "dir">;
+    return record.space === space ? [{ dir: join(parent, n), ...record }] : [];
   } catch { return []; }
-});
+}));
 const record = (dir: string): Held => ({ dir, ...JSON.parse(readFileSync(join(dir, "identity.json"), "utf8")) });
 const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid;
 const secretShaped = /BEGIN NATS|NKEY SEED|-----BEGIN|\bSU[A-Z2-7]{50,}/;
@@ -237,6 +239,9 @@ try {
   check("  its record names the native session, the host process and the seat, and holds no secret",
     heldA.session === "session-a" && heldA.owner === process.ppid && heldA.alias === "claude_app" && heldA.id === envA.COTAL_ID &&
     heldA.lifecycleUid === envA.COTAL_LIFECYCLE_UID && !secretShaped.test(readFileSync(join(heldA.dir, "identity.json"), "utf8")), heldA);
+  // The temp directory is cleared at boot, so a record kept there is lost with a host the reboot ended (#7372).
+  check("  its directory is in the account's Cotal folder, not the temp directory", dirname(resolve(heldA.dir)) === resolve(recordRoot), heldA.dir);
+  check("  and its record carries the host process's start token", typeof heldA.ownerStart === "string" && heldA.ownerStart.length > 0, heldA);
   const ownA = eventChannel({ owner: DEV_OWNER, actor: heldA.id });
   check("  its grant retains the default persona's channels, role and capabilities plus its own event channel",
     isDeepStrictEqual(a.reply.grant, { scope: ["spawn", "run"], role: "default", allowSubscribe: ["general", "team.>"], allowPublish: [ownA, "general"], subscribe: [] }) &&
@@ -247,6 +252,8 @@ try {
   check("  it is issued as a terminal seat under its own lifecycle",
     refA.owner === DEV_OWNER && refA.actor === heldA.id && refA.uid === heldA.lifecycleUid &&
     issuedA.evidence?.sources.length === 1 && issuedA.evidence.sources[0]!.key === `cred.${heldA.lifecycleUid}`, issuedA);
+  check("  its record reserves the name before the host publishes presence",
+    isDeepStrictEqual((await run(["provision"], { space: SPACE, name: "claude_app", session: "before-presence-a" })).reply, { ok: false, taken: true }));
   const epA = await connect(envA, broker.servers, SPACE);
   await wait(1_500);
   check("  and it connects through a renewal source over its file, with no timer overflow", overflow.length === 0, overflow.slice(0, 2));
@@ -313,6 +320,16 @@ try {
   check("  and the reopened one is distinct", d.reply.env.COTAL_ID !== heldC.id);
   await run(["retire"], { dir: d.reply.retire.dir });
 
+  // After a reboot the host's pid can name another running process. Its start token differs, so the
+  // record's host still reads as gone.
+  const e = await run(["provision"], { space: SPACE, name: "claude_e", session: "session-e" });
+  const heldE = record(e.reply.retire.dir);
+  writeFileSync(join(heldE.dir, "identity.json"), JSON.stringify({ ...heldE, dir: undefined, owner: process.pid, ownerStart: "a process before the reboot" }), { mode: 0o600 });
+  const f = await run(["provision"], { space: SPACE, name: "claude_f", session: "session-e" });
+  check("a later provision retires an identity whose host pid now runs another process", f.code === 0 && !existsSync(heldE.dir), f.out);
+  check("  with its broker footprint and gate", await footprintGone(heldE) && (await gateLive(heldE.lifecycleUid)) === false);
+  await run(["retire"], { dir: f.reply.retire.dir });
+
   // ── a static mesh this account holds no signing authority for ───────────────────────────────
   recordMesh({ space: NOAUTH, server: broker.servers, root: noAuthRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
   const noAuth = await run(["provision"], { space: NOAUTH, name: "claude_app", session: "session-n" });
@@ -325,7 +342,12 @@ try {
   check("an open mesh opens a native conversation's identity", o.code === 0 && o.reply.ok === true && envO.COTAL_SPACE === OPEN, o.out);
   const heldO = record(o.reply.retire.dir);
   check("  with no credential", envO.COTAL_CREDS === undefined && envO.COTAL_ACCEPTED_TOKEN === undefined && readdirSync(heldO.dir).join() === "identity.json");
-  check("  recorded with its session and no seat", heldO.session === "session-o" && heldO.alias === undefined && heldO.id === envO.COTAL_ID);
+  check("  recorded with its session and reserved name", heldO.session === "session-o" && heldO.alias === "claude_open" && heldO.id === envO.COTAL_ID);
+  check("  its name is taken even before presence starts",
+    isDeepStrictEqual((await run(["provision"], { space: OPEN, name: "claude_open", session: "before-presence-o" })).reply, { ok: false, taken: true }));
+  const otherSpace = await run(["provision"], { space: SPACE, name: "claude_open", session: "other-space" });
+  check("  the same name on another space remains available", otherSpace.reply?.ok === true, otherSpace.out);
+  await run(["retire"], { dir: otherSpace.reply.retire.dir });
   check("  and the persona's grant plus its own event channel", isDeepStrictEqual(o.reply.grant,
     { scope: ["spawn", "run"], role: "default", allowSubscribe: ["general", "team.>"], allowPublish: [eventChannel({ owner: DEV_OWNER, actor: heldO.id }), "general"], subscribe: [] }), o.reply.grant);
   const epO = await connect(envO, openServers, OPEN);
@@ -335,6 +357,9 @@ try {
   check("  and its session cannot open a second one", sameO.code === 1 && /already has a live identity on/.test(sameO.reply?.error), sameO.out);
   await epO.stop();
   check("  it retires", (await run(["retire"], { dir: heldO.dir })).code === 0 && !existsSync(heldO.dir));
+  const reopened = await run(["provision"], { space: OPEN, name: "claude_open", session: "reopened-o" });
+  check("  retirement releases its reserved name", reopened.reply?.ok === true, reopened.out);
+  await run(["retire"], { dir: reopened.reply.retire.dir });
 
   // ── a signed-in mesh still refuses a caller with no native session ──────────────────────────
   // A per-user sign-in mesh, recorded the way `cotal meshes add` records one. It is refused before
@@ -398,7 +423,7 @@ try {
   // A readable record naming the live mesh, so only the directory checks stand between retire and the file.
   writeFileSync(join(elsewhere, "identity.json"), JSON.stringify({ space: SPACE, id: newIdentity().id, lifecycleUid: mintLifecycleUid(), owner: process.pid }));
   const misplaced = await run(["retire"], { dir: elsewhere });
-  check("retire refuses a credential-named directory outside the temp directory", misplaced.code === 1 && /refusing to remove/.test(misplaced.reply?.error), misplaced.out);
+  check("retire refuses a credential-named directory outside the record directories", misplaced.code === 1 && /refusing to remove/.test(misplaced.reply?.error), misplaced.out);
   check("  and leaves its file in place", existsSync(join(elsewhere, "agent.creds")));
   const link = join(tmpdir(), `cotal-app-identity-link-${process.pid}`);
   symlinkSync(elsewhere, link);

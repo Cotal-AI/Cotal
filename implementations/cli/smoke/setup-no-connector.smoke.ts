@@ -4,8 +4,8 @@
  * `--harness nosuch` got the same "no connector is installed" refusal as a real connector name.
  *
  * Driven through the built binary of this checkout in a sandboxed HOME, XDG_CONFIG_HOME and
- * COTAL_HOME with COTAL_SKIP_CONNECTOR_SEED=1 for the empty-inventory checks. Then seed and remove
- * the built-ins through the CLI and follow the recommended targeted recovery.
+ * COTAL_HOME. Check the empty inventory with seeding both disabled and enabled, then seed and
+ * remove the built-ins through the CLI and follow the recommended targeted recovery.
  *
  * Run: pnpm smoke:setup-no-connector
  */
@@ -32,7 +32,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
 const setup = (harness: string, extra: Record<string, string> = {}) => {
-  const r = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", harness, "--project", project, "--space", "noconn", "--json"], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
+  const r = spawnSync(process.execPath, [BIN, "setup", "--destination", "local", "--harness", harness, "--project", project, "--space", "noconn", "--no-input", "--json"], { cwd: project, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
@@ -53,11 +53,28 @@ check("an official harness names its targeted install", optedIn.status === 2 && 
 
 check("nothing was written to the project", !existsSync(join(project, ".cotal")));
 
-// Exercise the supported removal path, not just an initially empty manifest.
 const seededEnv = { ...env, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1" };
 const command = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { cwd: project, env: seededEnv, encoding: "utf8", timeout: 180_000 });
+const before = command("ext", "list", "--json");
+const coldUnknown = setup("nonexistent-harness", seededEnv);
+const after = command("ext", "list", "--json");
+check("an unknown harness refuses before first-run seeding",
+  coldUnknown.status === 1 && coldUnknown.envelope?.outcome === "refused" && coldUnknown.envelope.error?.code === "USAGE_INVALID"
+    && !coldUnknown.stderr.includes("Reconciling built-in") && !existsSync(join(project, ".cotal")), shown(coldUnknown));
+check("the cold setup refusal leaves the extension inventory empty",
+  before.status === 0 && after.status === 0 && /"items":\[\]/.test(before.stdout) && after.stdout === before.stdout,
+  { before: before.stdout, after: after.stdout });
+
+// Exercise the supported removal path, not just an initially empty manifest.
 check("seed the built-ins", command("ext", "seed").status === 0);
-for (const pkg of ["connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi"]) {
+const removedClaude = command("ext", "remove", "@cotal-ai/connector-claude-code");
+check("remove connector-claude-code", removedClaude.status === 0, removedClaude.stderr);
+const withSiblings = setup("claude", seededEnv);
+check("setup names the missing Claude package when other connectors remain installed",
+  withSiblings.status === 2 && withSiblings.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE"
+    && withSiblings.envelope.error.remedy === "run `cotal ext add @cotal-ai/connector-claude-code`"
+    && !existsSync(join(project, ".cotal")), shown(withSiblings));
+for (const pkg of ["connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi"]) {
   const removed = command("ext", "remove", `@cotal-ai/${pkg}`);
   check(`remove ${pkg}`, removed.status === 0, removed.stderr);
 }

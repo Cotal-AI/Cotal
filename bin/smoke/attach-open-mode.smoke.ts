@@ -41,7 +41,7 @@
  * COTAL_HOME and XDG_CONFIG_HOME are sandboxed. Needs nats-server on PATH. Kills only the PIDs it
  * spawns, and stops the manager WITH its agents so no supervised child outlives the run.
  */
-import { spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { execFile, spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -207,12 +207,13 @@ const cmd = (name: string): Command => {
   return c;
 };
 
-/** Run the REAL binary's `attach` from `cwd` against `space`, and return everything it said.
- *  Stops as soon as the session banner appears, or when the process ends, or at the deadline. */
-async function attachFrom(cwd: string, space: string, ms = 25_000): Promise<string> {
-  const p = spawnProc(TSX, [BIN, "attach", "--name", SEAT, "--space", space], {
+const cliEnv = { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+
+/** Run the CLI's `attach` and stop at the session banner, exit or deadline. */
+async function attachFrom(cwd: string, args: string[], ms = 25_000): Promise<string> {
+  const p = spawnProc(TSX, [BIN, "attach", ...args], {
     cwd,
-    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+    env: cliEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(p);
@@ -225,6 +226,42 @@ async function attachFrom(cwd: string, space: string, ms = 25_000): Promise<stri
   p.kill("SIGKILL");
   await awaitExit(p);
   return out.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+async function checkPinnedRetries(): Promise<void> {
+  const route = ["--space", SPACE, "--server", OPEN_SERVER];
+  const options = { cwd: rootOpen, env: cliEnv, encoding: "utf8" as const, timeout: 20_000 };
+  const run = (args: string[]) => new Promise<{ status: number | string | null | undefined; stdout: string; stderr: string }>((resolve) => {
+    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), BIN, ...args], options, (error, stdout, stderr) =>
+      resolve({ status: error ? error.code : 0, stdout, stderr }));
+  });
+  const roster = await run(["ps", ...route]);
+  const instance = /instance:\s+([a-z0-9]{26,32})\b/.exec(roster.stdout ?? "")?.[1];
+  must("ps lists the managed seat and its manager instance on the open mesh",
+    roster.status === 0 && Boolean(instance) && roster.stdout.includes(SEAT), roster.stdout);
+  const refused = await run(["attach", SEAT, "--no-reconnect", "--on", "not-a-pin", ...route]);
+  const retries = [...(refused.stderr ?? "").matchAll(/`(cotal attach [^`]+)`/g)].map((match) => match[1]!);
+  const expected = `cotal attach ${SEAT} --no-reconnect ${route.join(" ")} --on <instance>`;
+  ok("both malformed attach pin remedies keep the seat, route and --no-reconnect",
+    refused.status === 1 && refused.stdout === "" && refused.stderr.includes("not a valid lifecycle token")
+    && retries.length === 2 && retries.every((retry) => retry === expected), refused.stderr);
+  if (!retries[0] || !instance) return;
+  const attached = await attachFrom(rootOpen, retries[0].replace("<instance>", instance).split(" ").slice(2));
+  ok("the printed attach retry opens the seat with the manager instance from ps", attached.includes(`attached to ${SEAT}`), attached);
+
+  const stop = await run(["stop", "--force", "--json", "--on", "not-a-pin", ...route]);
+  const stopError = JSON.parse(stop.stdout).error;
+  const stopRetry = `cotal stop <name> --on <instance> --force --json ${route.join(" ")}`;
+  ok("nameless stop replaces an invalid open-mesh pin with the instance from ps",
+    stop.status === 1 && stop.stderr === "" && stopError?.code === "USAGE_INVALID"
+    && stopError.message.includes('--on "not-a-pin" is not a valid manager instance id')
+    && stopError.remedy === `run \`cotal ps ${route.join(" ")}\`, then \`${stopRetry}\``, stop);
+  const retry = /then `(cotal stop [^`]+)`/.exec(stopError?.remedy ?? "")?.[1];
+  if (retry !== stopRetry) return;
+  const stopped = await run(retry.replace("<name>", SEAT).replace("<instance>", instance).split(" ").slice(1));
+  const receipt = stopped.status === 0 ? JSON.parse(stopped.stdout) : undefined;
+  ok("the printed stop retry stops the seat with the manager instance from ps",
+    receipt?.target?.managerInstanceId === instance && receipt?.result?.stopped === true, stopped);
 }
 
 let mgr: InstanceType<typeof Manager> | undefined;
@@ -488,7 +525,7 @@ try {
     connectErr,
   );
 
-  const sealedAttach = await attachFrom(rootSealedNoSeed, SEALED_SPACE, 20_000);
+  const sealedAttach = await attachFrom(rootSealedNoSeed, ["--name", SEAT, "--space", SEALED_SPACE], 20_000);
   ok(
     "THE CONTROL CELL: `cotal attach` on a live SEALED mesh with no seed still REFUSES, and never takes the open path",
     !/attached to /.test(sealedAttach) && /This mesh is not open/.test(sealedAttach) && sealedAttach.includes(rootSealedNoSeed),
@@ -524,12 +561,13 @@ try {
   }
   must("a seat is running under the open mesh", lastOpts?.name === SEAT, lastOpts?.name);
 
-  const fromOpen = await attachFrom(rootOpen, SPACE);
+  const fromOpen = await attachFrom(rootOpen, ["--name", SEAT, "--space", SPACE]);
   ok(
     "open-without-seed attaches",
     /attached to seat1/.test(fromOpen) && !/needs this space's local seed/.test(fromOpen) && !/re-register the mesh/.test(fromOpen),
     fromOpen.slice(-900),
   );
+  await checkPinnedRetries();
 
   console.log(`\nattach open-mode: ${pass} passed, ${fail} failed`);
   if (!fail) exitCode = 0;

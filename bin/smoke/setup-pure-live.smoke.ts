@@ -7,7 +7,7 @@
  *   C. WRITE the default persona, install @cotal-ai/web in a sandboxed config dir, and write the
  *      onboarded stamp, with persona/stamp writes announced on stderr;
  *   D. `setup --demo` on an onboarded machine writes the guided team;
- *   E. a REPEAT run with the same answers reports the space already set up, still launches nothing,
+ *   E. a REPEAT run with the same answers reports the space already prepared, still launches nothing,
  *      and exits 0;
  *   F. the removed `--open` flag and the deleted `go` command fail loud.
  * Run: pnpm smoke:setup-pure:live
@@ -38,12 +38,26 @@ const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim(
 const realNpm = spawnSync("which", ["npm"], { encoding: "utf8" }).stdout.trim();
 symlinkSync(realNode, join(binDir, "node"));
 symlinkSync(realNpm, join(binDir, "npm"));
-// The application setup prepares the space for must be on PATH, or setup ends partial (exit 4).
-// A stand-in is enough: setup checks that the tool is there and launches nothing.
-writeFileSync(join(binDir, "codex"), "#!/bin/sh\necho codex 0.0.0\n", { mode: 0o755 });
+// Setup checks the installed plugin version without starting a Codex session.
+writeFileSync(join(binDir, "codex"), `#!${process.execPath}
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const home = process.env.COTAL_HOME;
+const installed = join(home, "codex-installed-version");
+const args = process.argv.slice(2).join(" ");
+if (args === "--version") console.log("codex 0.0.0");
+else if (args === "plugin marketplace list") console.log("cotal-mesh");
+else if (args === "plugin add cotal@cotal-mesh") {
+  const manifest = join(home, "codex-plugin", "plugins", "cotal", ".codex-plugin", "plugin.json");
+  writeFileSync(installed, JSON.parse(readFileSync(manifest, "utf8")).version);
+} else if (args === "plugin list") {
+  if (existsSync(installed)) console.log("cotal@cotal-mesh  installed  " + readFileSync(installed, "utf8"));
+} else process.exit(1);
+`, { mode: 0o755 });
 const env = {
   ...process.env,
   COTAL_HOME: home,
+  CODEX_HOME: join(home, ".codex"),
   XDG_CONFIG_HOME: configHome,
   PATH: binDir,
   COTAL_SKIP_ASSIST: "1",
@@ -137,6 +151,8 @@ ok("CONTROL: and detection clears once it is removed", !existsSync(pidProbe), { 
 // A — first run: configure-only, non-interactive.
 const first = cotal(SETUP, proj);
 ok("first run exits 0", first.status === 0, { status: first.status, err: first.stderr.slice(-400) });
+const manifest = JSON.parse(readFileSync(join(home, "codex-plugin", "plugins", "cotal", ".codex-plugin", "plugin.json"), "utf8"));
+ok("Codex installed the version from the marketplace", readFileSync(join(home, "codex-installed-version"), "utf8") === manifest.version);
 
 // B — nothing launched: no manager pid file under the ANCHORED PROJECT ROOT — these cells resolve
 // through `runtimeArtifact`, i.e. `<proj>/.cotal/`, NOT the sandboxed home — and setup spawned no
@@ -175,10 +191,11 @@ for (const f of ["david.md", "sven.md", "me.md"]) {
 ok("demo provenance announces persona writes", /→ wrote persona: .*david\.md/.test(demo.stderr), demo.stderr.slice(-500));
 ok("demo setup still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
-// E — repeat run with the same answers: already set up, still nothing launched, exit 0.
-const second = cotal(SETUP, proj);
+// E — repeat run refreshes the connector without preparing or launching the space again.
+const second = cotal([...SETUP, "--json"], proj);
 ok("repeat run exits 0", second.status === 0, { status: second.status, err: second.stderr.slice(-300) });
-ok("repeat run reports the space already set up", new RegExp(`${DEFAULT_SPACE} is already set up for codex`).test(second.stdout), second.stdout.slice(-300));
+const repeat = JSON.parse(second.stdout) as { result: { spaceState: string } };
+ok("repeat run reports the space already prepared", repeat.result.spaceState === "prepared", repeat.result);
 ok("repeat run still launches nothing", !existsSync(runtimeRecord(MANAGER_PIDFILE)) && !existsSync(runtimeArtifact("nats.log")));
 
 // F — removed surface fails loud.

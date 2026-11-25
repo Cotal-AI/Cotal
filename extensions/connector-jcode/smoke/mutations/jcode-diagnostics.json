@@ -49,7 +49,7 @@
     },
     {
       "name": "host default bound is a second 180s literal again",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-support.ts",
       "find": "  if (!raw) return JCODE_READINESS_TIMEOUT_MS;",
       "replace": "  if (!raw) return 180_000;",
       "command": "pnpm smoke:jcode-args",

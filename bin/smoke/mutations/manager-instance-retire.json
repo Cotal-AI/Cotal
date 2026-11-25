@@ -6,7 +6,7 @@
   "mutations": [
     {
       "name": "serve seed is ignored when comparing generations",
-      "file": "packages/workspace/src/auth-paths.ts",
+      "file": "packages/workspace/src/auth-identity.ts",
       "find": "a.serveIdentity.id === b.serveIdentity.id && a.serveIdentity.seed === b.serveIdentity.seed",
       "replace": "a.serveIdentity.id === b.serveIdentity.id",
       "cell": "a successor with the same instanceId and nkey but another seed refuses",
@@ -14,7 +14,7 @@
     },
     {
       "name": "captured successor is deleted without the second comparison",
-      "file": "packages/workspace/src/auth-paths.ts",
+      "file": "packages/workspace/src/auth-identity.ts",
       "find": "if (held === undefined || !sameManagerInstanceIdentity(held, expected)) {",
       "replace": "if (false) {",
       "cell": "a record changed by a competing writer before rename is put back and refuses",
@@ -22,7 +22,7 @@
     },
     {
       "name": "link-back overwrites a competing successor instead of refusing the occupied path",
-      "file": "packages/workspace/src/auth-paths.ts",
+      "file": "packages/workspace/src/auth-identity.ts",
       "find": "try { linkSync(captured, path); unlinkSync(captured); } catch {",
       "replace": "try { renameSync(captured, path); } catch {",
       "cell": "link-back collision preserves both generations and refuses naming captured path",
@@ -30,7 +30,7 @@
     },
     {
       "name": "a missing record claims that this call removed it",
-      "file": "packages/workspace/src/auth-paths.ts",
+      "file": "packages/workspace/src/auth-identity.ts",
       "find": "if (current === undefined) return { outcome: \"absent\" };",
       "replace": "if (current === undefined) return { outcome: \"removed\" };",
       "cell": "a retry after removal reports absent, not removed",
@@ -38,7 +38,7 @@
     },
     {
       "name": "a denied capture escapes without the named retirement refusal",
-      "file": "packages/workspace/src/auth-paths.ts",
+      "file": "packages/workspace/src/auth-identity.ts",
       "find": "    throw new Error(`manager-instance-identity-retire-refused: space \"${space}\" at ${path}: capture failed`, { cause: e });",
       "replace": "    throw e;",
       "cell": "a non-ENOENT rename error refuses by name",

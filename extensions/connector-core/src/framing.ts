@@ -41,14 +41,31 @@ function boundedRow(row: string, maxCodePoints: number): string {
   return points.length <= maxCodePoints ? row : `${points.slice(0, maxCodePoints - 1).join("")}…`;
 }
 
-/** Render a non-consuming inbox snapshot with the same provenance convention as `cotal_inbox`. */
+/** Render a non-consuming inbox snapshot with the same provenance convention as `cotal_inbox`.
+ *  Each row's attribution, the sender's unverified marker included, is whole inside the row: the
+ *  channel or role label is capped and the sender label gets the room the row has left, so only
+ *  the body is cut. The bound is at least {@link MIN_PREVIEW_ROW} code points, which holds the
+ *  longest attribution these caps allow. */
 export function renderInboxPreview(snapshot: InboxSnapshot, maxRowCodePoints = 240): RenderedInboxPreview {
-  if (!Number.isInteger(maxRowCodePoints) || maxRowCodePoints < 16 || maxRowCodePoints > 1_000)
-    throw new Error(`inbox preview row bound must be a whole number from 16 to 1000, got ${maxRowCodePoints}`);
+  if (!Number.isInteger(maxRowCodePoints) || maxRowCodePoints < MIN_PREVIEW_ROW || maxRowCodePoints > 1_000)
+    throw new Error(`inbox preview row bound must be a whole number from ${MIN_PREVIEW_ROW} to 1000, got ${maxRowCodePoints}`);
   return {
     unread: snapshot.unread,
-    rows: snapshot.items.map((item) => boundedRow(fmtItem(item).replace(PREVIEW_CONTROL, "\uFFFD"), maxRowCodePoints)),
+    rows: snapshot.items.map((item) => boundedRow(formatItem(item, "", maxRowCodePoints - 1).replace(PREVIEW_CONTROL, "\uFFFD"), maxRowCodePoints)),
   };
+}
+
+/** The most code points a channel or role label takes in a bounded attribution. */
+const LABEL_MAX_CODE_POINTS = 40;
+
+/** The smallest preview row: a capped channel label, `@you`, and the smallest sender label with
+ *  its marker, inside one row with room to spare. */
+const MIN_PREVIEW_ROW = 80;
+
+/** `s` cut to `max` code points, ending in `…` when it was longer. */
+function capped(s: string, max: number): string {
+  const points = Array.from(s);
+  return points.length <= max ? s : `${points.slice(0, max - 1).join("")}…`;
 }
 
 /**
@@ -71,11 +88,28 @@ export function attributionSafe(s: string): string {
   return peerLabel({ name: s });
 }
 
-/** A message's sender, by the label every other surface prints for that peer. A blank name is not a
- *  name: the frame uses the sender's id, and a role still follows it. */
-export function fmtFrom(i: InboxItem): string {
-  const name = i.fromName.trim() ? i.fromName : i.fromId;
-  return peerLabel({ name, ...(i.fromRole ? { role: i.fromRole } : {}) });
+/** The most code points {@link fmtFrom} returns when its caller names no bound, marker included. */
+const FROM_MAX_CODE_POINTS = 160;
+
+/** The smallest bound {@link fmtFrom} accepts: the longer marker after one code point and `…`. */
+export const FROM_MIN_CODE_POINTS = " (unverified name)".length + 2;
+
+/** A message's sender, by the label every other surface prints for that peer, marked as the
+ *  sender's own claim. A sender writes its name and role into its payload and its presence row
+ *  alike, so neither is bound to one principal; the `sender_id` a delivery frame prints is. A blank
+ *  name is not a name: the frame uses the sender's id, and a role still follows it, marked as an
+ *  unverified role so the id is never called a name.
+ *
+ *  The result is at most `maxCodePoints` code points. A longer label is cut, ending in `…`, and the
+ *  marker always follows it whole, so a caller that bounds the line it prints keeps the marker. A
+ *  bound below {@link FROM_MIN_CODE_POINTS} cannot hold a marker and is refused. */
+export function fmtFrom(i: InboxItem, maxCodePoints = FROM_MAX_CODE_POINTS): string {
+  if (!Number.isInteger(maxCodePoints) || maxCodePoints < FROM_MIN_CODE_POINTS)
+    throw new RangeError(`a sender label bound must be a whole number of at least ${FROM_MIN_CODE_POINTS} code points, got ${maxCodePoints}`);
+  const named = i.fromName.trim() !== "";
+  const label = peerLabel({ name: named ? i.fromName : i.fromId, ...(i.fromRole ? { role: i.fromRole } : {}) });
+  const marker = named ? " (unverified name)" : i.fromRole ? " (unverified role)" : "";
+  return `${capped(label, maxCodePoints - marker.length)}${marker}`;
 }
 
 /**
@@ -112,22 +146,44 @@ export function fmtDeliveryItem(i: InboxItem): string {
   return formatItem(i, `[${metadata.join(" ")}] `);
 }
 
-function formatItem(i: InboxItem, metadata = ""): string {
+function formatItem(i: InboxItem, metadata = "", attributionMax?: number): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
-  // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
-  // That is a delivery fact, not evidence of a prior context handoff. A process restart also loses
-  // every local observation of what happened before it, so preserve the unknown rather than inventing
-  // a prior run or claiming the earlier copy did not reach one.
-  const r = i.deliveryCount !== undefined && i.deliveryCount > 1
-    ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
-    : "";
-  const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
+  const body = `${metadata}${h}${redeliveryNote(i)}${fmtBody(i.text)}`;
   // A notice is the mesh's own word about something this session sent, checked against the delivery
   // lease, so it is labelled as that and not as a peer's DM that wants an answer.
   if (i.notice) return `[${i.notice} notice from the delivery daemon] ${body}`;
-  if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
-  if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
-  return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;
+  // With a bound, the channel or role label is capped and the sender label takes the room left, so
+  // the attribution and its marker end inside the bound whatever the peer-chosen labels are.
+  const label = (s: string | undefined) => attributionMax === undefined ? attributionSafe(s ?? "") : capped(attributionSafe(s ?? ""), LABEL_MAX_CODE_POINTS);
+  const from = (head: string) => fmtFrom(i, attributionMax === undefined ? undefined : Math.min(FROM_MAX_CODE_POINTS, attributionMax - Array.from(head).length - "] ".length));
+  if (i.kind === "dm") return `[DM from ${from("[DM from ")}] ${body}`;
+  if (i.kind === "anycast") {
+    const head = `[@${label(i.service)} from `;
+    return `${head}${from(head)}] ${body}`;
+  }
+  const head = `[#${label(i.channel)}${i.mentionsMe ? " @you" : ""} `;
+  return `${head}${from(head)}] ${body}`;
+}
+
+/**
+ * What a broker redelivery says about an earlier handoff to a model.
+ *
+ * The count is the broker's, so a peer cannot forge or hide it, but a count above 1 only proves that
+ * an earlier copy outlived its ack wait. A message queued in this session past that wait is
+ * redelivered without ever reaching the host, and labelling it a redelivery made seats read a post
+ * that waited an hour as one they had seen sixty times. This session records the first copy it
+ * received and the first copy it handed to its host, so it says nothing for a message it never handed
+ * over and says when an earlier handoff was not confirmed. A first copy that was already a
+ * redelivery, as after a restart, has no local record behind it, so the handoff stays unknown.
+ */
+function redeliveryNote(i: InboxItem): string {
+  const n = i.deliveryCount;
+  if (n === undefined || n <= 1) return "";
+  if (i.firstDeliveryCount === undefined || i.firstDeliveryCount > 1)
+    return `(broker redelivery, delivery ${n}: prior model handoff unknown) `;
+  if (i.handedOverAt !== undefined && i.handedOverAt < n)
+    return `(broker redelivery, delivery ${n}: an earlier handoff in this session was not confirmed) `;
+  return "";
 }
 
 /**

@@ -95,9 +95,9 @@ function jetStreamUnanswered(conn: Connection): CommandFailure {
  *  consumer behind. Any other, such as a user bearer or an agent credential passed with `--creds`,
  *  watches them and waits for the presence replay; the consumer lasts until the broker's inactive
  *  threshold. `presenceOnly` holds the roster alone and opens no channel registry, so only the
- *  presence bucket's grant decides whether it is read once. `watch` keeps both watches for every
- *  credential, for a caller that reports the watch's own state (`cotal who`); that caller waits for
- *  the presence replay itself, on its own bound. `throwOnRefusal` hands connection refusals to the
+ *  presence bucket's grant decides whether it is read once. `watch` keeps both watches on an
+ *  authenticated connection, for a caller that reports the watch's own state (`cotal who`) and
+ *  waits for the presence replay on its own bound. `throwOnRefusal` hands connection refusals to the
  *  command kernel, and `report` takes endpoint errors and warnings instead of printing them. A
  *  credential the broker will not let read a bucket is refused with `PERMISSION_DENIED`. */
 export async function openTransient(
@@ -110,8 +110,9 @@ export async function openTransient(
   // Raw credentials and user-mode retain their existing path.
   const senderPrincipal = opts.senderActor !== undefined && conn.auth && conn.creds
     ? { owner: DEV_OWNER, actor: opts.senderActor } : undefined;
-  const readOnce = batchedRead(conn, presenceBucket(conn.space)) && batchedRead(conn, channelBucket(conn.space));
-  const once = !opts.watch && (opts.presenceOnly ? batchedRead(conn, presenceBucket(conn.space)) : readOnce);
+  const open = conn.creds === undefined && conn.bearer === undefined;
+  const once = open || (!opts.watch && batchedRead(conn, presenceBucket(conn.space)) &&
+    (opts.presenceOnly || batchedRead(conn, channelBucket(conn.space))));
   const report = opts.report ?? ((level, e) => console.error(level === "error" ? c.red("! " + e.message) : c.yellow("! " + e.message)));
   // A connect the broker refuses or does not complete in time sends nothing, so it is tried again
   // with a new endpoint. What a failed attempt reported is dropped with it; a failure after the

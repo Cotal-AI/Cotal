@@ -94,7 +94,7 @@
     },
     {
       "name": "a space with no registry bucket fails the replay read",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-channel-discovery.ts",
       "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };",
       "replace": "      throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null, registered: cfg !== undefined };",
       "expectRed": "a space with no channel registry has the built-in replay policy, and the read is complete",

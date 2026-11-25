@@ -37,7 +37,8 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import type { ServiceWriteScope } from "../src/service-write.js";
 import { serviceHostDiscoveryGrants, type ServiceHostEffectReads } from "../src/authority-client.js";
-import { S2A_INVOCATION_MS, openServiceHostEffect, type ServiceHostEffect } from "../src/service-host-ops.js";
+import { openServiceHostEffect, type ServiceHostEffect } from "../src/service-host-ops.js";
+import { S2A_INVOCATION_MS } from "../src/service-host-kernel.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));

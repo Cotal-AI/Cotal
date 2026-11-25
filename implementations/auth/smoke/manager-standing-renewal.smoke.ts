@@ -15,17 +15,13 @@ import {
   createRunSpec, createSpaceAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, openRecordsBucket, remoteManagerActors, serverConfig, setupSpaceStreams, standaloneConnectOpts, writeRunStatus,
   type Identity, type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
-import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 import { openAuthAuthorityPlane } from "../src/index.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { registerRemoteManagerAuthority } from "../../manager/src/remote-register.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const refusal = async (p: Promise<unknown>): Promise<string> => {
   try { await p; return "issued"; } catch (e) { return `${(e as { code?: string }).code ?? "?"}: ${(e as Error).message}`; }
 };
@@ -257,8 +253,9 @@ try {
   await killAndAwaitExit(srv, "SIGKILL");
   releaseBroker();
 }
-console.log(`manager standing renewal: ${pass} passed, ${fail} failed`);
-process.exit(fail === 0 && pass > 0 ? 0 : 1);
+console.log(`manager standing renewal: ${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() === 0 && passed() > 0 ? 0 : 1);
 
 function createSpaceAuthPub(): string {
   // A syntactically valid account key that is not this space's data account.

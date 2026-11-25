@@ -27,7 +27,7 @@ A completed timer records its sleep step as `ok`.
 ## Tool availability [#if-cotal_run-is-missing]
 
 1. Call `cotal_orientation` and check the connector version, capabilities and tool list.
-   Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.mdx).
+   Upgrade an older installation using the [upgrade guide](https://github.com/Cotal-AI/Cotal/blob/main/docs/UPGRADING.md).
 2. Have the operator add `run` to the persona's existing `capabilities` list, for example
    `capabilities: [spawn, run]`. `spawn` alone does not expose `cotal_run`. Setup leaves existing
    personas unchanged except for its [byte-exact legacy migration](getting-started.mdx).
@@ -47,6 +47,9 @@ or wrong manager selection refuses rather than borrowing a signed-in user's auth
 parent's `run` grant is restored, the next call checks its new connection's issued authority before
 submitting the workflow.
 
+If the bearer exchange refuses the call, the connector reports `permission-denied` and the
+request never reaches the manager. The connector API reports the outcome as `not-executed`.
+
 Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
 run authority and an `execution: "none"` control manager also refuse the family. A legacy
 credential without issued authority must be replaced through the current issuance path.
@@ -56,9 +59,12 @@ credential without issued authority must be replaced through the current issuanc
 The manager hosts runs. `cotal run start` hands the program to the manager of the resolved mesh
 (the usual `--space` / `--server` / `--creds` flags), which validates it, mints the run id, drives
 it in its own process, and answers with the id once the run is recorded. The terminal is free the
-moment the id prints; the run continues on the manager through every pause, and a manager restart
-takes back every run it had recorded running, from the journal, under the next epoch. `resume`
-names a run the manager recorded and is refused while the manager is already driving it, and for
+moment the id prints. The run continues on the manager through every pause. On restart, the manager
+takes back eligible runs recorded as running, using the journal to continue under a new epoch.
+If the startup scan fails, the manager keeps serving requests and retries the scan in the background.
+If it logs that retries are exhausted, use `cotal run resume <runId>` after the broker is reachable.
+
+`resume` names a run the manager recorded and is refused while the manager is already driving it, and for
 a run recorded `completed` or `failed`, whose journal already holds its outcome. Bare
 `run` and `show` read; `answer` resolves an open checkpoint, or an open `ask` attempt, from any terminal
 or agent that holds the `run` capability.
@@ -92,15 +98,22 @@ writes the lines before the resume point again.
 cotal run start --file build.cotal.js                   # the manager starts it; the minted id is printed
 cotal run                                               # list run records and their recorded state
 cotal run show run-3f2a90c41b7e0d5a6c884e19b02df4a1                        # print the record and its last 20 journal rows; --limit <n> prints up to 1000, --json all
-cotal run resume run-3f2a90c41b7e0d5a6c884e19b02df4a1                      # the manager takes the run back
 cotal run answer run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"yes"'
 cotal run amend run-3f2a90c41b7e0d5a6c884e19b02df4a1 "/checkpoint:approve#0" --value '"no"'   # record a changed position
 cotal run check run-3f2a90c41b7e0d5a6c884e19b02df4a1 build-v2.cotal.js   # check an edited program against the journal
 ```
 
+To recover an interrupted run, resume it only after it no longer has an active driver.
+Answer a checkpoint on an active run directly with `cotal run answer`.
+
+```bash
+cotal run resume <runId>
+```
+
 A program that does not validate is refused before anything is recorded, with every problem in the
 answer as the validator would print it. The driver records the program beside the run, so `resume`
-takes the run id alone and the manager reads the source back; an edited program is a migration or a
+takes the run id alone and the manager reads the source back. If a hosted resume refuses `--file`,
+remove that option and its value and keep the other arguments. An edited program is a migration or a
 `fork`, never a resume. `cotal run check <runId> <program>` is that check: it
 replays the run's journal and walks the edited program over it, prints whether the migration is
 admissible, how many journal rows the walk accounted for, every orphaned step with its verdict and
@@ -119,9 +132,10 @@ retry a moment later is the whole remedy.
 
 `--local` drives the run in this process instead: `start`, `resume` and `answer` exit when the
 drive settles, `--by <who>` names the answerer, and `cotal run resume <runId> --local --file
-<program>` is how a run with no recorded program is continued. On a static mesh the local drive
-mints the run's own credential from the folder's trust material, so it runs from the mesh's
-project folder. A local start also names the run's channel ceiling itself:
+<program>` is how a run with no recorded program is continued. A local resume refuses completed or
+failed runs without running their programs again or changing their journals. On a static mesh the
+local drive mints the run's own credential from the folder's trust material, so it runs from the
+mesh's project folder. A local start also names the run's channel ceiling itself:
 `--admit-read <channels> --admit-publish <channels>`, comma-separated patterns or `none`, both
 required. The record it writes says an operator admitted the run and why, and the host checks
 it the same way it checks a hosted admission. The run's helpers get only channels within that
@@ -241,8 +255,11 @@ request can read the same marker and a current holder, then report its own obser
 ## Revocation [#revocation]
 
 `cotal run revoke <runId> --local --by <who> --reason <text>` writes the run's revocation marker
-from the project folder. An empty `--by` or `--reason` is refused `USAGE_INVALID` before anything is written, naming the empty flag. A run ID with no admission on the endpoint is refused `TARGET_NOT_FOUND`, exit 2, before anything is written. The
-admission itself is never rewritten. Every host reads the marker
+from the project folder. If the run ID is missing, add it after `run revoke` and keep the original
+options. An empty `--by` or `--reason` is refused `USAGE_INVALID` before anything is written, naming the empty flag.
+A run ID with no admission on the endpoint is refused `TARGET_NOT_FOUND`, exit 2, before anything is written.
+The refusal points to `cotal run list --local` on the same space and keeps explicit broker and endpoint selectors.
+The list reads the records without a manager. The admission itself is never rewritten. Every host reads the marker
 before its next channel effect, so an open `wait` refuses at its next poll, and no resume,
 takeover or manager restart continues the run. A spawn a hosted run makes after the revoke is
 refused before anything is minted, and so is one whose marker cannot be read. An open checkpoint or
@@ -321,8 +338,9 @@ cotal run --page --on <instance> --cursor <cursor>
 For the MCP surface, use `cotal_run` with `verb: "ps"`, `instance` and `page: { limit: 8 }`.
 Pass a returned `nextCursor` as `page.cursor` to continue. A managed session can use its existing
 manager binding. Keep the same space, endpoint filter, instance and process epoch throughout a scan.
-The CLI requires `--on`; page mode is not available with `--local` or other verbs. An older host
-refuses page mode rather than returning a truncated legacy list.
+The CLI requires `--on`; page mode is not available with `--local` or other verbs. Use
+`cotal run show <run-id> --limit <n>` without `--page` or `--cursor` to limit the text journal.
+An older host refuses page mode rather than returning a truncated legacy list.
 
 Each page has at most 16 rows (default 8), and the complete reply fits 65536 bytes and the broker's
 payload limit. The reader issues at most 64 storage calls and stops issuing them after 2 seconds or

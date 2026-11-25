@@ -1,5 +1,155 @@
 # @cotal-ai/lang
 
+## 0.179.0
+
+No changes in this release.
+
+## 0.178.0
+
+No changes in this release.
+
+## 0.177.0
+
+No changes in this release.
+
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+
+## 0.176.3
+
+### Patch Changes
+
+- a38ed1d: Apply scripted workflow simulation faults to the named fan-out step before any of its branches run.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Patch Changes
+
+- 7266240: Make workflow simulations reject late turn yields and enforce one shared deadline across ask retries.
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+
+## 0.175.3
+
+No changes in this release.
+
+## 0.175.2
+
+### Patch Changes
+
+- 8cf0871: The interpreter's run state types (environments, branch frames and run options) now live in their own lang module, with no change in behavior.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+No changes in this release.
+
+## 0.174.4
+
+No changes in this release.
+
+## 0.174.3
+
+No changes in this release.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+No changes in this release.
+
+## 0.173.0
+
+No changes in this release.
+
+## 0.172.2
+
+No changes in this release.
+
+## 0.172.1
+
+### Patch Changes
+
+- e11a800: A checkpoint scripted as expired in a workflow simulation now expires at its timeout, so a race against it picks the same winner as a live run.
+- 728bde0: Workflow simulations now time out when a scripted event arrives after the wait deadline.
+
+## 0.172.0
+
+No changes in this release.
+
+## 0.171.5
+
+No changes in this release.
+
+## 0.171.4
+
+### Patch Changes
+
+- 82e9e79: Split the validator in `grammar.ts`: the resolution walk (identifier binding and effect call checks) moves to an internal `grammar-resolve.ts`, and the node, scope and pattern helpers both walks use move to an internal `grammar-shared.ts`. The package surface is unchanged.
+- 8a918ce: Move the walker's operator helpers (`applyBinary`, the no-coercion and update-operand refusals, and canonical array indexes) out of `interpret.ts` into an internal `interpret-operators.ts`. The package surface is unchanged.
+- 5cbdcfe: Move per-primitive dispatch (`dispatchPrimitive`, its hashed projections and the `waitUntil` observation loop) out of `perform.ts` into an internal `perform-dispatch.ts`. The package surface is unchanged.
+
+## 0.171.3
+
+No changes in this release.
+
+## 0.171.2
+
+No changes in this release.
+
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+No changes in this release.
+
+## 0.170.0
+
+### Patch Changes
+
+- 3e748e8: Workflow syntax errors now report a single position with a one-based line and column.
+
+## 0.169.0
+
+No changes in this release.
+
+## 0.168.0
+
+No changes in this release.
+
+## 0.167.0
+
+No changes in this release.
+
 ## 0.166.3
 
 No changes in this release.

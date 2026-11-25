@@ -130,11 +130,14 @@ c("a tool result marker draws as `  ↳ done`",
   draw(marker({ toolCallId: "t1", isError: false })) === "  ↳ done", draw(marker({ toolCallId: "t1", isError: false })));
 c("a marker that says isError draws as `  ↳ failed`",
   draw(marker({ toolCallId: "t1", isError: true })) === "  ↳ failed", draw(marker({ toolCallId: "t1", isError: true })));
+c("a marker that does not say whether the call failed draws as `  ↳ done`",
+  draw(marker({ toolCallId: "t1" })) === "  ↳ done", draw(marker({ toolCallId: "t1" })));
 c("a malformed marker draws as `• custom cotal.toolResult`",
-  draw(marker({ toolCallId: "t1" })) === "• custom cotal.toolResult" &&
+  draw(marker({ isError: false })) === "• custom cotal.toolResult" &&
+    draw(marker({ toolCallId: "t1", isError: "yes" })) === "• custom cotal.toolResult" &&
     draw(marker({ toolCallId: "t1", isError: false, content: "x" })) === "• custom cotal.toolResult" &&
     draw(marker("t1")) === "• custom cotal.toolResult",
-  [draw(marker({ toolCallId: "t1" })), draw(marker("t1"))]);
+  [draw(marker({ isError: false })), draw(marker({ toolCallId: "t1", isError: "yes" })), draw(marker("t1"))]);
 
 // ── NOTHING IS SKIPPED, because a skipped event is a hole in a transcript that looks complete ─
 const unknownEvent = draw(ev("SOMETHING_FROM_THE_FUTURE"));

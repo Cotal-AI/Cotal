@@ -27,11 +27,11 @@ try {
     const mapper = createJcodeMapper({ threadId: "open", mintRunId: () => "run-open" });
     const brackets = new AguiBrackets();
     const first = await source.read(undefined);
-    for (const r of first.records) for (const e of unitOf(mapper.map({ cursor: r.cursor, record: r.value }))?.events ?? []) brackets.accept(e);
+    for (const r of first.records) for (const e of unitOf(mapper.map({ harness: { cursor: r.cursor, record: r.value } }))?.events ?? []) brackets.accept(e);
     await snapshot("open");
     await writeFile(path, "");
     const next = await source.read(first.cursor);
-    const events = next.records.flatMap(r => unitOf(mapper.map({ cursor: r.cursor, record: r.value }))?.events ?? []);
+    const events = next.records.flatMap(r => unitOf(mapper.map({ harness: { cursor: r.cursor, record: r.value } }))?.events ?? []);
     for (const e of events) brackets.accept(e);
     assert(events.some(e => e.type === "RUN_ERROR" && e.code === "jcode_journal_fold"));
     assert(!events.some(e => e.type === "RUN_FINISHED"));
@@ -48,7 +48,7 @@ try {
     const next = await source.read(first.cursor);
     const mapper = createJcodeMapper({ threadId: "unseen", mintRunId: () => "run-unseen" });
     const brackets = new AguiBrackets();
-    const events = next.records.flatMap(r => unitOf(mapper.map({ cursor: r.cursor, record: r.value }))?.events ?? []);
+    const events = next.records.flatMap(r => unitOf(mapper.map({ harness: { cursor: r.cursor, record: r.value } }))?.events ?? []);
     for (const e of events) brackets.accept(e);
     assert(events.some(e => e.type === "RUN_ERROR" && e.code === "jcode_tool_start_missing"));
     assert(!events.some(e => e.type === "TOOL_CALL_END" || e.type === "TOOL_CALL_START" || e.type === "RUN_FINISHED"));
@@ -74,10 +74,10 @@ try {
   await check("restart restores open tool observations without manufacturing a gap", async () => {
     const before = createJcodeMapper({ threadId: "restart", mintRunId: () => "run-restart" });
     const brackets = new AguiBrackets();
-    for (const e of unitOf(before.map({ cursor: "before", record: { append_messages: [start] } }))!.events) brackets.accept(e);
+    for (const e of unitOf(before.map({ harness: { cursor: "before", record: { append_messages: [start] } } }))!.events) brackets.accept(e);
     const saved = brackets.snapshot();
     const restored = createJcodeMapper({ threadId: "restart", mintRunId: () => "unexpected", resumeRunId: saved.run, resumeTools: saved.tools });
-    const events = unitOf(restored.map({ cursor: "after", record: { append_messages: [result] } }))!.events;
+    const events = unitOf(restored.map({ harness: { cursor: "after", record: { append_messages: [result] } } }))!.events;
     assert.deepEqual(events.map(e => e.type), ["TOOL_CALL_END", "TOOL_CALL_RESULT", "CUSTOM"]);
     for (const e of events) brackets.accept(e);
     assert.deepEqual(brackets.snapshot().tools, []);

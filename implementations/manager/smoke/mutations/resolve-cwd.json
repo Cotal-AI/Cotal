@@ -16,7 +16,7 @@
   "mutations": [
     {
       "name": "M1 return the alias spelling instead of the canonical path",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      cwd = realpathSync(resolved);",
       "replace": "      cwd = resolved;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -25,16 +25,16 @@
     },
     {
       "name": "M2 fall back to the workspace root for a missing directory",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-launch.ts",
       "find": "      return { refusal: `path cannot be resolved: ${rejectionText(error)}` };",
-      "replace": "      cwd = this.workspaceRoot;",
+      "replace": "      cwd = this.config.workspaceRoot;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "resolve-cwd refuses a missing directory by name with failed-precondition",
       "cell": "resolve-cwd refuses a missing directory by name with failed-precondition"
     },
     {
       "name": "M3 drop the answered cwd before spawning the real seat",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/start-doors.ts",
       "find": "        cwd: args.cwd as string | undefined,",
       "replace": "        cwd: undefined,",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -43,16 +43,16 @@
     },
     {
       "name": "M4 let a spawn naming an unresolvable cwd through admission",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/seat-start.ts",
       "find": "      if (\"refusal\" in checked)\n        return { ok: false, error: `spawn: cwd does not resolve on this host (${hostname()}): ${JSON.stringify(asked)} (${checked.refusal}); the seat was not launched` };\n      resolvedCwd = checked.cwd;",
-      "replace": "      resolvedCwd = \"refusal\" in checked ? this.workspaceRoot : checked.cwd;",
+      "replace": "      void hostname;\n      resolvedCwd = \"refusal\" in checked ? this.config.workspaceRoot : checked.cwd;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "expectRed": "a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)",
       "cell": "a spawn naming a directory the serving host cannot resolve is refused at admission with the path, the reason and the host (#385)"
     },
     {
       "name": "M3 the ps row reads provider from the launch request instead of the presence card",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/status-and-models.ts",
       "find": "      const providerMeta = seen?.card.meta?.provider;",
       "replace": "      const providerMeta = a.launch.model;",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
@@ -61,7 +61,7 @@
     },
     {
       "name": "M4 an absent provider is fabricated as an empty string",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/status-and-models.ts",
       "find": "        ...(provider ? { provider } : {}),",
       "replace": "        provider: provider ?? \"\",",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",

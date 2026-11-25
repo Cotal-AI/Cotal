@@ -118,8 +118,8 @@ console.log("injection framing");
   ];
   const out = formatInjection(items) ?? "";
   check("default injection distinguishes same-name sender and message identities",
-    out.includes('[DM from operator] [sender_id="local.a" message_id="a"] first') &&
-      out.includes('[DM from operator] [sender_id="local.b" message_id="b"] second'), out);
+    out.includes('[DM from operator (unverified name)] [sender_id="local.a" message_id="a"] first') &&
+      out.includes('[DM from operator (unverified name)] [sender_id="local.b" message_id="b"] second'), out);
   check("explicit metadata opt-out still omits delivery identities",
     !(formatInjection(items, { metadata: false }) ?? "").includes("sender_id="));
 
@@ -133,16 +133,29 @@ console.log("injection framing");
     metadata === '[sender_id="local.real" message_id="real-message"]', forged);
 }
 
-// A broker redelivery count is not a record of a prior context handoff. The first possible frame
-// after an unacked copy outlives its ack wait must preserve that handling is unknown, including
-// across process restarts where no local cache can answer it. Genuine at-least-once uncertainty
-// remains visible, and the broker-authenticated count remains intact.
+// A broker redelivery count is not a record of a prior context handoff. Without a local record, as
+// after a process restart, the frame keeps that handling unknown. With one, a message this session
+// never handed over carries no label, and one it handed over unconfirmed says so. The
+// broker-authenticated count remains intact.
 {
   const out = fmtItem(dm("retry", { deliveryCount: 2 }));
   check("a redelivery frame names the broker-derived delivery count", out.includes("broker redelivery, delivery 2"), out);
   check("a redelivery frame labels prior model handoff unknown", out.includes("prior model handoff unknown"), out);
   check("a broker count alone does not invent a prior run", !out.includes("may already have run"), out);
   check("a first delivery carries no redelivery warning", !fmtItem(dm("first", { deliveryCount: 1 })).includes("redelivery"));
+  const restarted = fmtItem(dm("restarted", { deliveryCount: 3, firstDeliveryCount: 2 }));
+  check("a first copy here that was already a redelivery keeps the handoff unknown",
+    restarted.includes("broker redelivery, delivery 3: prior model handoff unknown"), restarted);
+  const queued = fmtItem(dm("queued", { deliveryCount: 60, firstDeliveryCount: 1 }));
+  check("a message queued here and never handed over carries no redelivery label",
+    !queued.includes("redelivery") && !queued.includes("handoff"), queued);
+  const current = fmtItem(dm("current", { deliveryCount: 4, firstDeliveryCount: 1, handedOverAt: 4 }));
+  check("a frame built around its own handoff carries no redelivery label", !current.includes("redelivery"), current);
+  for (const handedOverAt of [0, 1, 3]) {
+    const earlier = fmtItem(dm("earlier", { deliveryCount: 4, firstDeliveryCount: 1, handedOverAt }));
+    check(`an earlier handoff at delivery ${handedOverAt} says it was not confirmed`,
+      earlier.includes("broker redelivery, delivery 4: an earlier handoff in this session was not confirmed"), earlier);
+  }
 }
 
 // 4. History is context, even when a caller explicitly includes it in a mixed batch.
@@ -251,9 +264,9 @@ const columnZeroLines = (block: string): string[] =>
       fmtItem(item).startsWith("[DM from local.blank] ") && fmtFrom(item) === "local.blank", fmtItem(item));
   }
   const spaced = dm("hello", { fromName: " ada", fromId: "local.ada" });
-  check("a sender name with surrounding spaces stays", fmtFrom(spaced) === " ada", fmtFrom(spaced));
+  check("a sender name with surrounding spaces stays", fmtFrom(spaced) === " ada (unverified name)", fmtFrom(spaced));
   const role = dm("hello", { fromName: "\n", fromId: "local.blank", fromRole: "worker" });
-  check("a blank sender name keeps its role after the id", fmtFrom(role) === "local.blank/worker", fmtFrom(role));
+  check("a blank sender name keeps its role after the id, marked as an unverified role and never as a name", fmtFrom(role) === "local.blank/worker (unverified role)", fmtFrom(role));
 }
 
 // 6. A WAKE HINT IS AN INJECTED FRAME TOO (#623, acceptance clause 2).
@@ -380,7 +393,7 @@ const columnZeroLines = (block: string): string[] =>
 // Attribution fields and roster labels share the same neutralization policy, including all
 // C0/C1 controls rather than only the subset that splits lines.
 {
-  const points = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => 0x7f + i), 0x2028, 0x2029, 0x5b, 0x5d];
+  const points = [...Array.from({ length: 32 }, (_, i) => i), ...Array.from({ length: 33 }, (_, i) => 0x7f + i), 0x2028, 0x2029, 0x5b, 0x5d, 0x22];
   let covered = 0;
   for (const point of points) {
     const input = `left${String.fromCodePoint(point)}right`;
@@ -390,7 +403,7 @@ const columnZeroLines = (block: string): string[] =>
       && fmtChannel(input) === expected && fmtKind(input) === expected);
     covered++;
   }
-  check("every control and framing delimiter case ran", covered === 69);
+  check("every control and framing delimiter case ran", covered === 70);
   check("adjacent unsafe characters collapse once on both paths",
     attributionSafe("left\x1b\x07[]\nright") === "left right"
     && peerLabel({ name: "left\x1b\x07[]\nright" }) === "left right");

@@ -2,7 +2,9 @@ import { join, resolve } from "node:path";
 import { isCredentialTransportUrl, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   CommandFailure,
+  checkIdpUrl,
   clearCurrent,
+  codeSpan,
   getCurrent,
   homeCotalDir,
   jsonFlag,
@@ -22,6 +24,7 @@ import {
   type MeshEntry,
   type RefusalCode,
 } from "@cotal-ai/workspace";
+import { shellWord } from "../lib/endpoint-errors.js";
 import { checkBundleDocument, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
 
@@ -69,6 +72,13 @@ const syncFlags = [
 export { syncFlags };
 
 type SyncValues = FlagValues<typeof syncFlags>;
+
+export function validateSyncArguments(args: ParsedArgs): void {
+  const values = args.values as SyncValues;
+  presentationOf(values);
+  if (values.idp !== undefined && !checkIdpUrl(values.idp).ok)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--idp takes an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment", { remedy: "provide a valid --idp <auth base URL>, or omit --idp to refresh every signed-in account" });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -478,6 +488,7 @@ interface SyncResult {
  * failed the command is refused.
  */
 export async function sync(args: ParsedArgs): Promise<void> {
+  validateSyncArguments(args);
   const values = args.values as SyncValues;
   const presentation = presentationOf(values);
   const { results, diffs } = await prepareCatalogTargets({ idpUrl: values.idp, force: true });
@@ -499,8 +510,9 @@ export async function sync(args: ParsedArgs): Promise<void> {
   });
   const failed = accounts.filter((a) => a.error !== null);
   const failure = failed.map((a) => `space catalog for ${a.idp} failed: ${a.error}`).join("; ");
+  const retry = values.idp === undefined ? "cotal sync" : `cotal sync --idp ${shellWord(values.idp)}`;
   if (failed.length > 0 && failed.length === accounts.length)
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failure, { remedy: "check the IdP is reachable and you are signed in (`cotal whoami`), then run `cotal sync` again" });
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", failure, { remedy: `check the IdP is reachable and you are signed in (\`cotal whoami\`), then run ${codeSpan(retry)} again` });
   const warnings: OutputWarning[] = failed.map((a) => ({ code: "CATALOG_UNAVAILABLE", target: { idp: a.idp }, message: `space catalog for ${a.idp} failed: ${a.error}; its last snapshot stays applied` }));
   const result: SyncResult = { kind: "sync", accounts };
   writeResult(
