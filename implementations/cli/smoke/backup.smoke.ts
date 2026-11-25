@@ -88,6 +88,7 @@ async function checkUnreadableManifest(root: string, directory: string): Promise
 
 async function checkMissingBackupParents(root: string, store: string): Promise<void> {
   const auth = authDir(root);
+  const run = join(root, ".cotal", "run");
   const attempts = join(root, ".cotal", "maintenance", "attempts");
   const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
   const before = readFileSync(journal);
@@ -95,10 +96,17 @@ async function checkMissingBackupParents(root: string, store: string): Promise<v
   assert.equal(existsSync(attempts), false);
   const storeAlias = join(root, "store-link");
   symlinkSync(store, storeAlias, "junction");
+  const protectedAlias = join(root, "protected-alias");
+  const chainedAlias = join(root, "chained-alias");
+  symlinkSync(join(auth, "absent"), protectedAlias, "junction");
+  symlinkSync(protectedAlias, chainedAlias, "junction");
+  symlinkSync(join(root, "missing-run-target"), run, "junction");
   for (const [destination, protectedPath, reason] of [
     [join(auth, "new"), auth, "which `cotal clean all` removes"],
     [join(storeAlias, "missing", "nested", "new"), store, "inside the preserved store"],
     [join(attempts, "nested", "new"), attempts, "overlaps the maintenance attempt directory"],
+    [join(chainedAlias, "new"), auth, "which `cotal clean all` removes"],
+    [join(run, "new"), run, "which `cotal clean all` removes"],
   ]) {
     await assert.rejects(backup({ positionals: ["create", destination], values: {}, raw: [] }), (error: unknown) =>
       isCommandFailure(error) && error.outcome === "refused" && error.code === "USAGE_INVALID"
@@ -112,7 +120,7 @@ async function checkMissingBackupParents(root: string, store: string): Promise<v
     remedy: "create that folder first; backup create makes only the artifact's own folder",
   });
   const dangling = join(root, "dangling-parent");
-  symlinkSync(auth, dangling, "junction");
+  symlinkSync(join(root, "ordinary-missing-target"), dangling, "junction");
   await assert.rejects(backup({ positionals: ["create", join(dangling, "nested", "new")], values: {}, raw: [] }), {
     outcome: "refused", code: "USAGE_INVALID", remedy: "fix the symbolic link or name another destination",
   });
@@ -120,6 +128,21 @@ async function checkMissingBackupParents(root: string, store: string): Promise<v
   assert.equal(existsSync(join(root, ".cotal", "maintenance", "lock.json")), false);
   assert.equal(existsSync(attempts), false);
   assert.equal(existsSync(auth), false);
+}
+
+async function checkCaseVariantBackupParent(root: string): Promise<void> {
+  const auth = authDir(root);
+  const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
+  const before = readFileSync(journal);
+  const caseInsensitive = existsSync(join(root, ".cotal", "MAINTENANCE"));
+  const destination = join(root, ".cotal", "AUTH", "new");
+  await assert.rejects(backup({ positionals: ["create", destination], values: {}, raw: [] }), {
+    outcome: "refused", code: caseInsensitive ? "USAGE_INVALID" : "TARGET_NOT_FOUND",
+    remedy: caseInsensitive ? `name a destination outside ${auth}` : "create that folder first; backup create makes only the artifact's own folder",
+  });
+  assert.equal(existsSync(auth), false);
+  assert.equal(existsSync(join(root, ".cotal", "AUTH")), false);
+  assert.deepEqual(readFileSync(journal), before);
 }
 
 function checkLinkedInterruptedBackup(root: string): void {
@@ -663,6 +686,7 @@ try {
         `clean ${target} on a preserved cut names the step status shows for it`);
       assert.ok(existsSync(cleanStore) && readMaintenanceJournal(cleanRoot)?.state === "ready", "the refused clean removed nothing and kept the cut");
       await checkMissingBackupParents(realpathSync.native(cleanRoot), realpathSync.native(cleanStore));
+      await checkCaseVariantBackupParent(realpathSync.native(cleanRoot));
       if (process.geteuid && process.geteuid() !== 0) {
         await checkUnreadableRestore(realpathSync(cleanRoot), realpathSync(destination), snapshot.path);
         await checkUnreadableManifest(realpathSync(cleanRoot), realpathSync(destination));

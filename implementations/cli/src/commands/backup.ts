@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -28,7 +28,6 @@ import {
   assessRestoreClaim,
   assertStoreIdentity,
   authDir,
-  canonicalRoot,
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
@@ -44,12 +43,11 @@ import {
   retainedLegacyBroker,
   sameStoreIdentity,
   workspaceSecretStore,
-  type MaintenanceJournal,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
 } from "@cotal-ai/workspace";
-import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
+import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
 import { assertControllerBrokerConfig } from "../lib/controller-restore.js";
 import { refuseControllerCut } from "../lib/stack-journal.js";
@@ -58,7 +56,8 @@ import { attemptProcessesGone, connectIsolatedBroker, createAttemptClone, ensure
 import { cotalRoot } from "../lib/paths.js";
 import { heldClaim, movedFolderRefusal, preservedSourceState, restoreNextStep } from "../lib/restore.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
-import { liveMeshProcesses, localIdentityCleanupTargets } from "./clean.js";
+import { liveMeshProcesses } from "./clean.js";
+import { assertBackupPaths, assertEligibleDestination } from "./backup-destination.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
 import { backupRestore } from "./backup-restore.js";
@@ -365,63 +364,6 @@ export function chunkQueue(): {
       nextWaiter = undefined;
     },
   };
-}
-
-function canonicalFuturePath(destination: string, allowMissingParent = false): string {
-  let parent = dirname(destination);
-  let suffix = basename(destination);
-  for (;;) {
-    try { return join(realpathSync.native(parent), suffix); }
-    catch (error) {
-      const above = dirname(parent);
-      if (!allowMissingParent || parent === above || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      // A dangling link is an existing entry, not a missing directory to append.
-      if (lstatSync(parent, { throwIfNoEntry: false })?.isSymbolicLink())
-        throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destination} goes through the symbolic link ${parent}, whose target is missing; nothing was written`, { target: { directory: destination, folder: dirname(destination) }, remedy: "fix the symbolic link or name another destination", selfContained: true });
-      suffix = join(basename(parent), suffix);
-      parent = above;
-    }
-  }
-}
-
-function overlaps(a: string, b: string): boolean {
-  const fromA = relative(a, b);
-  const fromB = relative(b, a);
-  const contained = (path: string) => path === "" || (path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(path));
-  return contained(fromA) || contained(fromB);
-}
-
-function assertBackupPaths(root: string, source: string, destinationPath: string): void {
-  const artifact = canonicalFuturePath(destinationPath);
-  const attempts = resolve(root, ".cotal", "maintenance", "attempts");
-  if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
-  if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
-  assertOutsideAttempts(artifact, attempts, destinationPath);
-}
-
-function assertOutsideAttempts(artifact: string, attempts: string, destinationPath: string): void {
-  if (overlaps(artifact, attempts))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} overlaps the maintenance attempt directory ${attempts}. No backup was created.`, {
-      target: { directory: destinationPath, attemptId: null, priorClaimAttemptId: null }, remedy: `name a destination outside ${attempts}`, selfContained: true,
-    });
-}
-
-function assertEligibleDestination(root: string, journal: MaintenanceJournal, destinationPath: string): void {
-  const missingFolder = missingBackupPath(destinationPath) === "folder";
-  const artifact = canonicalFuturePath(destinationPath, missingFolder);
-  const project = canonicalRoot(root);
-  const preserved = journal.state === "ready" || journal.state === "claimed" ? journal.source.path : undefined;
-  if (preserved && overlaps(artifact, preserved))
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside the preserved store ${preserved} it would copy; nothing was written`, { target: { directory: destinationPath, store: preserved }, remedy: `name a destination outside ${preserved}`, selfContained: true });
-  const cleaned = Object.values(localIdentityCleanupTargets(project, journal.space)).flat().map(canonicalRoot)
-    .find((path) => overlaps(artifact, path));
-  if (cleaned)
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
-  if (missingFolder) {
-    assertOutsideAttempts(artifact, join(project, ".cotal", "maintenance", "attempts"), destinationPath);
-    const folder = dirname(destinationPath);
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `there is no folder ${folder} to create the backup in; nothing was written`, { target: { directory: destinationPath, folder, missing: "folder" }, remedy: "create that folder first; backup create makes only the artifact's own folder" });
-  }
 }
 
 async function snapshotStream(
