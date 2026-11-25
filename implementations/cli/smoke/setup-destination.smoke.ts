@@ -435,6 +435,27 @@ ${example.replaceAll("research", "scripted-research")}`, "setup-example", proces
       runExample.status === 4 && /saved scripted-research; claude is not set up yet/.test(runExample.stdout) &&
       existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
   }
+} else {
+  const example = installationDocs.split(/^```/m)
+    .find((block) => block.startsWith("powershell\n") && /^cotal\.cmd setup --destination local .* --no-input$/m.test(block))
+    ?.slice("powershell\n".length);
+  const dir = join(home, "scripted research");
+  check("the documented PowerShell example starts without its project folder", example !== undefined && !existsSync(dir));
+  if (example !== undefined) {
+    const script = `$ErrorActionPreference = 'Stop'
+Set-Variable HOME $env:HOME -Force
+$env:Path = "$env:SETUP_EXAMPLE_BIN;$env:Path"
+${example.replace("'research'", "'scripted research'").replace("--space research", "--space ps-research")}
+exit $LASTEXITCODE`;
+    writeFileSync(join(bin, "cotal.cmd"), `@"${process.execPath}" "${BIN}" %*\r\n`);
+    const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const runExample = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+      { cwd: home, env: { ...env, SETUP_EXAMPLE_BIN: bin }, encoding: "utf8", timeout: 180_000 });
+    rmSync(join(bin, "cotal.cmd"));
+    check("the documented PowerShell example saves preparation under Restricted in a path with spaces",
+      runExample.status === 4 && /saved ps-research; claude is not set up yet/.test(runExample.stdout) &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")), shown(runExample));
+  }
 }
 
 {
