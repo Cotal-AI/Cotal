@@ -64,8 +64,7 @@ import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors, seedD
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printHelpPath, printEntry } from "./help.js";
-import { historySetupFailureRecords, membershipSetupFailureRecords } from "./lib/follow-setup-failure.js";
-import { watchSetupFailureRecords } from "./commands/watch.js";
+import { historySetupFailureRecords, membershipSetupFailureRecords, watchSetupFailureRecords } from "./lib/stream-setup-failure.js";
 import { HISTORY_LIMIT_FLAGS } from "./commands/history-limit.js";
 import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { keepStartupNotice, type StartupNotice } from "./lib/interrupt-notice.js";
@@ -219,10 +218,9 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
     const historyFollow = cmd.name === "history" && follow
       && !findSubcommand(cmd, validationArgs.positionals[0]);
     const membershipFollow = cmd.name === "channel" && follow && validationArgs.positionals[0] === "members";
-    const space = validationArgs?.values.space;
     const records = historyFollow ? historySetupFailureRecords(validationArgs, failure)
       : membershipFollow ? membershipSetupFailureRecords({
-        space: typeof space === "string" && space.trim() ? space : null,
+        space: validationArgs.values.space,
         channel: validationArgs.positionals[1]?.replace(/^#/, "") ?? null,
       }, failure)
       : cmd.name === "watch" && validationArgs && !plain ? watchSetupFailureRecords(validationArgs, failure) : undefined;
@@ -427,6 +425,7 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
   if (cmd.name !== "history" && cmd.name !== "channel" && cmd.name !== "watch") return undefined;
   const options = Object.fromEntries((cmd.flags ?? []).map(({ name, type, short }) => [name, { type, ...(short ? { short } : {}) }]));
   const args = [...words];
+  let missingSpace = false;
   for (;;) {
     const { values, positionals, tokens } = parseArgs({ args, options, strict: false, allowPositionals: true, tokens: true });
     // The loose parser consumes an option-looking word after a missing value. Leave that word
@@ -434,7 +433,11 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
     const missing = tokens.find((token) => token.kind === "option" && token.inlineValue === false
       && token.value?.startsWith("-") && token.value !== "-"
       && !(args[token.index] === token.rawName && /^-\d/.test(token.value)));
-    if (!missing) {
+    if (missing?.kind !== "option") {
+      // A later --space cannot supply the value for a missing or blank occurrence.
+      if (missingSpace || tokens.some((token) => token.kind === "option" && token.name === "space" && !token.value?.trim())) {
+        delete values.space;
+      }
       // The caller detected JSON. A malformed repeat cannot mask a bare follow switch.
       if (cmd.name !== "watch") {
         if (!tokens.some((token) => token.kind === "option" && token.name === "follow" && token.value === undefined)) return undefined;
@@ -442,6 +445,7 @@ function streamRefusalArgs(cmd: Command, words: readonly string[]): ParsedArgs |
       }
       return { values: values as ParsedArgs["values"], positionals, raw: words };
     }
+    if (missing.name === "space") missingSpace = true;
     args.splice(missing.index + 1, 0, "");
   }
 }
