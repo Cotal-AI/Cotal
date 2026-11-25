@@ -11,6 +11,7 @@
  *    earlier tool inputs and results cannot be read, and why;
  *  - on the open space, a seat shows the label it took in place of its name, a rename that drops the
  *    label shows the new name and reaches the roster follower, and another run of the seat shows none.
+ *  - with no manager registered, the agent list rejects with the error that names it.
  *
  * Run: pnpm smoke:acp-space-reads (needs nats-server on PATH).
  */
@@ -124,6 +125,9 @@ async function checkSpace(label: string, s: Space): Promise<void> {
     const unread = await mesh.frameHistory(seat).then(() => undefined, (e: Error) => e);
     check(`${label} when the payload history cannot be read: replay fails, saying the earlier tool inputs and results cannot be read, and why`,
       unread?.message.startsWith("seat's earlier tool inputs and results cannot be read from its payload history: ") === true && unread.message.length > 80, unread?.message);
+    const none = await mesh.seats().then(() => undefined, (e: Error) => e);
+    check(`${label} with no manager registered: the agent list rejects saying so, as NoManagerRegistered`,
+      none?.name === "NoManagerRegistered" && none.message === `No live manager is registered for ${s.name}`, none && { name: none.name, message: none.message });
   } finally {
     await nc.close();
     await mesh.close();

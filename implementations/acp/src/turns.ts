@@ -81,11 +81,6 @@ function pause(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Why no seat on this space can take images: it serves no `agent` endpoint. Undefined when it does. */
-export function spaceImageRefusal(m: Mesh, seat: string): string | undefined {
-  return m.agentEndpoints ? undefined : `${seat} cannot take images here: images need the agent endpoint, which a space serves only where people sign in`;
-}
-
 /** Give a running seat a prompt on the one path its presence picks now: a `turn`, or its manager's
  *  `input`. Images go only where the seat says it takes them with a turn, and are refused before
  *  anything is sent otherwise. A turn resolves once the seat started it, with the time
@@ -94,7 +89,7 @@ export function spaceImageRefusal(m: Mesh, seat: string): string | undefined {
 export async function takeTurn(m: Mesh, seat: SeatRef, text: string, images: readonly TurnImage[], signal?: AbortSignal): Promise<number | void> {
   const served = m.served(seat);
   if (images.length) {
-    const why = spaceImageRefusal(m, seat.name) ?? (served?.turn && served.images ? undefined : `${seat.name} does not take images with a turn now`);
+    const why = served?.turn && served.images ? undefined : `${seat.name} does not take images with a turn now`;
     if (why) throw new Error(why);
   }
   if (!served?.turn) return m.input(seat, text);

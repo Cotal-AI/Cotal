@@ -6,10 +6,10 @@ import { MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js"
 
 /** The `-c key=value` override list for the codex child: the operator's launch options first
  *  (verbatim), then the selectors and autonomy defaults ONLY where the operator didn't set that
- *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. `asks` says Codex's
- *  approval requests can be answered: only a user-auth mesh serves the agent's prompt desk.
+ *  key — one rail, so an explicit `--opt approval_policy=…` naturally wins. An asking
+ *  approval_policy is answered on the agent's prompt desk, which a seat serves on every mesh mode.
  *  `askPermissions` launches the thread with {@link ASKING_THREAD} in place of the autonomy defaults. */
-export function configOverrides(model: string | undefined, variant: string | undefined, asks: boolean, askPermissions: boolean): [string, string][] {
+export function configOverrides(model: string | undefined, variant: string | undefined, askPermissions: boolean): [string, string][] {
   const overrides: [string, string][] = [];
   const raw = process.env.COTAL_CODEX_CONFIG?.trim();
   if (raw) {
@@ -27,7 +27,7 @@ export function configOverrides(model: string | undefined, variant: string | und
   if (model && !has("model")) overrides.push(["model", `"${model}"`]);
   if (variant && !has("model_reasoning_effort")) overrides.push(["model_reasoning_effort", `"${variant}"`]);
   if (askPermissions) refuseAskingConflicts(overrides);
-  else pushAutonomy(overrides, asks);
+  else pushAutonomy(overrides);
   // The connector OWNS the `mcp_servers.cotal.*` namespace — it is where this agent's own mesh
   // voice is wired up, not a tunable. A later `-c` wins in codex, so an operator key here would
   // be silently overridden; refuse instead, so a bad launch says so rather than half-applying.
@@ -63,19 +63,9 @@ export function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
 }
 
 /** The autonomy defaults for a launch that does not ask before Codex uses a tool. */
-function pushAutonomy(overrides: [string, string][], asks: boolean): void {
+function pushAutonomy(overrides: [string, string][]): void {
   const has = (key: string): boolean => overrides.some(([k]) => k === key);
-  // Autonomy: without the prompt desk nobody can answer an approval request, so an interactive
-  // approval_policy cannot be HONORED — the driver would have to auto-answer, silently
-  // nullifying the operator's stated policy. Refuse anything but `never` there rather than pretend.
   const approval = overrides.find(([k]) => k === "approval_policy");
-  if (approval && approval[1].replace(/"/g, "") !== "never" && !asks)
-    throw new Error(
-      `codex connector: approval_policy=${approval[1]} needs a space where people sign in — this host ` +
-        `answers Codex's approval requests through the agent endpoint, which only such a space serves; ` +
-        `only "never" (the default) is honest here. Tighten the sandbox (sandbox_mode) instead to ` +
-        `restrict what the agent may do.`,
-    );
   if (!approval) overrides.push(["approval_policy", '"never"']);
   // `never` means never ASK, not never allow: the agent runs its commands, and what bounds it is
   // the sandbox below, not a prompt nobody would be there to answer.

@@ -217,6 +217,11 @@ field Hermes has not reported is left out. That is the case before the first tur
 releases the session's agent, and for the cost when Hermes reports it as unknown, as it does for a
 custom endpoint.
 
+The seat does not serve `set-model`, so it answers `unimplemented` and its presence shows `setModel`
+false. Hermes switches a running session's model only through the gateway's `/model` and
+`/reasoning` commands, and the connector does not run them for a switch. To run another model, stop
+the agent and start a new one on it.
+
 ## Model catalog [#model-catalog]
 
 `cotal models` and the manager's model selector read the catalog from the connector's pinned

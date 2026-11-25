@@ -17,7 +17,7 @@ import { MANAGER_STATUS_CONTRACT, managerShippedSurface, type ManagerConnectorSt
 
 const { check, finish } = createSuite();
 
-check("the launch fields advance the Manager cluster to revision 56", managerShippedSurface().revision === 56);
+check("the Manager cluster keeps the launch fields at revision 57", managerShippedSurface().revision === 57);
 
 const base = {
   instanceId: "a".repeat(26), execution: "runtime", runtime: "pty", custody: "legacy", runHosting: false,
@@ -36,7 +36,7 @@ async function inspect(installed: boolean): Promise<ManagerConnectorStatus[]> {
     () => undefined,
   );
   await inventory.inspectConnectorsAtBoot();
-  return servedConnectorStatuses(inventory.connectorStatuses, false);
+  return servedConnectorStatuses(inventory.connectorStatuses);
 }
 const facts = (rows: ManagerConnectorStatus[], agent: string) => {
   const r = rows.find((candidate) => candidate.agent === agent);

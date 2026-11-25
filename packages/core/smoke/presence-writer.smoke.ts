@@ -95,6 +95,9 @@ try {
   assertPresenceRow(future, key);
   check("shared shape guard retains the reader's forward-compatible strings", isPresenceRow(future, key));
   check("a row whose agentEndpoint carries four booleans is a row", isPresenceRow({ ...row, agentEndpoint: { interrupt: false, turn: true, images: false, usage: true } }, key));
+  check("a row whose agentEndpoint also carries a boolean setModel is a row, and one whose setModel is not a boolean is not",
+    isPresenceRow({ ...row, agentEndpoint: { interrupt: false, turn: true, images: false, usage: true, setModel: true } }, key)
+    && !isPresenceRow({ ...row, agentEndpoint: { interrupt: false, turn: true, images: false, usage: true, setModel: "yes" } }, key));
   const disconnected = new CotalEndpoint({ space, servers, channels: [], card: { id: "unstarted", name: "unstarted", kind: "agent" } });
   let preconnectError: unknown;
   try { await disconnected.setActivity({ invalid: true } as never); } catch (caught) { preconnectError = caught; }
