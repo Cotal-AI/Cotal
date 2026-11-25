@@ -188,11 +188,13 @@ A word that starts with `-` reads as an option. A message or name that starts wi
 `--`. The refusal can suggest `--` when an operand is still available and there is no spelling
 suggestion. Once `space add` has its name, `endpoint check` has its contract file, or
 `endpoint work lease` has its target and pool, the refusal tells you to drop an unknown option instead.
+`channel set` gives the same remedy once you supply the channel name. If you type
+`--description`, the refusal points to `--desc`.
 The same applies to `team check`, `team boot` and `team deploy` once you have supplied the manifest file.
 Service verbs with a definition name, such as `service add <name>`, give the same remedy.
 `service list` takes no operands and gives it too. So do manager lifecycle commands such as
 `manager status`, which already select the manager service by name.
-`ext root` takes no operands, so the refusal tells you to drop an unknown option instead of suggesting `--`.
+`ext root` and `history limit` take no operands, so the refusal tells you to drop an unknown option instead of suggesting `--`.
 When the refusal suggests an option spelling, replace the mistyped option and keep its value,
 as in `cotal docs --search <query>`. If the suggested switch is already set and cannot be repeated,
 the refusal tells you to drop the unknown option instead.
@@ -242,7 +244,9 @@ word. Neither flag takes a value. If you attach one, the refusal tells you to om
 it without a value. No command may declare a flag with either name. The output
 flags `--json` (`-j`) and `--plain` may also come before the command word, as in
 `cotal --json status`; they are read as the command's own flags, so a command without that output
-refuses them as it does after the command word. A command that takes its words raw, such as the
+refuses them as it does after the command word. If you attach a value to a leading output flag,
+the refusal names the flag and keeps JSON output when you request it with a separate `--json` or
+`-j` and the command supports it. A command that takes its words raw, such as the
 hidden completion entry, has no flags to read them as and refuses them before its word with a usage
 error. A `--` before the command word ends these leading flags. An installed extension
 whose command declares one is an internal error, and `cotal` exits 1 before running any command.

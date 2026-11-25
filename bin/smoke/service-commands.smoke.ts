@@ -396,6 +396,18 @@ try {
       && brokerCorrected.status === 0 && out(brokerCorrected).includes("Nothing was saved, launched or loaded.")
       && serviceDefinitionStore(PREPARED).read("broker") === undefined, { refused: out(brokerPartial), corrected: out(brokerCorrected) });
 
+  const brokerNewArgs = ["service", "start", "broker", "--space", PREPARED, "--dry-run", "--new-instance", "--json"];
+  const brokerNew = cotal(brokerNewArgs);
+  const { error: brokerNewError } = JSON.parse(brokerNew.stdout);
+  const edits = /^remove `(--new-instance)` and add `(--config <file> --binary <file> --server <url>)`, keeping the rest of the command unchanged$/.exec(brokerNewError?.remedy);
+  const brokerRetry = edits && cotal([...brokerNewArgs.filter((word) => word !== edits[1]), ...edits[2]!.split(" ").map((word, index, words) => fills[words[index - 1]!] ?? word)]);
+  const retried = brokerRetry?.status === 0 ? JSON.parse(brokerRetry.stdout) : undefined;
+  check("the broker preview retry drops --new-instance, fills the missing options and changes no service state",
+    brokerNew.status === 1 && brokerNew.stderr === "" && brokerNewError?.code === "USAGE_INVALID"
+      && retried?.target.space === PREPARED && retried.result?.dryRun === true && retried.result.saved === false
+      && retried.result.allocated === false && serviceDefinitionStore(PREPARED).read("broker") === undefined,
+    { refused: out(brokerNew), retry: brokerRetry && out(brokerRetry) });
+
   const unready = cotal(["service", "add", "b0", "--preset", "broker", "--space", PREPARED]);
   const printed = out(unready).split("\n").map((line) => line.trim()).find((line) => line.startsWith("cotal service add b0 --preset broker")) ?? "";
   check("a broker add missing its options prints all three options and keeps the explicit space",
