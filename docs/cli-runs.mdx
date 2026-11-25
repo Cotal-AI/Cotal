@@ -360,7 +360,7 @@ before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
-If you requested JSON, the retry command includes `--json`.
+The retry command keeps `--json` or `--plain` when you pass either flag.
 For an exhausted list it names the needed result, counted
 from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
 journal entry matches the error code. That can be a different step from the one in the message,
