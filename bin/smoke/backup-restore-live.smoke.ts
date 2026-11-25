@@ -83,22 +83,21 @@ function sandboxRun(root: string, home: string): {
 
 interface Checkpoint { stream: string; name: string }
 
-function assertOverlappingRestoreTarget(root: string, artifact: string, run: ReturnType<typeof sandboxRun>["run"]): void {
-  const target = join(artifact, "target");
+function assertOverlappingRestoreTarget(root: string, artifact: string, run: ReturnType<typeof sandboxRun>["run"], target: string, overlap: "backup artifact" | "preserved source store"): void {
   const journal = join(root, ".cotal", "maintenance", "v1", "journal.json");
   const manifest = join(artifact, "manifest.json");
   const attempts = join(root, ".cotal", "maintenance", "attempts");
   const journalBefore = readFileSync(journal);
   const manifestBefore = readFileSync(manifest);
   const attemptsBefore = readdirSync(attempts).sort();
-  const message = /restore target must not overlap the backup artifact\. No restore started\./;
-  const remedy = /choose an absent `--store-dir` path outside the backup artifact/;
+  const message = `restore target must not overlap the ${overlap}. No restore started.`;
+  const remedy = `choose an absent \`--store-dir\` path outside the ${overlap}`;
   const plain = run("backup", "restore", artifact, "--store-dir", target, "--plain");
   const up = run("up", "--restore", artifact, "--store-dir", target, "--detach");
   for (const result of [plain, up]) {
     assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
-    assert.match(result.stderr, message);
-    assert.match(result.stderr, remedy);
+    assert.ok(result.stderr.includes(message), result.stderr);
+    assert.ok(result.stderr.includes(remedy), result.stderr);
     assert.doesNotMatch(result.stderr, /Outcome unconfirmed|cotal status/);
   }
   const json = run("backup", "restore", artifact, "--store-dir", target, "--json");
@@ -106,8 +105,8 @@ function assertOverlappingRestoreTarget(root: string, artifact: string, run: Ret
   const envelope = JSON.parse(json.stdout);
   assert.equal(envelope.outcome, "refused");
   assert.equal(envelope.error.code, "USAGE_INVALID");
-  assert.match(envelope.error.message, message);
-  assert.match(envelope.error.remedy, remedy);
+  assert.ok(envelope.error.message.includes(message), json.stdout);
+  assert.ok(envelope.error.remedy.includes(remedy), json.stdout);
   assert.equal(envelope.target.storeDir, target);
   assert.equal(existsSync(target), false);
   assert.deepEqual(readFileSync(journal), journalBefore);
@@ -342,7 +341,7 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     assert.equal(nestedArtifact.status, 1, `an artifact in the maintenance folder is a usage refusal\n${nestedArtifact.stderr}`);
     assert.ok(nestedArtifact.stderr.includes(`the restore artifact ${realpathSync(attemptArtifact)} is inside this root's maintenance folder ${realpathSync(join(root, ".cotal", "maintenance"))}, where it stages its attempt; nothing was restored`), `it names the artifact and the folder\n${nestedArtifact.stderr}`);
     rmSync(attemptArtifact, { recursive: true });
-    assertOverlappingRestoreTarget(root, artifact, run);
+    assertOverlappingRestoreTarget(root, artifact, run, join(artifact, "target"), "backup artifact");
     // An explicit store that already exists, or whose parent is missing, is a usage refusal before
     // anything is staged, and the preserved cut stays as it was.
     const cutState = readMaintenanceJournal(root)?.state;
@@ -993,6 +992,7 @@ async function missingCustomSourceScenario(): Promise<void> {
     must("send a message to keep", run("send", "-c", "preserved", "history-before-backup", "--space", space));
     must("down --preserve-state", run("down", "--preserve-state"));
     must("backup create", run("backup", "create", artifact));
+    assertOverlappingRestoreTarget(root, artifact, run, join(store, "new"), "preserved source store");
     renameSync(store, join(root, "saved-source"));
     const elsewhere = run("backup", "restore", artifact, "--accept-missing-source", "--store-dir", join(root, "elsewhere"), "--json");
     assert.equal(elsewhere.status, 1, `another --store-dir is a usage refusal\n${elsewhere.stdout}${elsewhere.stderr}`);
