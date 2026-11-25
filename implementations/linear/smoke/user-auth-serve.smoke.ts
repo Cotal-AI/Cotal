@@ -9,14 +9,14 @@ import { join } from "node:path";
 import { connect, credsAuthenticator, tokenAuthenticator, PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import {
   CotalEndpoint, EpEnvelopeError, contractDigest, invokeCommand, mintCreds, newIdentity, parseServiceAuthorityRequest, resolveService,
-  setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest, bearerInboxConnId
+  setupSpaceStreams, type AuthProvider, type ServiceAuthorityRequest,
 } from "@cotal-ai/core";
 import { startHostedAuthFixture, MemoryStore } from "../../auth/smoke/_hosted-auth-fixture.js";
 import { deriveOwnerForIdpSubject } from "../../auth/src/derive.js";
 import { grantActor } from "../../auth/src/ledger.js";
 import { saveIdpSession } from "../../auth/src/login.js";
 import { cotalAuthProvider } from "../../auth/src/provider.js";
-import { startAuthService, type AuthServiceHandle } from "../../auth/src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../../auth/src/service-host.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../../auth/src/store.js";
 import { mintServiceCallerPayloadObserverCreds } from "../../auth/src/service-caller-payload-bootstrap.js";
 import { serviceEndpointHostCall } from "../../auth/src/service-host-client.js";
@@ -153,7 +153,7 @@ try {
   };
   const dial = async (actor: string) => {
     const token = await bearer(actor);
-    const nonce = bearerInboxConnId(token);
+    const nonce = rid();
     const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, maxReconnectAttempts: 0,
       authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(token)] });
     conns.push(nc); return nc;

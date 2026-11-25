@@ -2,20 +2,21 @@
  * An auth-callout connection's history-reader deletes are keyed on what the server assigned it (#4123).
  *
  * The observer and admin profiles may delete their own history readers, `hist_<readerId>_<n>`. Under
- * the auth callout a connection's connId is the inbox name the client chose and passed as its
- * connection name, so it cannot key those deletes. The callout keys them on the server's id and the
- * client id the server assigned the connection, which the client reads from the server's INFO and
- * does not choose.
+ * the auth callout a connection's connId is the inbox nonce the client chose and passed as its
+ * connection name, so deletes keyed on it let one connection claim another's readers by naming the
+ * same nonce. The callout now keys them on the server's id and the client id the server assigned the
+ * connection, which the client reads from the server's INFO and does not choose.
  *
  * The suite runs the shipped callout and permission builder with two admin-view principals. It reads
- * history through a user-mode endpoint, learning that endpoint's inbox name and reader name from its
+ * history through a user-mode endpoint, learning that endpoint's nonce and reader name from its
  * requests on the wire, as any responder sees a reply subject. It then connects as the other principal
- * and tries to delete a reader under the endpoint's name. Last, it reconnects the endpoint, whose
- * reader names move with the new connection, and reads again.
+ * under the same nonce and tries to delete a reader under the endpoint's name. Last, it reconnects the
+ * endpoint, whose reader names move with the new connection, and reads again.
  *
  * Run: pnpm smoke:history-reader-callout:auth   (needs nats-server on PATH; operator-mode callout, local-only)
  */
 import { randomUUID } from "node:crypto";
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,10 +27,11 @@ import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
-  CotalEndpoint, bearerInboxConnId, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, type CotalMessage,
+  CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, type CotalMessage,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
+import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, createSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -47,7 +49,9 @@ const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
-const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+let brokerLog = "";
+srv.stderr.on("data", (chunk: Buffer) => { brokerLog += chunk.toString(); });
 const releaseBroker = teardownOnSignal(srv, dir);
 
 const { publicKey, privateKey } = await generateKeyPair("EdDSA");
@@ -58,6 +62,21 @@ async function adminBearer(actor: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ sub: OWNER, ver: USER_TOKEN_VER, act: { owner: OWNER, actor, scope: ["admin"], lifecycleUid: smokeUid, view: "admin" } })
     .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(OWNER)
+    .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 600)
+    .sign(privateKey as CryptoKey);
+}
+
+const PAYLOAD_ACTOR = "payload_writer";
+const FOREIGN = deriveOwnerToken("s".repeat(32), "better-auth|payload-foreign");
+const participantRows = [
+  grantActor(dir, { owner: OWNER, actor: "payload_reader", scope: [], allowSubscribe: [], allowPublish: [] }),
+  grantActor(dir, { owner: FOREIGN, actor: "payload_explicit", scope: [], allowSubscribe: [`events.${OWNER}.${PAYLOAD_ACTOR}`], allowPublish: [] }),
+  grantActor(dir, { owner: FOREIGN, actor: "payload_broad", scope: [], allowSubscribe: [">", "events.>"], allowPublish: [] }),
+];
+async function participantBearer(row: typeof participantRows[number]): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ ver: USER_TOKEN_VER, act: { owner: row.owner, actor: row.actor, scope: [], lifecycleUid: row.lifecycleUid } })
+    .setProtectedHeader({ alg: "EdDSA" }).setIssuer(ISS).setAudience(space).setSubject(row.owner)
     .setIssuedAt(now - 60).setNotBefore(now - 60).setExpirationTime(now + 600)
     .sign(privateKey as CryptoKey);
 }
@@ -90,10 +109,13 @@ try {
     space,
     token: { key: publicKey as never, issuer: ISS },
     recordIssuance: async () => {},
-    authorizeActor: () => {},
-    permissionsFor: calloutPermissions(() => ({ allowSubscribe: ["general"], allowPublish: [], lifecycleUid: smokeUid, scope: ["admin"] })),
+    authorizeActor: (t) => { if (!t.act.view) ledgerAuthorizeConnect(dir)(t); },
+    permissionsFor: calloutPermissions((t) => t.act.view
+      ? { allowSubscribe: ["general"], allowPublish: [], lifecycleUid: smokeUid, scope: ["admin"] }
+      : ledgerAclResolver(dir)(t)),
     log: (l) => { if (/denied|drop|fail/i.test(l)) console.log("  [callout]", l); },
   });
+  await calloutNc.flush();
 
   // A test-only allow-all inspector in the data account: it counts consumers and sees the endpoint's
   // JetStream requests, reply subjects included, as any subscriber to those subjects would.
@@ -106,7 +128,7 @@ try {
   const CHAT = chatStream(space);
   const count = async () => (await jsm.streams.info(CHAT)).state.consumer_count;
   const exists = async (name: string) => jsm.consumers.info(CHAT, name).then(() => true, () => false);
-  /** Each history-reader create on CHAT: the consumer name and the inbox name its reply names. */
+  /** Each history-reader create on CHAT: the consumer name and the inbox nonce its reply names. */
   const seen: { name: string; nonce: string }[] = [];
   for (const subject of [`$JS.API.CONSUMER.CREATE.${CHAT}`, `$JS.API.CONSUMER.CREATE.${CHAT}.>`])
     control.subscribe(subject, { callback: (err, m) => {
@@ -116,8 +138,9 @@ try {
     } });
   await control.flush();
 
+  const dashBearer = await adminBearer("dashboard");
   const dash = new CotalEndpoint({
-    space, servers: SERVERS, bearer: await adminBearer("dashboard"), sentinelCreds: callout.sentinelCreds,
+    space, servers: SERVERS, bearer: dashBearer, sentinelCreds: callout.sentinelCreds,
     card: { name: "dashboard", kind: "endpoint" },
     channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
   });
@@ -135,27 +158,27 @@ try {
   const afterReads = await count();
   check(`user mode: ${READS} sequential reads all answer and leave no consumer`, answered === READS && afterReads === base, { answered, first, base, afterReads });
 
-  // 2. Another principal tries to delete a reader under the endpoint's name.
+  // 2. Two connections of the same principal can share an inbox name but never a reader grant.
   const victim = seen[0];
-  check("positive control: the endpoint's reader name and inbox name were seen on the wire", victim !== undefined && /^u_[a-z2-7]{26}-dashboard-ibx[0-9a-f]{32}$/.test(victim.nonce), seen.slice(0, 1));
+  check("positive control: the endpoint's reader name and bound inbox name were seen on the wire",
+    victim !== undefined && new RegExp(`^${OWNER}-dashboard-[a-z0-9]{25}$`).test(victim.nonce), seen.slice(0, 1));
   await jsm.consumers.add(CHAT, { name: victim.name, ack_policy: AckPolicy.None, mem_storage: true, inactive_threshold: 60_000_000_000 });
-  const intruderBearer = await adminBearer("intruder"), intruderName = bearerInboxConnId(intruderBearer);
   const intruder = await connect({
-    servers: SERVERS, name: intruderName, inboxPrefix: `_INBOX_${intruderName}`, maxReconnectAttempts: 0,
-    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(intruderBearer)],
+    servers: SERVERS, name: victim.nonce, inboxPrefix: `_INBOX_${victim.nonce}`, maxReconnectAttempts: 0,
+    authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(dashBearer)],
   });
   raws.push(intruder);
   const intruderJsm = await jetstreamManager(intruder);
   const admitted = await intruderJsm.streams.info(CHAT).then(() => true, () => false);
-  check("positive control: the other principal is admitted as an admin view", admitted);
+  check("positive control: a second admin connection is admitted under the same inbox name", admitted);
   const outcome = await intruderJsm.consumers.delete(CHAT, victim.name).then(() => "deleted", (e: Error) => e.message);
   const survives = await exists(victim.name);
-  check("user mode: another principal's connection may not delete a reader under the endpoint's name",
+  check("user mode: sharing an inbox name does not grant deletion of another connection's reader",
     /permission/i.test(outcome) && survives, { outcome, survives });
   await jsm.consumers.delete(CHAT, victim.name).catch(() => {});
 
   // 3. A reconnect is a new connection, so its reader names are new, and reads go on.
-  const dashNc = (dash as unknown as { nc: NatsConnection }).nc;
+  const dashNc = (dash as unknown as { conn: { nc: NatsConnection } }).conn.nc;
   const cidBefore = dashNc.info?.client_id;
   await dashNc.reconnect();
   // The client clears its INFO when it starts to dial and sets it again when the new server's INFO arrives.
@@ -167,6 +190,51 @@ try {
   check("user mode: after a reconnect the read answers and leaves no consumer", again === 5 && afterReconnect === base, { again, afterReconnect, base, cidBefore, cidAfter: dashNc.info?.client_id });
   check("user mode: ...under reader names of the new connection, not the old one",
     moved.length > 0 && moved.every((p) => p !== victim.name.slice(0, victim.name.lastIndexOf("_"))), { moved, before: victim.name });
+
+  const payloadUid = mintLifecycleUid();
+  const payloadWriter = new CotalEndpoint({
+    space, servers: SERVERS, lifecycleUid: payloadUid,
+    creds: await mintCreds(auth, newIdentity(), "agent", { principal: { owner: OWNER, actor: PAYLOAD_ACTOR }, lifecycleUid: payloadUid }),
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    card: { name: "payload_writer", kind: "endpoint", owner: OWNER, actor: PAYLOAD_ACTOR },
+  });
+  endpoints.push(payloadWriter);
+  await payloadWriter.start();
+  await payloadWriter.publishEventPayload({ id: "participant-payload-probe", expectedLastSubjectSeq: 0, parts: [{ kind: "text", text: "retained payload" }] });
+  const PAYLOAD = eventPayloadStream(space);
+  const payloadBase = (await jsm.streams.info(PAYLOAD)).state.consumer_count;
+  for (const row of participantRows) {
+    const participant = new CotalEndpoint({
+      space, servers: SERVERS, bearer: await participantBearer(row), sentinelCreds: callout.sentinelCreds,
+      channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+      card: { name: row.actor, kind: "endpoint" },
+    });
+    endpoints.push(participant);
+    await participant.start();
+    const read = () => participant.eventPayloadHistory(OWNER, PAYLOAD_ACTOR, { limit: 10, signal: AbortSignal.timeout(5000) });
+    if (row.actor === "payload_broad") {
+      const logStart = brokerLog.length;
+      await assert.rejects(read(), /permission/i);
+      // The permission reply and the broker's stderr pipe arrive independently.
+      let refused: string | undefined;
+      const logDeadline = Date.now() + 5000;
+      do {
+        refused = brokerLog.slice(logStart).split("\n").find(line => line.includes("Publish Violation")
+          && line.includes(`$JS.API.CONSUMER.CREATE.${PAYLOAD}.hist_`) && line.includes(`.evp.${OWNER}.${PAYLOAD_ACTOR}`));
+        if (refused || Date.now() >= logDeadline) break;
+        await wait(20);
+      } while (true);
+      assert.ok(refused, `the broker logs the foreign payload history permission violation; broker log tail:\n${brokerLog.slice(-8000)}`);
+      console.log(refused);
+      console.log("PASS participant foreign payload history denied despite chat and event wildcards, with broker permission violation");
+    } else {
+      for (const rows of await Promise.all([read(), read()]))
+        assert.ok(rows.some(message => message.id === "participant-payload-probe"), `${row.actor} reads retained payload history`);
+      console.log(`PASS ${row.actor}: concurrent participant payload history reads`);
+    }
+    assert.equal((await jsm.streams.info(PAYLOAD)).state.consumer_count, payloadBase, "payload history leaves no consumer behind");
+    await participant.stop();
+  }
 
   console.log(`  counts ${JSON.stringify({ reads: READS, answered, base, afterReads, outcome, survives, again, afterReconnect })}`);
 } finally {

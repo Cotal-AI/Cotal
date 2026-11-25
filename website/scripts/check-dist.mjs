@@ -60,7 +60,7 @@ for (const cmd of ['npx cotal-ai setup --destination local --harness claude --pr
   if (!setupTwin.includes(cmd)) fail(`setup lost the runbook command: ${cmd}`);
 }
 for (const f of ['docs/getting-started.md', 'llms-full.txt', 'llms-small.txt']) {
-  if (readFileSync(join(dist, f), 'utf8').includes('AgentPrompt'))
+  if (/<\/?AgentPrompt(?:\s|>|\/)|import \{ AgentPrompt \}/.test(readFileSync(join(dist, f), 'utf8')))
     fail(`AgentPrompt component leaked into ${f}`);
 }
 

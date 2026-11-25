@@ -26,7 +26,7 @@
     },
     {
       "name": "Jcode inbox relay preserves peek",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-support.ts",
       "find": "spec.name === \"cotal_inbox\" ? { ...args, scope: \"pull-only\" } : args,",
       "replace": "spec.name === \"cotal_inbox\" ? { scope: \"pull-only\" } : args,",
       "command": "pnpm smoke:jcode-host",
@@ -42,7 +42,7 @@
     },
     {
       "name": "Jcode bridge rides the daemon pool instead of spawning per session",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-support.ts",
       "find": "        shared: true,",
       "replace": "        shared: false,",
       "command": "pnpm smoke:jcode-host",

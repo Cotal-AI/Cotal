@@ -28,7 +28,7 @@ import {
   writeMaintenanceResumeDocument,
 } from "@cotal-ai/workspace";
 import { backup, isStoppedKvWatcher } from "../src/commands/backup.js";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const awaitExit = (proc: ChildProcess, timeoutMs = 5_000): Promise<void> => new Promise((resolve) => {
@@ -158,11 +158,7 @@ async function preservedFixture(label: string, residue: Residue): Promise<{
 }
 
 const originalCwd = process.cwd();
-let passed = 0, failed = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) { passed++; console.log(`  ✓ ${name}`); }
-  else { failed++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 let sanctionedShapeAccepted = false;
 try {
   const healthy = await preservedFixture("healthy", "kv-scan");
@@ -204,8 +200,8 @@ try {
     await unhealthy.cleanup();
   }
 
-  console.log(`\nBACKUP KV CONSUMER SMOKE ${failed === 0 ? "OK" : "FAILED"} (${passed} passed, ${failed} failed)`);
-  if (failed) process.exitCode = 1;
+  console.log(`\nBACKUP KV CONSUMER SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+  finish();
 } finally {
   process.chdir(originalCwd);
 }

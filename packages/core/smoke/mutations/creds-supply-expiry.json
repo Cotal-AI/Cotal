@@ -33,17 +33,17 @@
   "mutations": [
     {
       "name": "the wire getter is unchecked again (the reported defect: internal reconnects read the raw cache)",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
-      "replace": "creds: this.credsSource ? () => this.currentCreds! : this.currentCreds",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "creds: this.cred.currentCreds !== undefined || this.identity.credsSource ? () => this.presentCreds() : undefined",
+      "replace": "creds: this.identity.credsSource ? () => this.cred.currentCreds! : this.cred.currentCreds",
       "expectRed": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
       "cell": "an in-flight library dial loop that crosses expiry presents the expired credential ZERO times",
       "note": "This restores the exact expression from before the fix, so it reproduces the issue as filed. The checkpoint still exists and the preflight still uses it; only the authenticator handed to nats.js goes back to reading the cache raw. The named cell watches a dial loop that was ALREADY RUNNING when exp passed, which no pre-dial guard can reach, so it grades this mutation on the property the fix actually added."
     },
     {
       "name": "the adoption preflight bypasses the checkpoint and presents the candidate unchecked",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    const proven = CotalEndpoint.presentableCreds(candidate, { renewable: true });\n",
+      "file": "packages/core/src/endpoint-credentials.ts",
+      "find": "    const proven = EndpointCredentials.presentableCreds(candidate, { renewable: true });\n",
       "replace": "    const proven = candidate;\n",
       "expectRed": "the refused candidate never reaches the broker (no preflight presentation on the wire)",
       "cell": "the refused candidate never reaches the broker (no preflight presentation on the wire)",
@@ -51,7 +51,7 @@
     },
     {
       "name": "the expiry comparison is loosened to a strict past-check (a cred expiring THIS instant is presented)",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-credentials.ts",
       "find": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now())\n      throw new Error(\n        opts.renewable",
       "replace": "    if (typeof exp === \"number\" && exp * 1000 <= Date.now() - 30_000)\n      throw new Error(\n        opts.renewable",
       "expectRed": "REFUSE: a STATIC expired cred is refused and names replacement, not renewal",
@@ -60,9 +60,9 @@
     },
     {
       "name": "the dial gate tests the cached cred for TRUTHINESS again (an empty credential dials anonymously)",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "creds: this.currentCreds !== undefined || this.credsSource ? () => this.presentCreds() : undefined",
-      "replace": "creds: this.currentCreds || this.credsSource ? () => this.presentCreds() : undefined",
+      "file": "packages/core/src/endpoint-connection.ts",
+      "find": "creds: this.cred.currentCreds !== undefined || this.identity.credsSource ? () => this.presentCreds() : undefined",
+      "replace": "creds: this.cred.currentCreds || this.identity.credsSource ? () => this.presentCreds() : undefined",
       "expectRed": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
       "cell": "REFUSE: a STATIC EMPTY creds string fails loud instead of dialing anonymously",
       "note": "A one-character weakening that reads as a harmless falsiness idiom. Under it an empty creds string is indistinguishable from 'no creds configured', so the endpoint dials with no auth material and the broker answers `Authorization Violation` -- a permissions-shaped error for what is a supply mistake. The named cell asserts BOTH that the refusal names the empty credential AND that the broker's violation text is absent, so a red here cannot be satisfied by any failure that merely happened. Its accepting twin (no creds at all still connects) stays green under this mutation, which is what confines the mutation to the empty case rather than to anonymity."
@@ -71,7 +71,7 @@
       "name": "the self-heal never runs after a credential refusal (the guard strands a renewable endpoint)",
       "file": "packages/core/src/endpoint.ts",
       "find": "      void this.reestablishLoop();\n",
-      "replace": "      if (!this.credsSource) void this.reestablishLoop();\n",
+      "replace": "      if (!this.identity.credsSource) void this.reestablishLoop();\n",
       "expectRed": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
       "cell": "the refusal fails CLOSED, not dead: the endpoint reconnects once its source returns",
       "note": "This is the wrong repair that a guard-only fix invites: refuse the expired credential and never come back, which satisfies every ZERO cell in the suite while leaving a renewable endpoint permanently dead. The mutation is conditioned on credsSource so it severs the self-heal only for endpoints with a renewal source, leaving the static-cred cells untouched and confining the red to the recovery half. It is also the mutation that proves the recovery cell is no longer vacuous: against the previous setActivity-based version this mutation SURVIVED, because with registerPresence:false that call returns without a wire and reports success on a dead endpoint."

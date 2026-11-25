@@ -9,7 +9,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { daemonArgv, displayCmd, isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
+import { daemonArgv, displayCmd, isNpx, isPnpmDlx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
 import { renderSystemdServiceUnit } from "../src/lib/service-systemd-unit.js";
 import { renderLaunchdServiceUnit } from "../src/lib/service-launchd-unit.js";
 import { offerGlobalInstall } from "../src/commands/setup.js";
@@ -105,6 +105,27 @@ check(
     && durableRecovery[0]?.path === realCotal
     && durableRecovery[0]?.version === "9.8.7",
 );
+
+const dlxBin = seedCotal(join(prefix, "pnpm", "dlx", "f366da99", "mwm2iwjx-ygzp", "node_modules", ".bin"));
+const dlxCotal = join(dlxBin, cotalExe());
+writeFileSync(dlxCotal, versionedBody);
+chmodSync(dlxCotal, 0o755);
+setArgv(join(prefix, "pnpm", "dlx", "f366da99", "mwm2iwjx-ygzp", "node_modules", ".pnpm", "cotal-ai@0.168.0", "node_modules", "cotal-ai", "dist", "cotal.js"));
+check("pnpm dlx ⇒ isPnpmDlx() true and isNpx() false", isPnpmDlx() === true && isNpx() === false);
+process.env.PATH = dlxBin;
+check("pnpm dlx `pnpm/dlx/.../.bin/cotal` shim on PATH ⇒ cotalOnPath() ignores it (false)", cotalOnPath() === false);
+check("pnpm dlx display keeps its durable invocation when only the ephemeral dlx shim is on PATH", displayCmd() === "pnpm dlx cotal-ai");
+threw = false;
+try {
+  await offerGlobalInstall(false);
+} catch {
+  threw = true;
+}
+check("pnpm dlx install path: failed install handled gracefully (no throw)", !threw);
+process.env.PATH = [dlxBin, realBin].join(delimiter);
+check("a durable `cotal` alongside the pnpm dlx shim ⇒ cotalOnPath() true", cotalOnPath() === true);
+check("a durable PATH executable alongside pnpm dlx keeps concise command suggestions", displayCmd() === "cotal");
+check("recovery probe: ignores an ephemeral pnpm dlx executable", verifiedCotalExecutables({ ...cleanEnv, HOME: recoveryHome, PATH: dlxBin }).length === 0);
 
 process.env.PATH = prefix; // restore the deterministic no-cotal PATH
 

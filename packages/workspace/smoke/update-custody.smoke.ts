@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beginGlobalUpdateChild, inspectGlobalUpdateChild, updateCustodyPrivateGroup, type UpdateCustodyAccounts } from "../src/extension-mutation.js";
-import { acquireLock } from "../src/advisory-lock.js";
+import { beginGlobalUpdateChild, claimGlobalNpmUpdateLock, inspectGlobalUpdateChild, updateCustodyPrivateGroup, type UpdateCustodyAccounts } from "../src/extension-mutation.js";
+import { acquireLock, processStartToken } from "../src/advisory-lock.js";
 
 const uid = process.getuid!(), gid = process.getgid!();
 const accounts: UpdateCustodyAccounts = {
@@ -53,5 +54,40 @@ try {
     assert.throws(() => inspectGlobalUpdateChild(root, accounts), /not protected/);
     rmSync(markerPath);
   } finally { lock.release(); }
+  chmodSync(ancestor, 0o755);
+  const markerPath = join(root, ".cotal-update-child");
+  const marker = { phase: "ambiguous", owner: process.pid, nonce: "a".repeat(24), operation: "global reconcile", reason: "interrupted" };
+  writeFileSync(markerPath, JSON.stringify(marker));
+  assert.throws(() => claimGlobalNpmUpdateLock(root, { repairAmbiguous: () => assert.fail("live owner must not enter repair") }), /owner is still running/);
+  writeFileSync(markerPath, JSON.stringify({ ...marker, owner: 2147483647 }));
+  assert.throws(() => claimGlobalNpmUpdateLock(root), /ended ambiguously/);
+  assert.throws(() => claimGlobalNpmUpdateLock(root, { repairAmbiguous: () => { throw new Error("live writer"); } }), /live writer/);
+  assert.equal(JSON.parse(readFileSync(markerPath, "utf8")).phase, "ambiguous");
+  let checked = false;
+  const release = claimGlobalNpmUpdateLock(root, { repairAmbiguous: () => { checked = true; } });
+  try {
+    assert.equal(checked, true);
+    assert.equal(readdirSync(root).filter(name => name.startsWith(".cotal-update-child.retained-")).length, 1);
+    assert.throws(() => claimGlobalNpmUpdateLock(root), /another cotal-ai update/);
+  } finally { release(); }
+  if (process.platform === "linux") {
+    // The recorded leader is gone, but the process-group probe must still block repair.
+    const group = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    const exited = new Promise(resolve => group.once("exit", resolve));
+    try {
+      assert(group.pid);
+      const evidence = JSON.stringify({ ...marker, owner: 2147483647, custody: { ownerStart: "1", pid: group.pid, start: `${processStartToken(group.pid)}-different` } });
+      writeFileSync(markerPath, evidence);
+      assert.throws(() => claimGlobalNpmUpdateLock(root), /child has surviving processes/);
+      assert.equal(readFileSync(markerPath, "utf8"), evidence);
+      group.kill("SIGTERM");
+      await exited;
+      claimGlobalNpmUpdateLock(root)();
+      assert.equal(readdirSync(root).includes(".cotal-update-child"), false);
+    } finally {
+      if (group.exitCode === null && group.signalCode === null) group.kill("SIGKILL");
+      await exited;
+    }
+  }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 console.log("update-custody.smoke: local primary-group proof and real-path marker inspection passed");

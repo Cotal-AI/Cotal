@@ -19,6 +19,11 @@
  *
  * Watch only for OUR subject. The connection is shared, and another component's
  * denial or an unrelated transport error must not fail this call.
+ *
+ * `closed` rejects when the connection closes while the watch is open. A caller
+ * whose only deadline is a subscription's own `timeout` races it: nats-core
+ * cancels that timer and closes the subscription without calling back, so the
+ * wait would otherwise never settle (#7370).
  */
 import { PermissionViolationError, type NatsConnection } from "@nats-io/nats-core";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
@@ -38,11 +43,14 @@ export function openPublishDenialWatch(
   subject: string,
   refusal: (err: PermissionViolationError) => Error,
   what: string,
-): { denied: Promise<never>; release(): void } {
+): { denied: Promise<never>; closed: Promise<never>; release(): void } {
   const statusStream = nc.status() as StatusStream;
   if (typeof statusStream?.stop !== "function")
     throw new EpEnvelopeError("unavailable", `the NATS connection's status() stream does not expose stop(); the ${what} permission watch cannot be released and would leak a listener per call`);
   const statusIter = statusStream[Symbol.asyncIterator]();
+  let onClose!: (err: Error) => void;
+  const closed = new Promise<never>((_, reject) => { onClose = reject; });
+  closed.catch(() => { /* only a caller that races it observes the close */ });
   const denied = new Promise<never>((_, reject) => {
     void (async () => {
       // Driven by hand rather than `for await` so `release` can CLOSE it: `nc.status()`
@@ -51,6 +59,10 @@ export function openPublishDenialWatch(
       for (;;) {
         const { value: s, done } = await statusIter.next();
         if (done === true || s === undefined) return;
+        if (s.type === "close") {
+          onClose(new Error(`connection closed before the ${what} was answered`));
+          return;
+        }
         if (s.type !== "error") continue;
         if (s.error instanceof PermissionViolationError && s.error.subject === subject) {
           reject(refusal(s.error));
@@ -61,6 +73,7 @@ export function openPublishDenialWatch(
   });
   return {
     denied,
+    closed,
     release() {
       statusStream.stop();
       void statusIter.return?.(undefined);

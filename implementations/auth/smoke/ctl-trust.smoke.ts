@@ -40,7 +40,7 @@ import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } 
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   principalKey, controlServiceSubject, CONTROL_DELIVERY,
-  type ControlRequest, type ControlReply, bearerInboxConnId
+  type ControlRequest, type ControlReply,
 } from "@cotal-ai/core";
 import {
   createCalloutAuth, startAuthCallout, calloutPermissions,
@@ -152,7 +152,7 @@ try {
   await witnessNc.flush();
 
   // ---------- connect A.cli USER-MODE (sentinel + bearer → callout mints its scoped grant) ----------
-  const nonceA = bearerInboxConnId(bearerAcli);
+  const nonceA = `ibx${randomUUID().replace(/-/g, "")}`;
   ncA = await connect({
     servers: SERVERS,
     authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearerAcli)],

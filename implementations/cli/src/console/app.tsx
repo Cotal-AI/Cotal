@@ -76,7 +76,7 @@ export function App({
   const { focus, focusNext, focusPrevious } = useFocusManager();
 
   const [size, setSize] = useState({ cols: stdout.columns || 80, rows: stdout.rows || 24 });
-  const [activeChannel, setActiveChannel] = useState("all");
+  const [activeChannel, setActiveChannel] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState({ active: false, query: "" });
@@ -243,7 +243,7 @@ export function App({
     };
   }, [stdout]);
 
-  const tabs = ["all", ...mesh.channels.map((ch) => ch.channel)];
+  const tabs = [null, ...mesh.channels.map((ch) => ch.channel)];
   const counts: Record<string, number> = {};
   for (const ch of mesh.channels) counts[ch.channel] = ch.messages;
 
@@ -273,7 +273,7 @@ export function App({
           delete next[channel];
         }
       const cur = mesh.channels.find((ch) => ch.channel === activeChannel)?.arrivals;
-      if (activeChannel !== "all" && cur !== undefined && next[activeChannel] !== cur) bump(activeChannel, cur);
+      if (activeChannel !== null && cur !== undefined && next[activeChannel] !== cur) bump(activeChannel, cur);
       return next;
     });
     // an activeChannel change must also re-pin the watermark.
@@ -319,7 +319,7 @@ export function App({
     [canControl],
   );
   const feedCompose = useCallback(
-    () => setCompose({ kind: "channel", channel: activeChannel === "all" ? "general" : activeChannel, value: "" }),
+    () => setCompose({ kind: "channel", channel: activeChannel ?? "general", value: "" }),
     [activeChannel],
   );
   const feedReply = useCallback((e: FeedEntry) => setCompose({ kind: "reply", entry: e, value: "" }), []);
@@ -491,7 +491,7 @@ export function App({
       void deleteChannel({ ...controlCtx, space: ep.space }, c.channel).then((r) => {
         if (!r.ok) return setNotice(`delchan: ${r.error}`);
         setNotice(`deleted #${c.channel} · ${r.purged} messages purged`);
-        setActiveChannel((ch) => (ch === c.channel ? "all" : ch));
+        setActiveChannel((ch) => (ch === c.channel ? null : ch));
       });
     }
   };

@@ -63,7 +63,7 @@ const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintL
 const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
-type MgrPriv = { managerInstanceId: string; serviceServe?: { grant: { epoch: number; instanceId: string } }; goalWriter?: { ctx: ActionContext } };
+type MgrPriv = { managerInstanceId: string; goalWriterComponent: { goalWriter?: { ctx: ActionContext }; }; servePlane: { serviceServe?: { grant: { epoch: number; instanceId: string } }; } };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let mgr: InstanceType<typeof Manager> | undefined;
@@ -90,13 +90,13 @@ try {
   await mgr.start();
   const M1 = mgr as unknown as MgrPriv;
   const iid1 = M1.managerInstanceId;
-  const epoch1 = M1.serviceServe!.grant.epoch;
+  const epoch1 = M1.servePlane.serviceServe!.grant.epoch;
   check("incarnation 1 registered its persisted instanceId at epoch 0 (a FIRST registration on AUTH)",
-    M1.serviceServe!.grant.instanceId === iid1 && epoch1 === 0, { iid1, epoch1 });
+    M1.servePlane.serviceServe!.grant.instanceId === iid1 && epoch1 === 0, { iid1, epoch1 });
 
   // A goal ACCEPTED under epoch 0 and terminated by incarnation 1 before it dies — the legitimate
   // pre-restart winner, whose survival across a REAL auth restart is what this leg proves.
-  const gw1 = M1.goalWriter!.ctx;
+  const gw1 = M1.goalWriterComponent.goalWriter!.ctx;
   const ref1 = goalRefOf(reqFor("g-pre-restart"), "g-pre-restart");
   await bindGoal(gw1, ref1, "fp-pre-restart");
   await createGoal(gw1, ref1, {
@@ -116,17 +116,17 @@ try {
   await mgr.start(); // this SUCCEEDS only because the delivery-admin eviction responder answered
   const M2 = mgr as unknown as MgrPriv;
   const iid2 = M2.managerInstanceId;
-  const epoch2 = M2.serviceServe!.grant.epoch;
+  const epoch2 = M2.servePlane.serviceServe!.grant.epoch;
 
   check("the AUTH restart SUCCEEDED — it drove the delivery-admin eviction responder", evictCalls >= 1, { evictCalls });
   check("the restart PRESERVED the logical instanceId (persisted, not a fresh mint)", iid2 === iid1, { iid1, iid2 });
   check("the restart ADVANCED the process epoch through the §13.1 gate (superseding the predecessor)",
-    epoch2 > epoch1 && M2.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
+    epoch2 > epoch1 && M2.servePlane.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
 
   // TERMINAL SURVIVAL on a real AUTH+daemon restart. A verified eviction kills the PREDECESSOR; it
   // does not retract what the predecessor already durably committed. So the pre-restart fact stands
   // and the successor cannot overwrite it — one goal, one terminal subject, first fact wins.
-  const gw2 = M2.goalWriter!.ctx;
+  const gw2 = M2.goalWriterComponent.goalWriter!.ctx;
   const survived = await readGoalResult(gw2, ref1);
   check("the pre-restart terminal SURVIVES the evicting restart and is what the restarted incarnation reads",
     survived?.state === "failed" && (survived?.data as { by?: string })?.by === "pre-restart", survived);

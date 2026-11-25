@@ -1,6 +1,6 @@
 ---
 title: "pi connector reference"
-description: "pi host lifecycle, delivery confirmation, continuation attempts, managed recovery, and event persistence."
+description: "pi host lifecycle, delivery confirmation, continuation attempts, managed recovery, agent commands, and event persistence."
 kind: "Reference"
 audience: "integrators"
 ---
@@ -11,11 +11,15 @@ The connector does not include a pi runtime.
 
 ## Host integration
 
-One standalone artifact supports three Pi-hosted surfaces:
+The connector supports three Pi-hosted surfaces:
 
-1. `cotal spawn --harness pi --detach` launches the installed `pi` binary in the manager's PTY. `--prompt` is
-   delivered as Pi's initial message (its first turn); a prompt that is empty or starts with `-` or
-   `@` refuses the launch, since Pi would read it as an option or a file reference.
+1. `cotal spawn --harness pi` launches the npm-installed `pi` binary with Cotal's bundled extension.
+   This also applies with `--detach`, which runs Pi in the manager's PTY.
+   Spawn leaves copies of the released standalone bundle on disk and does not evaluate them.
+   This includes local package entry points and copies found on reload.
+   Other extensions follow Pi's usual discovery and project trust rules.
+   `--prompt` supplies Pi's initial message. Cotal refuses an empty prompt or one that starts with `-` or `@`,
+   since Pi would read it as an option or a file reference.
 2. Interactive Pi discovers a copied `~/.pi/agent/extensions/cotal.js`.
 3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
    must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.
@@ -70,7 +74,9 @@ takes a seat ahead of the channel posts that arrived before it, so it does not w
 for a later turn. DMs keep their place in arrival order. A post that mentions the seat counts as a
 channel post here, so it can wait for a later batch, and it still wakes the seat. That wake names
 the sender by id when the sender's name is missing or only whitespace. A name that contains
-anything else is kept, including a leading space.
+anything else is kept, including a leading space. The wake is one line: control characters, line
+separators and brackets in the sender's name, role or channel are shown as spaces, as in the
+other connectors' frames.
 
 A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
 request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
@@ -90,7 +96,12 @@ the turn, each held presence repeats it in parentheses after the stop reason, on
 300 characters, so a cause such as `Unknown provider: unknown` is visible. User abort never retries; it
 is identified from the `AbortSignal` captured while the turn is active and stays a plain hold, since
 the person who aborted is the party who continues. Non-aborted `stop`, `toolUse`, and positive-output
-`length` are locally provable terminal boundaries and may commit confirmed work.
+`length` are locally provable terminal boundaries and may commit confirmed work. A turn that carried
+no Cotal batch returns to `idle` when it ends, whether it finished, failed or was aborted. A turn
+that ended on `error` also sets the presence condition `failed`, with `source` `error` and Pi's error
+as `message` (the same bounded line), whether it is held as `waiting` or returns to `idle`. Pi's
+error is free text, so the connector does not classify it further. An aborted turn sets none, and
+the next turn's start clears it.
 
 `session_before_compact { reason: "overflow", willRetry: true }` identifies the overflow path but is
 not itself a terminal decision. An abort or dispatch watchdog blocks automatic replay. In managed
@@ -108,7 +119,7 @@ DMs waiting during a reload remain queued and can commit after a clean terminal 
 
 For managed PTY seats, `cotal spawn --harness pi --detach --resume <pi-session-id>` forks that transcript into
 a new meshed Pi session (`pi --fork`; the source is untouched). After readiness, the manager binds
-the exact current Pi session through the token-authenticated local control socket. Automatic recovery
+the exact current Pi session through the authenticated local control socket. Automatic recovery
 requires runtime proof that all prior local work ended, including tools in other sessions or process
 groups. The built-in PTY runtime has no such proof and retires a crashed seat without restarting it.
 A runtime that proves closure may reopen the same session and lifecycle, with three restarts in a
@@ -119,32 +130,99 @@ or maintenance cut never restarts the seat.
 A manifest agent declared `continuity: exact` is reopened with `pi --session <id>`, which
 fails when Pi no longer has that session instead of creating an empty one under the same id.
 
+## Agent commands [#agent-commands]
+
+On a per-user mesh, Pi 0.84.2 or later runs [agent commands](connector-runtime-reference.mdx#agent-commands)
+in its session. The list is Pi's `getCommands()`. Extension commands and prompt templates are
+commands, and each skill is a skill named without Pi's `skill:` prefix. Pi runs an extension command
+before a prompt template of the same name, so only the extension command is listed. Only each
+entry's name and description leave Pi.
+
+A command runs through Pi's own command path, `sendUserMessage` with `expandPromptTemplates`. Pi
+runs an extension command's handler, and expands a prompt template or a skill before the model
+sees it. Pi sends an unknown `/name` to its model as text, so the connector sends only a name Pi
+lists at that moment, and any other name ends `refused` with `not-found`. A command starts only
+while no turn runs. It also starts while delivery is held, because a held delivery waits for a new
+turn. Right after a command, waiting messages go before the next queued command.
+
+An extension command reads `started` once Pi ran its handler, and the handler decides whether a
+turn follows. A prompt template or a skill reads `started` once its turn starts. When no turn starts
+within 5 s it reads `unknown`: Pi reports a refused prompt only on its own display, and it refuses
+one when no model with credentials is selected. `interrupt` calls Pi's abort and answers
+`interrupted` once the turn ended, or `idle` when no turn ran. The stopped turn ends as one its user
+stopped with Escape.
+
+`turn` sends the owner's words to Pi as the user's own message, with `sendUserMessage` and without
+`expandPromptTemplates`, so Pi takes the text as typed, a leading `/` included. Each image follows
+the text in the same message. Pi replaces an image with a placeholder for a model that takes none,
+so a turn with images for such a model, or a turn while no model is selected, ends `refused` with
+`failed-precondition` before Pi sees it. A turn waits in the same queue as commands, and reads
+`started` once its Pi turn starts, or `unknown` when none starts within 5 s.
+
+`usage` reports what Pi's footer shows: the context tokens and window from `getContextUsage()`,
+and the session's cost in USD, summed from the usage Pi records in the session. It leaves out the
+tokens while Pi does not know them, such as right after a compaction, and the cost while it is zero
+or Pi runs on a subscription sign-in, which Pi prices at list prices.
+
+An older Pi ignores `expandPromptTemplates`, so before 0.84.2 `commands` answers
+`supported: false`, while `turn`, `usage` and `interrupt` work. Pi has no API that reports its
+version. The connector reads it from Pi's own module, which Pi resolves to itself unless a copy of
+Pi is installed beside the extension.
+
 ## Event plane
 
-The shared launch and emitter carry payload-withholding safety controls. This release does not
-qualify Pi payload mapping or native payload acceptance. See the
-[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
-
-A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
-boundaries to `events.<owner>.<actor>`. The thread id is Pi's native session id. Pi's native
-session JSONL is the durable source; extension hooks only wake the reader after persistence.
+A managed Pi seat publishes AG-UI runs, assistant text as Pi streams it, and tool start/end
+boundaries to `events.<owner>.<actor>`. Each tool call's arguments and its result text publish by
+default on the separate `cotal.<space>.evp.<owner>.<actor>` payload rail, and the channel carries a
+`cotal.toolResult` marker for each finished call with its error flag. A result whose content holds
+anything other than text, such as an image, publishes the whole content array as JSON. Pass
+`--no-event-payloads` to withhold payloads while keeping tool activity. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for admission, cut markers and limits.
+The thread id is Pi's native session id. Pi's native session JSONL is the durable source, read
+together with the thread's [delta journal](connector-runtime-reference.mdx#streamed-text): each text
+delta Pi reports while it writes a reply is journaled, at most one line every 250 ms, and wakes the
+reader. Other extension hooks only wake the reader after persistence. Pi saves a reply before it
+runs the reply's tools, and each tool's start wakes the reader, so a call shows as started while it
+runs.
 The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
 A registration that requires events arms the plane independently of the environment flag, and
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
 workspace root for its write-ahead log. If the event plane stops, the seat keeps running on every
 space, and Pi's log records `AG-UI emitter stopped` with the reason and the delay before the
 extension re-establishes the plane. The re-establish is a fresh start of the same session: it
-settles any frame the outage left pending and rebuilds the mapper from the run and tool calls
-that frame opened, so a tool result written after the outage closes the call the plane came back
-with.
+settles any frame the outage left pending and rebuilds the mapper from the run, tool calls and
+streamed text that frame left open, so a tool result written after the outage closes the call the
+plane came back with, and a reply saved after it ends the message it streamed.
 
-Text is published at **completed-message granularity**, not as live token deltas. Pi emits
-live text updates before writing the assistant record, so those deltas cannot be recovered
-after a crash. Tool arguments and results, reasoning, usage, branch and compaction entries
-are not published. User text is never published: Pi's native user record cannot separate
+A turn you stop, such as with Escape, ends its run with `RUN_FINISHED` whose outcome is `interrupt`.
+Pi records that stop as an abort, or, when it lands during a tool call, as an error carrying the
+abort text. Any other error ends the run with `RUN_ERROR`.
+
+Text streams: each journal line publishes as content of the reply's message, and the saved reply
+sends the rest and ends it. A reply whose saved text does not begin with what streamed, as a
+provider retry leaves, ends the streamed message and publishes the saved text as a message of its
+own. Reasoning is off by default. A seat launched with the `reasoningEvents` field publishes
+Pi's thinking as `REASONING_*` events, streamed the same way. Redacted thinking is never published.
+A reply that streamed nothing publishes from its saved record. Usage, branch and compaction
+entries are not published. User text is never published: Pi's native user record cannot separate
 peer-authored content from human-authored content. A reload keeps the same native session
 and event frontier. A new, resumed or forked session gets its own thread and log on the same
 principal channel.
+
+## Tool permissions [#tool-permissions]
+
+Pi has no permission dialog of its own, so a seat runs every tool call unless it was launched
+with `askPermissions`. Then each call other than `read`, `grep`, `find`, `ls` and the seat's own
+`cotal_*` tools opens a prompt on the agent's [prompt desk](connector-runtime-reference.mdx#prompt-desk)
+before it runs, and Pi waits for the answer. The prompt shows the tool, its input and the seat's
+folder, and offers Allow and Deny. An input over the prompt size limit shows its size and offers
+only Deny. Allow runs the call. Deny blocks it, and the model gets the owner's note, or "The user
+denied this tool call.", as the call's result. Pi finishing the call confirms the answer.
+
+The desk is the one path. When it cannot take the prompt, because the agent endpoint does not
+serve it, it is full, or the prompt closes unanswered, the call is blocked with a reason that
+names the cause, and Pi's log records it. Stopping the turn withdraws the prompt and blocks the
+call. Pi's own UI is never asked.
 
 ## Launch restrictions
 
@@ -155,7 +233,11 @@ principal channel.
   sandbox hooks remain on the normal agent path.
 - `cotal_inbox` destructively pulls quiet ambient while the driver retains ownership of automatic
   traffic; normal focus recall shown alongside it remains read-only.
-- Pi model variants, MCP sharing, and raw launch options fail loudly until implemented.
+- Pi MCP sharing and raw launch options fail loudly until implemented.
+- A model variant is a Pi thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh` or
+  `max`), passed as `--thinking`, and any other value fails the launch. Pi clamps a level to what
+  the model supports. `cotal models` lists the levels Pi offers for each model, as Pi's
+  `get_available_thinking_levels` answers once that model is selected (Pi 0.81.0 or later).
 
 ### Run turns
 

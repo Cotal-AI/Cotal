@@ -22,7 +22,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readFile, rename, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, open, readFile, readdir, rename, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { assertIdToken, type Part } from "@cotal-ai/core";
 import type { BracketState } from "./agui.js";
@@ -543,6 +543,42 @@ export class EventWal {
   get brackets(): BracketState | null { return this.doc.brackets; }
   get frontier(): WalFrontier { return { ...this.doc.frontier }; }
   get pending(): WalPending | null { return this.doc.pending ? { ...this.doc.pending } : null; }
+
+  /** Unacknowledged logs of earlier threads in this principal's canonical state directory. */
+  async pendingSiblings(): Promise<EventWal[]> {
+    const threadDir = createHash("sha256").update(this.threadId).digest("hex").slice(0, 16);
+    if (dirname(this.path).split(/[\\/]/).pop() !== threadDir) return [];
+    const parent = dirname(dirname(this.path));
+    const siblings: EventWal[] = [];
+    for (const entry of await readdir(parent, { withFileTypes: true })) {
+      if (!/^[a-f0-9]{16}$/.test(entry.name)) continue;
+      const path = join(parent, entry.name, "wal.json");
+      if (path === this.path) continue;
+      if (entry.isSymbolicLink()) throw new WalCorruptError(path, "a real thread directory", "found a symlink");
+      if (!entry.isDirectory()) continue;
+      let bytes: Buffer;
+      try {
+        const st = await lstat(path);
+        if (!st.isFile() || st.nlink !== 1) throw new WalCorruptError(path, "a real thread log with one name", "refusing linked or non-file state");
+        const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        try { bytes = await file.readFile(); } finally { await file.close(); }
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw e;
+      }
+      const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const doc = JSON.parse(raw) as { threadId?: unknown; pending?: { state?: unknown } | null };
+      // Acknowledged logs already contribute to subject-frontier recovery. Only uncertain work
+      // needs a network retry, and settled historical logs are not rewritten at a new launch.
+      if (doc.pending?.state !== "sent_unacked") continue;
+      const threadId = doc.threadId;
+      if (typeof threadId !== "string" || createHash("sha256").update(threadId).digest("hex").slice(0, 16) !== entry.name)
+        throw new WalCorruptError(path, "thread id matches its directory", "refusing misplaced state");
+      const sibling = new EventWal(path, parseDoc(path, raw, this.space, threadId, this.principal));
+      if (sibling.pending) siblings.push(sibling);
+    }
+    return siblings.sort((a, b) => a.pending!.E - b.pending!.E);
+  }
 
   /** Bound by {@link bindSubjectFrontier}; absent for a WAL nothing publishes from. */
   private subject?: SubjectFrontier;

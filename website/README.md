@@ -84,16 +84,17 @@ The served `SKILL.md` bytes and their discovery digests remain unchanged.
 
 Cloudflare Pages uses root directory `website`, build command `npm run build`,
 output directory `dist`, and install command `npm ci`.
-The existing workflow publishes PR previews, production, and release snapshots.
+The workflow publishes production from `main` and a snapshot for each release. A pull
+request gets a build check and the built site as the `docs-site` artifact, with no deployment.
 `functions/` provides content negotiation. The Next.js development server does
-not run Pages middleware or redirects; use the Pages preview for compatibility checks.
+not run Pages middleware or redirects; use a release snapshot for compatibility checks.
 
 Build checks verify installer safety, skill digests, page exports, legacy redirects,
 and local links and assets. The link check parses HTML and Markdown destinations,
 including reference definitions and image candidates. Code samples remain literal text;
 relative targets are refused regardless of their directory name.
 Existing unresolved fragment links await page cleanup.
-Verify a preview deployment before production cutover.
+Verify a release snapshot before production cutover.
 
 ## HTTP references
 

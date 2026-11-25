@@ -47,7 +47,7 @@ The following guarantees combine broker enforcement with the required receiver c
 | Space containment | NATS accounts isolate each space's subjects, streams, and KV buckets. |
 | Channel posting | The connection posts as itself and only to declared `allowPublish` channels. Posting is default-deny. |
 | Channel content reads | Live subscription grants follow `allowSubscribe`. History uses server-pinned single-channel consumers. |
-| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers prevent reads of other inboxes and other roles' queues. Under per-user authentication the callout grants a reply inbox only under the bearer's own owner and actor. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
+| DM and task confidentiality against peers | Per-identity inboxes and provisioner-created bind-only consumers scope reads. On user-auth meshes, the callout checks principal-bound reply inbox names against the bearer. Legacy connections still use unbound nonces. A trusted reader reauthorizes durable-channel backstop reads. See [Delivery daemon](delivery-daemon.mdx). |
 | Carried resume transcripts | Only the target manager instance's transfer reader can read its transfer bucket. The operator's writer is pinned to one transcript. Seats and peers have no transfer-bucket grant. |
 | Optional transport secrecy | `cotals://` requires TLS for the agent-to-broker hop. The broker still sees plaintext. |
 
@@ -67,6 +67,7 @@ An authenticated peer can flood destinations it may write to. Cotal relies on co
 
 The deployment also has these limits.
 
+- An open mesh has no authentication and is outside these claims. Any process that reaches its broker can answer an agent's prompts, run its commands, give it a turn, stop its turn, or rename it through the agent's `agent` endpoint, naming any caller.
 - A copied static credential retains inline data-plane grants until expiry or signing-key rotation. Despawn retires its lifecycle and control authority but cannot add a static auth callout.
 - A host compromise can expose signing authority. Narrow operator profiles reduce individual connection grants but do not protect a copied signer.
 - Static `spawn` can choose a child's channel ACL. Spawn also grants access to connector launch options on the manager host.

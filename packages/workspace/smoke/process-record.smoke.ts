@@ -97,6 +97,14 @@ try {
   const pair = join(root, "owned-pair.pid");
   workspace.writePidPair(pair, pid);
   check("the public writer pins our live child", workspace.verifyIdentityPin(pair).kind, "match");
+  const stale = { pid, token: "old-start" };
+  workspace.writePidPair(pair, pid, { tokenAt: () => stale.token });
+  check("the old pin names a different incarnation of the live PID", workspace.verifyIdentityPin(pair).kind, "mismatch");
+  workspace.writePidPair(pair, pid);
+  check("cleanup refuses a stale creation pin after the same numeric PID is republished", workspace.removePidPair(pair, String(pid), stale), false);
+  check("cleanup does not reuse a gone verdict after a live publication", workspace.removePidPair(pair, String(pid), "gone"), false);
+  check("stale cleanup also refuses a live publication", workspace.removePidPair(pair, String(pid), "stale"), false);
+  check("the live successor still holds both records", workspace.verifyIdentityPin(pair).kind, "match");
   writeFileSync(path, String(pid));
   check("native alive verdict with unreadable argv has a pid", readProcessRecord(path, unexpected, undefined, unreadable), { state: "alive", path, pid });
   check("native alive verdict with gone argv retains its pid", readProcessRecord(path, unexpected, undefined, () => ({ kind: "gone" })), { state: "alive", path, pid });
@@ -117,5 +125,5 @@ try {
   await exited;
   rmSync(root, { recursive: true, force: true });
 }
-assert.equal(pass, 17, "all expected native/shape checks ran");
+assert.equal(pass, 22, "all expected native/shape checks ran");
 console.log(`PROCESS RECORD OK (${pass} checks)`);

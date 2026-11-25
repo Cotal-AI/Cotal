@@ -55,12 +55,12 @@ async function fixture(t, failure) {
   return { base, root, output, archives, calls, options: { source, version, sourceRoot: root, output, fetch: request, exec } };
 }
 
-test('synthetic public URL responses preserve all 24 real TGZ fixture bytes and file identities without rebuilding', async t => {
+test('synthetic public URL responses preserve all 25 real TGZ fixture bytes and file identities without rebuilding', async t => {
   const f = await fixture(t);
   const manifest = await fetchPublishedCandidate(f.options);
   assert.equal(manifest.source, source);
   assert.deepEqual(manifest.packages.map(row => row.name), names);
-  assert.equal(f.calls.length, 48);
+  assert.equal(f.calls.length, 50);
   for (const pkg of manifest.packages) {
     assert.deepEqual(readFileSync(join(f.output, pkg.archive)), f.archives.get(pkg.name));
     assert.equal(pkg.sha256, hash(f.archives.get(pkg.name)));

@@ -81,7 +81,7 @@ try {
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: join(root, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-live-smoke-control-token",
+      COTAL_CONTROL_KEY: "jcode-live-smoke-control-token", COTAL_CONTROL_VERSION: "1",
       COTAL_MODEL: "gpt-5.6-sol",
     },
     stdio: ["ignore", "pipe", "pipe"],

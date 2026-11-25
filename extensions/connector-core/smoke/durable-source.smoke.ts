@@ -55,10 +55,10 @@
  *
  * Run: pnpm smoke:durable-source
  */
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync, openSync, readSync, writeSync, closeSync, symlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync, openSync, readSync, writeSync, closeSync, symlinkSync, truncateSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlFileSource, type SourceRead } from "../src/durable-source.js";
+import { JsonlFileResetError, JsonlFileSource, type SourceRead } from "../src/durable-source.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -470,6 +470,32 @@ try {
     appendFileSync(p, '}\n{"i":5}\n');
     c("end:is-the-position-AT-THE-CALL-not-when-awaited", (await atCall) === torn, { atCall: await atCall, torn });
     c("end:consumes-nothing", (await readOr(s, all.cursor, "re-read after end")).records.length === 3);
+  }
+  // ── holdsSync(): is a cursor on the file at the path now, as read() decides ──
+  // A replacement can reuse the inode (ext4 hands a freed one to the next file), so a cursor of the
+  // replaced file names the new file's identity. Truncating in place makes that case on any file system.
+  {
+    const p = join(dir, "holds.jsonl");
+    writeFileSync(p, '{"i":1,"pad":"a replaced file longer than its replacement"}\n');
+    const s = new JsonlFileSource<{ i: number }>(p);
+    const old = s.endSync();
+    c("holds:a-cursor-of-the-file-holds", s.holdsSync(old));
+    const refused = async (cursor: string) => s.read(cursor).then(() => false, (e: unknown) => e instanceof JsonlFileResetError);
+    truncateSync(p, 0);
+    appendFileSync(p, '{"i":2}\n');
+    const fresh = s.endSync();
+    c("holds:same-inode-replacement-shorter-than-the-cursor-does-not-hold-and-read-refuses-it",
+      !s.holdsSync(old) && (await refused(old)) && s.holdsSync(fresh), { old, fresh });
+    appendFileSync(p, '{"i":3,"pad":"a replacement that grows past the old cursor"}\n');
+    c("holds:same-inode-replacement-past-the-cursor-with-other-bytes-does-not-hold-and-read-refuses-it",
+      !s.holdsSync(old) && (await refused(old)) && s.holdsSync(fresh) && s.holdsSync(s.endSync()));
+    writeFileSync(join(dir, "holds.next"), '{"i":4}\n');
+    renameSync(join(dir, "holds.next"), p);
+    c("holds:a-cursor-of-a-file-renamed-over-does-not-hold", !s.holdsSync(fresh));
+    rmSync(p);
+    let missing: unknown;
+    try { s.holdsSync(fresh); } catch (e) { missing = e; }
+    c("holds:throws-when-the-file-is-missing", (missing as NodeJS.ErrnoException | undefined)?.code === "ENOENT", String(missing));
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

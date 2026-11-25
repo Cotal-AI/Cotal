@@ -24,7 +24,7 @@ import {
   serveAuthenticityOf, type GuestServeAuthenticity,
   endpointToken, epAuthBucket, epgateKey, mintCreds, newIdentity, parseServiceAuthorityResult, publishContractArtifact, RECORD_KINDS, recordSpecKey,
   recordStatusKey, recordsBucket, registerServiceInstance, serviceAuthorityRequestDigest, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
-  type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness, bearerInboxConnId
+  type SecretStore, type ServiceAuthorityRequest, type ServiceAuthorityResult, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { cotalAuthProvider } from "../src/provider.js";
@@ -38,8 +38,10 @@ import { nativeServiceNameAuthority } from "../src/native-service-name.js";
 import { authClientSentinelKey, ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { answerServiceAuthority, serviceAuthorityEngineRequestId } from "../src/service-endpoint-authority.js";
-import { parseServiceRequestIntentIndexRecord, parseServiceRequestIntentRecord, serviceHostOperationId } from "../src/service-host-ops.js";
-import { serviceHostEngineOf, startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { parseServiceRequestIntentIndexRecord, parseServiceRequestIntentRecord } from "../src/service-host-ops.js";
+import { serviceHostOperationId } from "../src/service-host-kernel.js";
+import { serviceHostEngineOf } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks } from "./_service-custody-fixture.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -222,7 +224,7 @@ try {
     } catch (e) { return (e as Error).message; }
   };
   const dial = async (bearer: string) => {
-    const nonce = bearerInboxConnId(bearer);
+    const nonce = randomBytes(16).toString("hex");
     const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 4000, reconnect: false, maxReconnectAttempts: 0,
       authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(bearer)] });
     conns.push(nc);

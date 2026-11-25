@@ -41,7 +41,7 @@ import { Kvm, type KV } from "@nats-io/kv";
 import { connect, credsAuthenticator, tokenAuthenticator } from "@nats-io/transport-node";
 import {
   CotalEndpoint, VOID_SCHEMA_DIGEST, endpointToken, epAuthBucket, mintCreds, newIdentity, serviceWitnessDigest, setupSpaceStreams, singleDocumentClosure,
-  type ServiceAuthorityRequest, type ServiceRegistrationWitness, bearerInboxConnId
+  type ServiceAuthorityRequest, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { cotalAuthProvider } from "../src/provider.js";
 import { deriveOwnerForIdpSubject } from "../src/derive.js";
@@ -51,7 +51,7 @@ import { openAuthorityClient } from "../src/authority-client.js";
 import { ensurePinnedIdp, loadOwnerSecret, saveAuthServiceInfo } from "../src/store.js";
 import type { ServiceEndpointHost, ServiceHostRequest, ServiceHostResult } from "../src/service-host-contract.js";
 import { parseServiceRequestIntentIndexRecord } from "../src/service-host-ops.js";
-import { startAuthService, type AuthServiceHandle } from "../src/service.js";
+import { startAuthService, type AuthServiceHandle } from "../src/service-host.js";
 import { checks } from "./_service-custody-fixture.js";
 import { MemoryStore, startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -177,7 +177,7 @@ try {
   };
   const expOf = (jwt: string) => JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString("utf8")).exp as number;
   const dialOk = async (bearer: string) => {
-    const nonce = bearerInboxConnId(bearer);
+    const nonce = randomBytes(16).toString("hex");
     try {
       const nc = await connect({ servers: fx.servers, name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 4000, reconnect: false, maxReconnectAttempts: 0,
         authenticator: [credsAuthenticator(enc.encode(a.sentinelCreds)), tokenAuthenticator(bearer)] });
@@ -295,7 +295,7 @@ try {
     const five = await registeredWitness(ep);
     const s = source(five.witness);
     tokensSeen.push(await s.bearer());
-    // A non-owner cause takes an operator granter (stock rule, service-host-ops.ts revoke V0).
+    // A non-owner cause takes an operator granter (stock rule, service-host-decisions.ts revoke V0).
     const r = await call(host, { v: 1, kind: "service-endpoint-host", requestId: rid(), operation: "revoke", granter: operator,
       input: { endpoint: ep, instanceId: five.instanceId, expectedAssignmentDigest: five.assignmentDigest, cause: "restore-quarantine" } });
     for (let i = 0; i < 20 && s.state().state !== "ended"; i++) {

@@ -38,9 +38,13 @@ See the [service reference](cli-services.mdx#service) for supported definitions.
 
 ## Keep a foreground stack running
 
-For one host, run a foreground launcher so systemd can restart it after failure:
+For one host, run a foreground launcher in `cotal-stack.service` so systemd can restart it after failure:
 
 ```ini
+[Unit]
+StartLimitIntervalSec=1min
+StartLimitBurst=5
+
 [Service]
 Type=simple
 WorkingDirectory=/srv/cotal-mesh
@@ -50,6 +54,9 @@ RestartSec=5s
 ```
 `cotal up --foreground` refuses when this folder's stack is already running, for example after a
 manual background `cotal up`. Stop that stack before the unit starts.
+
+If repeated refusals hit the start limit, `systemctl status cotal-stack.service` shows the unit as failed and the refusal is in the journal.
+After fixing the cause, run `systemctl reset-failed cotal-stack.service` and then `systemctl start cotal-stack.service`, adding `--user` after `systemctl` for a user unit.
 
 Set the working directory and binary path for the installation.
 If the host should run only the broker and delivery daemon, add `--no-manager` to `ExecStart`.
@@ -70,6 +77,8 @@ Choose the ownership you need before copying a unit; `Type=simple` alone does no
 
 If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
 The unit restart repairs the recorded store rather than creating a second mesh.
+When `up` replaces a static-auth stack's broker, it restarts the recorded delivery daemon and waits for the new process to report ready.
+If the project folder moved, move it back to its recorded path before restarting the stack.
 If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
 A repair `up` can wait out that lease when it proves the holder is gone.
 It refuses if the lease is still renewed by a live holder.
@@ -95,8 +104,11 @@ ExecStart=/usr/bin/cotal status --components --space main
 Run the check from a systemd timer or another monitor and alert on a nonzero exit.
 It distinguishes `absent`, `not-serving`, and `refused` components.
 A dashboard extension that is not installed reports `not-installed` without making the check fail.
-An installed dashboard that has no process record reports `not-started` and also does not fail the check.
+An installed dashboard that has no process record or unsettled owned instance reports `not-started` and also does not fail the check.
 A stale dashboard PID record still reports `absent` and fails the check.
+An owned dashboard that exits without a confirmed service stop also reports `absent`, even if it removed its PID file.
+A manager intentionally omitted with `up --no-manager` reports `not-started` when no manager serves or holds a lease.
+A cleanly stopped local stack reports `absent` and exits `1`, not a probe refusal.
 A sibling's health does not count as proof for the target component.
 This `Type=oneshot` unit is a health check, not a detached launcher.
 

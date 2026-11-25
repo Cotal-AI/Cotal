@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   membersBucket,
   memberKey,
@@ -39,6 +40,7 @@ import {
   StaleMembershipWrite,
   type MembershipRecord,
 } from "../src/index.js";
+import { membersForFanout } from "../src/members.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -248,10 +250,63 @@ async function main() {
     JSON.stringify(covering) === JSON.stringify([`team.> ${FA}`, `team.backend ${D}`]), covering);
   check("listMembers(channel=team.>) reads the family row exactly", JSON.stringify((await listMembers(kv, { channel: "team.>" })).map((m) => m.owner)) === JSON.stringify([FA]));
 
+  const fanout = () => membersForFanout(kv, "team.backend");
+  check("fan-out view selects only exact and covering rows", JSON.stringify((await fanout()).map((m) => `${m.channel} ${m.owner}`).sort()) === JSON.stringify(covering));
+  await tombstoneMember(kv, "team.>", FA, lid(FA), 41, W);
+  check("warm fan-out view sees the acknowledged leave cursor", (await fanout()).find((m) => m.owner === FA)?.leaveCursor === 41);
+  await deleteMember(kv, "team.backend", D, lid(D));
+  check("warm fan-out view applies a purge marker", !(await fanout()).some((m) => m.owner === D));
+  await commitMember(kv, rec({ channel: "team.backend", owner: D, joinCursor: 42, generation: 2 }));
+  check("warm fan-out view sees the new join generation", (await fanout()).find((m) => m.owner === D)?.joinCursor === 42);
+  await commitMember(kv, rec({ channel: "team.backend", owner: D, joinCursor: 43, generation: 3 }));
+  const status = kv.status.bind(kv);
+  let reads = 0;
+  let concurrent: ReturnType<typeof fanout> | undefined;
+  kv.status = async () => {
+    const snapshot = await status();
+    if (++reads === 1) {
+      await commitMember(kv, rec({ channel: "team.backend", owner: D, joinCursor: 44, generation: 4 }));
+      concurrent = fanout();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      check("overlapping fan-out waits for the in-flight refresh", reads === 1, reads);
+    }
+    return snapshot;
+  };
+  try {
+    const first = await fanout();
+    const second = await concurrent;
+    check("both fan-out reads see the rejoin committed inside the scan window",
+      first.find((m) => m.owner === D)?.generation === 4 && second?.find((m) => m.owner === D)?.generation === 4);
+  } finally {
+    kv.status = status;
+  }
+  const fanoutCost = async () => {
+    const before = nc.stats().inMsgs;
+    await fanout();
+    return nc.stats().inMsgs - before;
+  };
+  const small = await fanoutCost();
+  for (let i = 0; i < 64; i++) await commitMember(kv, rec({ channel: `cold.${i}`, owner: D }));
+  await fanout(); // bring the view up to date before measuring unchanged posts
+  const large = await fanoutCost();
+  check("warm fan-out reads do not transfer more rows as unrelated membership grows", large <= small + 1, { small, large });
+  const removed = await readMember(kv, "team.backend", D, lid(D));
+  assert(removed);
+  const jsm = await jetstreamManager(nc);
+  await jsm.streams.deleteMessage(`KV_${membersBucket(space)}`, removed.revision);
+  check("fan-out refreshes its snapshot when a stored row disappears without a marker", !(await fanout()).some((m) => m.owner === D));
+
   // ---- delete (GC) removes the footprint ----
   await deleteMember(kv, "review", D, lid(D));
   check("deleteMember purges the record", (await readMember(kv, "review", D, lid(D))) === undefined);
   check("delete left the sibling record intact", (await readMember(kv, "review", A, lid(A))) !== undefined);
+
+  await jsm.streams.delete(`KV_${membersBucket(space)}`);
+  const replacement = await openMembersRegistry(nc, space, { create: true });
+  await commitMember(replacement, rec({ channel: "team.backend", owner: FB }));
+  const recreated = (await fanout()).map((m) => m.owner);
+  check("the same warm handle reads the recreated bucket without retaining previous rows",
+    recreated.length === 1 && recreated[0] === FB, recreated);
 
   console.log(`\nMEMBERS-REGISTRY SMOKE PASSED ✅  (${pass} checks)`);
   await nc.close();

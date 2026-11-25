@@ -11,7 +11,7 @@
     },
     {
       "name": "PREDICTED KILLED (2 red) - the client counts and drops but never re-issues, so the heal publishes no second request",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "          r = await invokeResolved(reissueTarget, signal);\n",
       "replace": "          r = await Promise.resolve(r);\n",
       "expectRed": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
@@ -20,7 +20,7 @@
     },
     {
       "name": "PREDICTED KILLED (3 red) - the recovery is silent, so a handled split stops being a measurable one",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-control-plane.ts",
       "find": "          this.splitsRecovered++;\n",
       "replace": "",
       "expectRed": "...and the recovery was counted, so a handled split is still a measurable one",

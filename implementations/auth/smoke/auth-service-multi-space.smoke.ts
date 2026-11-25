@@ -37,7 +37,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   await command.run(parseCommandArgs(command, process.argv.slice(3)));
 } else {
   const { spawn } = await import("node:child_process");
-  const { createHash, randomUUID } = await import("node:crypto");
+  const { createHash, generateKeyPairSync, randomUUID } = await import("node:crypto");
   const { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = await import("node:fs");
   const { createServer } = await import("node:http");
   const { createServer: createTcpServer } = await import("node:net");
@@ -53,7 +53,7 @@ if (process.argv[2] === "__daemon-auth-service") {
 
   const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
   const { jetstreamManager } = await import("@nats-io/jetstream");
-  const { createBrokerAuth, createSpaceAccountAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts, bearerInboxConnId } = await import("@cotal-ai/core");
+  const { createBrokerAuth, createSpaceAccountAuth, epAuthBucket, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, standaloneConnectOpts } = await import("@cotal-ai/core");
   const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken, parseAuthHostManifest } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
@@ -95,7 +95,8 @@ if (process.argv[2] === "__daemon-auth-service") {
   childEnv.COTAL_TELEMETRY = "off";
   childEnv.DO_NOT_TRACK = "1";
 
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 
@@ -148,7 +149,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   };
   /** One connect through the real callout. Resolves the broker's view of the connection. */
   const connectOnce = async (space: Space, bearer: string) => {
-    const nonce = bearerInboxConnId(bearer);
+    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
     const nc = await connect({
       servers, authenticator: [credsAuthenticator(new TextEncoder().encode(space.sentinelCreds)), tokenAuthenticator(bearer)],
       name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0,

@@ -9,7 +9,7 @@ import { decode } from "@nats-io/jwt";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { createSpaceAuth, createEndpointStreams, endpointRegistrationBarrier, mintLifecycleUid, registerServiceInstance,
-  serverConfig, isReachable, contractDigest, serviceEndpointActor, bearerInboxConnId, userInboxConnId, USER_INBOX_MIN_CLIENT_VERSION, type ServiceRegistrationWitness } from "@cotal-ai/core";
+  serverConfig, isReachable, contractDigest, serviceEndpointActor, standaloneConnectOpts, userInboxConnId, type ServiceRegistrationWitness } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, countedAssert, emitSentinel, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createCalloutAuth, startAuthCallout, type StartAuthCalloutOpts } from "../src/callout.js";
 import { createUserTokenIssuer, generateSigningKey } from "../src/issuer.js";
@@ -52,7 +52,7 @@ const dialAs = async (bearer: string, nonce: string) => {
     authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearer)] });
   conns.push(nc); nonces.set(nc, nonce); return nc;
 };
-const dial = (bearer: string) => dialAs(bearer, bearerInboxConnId(bearer));
+const dial = (bearer: string) => dialAs(bearer, standaloneConnectOpts({ bearer, sentinelCreds: callout.sentinelCreds, tls: false }).name as string);
 try {
   let up = false;
   for (let i = 0; i < 50; i++) {
@@ -147,7 +147,8 @@ try {
   assert.equal(receipt.connId, nonces.get(service));
   assert.ok(receipt.connId.startsWith(`${owner}-${actor}-`), "the service arm admits a connection name under the service principal's own prefix");
   await service.close();
-  const reconnect = await dial(actualBearer); await reconnect.flush();
+  const legacyNonce = randomUUID().replaceAll("-", "");
+  const reconnect = await dialAs(actualBearer, legacyNonce); await reconnect.flush();
   assert.equal(mints.length, 2);
   const secondKey = decode(mints[1]!.jwt).sub;
   assert.ok(typeof secondKey === "string");
@@ -155,21 +156,21 @@ try {
   const secondReceipt = (await readNativeIssuance(stores.authKv, secondKey))!;
   assert.equal(secondReceipt.service!.connection.clientId, reconnect.info?.client_id);
   assert.equal(secondReceipt.service!.connection.serverId, serverId);
-  // The service arm refuses a connection name outside the service principal's own inbox prefix,
-  // and a bare nonce, before it reads native authority, as the ordinary arm does.
+  assert.equal(secondReceipt.connId, legacyNonce, "the native service arm also accepts the deployed legacy name");
+  // The service arm refuses a mismatched bound name before issuing a credential.
   const mintsBefore = mints.length, logsBefore = logs.length;
   await assert.rejects(dialAs(actualBearer, userInboxConnId(owner, "control", `ibx${randomUUID().replaceAll("-", "")}`)), /authorization violation/i,
     "a service bearer naming another principal's inbox is refused");
-  assert.ok(logs.slice(logsBefore).some((line) => line.includes("outside this bearer's own inbox prefix") && line.includes(`${owner}-${actor}-`)),
+  assert.ok(logs.slice(logsBefore).some((line) => line.includes("The connection name belongs to another principal") && line.includes(`${owner}-${actor}-`)),
     "the service refusal names the service principal's own prefix");
-  await assert.rejects(dialAs(actualBearer, randomUUID().replaceAll("-", "")), /authorization violation/i, "a bare nonce under a service bearer is refused");
-  assert.ok(logs.slice(logsBefore).some((line) => line.includes("bare inbox nonce") && line.includes(USER_INBOX_MIN_CLIENT_VERSION)),
-    "the bare-nonce service refusal names the minimum client version");
-  assert.equal(mints.length, mintsBefore, "neither refused name releases a native mint");
+  assert.equal(mints.length, mintsBefore, "the refused name releases no native mint");
+  const corrected = await dial(actualBearer);
+  await corrected.close();
+  assert.equal(mints.length, mintsBefore + 1, "the service reconnects with the prescribed settings");
   const shortExpiry = Math.floor(Date.now() / 1000) + 3;
   const expiring = await dial(await issuer.issueServiceAccess({ witness: actualWitness, expiresAt: shortExpiry }));
-  assert.equal(mints.length, 3);
-  assert.equal(mints[2]!.exp, shortExpiry);
+  assert.equal(mints.length, 4);
+  assert.equal(mints[3]!.exp, shortExpiry);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const reason = await Promise.race([expiring.closed(), new Promise<never>((_, reject) => {
@@ -186,9 +187,9 @@ try {
   // Raw test-only revocation injection. Ordinary helper is deliberately not widened.
   await stores.authKv.put(credRowKey(lifecycleUid, rootCredentialId), encode({ ...rootRow, state: "revoked" }));
   await assert.rejects(dial(actualBearer), /authorization violation/i);
-  assert.equal(mints.length, 3, "fenced or revoked native authority never releases another mint");
+  assert.equal(mints.length, 4, "fenced or revoked native authority never releases another mint");
   assert.deepEqual(hooks, []);
-  console.log("service access callout: default refusal and ordinary control preserved; native registered service connected, refused a foreign or bare inbox name, disconnected/reconnected and expired through encrypted auth with exact broker receipts, then deny-new checked; public approval and terminal retirement not exercised");
+  console.log("service access callout: native service connected with bound and legacy names, refused a mismatched bound name, and expired through encrypted auth with exact broker receipts; deny-new checked");
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally {
   await setup?.close();

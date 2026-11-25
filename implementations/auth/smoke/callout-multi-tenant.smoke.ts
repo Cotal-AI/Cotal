@@ -42,7 +42,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   const { createServer } = await import("node:http");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const { randomUUID } = await import("node:crypto");
+  const { generateKeyPairSync, randomUUID } = await import("node:crypto");
   type ChildProcess = import("node:child_process").ChildProcess;
 
   const home = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}callout-mt-`));
@@ -52,7 +52,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   process.env.COTAL_HOME = home;
 
   const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
-  const { createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams, bearerInboxConnId } = await import("@cotal-ai/core");
+  const { createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, newIdentity, serverConfig, setupSpaceStreams } = await import("@cotal-ai/core");
   const { authDir, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
   const { admitsServiceEndpoints, cotalAuthProvider, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken, parseSpaceManifest } = await import("@cotal-ai/auth");
   const { saveIdpSession } = await import("../src/login.js");
@@ -109,7 +109,8 @@ if (process.argv[2] === "__daemon-auth-service") {
   childEnv.COTAL_TELEMETRY = "off";
   childEnv.DO_NOT_TRACK = "1";
 
-  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end('{"keys":[]}'); });
+  const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
+  const idp = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(jwks); });
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 
@@ -204,7 +205,7 @@ if (process.argv[2] === "__daemon-auth-service") {
   /** One connect through the real callout, as a client makes it. Resolves the broker's view of the
    *  connection it produced, which names the account the minted JWT bound it into. */
   const connectOnce = async (space: Space, bearer: string) => {
-    const nonce = bearerInboxConnId(bearer);
+    const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
     const nc = await connect({
       servers, authenticator: [credsAuthenticator(new TextEncoder().encode(space.sentinelCreds)), tokenAuthenticator(bearer)],
       name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0,
@@ -392,7 +393,7 @@ if (process.argv[2] === "__daemon-auth-service") {
       let eAuthorized = 0;
       const eSeen: Array<{ account: string | null; reason: string | null }> = [];
       for (let i = 0; i < eAttempts; i++) {
-        const nonce = bearerInboxConnId(E.bearers[0]!);
+        const nonce = `ibx${randomUUID().replace(/-/g, "")}`;
         try {
           const nc = await connect({ servers, authenticator: [credsAuthenticator(new TextEncoder().encode(E.sentinelCreds)), tokenAuthenticator(E.bearers[0])],
             name: nonce, inboxPrefix: `_INBOX_${nonce}`, timeout: 10_000, maxReconnectAttempts: 0 });

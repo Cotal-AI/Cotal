@@ -101,21 +101,21 @@ export interface PutProbeStats { n: number; failed: number; p50Ms: number; p99Ms
  *  heartbeat makes on the same connection and bucket, and the round trip is recorded. A put that
  *  takes `slowMs` or more, or fails, is reported at once (at most `limit` rows); `take` returns the
  *  distribution since the previous take. A probe failure is its own row and is never counted as
- *  the endpoint's own heartbeat failing. */
-export function putLatencyProbe(publishers: Array<() => Promise<void>>, emit: (row: { epochMs: number; ms: number; failed?: string }) => void, slowMs = 500, limit = 50, intervalMs = 250): { take(): PutProbeStats; stop(): void } {
+ *  the endpoint's own heartbeat failing. `stop` issues no more puts and resolves once the put in
+ *  flight, if any, is recorded, so a `take` after it counts every put the probe started. */
+export function putLatencyProbe(publishers: Array<() => Promise<void>>, emit: (row: { epochMs: number; ms: number; failed?: string }) => void, slowMs = 500, limit = 50, intervalMs = 250): { take(): PutProbeStats; stop(): Promise<void> } {
   if (!Number.isSafeInteger(limit) || limit < 0) throw new Error("put probe row limit must be nonnegative");
   if (publishers.length === 0) throw new Error("put probe needs at least one publisher");
-  let emitted = 0, next = 0, inFlight = false, samples: number[] = [], failed = 0;
+  let emitted = 0, next = 0, inFlight: Promise<void> | undefined, samples: number[] = [], failed = 0;
   const report = (row: { epochMs: number; ms: number; failed?: string }) => { if (emitted < limit) { emitted++; emit(row); } };
   const timer = setInterval(() => {
     if (inFlight) return;
-    inFlight = true;
     const publish = publishers[next++ % publishers.length];
     const started = performance.now();
-    publish().then(
+    inFlight = publish().then(
       () => { const ms = performance.now() - started; samples.push(ms); if (ms >= slowMs) report({ epochMs: Date.now(), ms: Math.round(ms) }); },
       (e: unknown) => { const ms = performance.now() - started; samples.push(ms); failed++; report({ epochMs: Date.now(), ms: Math.round(ms), failed: nativeErrorClass(e) }); },
-    ).finally(() => { inFlight = false; });
+    ).finally(() => { inFlight = undefined; });
   }, intervalMs);
   return {
     take() {
@@ -125,6 +125,6 @@ export function putLatencyProbe(publishers: Array<() => Promise<void>>, emit: (r
       samples = []; failed = 0;
       return stats;
     },
-    stop() { clearInterval(timer); },
+    async stop() { clearInterval(timer); await inFlight; },
   };
 }

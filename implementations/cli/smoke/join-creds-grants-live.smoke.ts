@@ -4,7 +4,7 @@
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,8 +13,9 @@ import {
   newIdentity, seedChannelRegistry, setupSpaceStreams,
 } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
-import { emitSentinel, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { emitSentinel, freePort, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { bootBroker } from "../../manager/smoke/_boot-broker.js";
+import { cotalPty, clean, type Pty } from "./_console-pty.js";
 
 const tree = resolve(import.meta.dirname, "../../..");
 const dir = mkdtempSync(join(tmpdir(), "join-creds-grants-"));
@@ -28,6 +29,7 @@ Object.assign(env, { COTAL_HOME: join(dir, "home"), XDG_CONFIG_HOME: join(dir, "
 process.env.COTAL_HOME = env.COTAL_HOME;
 const tsxLoader = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
 const children = new Set<ChildProcess>();
+const terminals = new Set<Pty>();
 function cli(...args: string[]) {
   const proc = spawn(process.execPath, ["--import", tsxLoader, join(tree, "bin/cotal.ts"), ...args], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] });
   children.add(proc);
@@ -60,7 +62,7 @@ try {
   recordMesh({ space, server: broker.servers, root: project, mode: "auth", ts: new Date().toISOString() });
   const provisioner = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: broker.servers, space, creds: provisioner });
-  await seedChannelRegistry({ servers: broker.servers, space, creds: provisioner, file: { channels: { general: {}, "review.code": {} } } });
+  await seedChannelRegistry({ servers: broker.servers, space, creds: provisioner, file: { channels: { general: {}, "review.code": {}, "-general": {} } } });
   daemon = new CotalEndpoint({ space, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "delivery"), consume: false, registerPresence: false, card: { name: "delivery", kind: "endpoint" } });
   daemon.on("error", () => {});
   await daemon.start();
@@ -99,20 +101,169 @@ try {
   await refused("other-channel", other.file, other.uid, /does not grant read access to #general[\s\S]*--allow-subscribe general/);
 
   async function joins(name: string, file: string, uid: string, channel: string) {
-    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel);
+    const run = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, `--channel=${channel}`);
     await until(() => run.output().includes("holding presence") || run.proc.exitCode !== null);
     check(`${name}: matching lifecycle and read grant join successfully`, run.proc.exitCode === null && run.output().includes("holding presence"), run.output());
     await killAndAwaitExit(run.proc);
     await run.exited;
   }
+  const truncated = join(dir, "truncated.creds");
+  writeFileSync(truncated, readFileSync(other.file, "utf8").split("\n").slice(0, 2).join("\n") + "\n", { mode: 0o600 });
+  const absent = join(dir, "absent.creds");
+  for (const [kind, file, exitCode, code, diagnosis, firstStep, channel, subscribe] of [
+    ["truncated", truncated, 1, "SCHEMA_INVALID", "no complete NATS user JWT block", "pass the complete credential file", "review.code", "--allow-subscribe review.code"],
+    ["absent", absent, 2, "TARGET_NOT_FOUND", `creds file not found: ${absent}`, "check the path", "review.code", "--allow-subscribe review.code"],
+    ["dash_channel", absent, 2, "TARGET_NOT_FOUND", `creds file not found: ${absent}`, "check the path", "-general", "--allow-subscribe=-general"],
+  ] as const) {
+    const attempt = cli("join", "--space", space, "--creds", file, "--lifecycle-uid", other.uid, `--channel=${channel}`);
+    const status = await attempt.exited;
+    const output = attempt.output();
+    check(`${kind} file: join diagnoses the file and explains how to pair the replacement`, status === exitCode &&
+      new RegExp(`Code: +${code}`).test(output) && output.includes(diagnosis) && output.includes(firstStep) &&
+      output.includes("--lifecycle-uid set to the new UID that mint reports"), output);
+    const advice = /`cotal auth mint (<name> [^`]+)`/.exec(output)?.[1];
+    assert.ok(advice && advice.includes(`--provision ${subscribe} --space ${space} --no-persona --out <file>`), output);
+    const repaired = join(dir, `${kind}-repair.creds`);
+    const mint = cli("auth", "mint", ...advice.split(" ").map((arg) => arg === "<name>" ? `${kind}_repair` : arg === "<file>" ? repaired : arg));
+    check(`${kind} file: the suggested command mints a replacement`, await mint.exited === 0, mint.output());
+    const replacementUid = /^\s*Lifecycle:\s+(\S+)/m.exec(mint.output())?.[1];
+    assert.ok(replacementUid && replacementUid !== other.uid, mint.output());
+    await joins(`${kind}-repair`, repaired, replacementUid, channel);
+  }
+
+  const foreign = join(dir, "foreign.creds"), foreignUid = mintLifecycleUid();
+  const foreignAuth = await createSpaceAuth("elsewhere");
+  writeFileSync(foreign, await mintCreds(foreignAuth, newIdentity(), "agent", {
+    lifecycleUid: foreignUid, allowSubscribe: ["general"], allowPublish: ["general"], role: "reviewer",
+  }), { mode: 0o600 });
+  const foreignRoot = join(dir, "elsewhere");
+  mkdirSync(foreignRoot);
+  const foreignServer = `nats://127.0.0.1:${await freePort()}`;
+  recordMesh({ space: "elsewhere", server: foreignServer, root: foreignRoot, mode: "auth", ts: new Date().toISOString() });
+  const foreignArgs = ["join", "--creds", foreign, "--lifecycle-uid", foreignUid, "--name", "foreign"];
+  const rejected = cli(...foreignArgs, "--space", space);
+  check("wrong-space join names the target and the credential's space", await rejected.exited === 2 &&
+    /Code: +PERMISSION_DENIED/.test(rejected.output()) && rejected.output().includes(`Space:   ${space}`) &&
+    rejected.output().includes(`is a credential for space "elsewhere", not "${space}"`), rejected.output());
+  const replacementArgs = /`cotal auth mint (<label> [^`]+)`/.exec(rejected.output())?.[1];
+  assert.ok(replacementArgs?.includes(`--space ${space} --provision --allow-subscribe general --allow-publish general --role reviewer --no-persona`), rejected.output());
+  check("wrong-space join tells the operator to pair the replacement with its new lifecycle", rejected.output().includes("join with the lifecycle UID that mint reports"), rejected.output());
+  const crossRepair = join(dir, "cross-repair.creds");
+  const crossMint = cli("auth", "mint", ...replacementArgs!.split(" ").map((arg) => arg === "<label>" ? "cross_repair" : arg === "<file>" ? crossRepair : arg));
+  check("the wrong-space remedy mints a replacement", await crossMint.exited === 0, crossMint.output());
+  const crossUid = /^\s*Lifecycle:\s+(\S+)/m.exec(crossMint.output())?.[1];
+  assert.ok(crossUid, crossMint.output());
+  await joins("cross-repair", crossRepair, crossUid, "general");
+
+  // Use the broker's exact numeric address in the link so DNS and address family cannot change the result.
+  const wrongLink = cli(...foreignArgs, "--link", `${broker.servers.replace(/^nats:/, "cotal:")}/elsewhere`);
+  check("a link to the wrong broker reports the registered address and how to drop the link", await wrongLink.exited === 2 &&
+    /Code: +PERMISSION_DENIED/.test(wrongLink.output()) && wrongLink.output().includes(`registered here at ${foreignServer}`) &&
+    wrongLink.output().includes("--space elsewhere without --link"), wrongLink.output());
+  const unnamed = cli(...foreignArgs, "--server", broker.servers);
+  check("a broker without a named target does not get a guessed replacement space", await unnamed.exited === 2 &&
+    unnamed.output().includes('is a credential for space "elsewhere"') && !/Space:|auth mint/.test(unnamed.output()), unnamed.output());
+
   await joins("allowed", allowed.file, allowed.uid, "general");
   // Read grants alone suffice for joining, and wildcard coverage must not be mistaken for denial.
   await joins("wildcard", other.file, other.uid, "review.code");
   const unpaired = cli("join", "--space", space, "--creds", allowed.file);
   await until(() => unpaired.proc.exitCode !== null);
   check("missing lifecycle explains pairing and the provisioning mint", await unpaired.exited === 1 && /lifecycle-paired/.test(unpaired.output()) && /--lifecycle-uid/.test(unpaired.output()) && /auth mint.*--provision/.test(unpaired.output()), unpaired.output());
+
+  // #7531: observer and admin credentials refuse PERMISSION_DENIED (exit 2) before lifecycle pairing or binding,
+  // naming the required provisioned agent credential rather than demanding --lifecycle-uid, blaming delivery, or printing dm-durable-missing.
+  for (const profile of ["observer", "admin"] as const) {
+    const profFile = join(dir, `${profile}.creds`);
+    const minted = cli("auth", "mint", `fixed_${profile}`, "--space", space, "--profile", profile, "--out", profFile);
+    await until(() => minted.proc.exitCode !== null);
+    check(`#7531 fixture: auth mint --profile ${profile} succeeds`, await minted.exited === 0, minted.output());
+    for (const [label, extra] of [["without --lifecycle-uid", []], ["with --lifecycle-uid", ["--lifecycle-uid", wrongUid, "--channel", "general"]]] as const) {
+      const attempt = cli("join", "--space", space, "--creds", profFile, "--name", `try_${profile}`, ...extra);
+      await until(() => attempt.proc.exitCode !== null);
+      const code = await attempt.exited;
+      const out = attempt.output();
+      check(`#7531: ${profile} credential ${label} refuses PERMISSION_DENIED naming agent mint`,
+        code === 2 &&
+          /Code: +PERMISSION_DENIED/.test(out) &&
+          out.includes(`an ${profile}-profile credential cannot join as a mesh participant`) &&
+          out.includes("cotal auth mint <name> --provision --allow-subscribe general --out <file>") &&
+          !/lifecycle-paired|DELIVERY DAEMON|dm-durable-missing/i.test(out),
+        out);
+    }
+  }
+  const unprovisioned = join(dir, "unprovisioned.creds");
+  const mintOnly = cli("auth", "mint", "unprovisioned", "--space", space, "--allow-subscribe", "general,review.>", "--allow-publish", "general", "--out", unprovisioned);
+  check("mint without provisioning succeeds", await mintOnly.exited === 0, mintOnly.output());
+  const uid = /^\s*Lifecycle:\s+(\S+)/m.exec(mintOnly.output())?.[1];
+  assert.ok(uid, "mint did not report its lifecycle UID");
+  const missing = cli("join", "--space", space, "--creds", unprovisioned, "--lifecycle-uid", uid, "--name", "unprovisioned", "--channel", "review.code");
+  const missingCode = await missing.exited;
+  check("unprovisioned join names lifecycle and provisioning remedy", missingCode === 2 && /TARGET_NOT_FOUND/.test(missing.output()) && missing.output().includes(uid) && /auth mint.*--provision/.test(missing.output()), missing.output());
+  check("unprovisioned join hides raw durable error", !/dm-durable-missing|DmDurableMissingError/.test(missing.output()), missing.output());
+  const command = /`cotal auth mint (<name> --provision [^`]+)`/.exec(missing.output())?.[1];
+  assert.ok(command?.includes("--allow-subscribe review.code"), missing.output());
+  const replacement = join(dir, "replacement.creds");
+  const repair = cli("auth", "mint", ...command!.split(" ").map((arg) => arg === "<name>" ? "replacement" : arg === "<file>" ? replacement : arg));
+  check("the exact missing-inbox remedy mints a replacement for the chosen channel", await repair.exited === 0, repair.output());
+  const repairedUid = /^\s*Lifecycle:\s+(\S+)/m.exec(repair.output())?.[1];
+  assert.ok(repairedUid, repair.output());
+  await joins("replacement", replacement, repairedUid, "review.code");
+  check("the remedy explains how to preserve additional grants", missing.output().includes("replace `--allow-subscribe review.code` with `--identity <original-file>`"), missing.output());
+
+  function terminal(name: string, file: string, uid: string, channel = "general") {
+    const terminalEnv = { ...env };
+    delete terminalEnv.COTAL_NO_PROMPT;
+    const proc = cotalPty(["join", "--space", space, "--creds", file, "--lifecycle-uid", uid, "--name", name, "--channel", channel], {
+      cwd: project, env: Object.fromEntries(Object.entries(terminalEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    });
+    terminals.add(proc);
+    let text = "", code: number | undefined;
+    proc.onData((chunk) => { text += chunk; });
+    proc.onExit((result) => { code = result.exitCode; terminals.delete(proc); });
+    return { proc, output: () => clean(text), code: () => code };
+  }
+  const readOnly = await mint("read_only", "--allow-subscribe", "general");
+  const reader = terminal("reader", readOnly.file, readOnly.uid);
+  await until(() => reader.output().includes("Commands:") || reader.code() !== undefined);
+  check("read-only join does not invite broadcasting", /read-only.*#general/i.test(reader.output()) && !reader.output().includes("Type to broadcast"), reader.output());
+  reader.proc.write("read-only forbidden post\r");
+  await until(() => reader.output().includes("nothing was sent") || reader.code() !== undefined);
+  check("read-only broadcast names missing publish grant and mint remedy", /--allow-subscribe general.*--allow-publish general/.test(reader.output()) && !/Permissions Violation/.test(reader.output()), reader.output());
+  reader.proc.write("/who\r");
+  await until(() => reader.output().includes("Roster:"));
+  check("read-only session keeps roster command available", reader.code() === undefined, reader.output());
+
+  const writer = terminal("writer", allowed.file, allowed.uid);
+  await until(() => writer.output().includes("Commands:") || writer.code() !== undefined);
+  check("publish-capable join advertises broadcasting", writer.output().includes("Type to broadcast"), writer.output());
+  writer.proc.write("permitted writer post\r");
+  await until(() => reader.output().includes("permitted writer post"));
+  check("writer post reaches read-only reader", /#general writer.*permitted writer post/.test(reader.output()), reader.output());
+  const history = cli("history", "general", "--space", space);
+  check("history read succeeds", await history.exited === 0, history.output());
+  check("only authorized broadcast is stored", history.output().includes("permitted writer post") && !history.output().includes("read-only forbidden post"), history.output());
+  reader.proc.write("/dm writer hello privately\r");
+  await until(() => writer.output().includes("hello privately"));
+  check("read-only reader can still send a DM", /\(DM\).*reader.*hello privately/.test(writer.output()), writer.output());
+  reader.proc.write("/quit\r");
+  writer.proc.write("/quit\r");
+  await until(() => reader.code() !== undefined && writer.code() !== undefined);
+  check("both interactive sessions quit successfully", reader.code() === 0 && writer.code() === 0);
+
+  const family = await mint("family", "--allow-subscribe", "review.>", "--allow-publish", "review.code");
+  const follower = terminal("follower", family.file, family.uid, "review.>");
+  await until(() => follower.output().includes("Commands:") || follower.code() !== undefined);
+  check("family join announces that broadcasts need a concrete channel", follower.output().includes("Broadcasts need a concrete channel") && !follower.output().includes("Type to broadcast"), follower.output());
+  follower.proc.write("not a broadcast target\r");
+  await until(() => follower.output().includes("Nothing was sent.") || follower.code() !== undefined);
+  check("broadcast to a family is refused without suggesting a credential change", follower.output().includes("Nothing was sent.") && !follower.output().includes("auth mint"), follower.output());
+  follower.proc.write("/quit\r");
+  await until(() => follower.code() !== undefined);
+  check("interactive family join quits successfully", follower.code() === 0, follower.output());
   emitSentinel({ passed, failed: 0 });
 } finally {
+  for (const terminal of terminals) terminal.kill();
   for (const child of children) await killAndAwaitExit(child);
   await daemon?.stop();
   await broker.stop();

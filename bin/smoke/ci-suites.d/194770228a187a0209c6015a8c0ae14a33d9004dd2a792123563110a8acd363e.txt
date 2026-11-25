@@ -1,0 +1,3 @@
+# The Claude Code connector's naming request: one tool-less claude -p on the session's login,
+# with the message on stdin, read back from its JSON result.
+smoke:claude-naming

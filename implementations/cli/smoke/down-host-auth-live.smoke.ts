@@ -4,8 +4,9 @@
  * Needs nats-server on PATH. Run: pnpm smoke:down-host-auth:live (after pnpm build).
  */
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -24,24 +25,40 @@ let checks = 0;
 const check = (message: string, condition: unknown, detail?: string) => { assert.ok(condition, detail ? `${message}\n${detail}` : message); checks++; console.log(`  ✓ ${message}`); };
 const stacks: Array<{ root: string; space: string; pids: number[] }> = [];
 let requests = 0;
+const jwks = JSON.stringify({ keys: [generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" })] });
 const idp = createServer((_req, res) => {
   requests++;
   res.writeHead(200, { "content-type": "application/json" });
-  res.end('{"keys":[]}');
+  res.end(jwks);
 });
 await new Promise<void>((done) => idp.listen(0, "127.0.0.1", done));
 const idpUrl = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}/auth`;
 let idpClosed = false;
 
+async function checkCallerParent(root: string, cli: (...args: string[]) => Promise<{ code: number | null; out: string }>): Promise<void> {
+  const parent = join(root, "caller-output");
+  const args = ["auth", "mint", "caller", "--endpoint", "example.echo", "--out", "caller-output/caller.creds", "--plain"];
+  const missing = await cli(...args);
+  check("static: endpoint caller names the missing parent before discovery",
+    missing.code === 2 && missing.out.includes("TARGET_NOT_FOUND") && missing.out.includes(`the --out parent directory ${parent} does not exist`) &&
+    missing.out.includes("create the directory privately or choose an existing protected directory") && !existsSync(parent), missing.out);
+  mkdirSync(parent, { mode: 0o700 });
+  const present = await cli(...args);
+  check("static: a private parent reaches the stopped broker and leaves no caller output",
+    present.code === 2 && present.out.includes("TARGET_UNAVAILABLE") && present.out.includes("no mesh running at") &&
+    readdirSync(parent).length === 0, present.out);
+}
+
 async function cell(user: boolean): Promise<void> {
   const label = user ? "user" : "static";
-  const root = join(scratch, label);
+  const space = `down-host-${label}`;
+  // Down retains the static project's registration when its space and folder names match.
+  const root = join(scratch, user ? label : space);
   const home = join(root, "home");
   const xdg = join(root, "xdg");
   mkdirSync(join(root, ".cotal"), { recursive: true, mode: 0o700 });
   mkdirSync(home, { mode: 0o700 });
   mkdirSync(xdg, { mode: 0o700 });
-  const space = `down-host-${label}`;
   const stack = { root, space, pids: [] as number[] };
   stacks.push(stack);
   const env = { ...inherited, HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
@@ -60,6 +77,15 @@ async function cell(user: boolean): Promise<void> {
     } finally { clearTimeout(timer); }
   };
   const server = `nats://127.0.0.1:${await pickFreePort()}`;
+  const mintOut = join(root, "alice.creds");
+  const checkMintRefused = async (phase: string) => {
+    const refused = await cli("auth", "mint", "alice", "--out", mintOut, "--json");
+    const receipt = JSON.parse(refused.out.trim());
+    check(`user: ${phase} static mint refuses without restart advice or output`,
+      refused.code === 2 && receipt.target?.space === space && receipt.outcome === "refused" &&
+        receipt.error?.code === "UNSUPPORTED" && receipt.error?.remedy?.includes("login/enrollment") &&
+        !refused.out.includes("cotal up") && !existsSync(mintOut), refused.out);
+  };
   const up = await cli("up", "--server", server, "--space", space, "--no-manager", ...(user ? ["--user-auth", "--idp", idpUrl] : []));
   for (const file of [DELIVERY_PIDFILE, AUTH_PIDFILE, NATS_PIDFILE]) {
     const path = canonicalLocalProcessPath(file, stack);
@@ -73,6 +99,7 @@ async function cell(user: boolean): Promise<void> {
   check(`${label}: recorded infrastructure processes are alive`, stack.pids.length === (user ? 3 : 2) && stack.pids.every(alive));
   let leaseRefusal: { code: number | null; out: string } | undefined;
   if (user) {
+    await checkMintRefused("running");
     await new Promise<void>((done, reject) => idp.close((error) => error ? reject(error) : done()));
     idpClosed = true;
     const before = requests;
@@ -157,6 +184,8 @@ async function cell(user: boolean): Promise<void> {
   if (leaseRefusal) check("user: live delivery without a pidfile refuses for its renewed lease", leaseRefusal.code === 2 && leaseRefusal.out.includes("LIFECYCLE_BLOCKED") && leaseRefusal.out.includes("still renewing a lease"));
   for (let end = Date.now() + 10_000; stack.pids.some(alive) && Date.now() < end; await wait(100));
   check(`${label}: every recorded process exited`, stack.pids.every((pid) => !alive(pid)));
+  if (user) await checkMintRefused("stopped");
+  else await checkCallerParent(root, cli);
   const again = await cli("down");
   check(`${label}: repeated stop succeeds without a login`, again.code === 0);
 }

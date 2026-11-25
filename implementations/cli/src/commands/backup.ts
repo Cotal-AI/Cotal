@@ -2,11 +2,12 @@ import { hostname } from "node:os";
 import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import type { ConsumerInfo } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
   downloadStreamSnapshot,
+  oneLine,
   spaceBackupInventory,
   validateCanonicalBackupStreamConfig,
   validateBackupStreamState,
@@ -21,7 +22,7 @@ import {
   type BackupStreamState,
 } from "@cotal-ai/core";
 import {
-  CommandFailure, isCommandFailure, isMaintenanceError, jsonFlag, plainFlag, presentationOf, writeResult, type Report,
+  CommandFailure, codeSpan, isCommandFailure, isMaintenanceError, jsonFlag, plainFlag, presentationOf, writeResult, type Report,
   acquireMaintenanceLock,
   assertSingleSpaceBroker,
   assessRestoreClaim,
@@ -31,6 +32,7 @@ import {
   claimMaintenanceReady,
   cutController,
   getSpaceAuth,
+  preparedSpaceAt,
   protectedLocalDirectory,
   readMaintenanceJournal,
   readMaintenanceLockHolder,
@@ -39,12 +41,12 @@ import {
   readStoreIdentity,
   releaseMaintenanceClaim,
   releaseMaintenanceLock,
+  retainedLegacyBroker,
   sameStoreIdentity,
   workspaceSecretStore,
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
-  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
@@ -59,8 +61,10 @@ import { liveMeshProcesses, localIdentityCleanupTargets } from "./clean.js";
 import { backupMaintenance } from "./backup-maintenance.js";
 import { backupRead } from "./backup-read.js";
 import { backupRestore } from "./backup-restore.js";
+import { controllerStackApplies } from "./stack-up.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { shellWord } from "../lib/endpoint-errors.js";
 
 const OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -68,7 +72,7 @@ export const backupFlags: FlagSpec[] = [jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "recover/cleanup-fallback: confirm only the exact reviewed restore attempt" },
   { name: "dry-run", type: "boolean", description: "recover/cleanup-fallback: read the original journal and paths without a lock or write" },
   { name: "discard-history", type: "boolean", description: "cleanup-fallback: also delete a previous store that holds the only copy of the history or workflow runs the restore left out" },
-  { name: "only", type: "string", value: "<full|registry>", description: "create: artifact selection (default full; registry is the only partial); restore: only registry, to restore just the registry (default follows the artifact)" },
+  { name: "only", type: "string", value: "<selection>", description: "create takes full (default) or registry. Restore takes only registry and follows the artifact's selection if omitted" },
   { name: "store-dir", type: "string", value: "<dir>", description: "create: preserved source store; restore: restore target (default .cotal/nats)" },
   { name: "accept-missing-source", type: "boolean", description: "restore: explicit disaster consent when the inode-bound preserved source is absent" },
 ];
@@ -112,7 +116,13 @@ function backupInterruptNotice(root: string, attemptId: string, destination: str
 
 /** This root has no stopped preserved cut to back up. Nothing was claimed or copied. */
 function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal>): CommandFailure {
-  if (!record) return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy: "stop the stack with `cotal down --preserve-state`, then create the backup" });
+  if (!record) {
+    const prepared = preparedSpaceAt(root);
+    const remedy = prepared && !retainedLegacyBroker(root) && controllerStackApplies(root, prepared.space, {})
+      ? "run `cotal space show` to inspect this prepared space. Its first `cotal up` uses the stack controller, which does not support preservation or backup in this release"
+      : "a plain `cotal down` records no cut: start the stack with `cotal up`, stop it with `cotal down --preserve-state`, then create the backup";
+    return new CommandFailure("refused", "LIFECYCLE_BLOCKED", "backup requires a stopped preserved cut, and this root records none", { target: { root }, remedy });
+  }
   // A restore that still runs is named and waited for; only a stale one is rolled back.
   if (record.state === "restore-ready") {
     const assessment = assessRestoreClaim(record, { unrecordedOwnersDead: attemptProcessesGone(root) });
@@ -120,14 +130,14 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, record) : "finish this root's current maintenance attempt first; check it with `cotal status`",
   });
 }
 
 /** Another operation holds this root's maintenance lock. A backup or restore attempt whose claim that
  *  process holds is named by its claim, which `backup recover` knows; otherwise the lock names the
  *  operation, its process and when it took the lock. Nothing was claimed or copied. */
-function lockHeld(root: string, retry: string): CommandFailure {
+function lockHeld(root: string, args: ParsedArgs): CommandFailure {
   const holder = readMaintenanceLockHolder(root);
   let journal: ReturnType<typeof readMaintenanceJournal>;
   try { journal = readMaintenanceJournal(root); } catch { journal = undefined; }
@@ -140,7 +150,7 @@ function lockHeld(root: string, retry: string): CommandFailure {
     : "another maintenance operation holds this root's maintenance lock";
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup create is refused: ${who}; nothing was changed`, {
     target: { root, ...(holder ? { holderPid: holder.owner.pid, holderStartedAt: holder.owner.startedAt, ...(holder.operation ? { holderOperation: holder.operation } : {}) } : {}) },
-    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then run \`${retry}\` again; \`cotal status\` shows this root's maintenance state`,
+    remedy: `wait for ${holder ? `process ${holder.owner.pid}` : "that operation"} to finish, then ${retryCreateStep(args)}; \`cotal status\` shows this root's maintenance state`,
   });
 }
 
@@ -368,12 +378,15 @@ function overlaps(a: string, b: string): boolean {
   return contained(fromA) || contained(fromB);
 }
 
-function assertBackupPaths(root: string, source: string, destination: string): void {
-  const artifact = canonicalFuturePath(destination);
+function assertBackupPaths(root: string, source: string, destinationPath: string): void {
+  const artifact = canonicalFuturePath(destinationPath);
   const attempts = resolve(root, ".cotal", "maintenance", "attempts");
   if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
   if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
-  if (overlaps(artifact, attempts)) throw new Error("backup destination must not overlap the maintenance attempt directory");
+  if (overlaps(artifact, attempts))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} overlaps the maintenance attempt directory ${attempts}. No backup was created.`, {
+      target: { directory: destinationPath, attemptId: null, priorClaimAttemptId: null }, remedy: `name a destination outside ${attempts}`, selfContained: true,
+    });
 }
 
 async function snapshotStream(
@@ -461,13 +474,18 @@ function noSpaceFailure(error: unknown, observed: BackupObservation, args: Parse
   const destination = resolve(args.positionals[1]!);
   const { what, directory } = observed.writing;
   const written = what === "backup" ? "it removed the partial backup and published none" : `it removed the partial copy and wrote nothing to ${destination}`;
-  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on the disk that holds ${directory}, then run \`${retryCreate(args)}\` again` });
+  return new CommandFailure("failed", "OPERATION_FAILED", `backup create ran out of disk space (${code}) writing the ${what} in ${directory}; ${written}, and the preserved cut is still ready`, { target, native: { detail: error instanceof Error ? error.message : String(error) }, remedy: `free space on that disk, then ${retryCreateStep(args)}` });
 }
 
-/** The same `backup create`, for a failure that left the preserved cut ready to try again. */
-function retryCreate(args: ParsedArgs): string {
-  const flags = [args.values.only === undefined ? "" : ` --only ${args.values.only}`, args.values["store-dir"] === undefined ? "" : ` --store-dir ${args.values["store-dir"]}`].join("");
-  return `cotal backup create ${resolve(args.positionals[1]!)}${flags}`;
+/** A displayed retry must name the same paths after terminal escaping. */
+function retryCreateStep(args: ParsedArgs): string {
+  const { only, "store-dir": store } = args.values as BackupValues;
+  const selectionFlag = only === undefined ? "" : ` --only ${only}`;
+  const storeFlag = store === undefined ? "" : ` --store-dir${store.startsWith("-") ? "=" : " "}${shellWord(store)}`;
+  const command = `cotal backup create ${shellWord(resolve(args.positionals[1]!))}${selectionFlag}${storeFlag}`;
+  return oneLine(command) === command
+    ? `run ${codeSpan(command)} again`
+    : "rerun your original backup command from the same folder (a path cannot be displayed unchanged)";
 }
 
 export function validateBackupArguments(args: ParsedArgs): void {
@@ -479,7 +497,21 @@ export function validateBackupArguments(args: ParsedArgs): void {
   const attempt = new RegExp(`^(${mode === "recover" ? "restore|backup" : "restore"})-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i");
   if (maintenance && !attempt.test(directory)) throw new CommandFailure("refused", "USAGE_INVALID", mode === "recover" ? "name the full attempt id, restore-<uuid> or backup-<uuid>; a prefix, path or backup directory is refused" : "name the full restore attempt id, restore-<uuid>; a prefix, path or backup directory is refused", { remedy: "cotal status shows the attempt this root holds, under Maintenance" });
   const allowed = new Set(["json", "plain", ...(mode === "create" ? ["only", "store-dir"] : mode === "restore" ? ["only", "store-dir", "accept-missing-source"] : maintenance ? ["yes", "dry-run", ...(mode === "cleanup-fallback" ? ["discard-history"] : [])] : [])]);
-  if (Object.keys(args.values).some((flag) => !allowed.has(flag))) throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  const unsupported = Object.keys(args.values).filter((flag) => !allowed.has(flag));
+  if (unsupported.length) {
+    const flags = unsupported.map((flag) => `--${flag}`).join(", ");
+    if (mode === "create") {
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup create does not accept ${flags}`, { remedy: `remove ${flags} to create the backup` });
+    }
+    if (maintenance) {
+      const selection = mode === "cleanup-fallback" && unsupported.includes("store-dir") ? ". The full attempt ID alone selects its recorded fallback" : "";
+      throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${flags}${selection}`);
+    }
+    throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  }
+  if (maintenance && args.values["dry-run"] && args.values.yes) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} cannot combine --dry-run and --yes`, { remedy: "use --dry-run to review or --yes to apply" });
+  }
   if (mode === "create") selection(args.values.only as string | undefined);
   // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
   // selection, so an explicit `full` could not be honored over a registry-only artifact. Refused here,
@@ -515,7 +547,7 @@ export async function backup(args: ParsedArgs): Promise<void> {
     // The guard's own sentence is the operator's evidence, as on restore: it names the cause, such as
     // a broker still answering at the cut's endpoint. Snapshot bytes and credentials never reach it.
     const detail = error instanceof Error ? error.message : String(error);
-    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then run \`${retryCreate(args)}\` again` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
+    throw new CommandFailure(outcome, outcome === "refused" ? "LIFECYCLE_BLOCKED" : outcome === "failed" ? "OPERATION_FAILED" : "OPERATION_UNKNOWN", outcome === "refused" ? "backup preparation did not establish an eligible stopped preserved cut; no published artifact was established" : outcome === "failed" ? "backup creation failed and its native attempt cleanup completed; no published artifact was established" : "the backup attempt did not confirm publication and cleanup; its original attempt is retained without a retry", { target, native: { ...(isMaintenanceError(error) ? { code: error.code } : {}), detail }, remedy: outcome === "failed" ? `the preserved cut is still ready; fix the cause in the native detail, then ${retryCreateStep(args)}` : "inspect the preserved-cut maintenance state and original attempt before recovery; snapshot bytes and credentials were not printed" });
   }
   writeResult(presentationOf(args.values), { command: "backup create", target: { space: observed.published!.space, directory: observed.published!.directory }, result: { ...observed.published!, cleanupConfirmed: observed.cleanupConfirmed } }, backupCreateView);
 }
@@ -546,13 +578,22 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   const journal = readMaintenanceJournal(root);
   if (!journal) throw notReady(root, undefined);
   const destinationPath = resolve(destination);
+  const folder = dirname(destinationPath);
   let destinationExists: boolean;
   try { destinationExists = lstatSync(destinationPath, { throwIfNoEntry: false }) !== undefined; }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES") {
+      const withChmod = oneLine(folder) === folder && existsSync(folder)
+        ? ` with ${codeSpan(`chmod u+x ${shellWord(folder)}`)}` : "";
+      throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot search ${folder}, so the backup cannot be created in it; nothing was written`, {
+        target: { directory: destinationPath, folder },
+        remedy: `make the path to that folder searchable${withChmod}, or name a destination in a folder this account can write and search`,
+      });
+    }
     if (code !== "ENOTDIR" && code !== "ELOOP") throw error;
     const problem = code === "ENOTDIR" ? "contains a parent that is not a directory" : "contains a symbolic-link loop";
-    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} ${problem} (${code}); nothing was written`, { target: { directory: destinationPath, folder }, native: { code }, remedy: "name a destination with an existing directory as its parent", selfContained: true });
   }
   if (destinationExists) {
     // The partial artifact of an interrupted create is named with the command that removes it.
@@ -572,13 +613,18 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     .find((path) => overlaps(canonicalFuturePath(destinationPath), path));
   if (cleaned)
     throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} is inside ${cleaned}, which \`cotal clean all\` removes; nothing was written`, { target: { directory: destinationPath, removedBy: cleaned }, remedy: `name a destination outside ${cleaned}`, selfContained: true });
-  try { accessSync(dirname(destinationPath), constants.W_OK | constants.X_OK); }
+  try { accessSync(folder, constants.W_OK | constants.X_OK); }
   catch {
-    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${dirname(destinationPath)}, so the backup cannot be created in it; nothing was written`, { target: { directory: destinationPath, folder: dirname(destinationPath) }, remedy: `make that folder writable with chmod u+w ${dirname(destinationPath)}, or name a destination in a folder this account can write` });
+    // Do not offer a command whose operand the terminal would change by escaping invisibles.
+    const withChmod = oneLine(folder) === folder ? ` with ${codeSpan(`chmod u+w ${shellWord(folder)}`)}` : "";
+    throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot write ${folder}, so the backup cannot be created in it; nothing was written`, {
+      target: { directory: destinationPath, folder },
+      remedy: `make that folder writable${withChmod}, or name a destination in a folder this account can write`,
+    });
   }
   // Verify and restore read the artifact at its real path and refuse one that another local account
   // could change there, so create refuses a destination whose folders break that rule.
-  protectedLocalDirectory(realpathSync.native(dirname(destinationPath)), "the backup destination");
+  protectedLocalDirectory(realpathSync.native(folder), "the backup destination");
   if (values["store-dir"] !== undefined && journal.state === "ready") assertNamedStore(root, journal, resolve(values["store-dir"]));
   // Omitted, the store is the cut's own source, which a restore into --store-dir put outside
   // .cotal/nats. An interrupted create's claim keeps that source, and this create recovers the claim
@@ -591,7 +637,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
   let lock: MaintenanceLock;
   try { lock = acquireMaintenanceLock(root, BACKUP_CREATE_LOCK); }
   catch (error) {
-    if (isMaintenanceError(error) && error.code === "lock-held") throw lockHeld(root, retryCreate(args));
+    if (isMaintenanceError(error) && error.code === "lock-held") throw lockHeld(root, args);
     throw error;
   }
   let ready: MaintenanceReadyRecord;
@@ -615,7 +661,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       observed.mutationAttempted = true;
     }
     ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
-    assertBackupPaths(root, ready.source.path, destination);
+    assertBackupPaths(root, ready.source.path, destinationPath);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);
@@ -634,7 +680,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     // is refused naming that listener, as restore and resume refuse it.
     const space = ready.space;
     await assertEndpointUnreachable(recordedServer).catch((error: Error) => {
-      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then run \`${retryCreate(args)}\` again` });
+      throw new CommandFailure("refused", "CONFLICT", `${error.message}; a process there may still be changing the preserved store, so nothing was copied`, { target: { root, space, server: recordedServer }, remedy: `stop the process that listens on ${recordedServer}, then ${retryCreateStep(args)}` });
     });
     // Ownership precedes existence: the claim is journaled with pending slots for every path this
     // attempt may create, so a crash at any later instant leaves a journal owner to recover from.

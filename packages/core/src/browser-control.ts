@@ -211,9 +211,7 @@ export async function openBrowserManagerCaller(opts: BrowserManagerCallerOptions
   const bound = managerCallerBinding(authority.bearer, {
     space: opts.space, owner: opts.owner, actor: opts.actor, lifecycleUid: opts.lifecycleUid, instanceId: opts.instanceId,
   });
-  // The user-mode connect of `standaloneConnectOpts`: the principal the binding checked, and a fresh
-  // nonce, name the connection and its inbox.
-  const connId = userInboxConnId(opts.owner, opts.actor, `ibx${globalThis.crypto.randomUUID().replace(/-/g, "")}`);
+  const connId = userInboxConnId(opts.owner, opts.actor);
   const nc = await wsconnect({
     servers: opts.servers,
     name: connId,

@@ -92,9 +92,8 @@ export async function who(args: ParsedArgs): Promise<void> {
   const errors: string[] = [];
   const { ep, space } = await openTransient(v, "who", {
     throwOnRefusal: true,
-    // ROSTER_INCOMPLETE, ROSTER_STALE and ROSTER_ERROR are states of a live watch, and the broker
-    // denies a watch by name to a credential that may not read the roster. A one-time read has none
-    // of those states, and its denied read times out instead.
+    // Keep the watch states and permission diagnostics on credentialed meshes. On an open mesh,
+    // the transient endpoint reads once without creating the roster or channel registry.
     watch: true,
     report: (level, e) => (level === "error" ? errors.push(e.message) : console.error(c.yellow(`! ${e.message}`))),
   }).catch((e: unknown) => {
@@ -192,7 +191,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       warnings: [...warnings, ...labels],
       ...(unread ? { partial: { message: `who could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}`, ...(remedy ? { remedy } : {}) } } : {}),
     },
-    (r) => whoView(r, space, Boolean(v.all), shared, roster),
+    (r) => whoView(r, space, scope, shared, roster, Boolean(v.waiting)),
   );
 }
 
@@ -204,7 +203,8 @@ export function whoLabel(name: string, id: string, role?: string | null): string
 const STATUS_TONE: Record<Presence["status"], Styled["tone"]> = { working: "ok", waiting: "waiting", idle: undefined, offline: "hint" };
 const STATUS_MARK: Record<Presence["status"], string> = { working: "●", waiting: "◐", idle: "○", offline: "⨯" };
 
-function whoView(r: WhoResult, space: string, all: boolean, shared: ReadonlySet<string>, roster: readonly Presence[]): Report {
+function whoView(r: WhoResult, space: string, scope: "all" | "waiting" | "agents", shared: ReadonlySet<string>, roster: readonly Presence[], waiting: boolean): Report {
+  const all = scope === "all";
   const now = Date.now();
   const byId = new Map(roster.map((p) => [p.card.id, p]));
   const columns: Column[] = [
@@ -236,8 +236,11 @@ function whoView(r: WhoResult, space: string, all: boolean, shared: ReadonlySet<
     };
   });
   const notes: Cell[] = [];
-  if (!r.items.length) notes.push({ text: `no ${all ? "participants" : "agents"} present in ${space}`, tone: "hint" });
-  if (r.hidden && !all) notes.push({ text: `${r.hidden} infrastructure ${r.hidden === 1 ? "endpoint is" : "endpoints are"} not listed; \`cotal who --all\` lists them`, tone: "hint" });
+  if (!r.items.length) notes.push({ text: `no ${all ? "participants" : "agents"} ${waiting ? "match --waiting" : "present"} in ${space}`, tone: "hint" });
+  if (r.hidden && !all) {
+    const change = scope === "waiting" ? "`--all` instead of `--waiting`" : "`--all`";
+    notes.push({ text: `${r.hidden} infrastructure ${r.hidden === 1 ? "endpoint is" : "endpoints are"} not listed; repeat this command with ${change} to list them`, tone: "hint" });
+  }
   return {
     sections: [
       {

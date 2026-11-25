@@ -5,6 +5,8 @@
  * `--mention`. The refusal also says what to run next, in `error.remedy` and the human report.
  * A `--creds` credential that may not read presence used to wait out a five-second Direct Get
  * timeout and exit 3 with an unknown `timeout`; it is refused with `PERMISSION_DENIED`.
+ * A broker publish denial proves nothing was stored for any destination. Explicit credential
+ * refusals give a recovery command and report the channel grants known from the file (#7536).
  * A `--server` nothing answers at used to be reported as the space's mesh recorded at its root but
  * not running, with `cotal up` as the Next, and in a folder with no space as a `main` mesh recorded
  * there. `send` and `history` now name the address that did not answer and, from the space's root or
@@ -21,12 +23,14 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
+import { chatStream, CotalEndpoint, createSpaceAuth, DEFAULT_SPACE, dmStream, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket, provisionAgent, seedChannelRegistry, serverConfig, setupSpaceStreams, taskStream } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, recordMesh, removeMesh, saveSpaceAuth } from "@cotal-ai/workspace";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -35,8 +39,10 @@ if (!existsSync(BIN)) {
 }
 
 interface Envelope {
+  schemaVersion: number;
   outcome: string;
-  target: { space?: string; name?: string } | null;
+  target: { space?: string; name?: string; post?: string[] | null; file?: string } | null;
+  result?: { stored?: boolean; messageId?: string; sender?: { principal: string } };
   error?: { code: string; message?: string; remedy?: string };
 }
 
@@ -64,19 +70,31 @@ const openBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(openPor
 const releaseOpenBroker = teardownOnSignal(openBroker, dir);
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-const run = (args: string[], cwd = root) => {
-  const r = spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
+const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+const run = (args: string[], cwd = root, shell = false) => {
+  const r = spawnSync(shell ? "sh" : process.execPath, shell ? args : [BIN, ...args], { cwd, env, encoding: "utf8", timeout: 60_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout ?? "") as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", envelope };
 };
 const shown = (r: ReturnType<typeof run>) => ({ status: r.status, stdout: r.stdout.slice(0, 600), stderr: r.stderr.slice(0, 600) });
+const retryBodySend = (refusal: ReturnType<typeof run>, cwd: string, body: string) => {
+  const command = /`cotal (send [^`]+) "<message>"`/.exec(refusal.envelope?.error?.remedy ?? "")?.[1];
+  if (!command) throw new Error(`missing send retry: ${JSON.stringify(shown(refusal))}`);
+  return run(["-c", `exec "$0" "$1" ${command} "$2"`, process.execPath, BIN, body], cwd, true);
+};
 const firstLine = (text: string) => text.split("\n")[0];
+const credsPath = (label: string) => join(dir, `${label}.creds`);
+let issuer: CotalEndpoint | undefined;
+let recipient: CotalEndpoint | undefined;
+let inspector: Awaited<ReturnType<typeof connect>> | undefined;
 
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 25, delayMs: 200 });
-  await setupSpaceStreams({ servers, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  const provisioner = newIdentity();
+  const provisionerCreds = await mintCreds(auth, provisioner, "provisioner");
+  await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+  await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: {}, "--audit": {} } } });
   recordMesh({ space, server: servers, root, mode: "auth", ts: new Date().toISOString() });
 
   for (const style of [[], ["--plain"]]) {
@@ -93,13 +111,10 @@ try {
   check("json: the envelope alone reports the refusal, with nothing on stderr", json.stderr === "", shown(json));
   check("json: the remedy names who to list", json.envelope?.error?.remedy?.includes(`cotal who --all --space ${space}`) === true, json.envelope?.error);
 
-  const mention = run(["send", "-c", "general", "--mention", absent, "hello", "--space", space, "--json"]);
-  check("mention: an absent mention is refused with the resolved space", mention.status === 2 && mention.envelope?.error?.code === "TARGET_NOT_FOUND" && mention.envelope.target?.space === space, shown(mention));
-
-  const adminCreds = join(dir, "admin.creds");
-  writeFileSync(adminCreds, await mintCreds(auth, newIdentity(), "admin"), { mode: 0o600 });
-  const denied = run(["send", "-c", "general", "hello", "--creds", adminCreds, "--server", servers, "--space", space, "--json"]);
-  check("creds: a credential that may not read presence is refused PERMISSION_DENIED with the space", denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && denied.envelope.target?.space === space, shown(denied));
+  const probeCreds = join(dir, "probe.creds");
+  writeFileSync(probeCreds, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });
+  const denied = run(["send", "-c", "general", "hello", "--creds", probeCreds, "--server", servers, "--space", space, "--json"]);
+  check("creds: a credential that may not read presence is refused PERMISSION_DENIED before publishing", denied.status === 2 && denied.envelope?.error?.code === "PERMISSION_DENIED" && denied.envelope.target?.space === space && denied.envelope.error.message?.includes("may not read the presence") === true, shown(denied));
 
   // A --server nothing answers at names that address. The space's own broker still answers and is
   // only named, never tried in its place, so nothing reaches its history.
@@ -112,7 +127,7 @@ try {
     const r = run([...args, "--json"]);
     check(`${args.slice(0, 2).join(" ")}${args.includes("--space") ? " --space" : ""} --server <closed>: refused TARGET_UNAVAILABLE, exit 2, naming that address and the space's recorded broker`,
       r.status === 2 && r.envelope?.error?.code === "TARGET_UNAVAILABLE" && r.envelope.error.message === unanswered
-        && r.envelope.error.remedy === `check that address, or drop --server to reach "${space}" at ${servers}, where it is recorded`, shown(r));
+        && r.envelope.error.remedy === `check that address, or drop --server and retry with \`--space ${space}\` to reach its recorded broker at ${servers}`, shown(r));
   }
   const empty = mkdtempSync(join(dir, "empty-"));
   const bare = run(["send", "-c", "general", "x", "--server", closed, "--json"], empty);
@@ -121,15 +136,172 @@ try {
       && bare.envelope.error.remedy === "check that address and that a broker runs there" && !bare.stdout.includes("recorded at"), shown(bare));
   check("the space's history is unchanged", kept.status === 0 && before === "kept" && history() === before, { kept: shown(kept), before, after: history() });
 
+  // The CLI resolves a real direct recipient and reaches the broker's message publish ACL on all
+  // three routes. Stream counts and sequence frontiers detect both stored sends and consumed ones.
+  issuer = new CotalEndpoint({ servers, space, creds: provisionerCreds, channels: [], consume: false, watchPresence: false, registerPresence: false, card: { name: "issuer", kind: "endpoint" } });
+  await issuer.start();
+  const listener = newIdentity();
+  const lifecycleUid = mintLifecycleUid();
+  const listenerCreds = await provisionAgent(issuer, auth, listener, { lifecycleUid, role: "reviewer", subscribe: [], allowSubscribe: [], durableMembership: false });
+  recipient = new CotalEndpoint({
+    servers, space, creds: listenerCreds, lifecycleUid,
+    channels: [], consume: false, watchPresence: false, registerPresence: true,
+    card: { name: "alice", role: "reviewer", kind: "agent", id: listener.id },
+  });
+  await recipient.start();
+  inspector = await connect({ servers, authenticator: credsAuthenticator(new TextEncoder().encode(provisionerCreds)), inboxPrefix: `_INBOX_${provisioner.id}` });
+  const jsm = await jetstreamManager(inspector);
+  const { consumer_count: presenceConsumers } = (await jsm.streams.info(`KV_${presenceBucket(space)}`)).state;
+  check("the recipient fixture does not bind a presence watch", presenceConsumers === 0, { presenceConsumers });
+  const state = async (stream: string) => {
+    const { messages, last_seq } = (await jsm.streams.info(stream)).state;
+    return { messages, last_seq };
+  };
+  for (const [label, flags] of [
+    ["observer", ["--profile", "observer"]], ["admin", ["--profile", "admin"]],
+    ["readonly", ["--allow-subscribe", "general", "--no-persona"]], ["poster", ["--allow-publish", "general", "--no-persona"]],
+  ] as const) {
+    const r = run(["auth", "mint", label, "--space", space, ...flags, "--out", credsPath(label), "--json"]);
+    if (r.status !== 0) throw new Error(`auth mint ${label} failed: ${JSON.stringify(shown(r))}`);
+  }
+  const mention = run(["send", "-c", "general", "--mention", absent, "hello", "--space", space, "--server", servers, "--creds", credsPath("observer"), "--json"]);
+  check("mention: the roster retry keeps the space, server and credential file",
+    mention.status === 2 && mention.envelope?.error?.code === "TARGET_NOT_FOUND" && mention.envelope.target?.space === space &&
+    mention.envelope.error.remedy?.includes(`cotal who --all --space ${space} --server ${servers} --creds `) === true && mention.envelope.error.remedy.includes("observer.creds"), shown(mention));
+  const generalMint = `cotal auth mint <label> --space ${space} --allow-publish general --no-persona --out <file>`;
+  for (const [flag, destination, stream] of [
+    ["-t", "alice", dmStream(space)], ["-r", "reviewer", taskStream(space)], ["-c", "general", chatStream(space)],
+  ] as const) {
+    const prior = await state(stream);
+    const args = ["send", flag, destination, "acl probe", "--space", space];
+    for (const label of flag === "-c" ? ["observer", "admin", "readonly"] : ["observer"]) {
+      for (const style of ["text", "json"]) {
+        const r = run([...args, "--creds", credsPath(label), ...(style === "json" ? ["--json"] : [])]);
+        const detail = style === "json" ? r.envelope?.error : { code: r.stderr.includes("PERMISSION_DENIED") ? "PERMISSION_DENIED" : undefined, message: r.stderr, remedy: r.stderr };
+        check(`${style} ${flag} with ${label}: refused exit 2 with a credential remedy`, r.status === 2 && detail?.code === "PERMISSION_DENIED"
+          && detail.message?.includes("it was not stored") === true && detail.remedy?.includes("cotal send") === true && detail.remedy.includes("without --creds")
+          && (style !== "json" || r.envelope?.outcome === "refused" && r.envelope.target?.space === space), shown(r));
+        if (flag === "-c") {
+          const profile = label === "readonly" ? "agent" : label;
+          check(`${style} channel with ${label}: names its profile, empty post grant and least-privilege mint`, detail?.remedy?.includes(`Credential profile: ${profile}`) === true
+            && detail.remedy.includes(`may post to no channel in ${space}`) && detail.remedy.includes(generalMint)
+            && (style !== "json" || r.envelope?.target?.post?.length === 0), shown(r));
+        }
+        const after = await state(stream);
+        check(`${style} ${flag} with ${label}: neither broker count nor sequence advanced`, after.messages === prior.messages && after.last_seq === prior.last_seq, { prior, after });
+      }
+    }
+    const control = run([...args, ...(flag === "-c" ? ["--creds", credsPath("poster")] : []), "--json"]);
+    const after = await state(stream);
+    check(`authorized ${flag}: shipped send stores once and confirms storage`, control.status === 0 && control.envelope?.result?.stored === true
+      && after.messages === prior.messages + 1 && after.last_seq === prior.last_seq + 1, { reply: shown(control), prior, after });
+  }
+  const auditSend = ["send", "--channel=--audit", "acl probe", "--space", space, "--json"];
+  const chatBefore = await state(chatStream(space));
+  const limited = run([...auditSend, "--creds", credsPath("poster")]);
+  const chatDenied = await state(chatStream(space));
+  check("a different channel grant remains visible and the mint names the attempted channel", limited.status === 2 && limited.envelope?.error?.code === "PERMISSION_DENIED"
+    && limited.envelope.error.remedy?.includes("#general") === true && limited.envelope.error.remedy.includes("--allow-publish=--audit")
+    && JSON.stringify(limited.envelope.target?.post) === '["general"]'
+    && chatDenied.messages === chatBefore.messages && chatDenied.last_seq === chatBefore.last_seq, shown(limited));
+  const minted = run(["auth", "mint", "audit_poster", "--space", space, "--allow-publish=--audit", "--no-persona", "--out", credsPath("audit_poster"), "--json"]);
+  if (minted.status !== 0) throw new Error(`auth mint audit_poster failed: ${JSON.stringify(shown(minted))}`);
+  const recovered = run([...auditSend, "--creds", credsPath("audit_poster")]);
+  const chatAfter = await state(chatStream(space));
+  check("the channel mint remedy produces a credential that stores on the requested channel", recovered.status === 0 && recovered.envelope?.result?.stored === true
+    && chatAfter.messages === chatBefore.messages + 1 && chatAfter.last_seq === chatBefore.last_seq + 1, { reply: shown(recovered), chatBefore, chatAfter });
+  const brokerOnlyArgs = ["send", "--channel=--audit", "registered broker with explicit creds", "--server", servers, "--creds", credsPath("audit_poster"), "--json"];
+  const brokerOnly = run(brokerOnlyArgs, empty);
+  check("--server with --creds and no --space stores in the broker's registered space", brokerOnly.status === 0
+    && brokerOnly.envelope?.target?.space === space && brokerOnly.envelope.result?.stored === true, shown(brokerOnly));
+
+  const extra = { space: `${space}-other`, server: servers, root: empty, mode: "auth" as const, ts: new Date().toISOString() };
+  recordMesh(extra);
+  try {
+    const multiple = run(brokerOnlyArgs, empty);
+    check("multiple registrations at the broker keep the raw credential target at main", multiple.status === 2
+      && multiple.envelope?.target?.space === DEFAULT_SPACE && multiple.envelope.error?.code === "PERMISSION_DENIED", shown(multiple));
+  } finally { removeMesh(extra.space); }
+  removeMesh(space);
+  try {
+    const unregistered = run(brokerOnlyArgs, empty);
+    check("no registration at the broker keeps the raw credential target at main", unregistered.status === 2
+      && unregistered.envelope?.target?.space === DEFAULT_SPACE && unregistered.envelope.error?.code === "PERMISSION_DENIED", shown(unregistered));
+  } finally { recordMesh({ space, server: servers, root, mode: "auth", ts: new Date().toISOString() }); }
+
+  const quotedCreds = credsPath("poster's credential");
+  copyFileSync(credsPath("poster"), quotedCreds);
+  const withCreds = ["send", "-c", "general", "--space", space, "--server", servers, "--creds", quotedCreds, "--json"];
+  const expectedSender = run([...withCreds, "credential control"]).envelope?.result?.sender?.principal;
+  const missingWithCreds = run([...withCreds, "--file", "missing.txt"]);
+  const retriedWithCreds = retryBodySend(missingWithCreds, root, "credential retry");
+  check("file retry quotes the credential path and publishes as that credential", missingWithCreds.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && retriedWithCreds.status === 0 && retriedWithCreds.envelope?.result?.stored === true
+    && expectedSender !== undefined && retriedWithCreds.envelope.result.sender?.principal === expectedSender, { refusal: shown(missingWithCreds), retry: shown(retriedWithCreds), expectedSender });
+
   // #7045: an open space that runs elsewhere gets its streams from its first participant, and a
   // one-shot send may be that participant. The space is not registered and its broker is open.
   await awaitBrokerReady(() => isReachable(openServers), { servers: openServers, attempts: 25, delayMs: 200 });
   const openSpace = `sendopen-${randomUUID().slice(0, 8)}`;
   const first = run(["send", "-c", "general", "first-open", "--space", openSpace, "--server", openServers, "--json"]);
   check("open: the first send to a never-used open space is stored, exit 0", first.status === 0 && first.envelope?.outcome === "ok", shown(first));
+  const absentOpen = run(["send", "-t", absent, "hello", "--space", openSpace, "--server", openServers, "--json"], empty);
+  const rosterCommand = /`cotal (who --all [^`]+)`/.exec(absentOpen.envelope?.error?.remedy ?? "");
+  const roster = rosterCommand && run([...rosterCommand[1]!.split(" "), "--json"], empty);
+  check("open: following the absent-recipient hint lists the unregistered space on its broker",
+    absentOpen.status === 2 && absentOpen.envelope?.error?.code === "TARGET_NOT_FOUND" && roster?.status === 0 && roster.envelope?.target?.space === openSpace, { send: shown(absentOpen), roster: roster && shown(roster) });
   const openHistory = run(["history", "general", "--space", openSpace, "--server", openServers, "--json"]);
   const openTexts = (JSON.parse(openHistory.stdout || "{}") as { result?: { items?: { text?: string }[] } }).result?.items?.map((m) => m.text).join("|");
   check("open: its history holds that message", openHistory.status === 0 && openTexts === "first-open", shown(openHistory));
+
+  const openRoot = join(dir, "open-project");
+  mkdirSync(join(openRoot, ".cotal"), { recursive: true, mode: 0o700 });
+  recordMesh({ space: openSpace, server: openServers, root: openRoot, mode: "open", ts: new Date().toISOString() });
+  const otherSpace = `${openSpace}-other`;
+  const missing = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", "missing.txt", "-j"], openRoot);
+  const retried = retryBodySend(missing, openRoot, "file retry");
+  const emptyFile = "./message.txt";
+  writeFileSync(join(openRoot, emptyFile), "");
+  const emptyBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--file", emptyFile, "--json"], openRoot);
+  check("an empty message file is refused with its path, explicit space and a retry",
+    emptyBody.status === 1 && emptyBody.stderr === "" && emptyBody.envelope?.outcome === "refused"
+      && emptyBody.envelope.target?.space === otherSpace && emptyBody.envelope.target.file === emptyFile
+      && emptyBody.envelope.error?.code === "USAGE_INVALID" && emptyBody.envelope.error.message?.includes(`"${emptyFile}" is empty`) === true
+      && emptyBody.envelope.error.remedy?.includes("write a nonempty message in the file") === true, shown(emptyBody));
+  const emptyRetry = retryBodySend(emptyBody, openRoot, "empty file retry");
+  const targetHistory = run(["history", "general", "--server", openServers, "--space", otherSpace, "--json"], openRoot);
+  const folderHistory = run(["history", "general", "--json"], openRoot);
+  check("each printed file retry returns a JSON storage receipt and publishes only to the explicit space", missing.status === 2 && missing.envelope?.error?.code === "TARGET_NOT_FOUND"
+    && retried.status === 0 && retried.envelope?.schemaVersion === 1 && retried.envelope.target?.space === otherSpace && retried.envelope.result?.stored === true
+    && emptyRetry.status === 0 && emptyRetry.envelope?.schemaVersion === 1 && emptyRetry.envelope.target?.space === otherSpace && emptyRetry.envelope.result?.stored === true
+    && targetHistory.status === 0 && targetHistory.stdout.includes('"text":"file retry"') && targetHistory.stdout.includes('"text":"empty file retry"')
+    && folderHistory.status === 0 && folderHistory.stdout.includes('"text":"first-open"') && !folderHistory.stdout.includes('file retry'),
+    { refusal: shown(missing), retry: shown(retried), emptyRetry: shown(emptyRetry), target: shown(targetHistory), folder: shown(folderHistory) });
+  const noBody = run(["send", "--server", openServers, "--space", otherSpace, "-c", "general", "--json"], openRoot);
+  const bodyRetry = retryBodySend(noBody, openRoot, "missing body retry");
+  check("following the printed missing-body retry returns a JSON storage receipt for the explicit space",
+    noBody.status === 1 && noBody.envelope?.outcome === "refused" && noBody.envelope.error?.code === "USAGE_INVALID"
+    && bodyRetry.status === 0 && bodyRetry.envelope?.schemaVersion === 1 && bodyRetry.envelope.target?.space === otherSpace
+    && bodyRetry.envelope.result?.stored === true && !!bodyRetry.envelope.result.messageId,
+    { refusal: shown(noBody), retry: shown(bodyRetry) });
+  const invalidServer = run(["send", "--server", "nats://fixture-user:fixture-secret@127.0.0.1:4222", "-c", "general", "--json"], openRoot);
+  check("body grammar remedies keep explicit targets but do not print credentials embedded in an invalid URL",
+    noBody.status === 1 && noBody.envelope?.error?.remedy?.includes(`--space ${otherSpace} --server ${openServers}`) === true
+    && invalidServer.status === 1 && !invalidServer.stdout.includes("fixture-secret") && !invalidServer.stderr.includes("fixture-secret"),
+    { noBody: shown(noBody), invalidServer: shown(invalidServer) });
+  const alias = run(["send", "-c", "general", "wrong-space", "--server", `nats://localhost:${openPort}`, "--json"], openRoot);
+  const openInspector = await connect({ servers: openServers });
+  try {
+    const streamNames: string[] = [];
+    const openJsm = await jetstreamManager(openInspector);
+    for await (const name of openJsm.streams.names()) streamNames.push(name);
+    check("open: an unmatched loopback host inside the registered project refuses without creating a chat stream for main",
+      alias.status === 2 && alias.envelope?.error?.code === "TARGET_NOT_FOUND" && alias.envelope.error.message?.includes(`${openSpace} (${openServers})`) === true
+        && streamNames.includes(chatStream(openSpace)) && !streamNames.includes(chatStream(DEFAULT_SPACE)), { reply: shown(alias), streamNames });
+  } finally {
+    await openInspector.close();
+  }
+
   // The distinction the remedy above depends on stays: on a space this machine started, absent
   // streams mean the space was deleted, so a send refuses rather than create them again.
   const hereSpace = `sendhere-${randomUUID().slice(0, 8)}`;
@@ -141,6 +313,9 @@ try {
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {
+  for (const result of await Promise.allSettled([recipient?.stop(), issuer?.stop(), inspector?.close()])) {
+    if (result.status === "rejected") check("fixture connections closed", false, result.reason);
+  }
   await killAndAwaitExit(broker);
   await killAndAwaitExit(openBroker);
   releaseBroker();

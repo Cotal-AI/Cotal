@@ -16,7 +16,7 @@ const env = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
 Object.assign(env, { COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" });
 let anchor: SmokeSandboxAnchor | undefined;
-type Envelope = { outcome?: string; target?: { space?: string; path?: string }; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; message: string }[]; result?: { items?: { text: string }[]; grants?: { read: string[]; post: string[]; role: string | null } } };
+type Envelope = { outcome?: string; target?: { space?: string; path?: string }; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code: string; message: string }[]; result?: { lifecycleUid?: string; items?: { text: string }[]; grants?: { read: string[]; post: string[]; role: string | null } } };
 function cli(cwd: string, ...args: string[]) {
   const options = { cwd, env, encoding: "utf8" as const, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 };
   assertSmokeSandboxDown(cwd === root ? anchor : undefined, args, options);
@@ -48,7 +48,8 @@ try {
   ok(home, "space", "create", space, "--root", root, "--json");
   anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
   ok(root, "up", "--server", server, "--no-manager", "--json");
-  ok(root, "auth", "mint", "ana", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "reviewer", "--out", stale, "--json");
+  const staleUid = ok(root, "auth", "mint", "ana", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "reviewer", "--out", stale, "--json").envelope?.result?.lifecycleUid;
+  assert.ok(staleUid);
   ok(root, "auth", "mint", "watcher", "--profile", "observer", "--out", observer, "--json");
   const emptyMint = ok(root, "auth", "mint", "emptyagent", "--allow-subscribe", "", "--allow-publish", "", "--out", empty, "--json");
   assert.deepEqual(emptyMint.envelope?.result?.grants, { read: [], post: [], role: null, fromIdentity: [] });
@@ -88,6 +89,15 @@ try {
       assert.ok(text.stderr.includes(remedy));
     });
   }
+  const joined = cli(root, "join", "--space", space, "--name", "ana", "--creds", stale, "--lifecycle-uid", staleUid);
+  check("join names the replaced local identity and a provisioned replacement", () => {
+    assert.equal(joined.status, 2);
+    assert.match(joined.stderr, /Code: +PERMISSION_DENIED/);
+    assert.ok(joined.stderr.includes(`Space:   ${space}`), joined.stderr);
+    assert.ok(joined.stderr.includes(`space "${space}" has a different local identity`), joined.stderr);
+    assert.ok(joined.stderr.includes(`cotal auth mint <label> --space ${space} --provision --allow-subscribe general --allow-publish general --role reviewer --no-persona --out <new file>`), joined.stderr);
+    assert.ok(joined.stderr.includes("join with the lifecycle UID that mint reports"), joined.stderr);
+  });
   const observerRefusal = cli(root, "who", "--all", "--creds", observer, "--space", space, "--server", server, "--json");
   assert.equal(observerRefusal.status, 2);
   assert.equal(observerRefusal.envelope?.error?.code, "PERMISSION_DENIED");

@@ -238,8 +238,8 @@ export interface StartAuthCalloutOpts {
   /** Permission builder for a validated principal (the flip feeds core's `permissionsFor` via a thin
    *  `@cotal-ai/auth` adapter). `connId` is the connection `name` (`req.connect_opts.name`), NOT the
    *  NATS-minted `req.user_nkey`. The builder scopes the private reply inbox `_INBOX_<connId>.>` on it.
-   *  The callout has already checked it with core's `assertUserInboxConnId`: it is
-   *  `<owner>-<actor>-<nonce>` for this bearer's own principal and carries no subject metacharacter.
+   *  The callout checks that a principal-bound name matches the bearer. Legacy nonces remain
+   *  valid. Neither form may contain subject metacharacters.
    *  `readerId` is core's `calloutReaderId` of this connection, which keys the observer and admin
    *  profiles' history-reader deletes: the client chooses the connId, so the connId cannot key them. */
   permissionsFor: (t: ValidatedUserToken, connId: string, readerId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
@@ -488,15 +488,9 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
       c.actor = validated.act.actor;
       // Before any ledger read or issuance write: a reconnect loop stops here once it is limited.
       limiter.take({ owner: validated.owner, actor: validated.act.actor });
-      // The private reply inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows
-      // pre-connect, and the connection nkey (`req.user_nkey`) is minted per-connect by NATS. So the
-      // client names its own inbox as `<owner>-<actor>-<nonce>` and passes it as the connection `name`.
-      // The name is admitted only under the bearer's own owner and actor, so whatever name a
-      // connection presents, it is granted no other principal's inbox. Checked HERE, where client input
-      // enters and before either arm reads a ledger, rather than inside an injected permissionsFor
-      // hook. A bare nonce, a missing name or another principal's prefix throws, and the catch below
-      // turns it into a signed deny (fail-closed).
-      const connId = assertUserInboxConnId(req.connect_opts?.name, validated.owner, validated.act.actor);
+      // Both arms accept legacy names and validate principal-bound names against the bearer before
+      // issuance. The broker's connection nkey is not known to the client when it chooses its inbox.
+      const connId = assertUserInboxConnId(req.connect_opts?.name ?? "", validated.owner, validated.act.actor);
       if (validated.act.view === "service-endpoint") {
         if (!serviceAuthority)
           throw new Error("callout: service-endpoint requires dedicated native service authority; ordinary actor hooks refuse it");

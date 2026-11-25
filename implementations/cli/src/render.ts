@@ -74,19 +74,23 @@ export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: stri
   let failed!: (error: unknown) => void;
   const ending = new Promise<ConnectRefusal>((resolve, reject) => { refused = resolve; failed = reject; });
   let checking: Promise<boolean> | undefined;
+  let stopping = false;
   /** Whether the credential has ended the log; one check runs at a time. */
   const check = (): Promise<boolean> => checking ??= (conn === undefined ? Promise.resolve(false) : credentialEnded(conn).then(
-    (refusal) => { if (refusal) refused(refusal); return refusal !== undefined; },
-    (error: unknown) => { failed(error); return true; },
+    (refusal) => { if (!stopping && refusal) refused(refusal); return refusal !== undefined; },
+    (error: unknown) => { if (!stopping) failed(error); return true; },
   )).finally(() => { checking = undefined; });
   // A failure is shown once the check finds the credential still usable, and not while the
   // connection is down, which one line reports instead.
   let outage = false;
-  const report = (line: string) => void check().then((ended) => { if (!ended && !outage) console.error(line); });
+  const report = (line: string) => {
+    if (!stopping) void check().then((ended) => { if (!stopping && !ended && !outage) console.error(line); });
+  };
   ep.on("error", (e: Error) => report(c.red("! " + oneLine(e.message))));
   // The socket edge drops at once, while the client still reconnects on its own, and the
   // connection only once that gives up; either one starts the outage, and either one coming back ends it.
   const edge = ({ connected }: { connected: boolean }) => {
+    if (stopping) return;
     if (connected) {
       if (outage) console.error(c.dim("the connection was re-established; messages sent while it was down are not shown"));
       outage = false;
@@ -94,7 +98,7 @@ export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: stri
     }
     if (outage) return void check();
     outage = true;
-    void check().then((ended) => { if (!ended && outage) console.error(c.yellow(`! the connection to ${(conn && brokerAddressForDisplay(conn.server)) ?? "the broker"} was lost; re-establishing it`)); });
+    void check().then((ended) => { if (!stopping && !ended && outage) console.error(c.yellow(`! the connection to ${(conn && brokerAddressForDisplay(conn.server)) ?? "the broker"} was lost; re-establishing it`)); });
   };
   ep.on("transport", edge);
   ep.on("connection", edge);
@@ -104,6 +108,8 @@ export async function runLog(ep: CotalEndpoint, space: string, tapSubject?: stri
   await view.start();
   console.log(c.dim(`watching space ${c.bold(space)} - Ctrl-C to stop\n`));
   const shutdown = async (code: number) => {
+    if (stopping) return;
+    stopping = true;
     await view.stop();
     process.exit(code);
   };

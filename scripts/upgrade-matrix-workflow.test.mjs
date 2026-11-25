@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
@@ -14,7 +15,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 42);
+  assert.equal(plan.matrix.include.length, 46);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -38,7 +39,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 42);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 46);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
@@ -61,6 +62,9 @@ test('paired routes preserve ordinary published arguments and bind artifact rece
   assert(run.includes('cell.finalTargetVersion ?? cell.targetVersion'));
   const download = cells.steps.find(step => step.with?.['artifact-ids'] === '${{ needs.release-next.outputs.artifact }}');
   assert(download.if.includes('matrix.chain == true'));
+  assert(download.if.includes("matrix.scenario == 'candidate-next-foreign-config-recovery'"));
+  assert(run.includes("'candidate-next-foreign-config-recovery': 'recovery'"));
+  assert(run.includes("['foreign-config-recovery', 'candidate-next-foreign-config-recovery'].includes(cell.scenario)) args.push('--foreign-config-snapshot', 'true')"));
   for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'stopped-daemon-before-update'", "'disabled-daemon-before-update'", "'stopped-desktop-beside-cli'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
 });
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
@@ -88,7 +92,7 @@ test('durable events preserve immutable heads without privileged PR execution or
   assert.equal(workflow.jobs['release-cells'].strategy['fail-fast'], false);
 });
 function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', sourceVersion = '0.164.6', targetVersion = '0.164.7', phase = 'candidate', corrupt = false } = {}) {
-  const root = mkdtempSync('/var/tmp/upgrade-matrix/census-guard-');
+  const root = mkdtempSync(join(tmpdir(), 'census-guard-'));
   const base = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: targetVersion, profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion });
   base.phase = phase;
   for (const cell of base.cells) cell.phase = phase;
@@ -182,7 +186,7 @@ function archivePairManifests(data, directory, a, b, c) {
     data.report.candidateNext[side + 'Archives'] = packages.map(({ name, sha256 }) => ({ name, sha256 }));
   }
 }
-function freshNextEvidence(data, directory) {
+function freshNextEvidence(data, directory, nativeService = true) {
   const a = data.cell.sourceVersion, b = data.cell.targetVersion;
   const sourceManifestSha256 = 'a'.repeat(64), targetManifestSha256 = 'b'.repeat(64);
   data.report.source = a;
@@ -195,9 +199,21 @@ function freshNextEvidence(data, directory) {
   data.nextOrigin = { source: data.cell.sourceSHA, artifact: '43', digest: 'sha256:next', sourceManifestSha256, targetManifestSha256 };
   data.report.candidateSourceInvocation.loadedCli = { name: '@cotal-ai/cli', version: a, packageSha256: 'c'.repeat(64), sha256: 'd'.repeat(64), member: 'dist/cotal.js' };
   archivePairManifests(data, directory, a, b);
-  manualServiceEvidence(data, directory);
+  if (nativeService) manualServiceEvidence(data, directory);
+  else data.report.calls.push({ label: 'upgrade under test', exit: 0 });
   Object.assign(data.report.calls.find(call => call.label === 'upgrade under test'), { argv: ['/owned/dist/cotal.js', 'update', '--self'], signal: null, timeout: false });
 }
+test('paired recovery summary requires foreign snapshot retention without a native service', () => {
+  for (const phase of ['candidate', 'published']) for (const retained of [true, false]) {
+    const result = fixture((data, directory) => {
+      freshNextEvidence(data, directory, false);
+      Object.assign(data.report, { state: 'recovery', extensionsBefore: [] });
+      if (retained) data.report.assertions.push({ name: 'foreign snapshot bytes remain untouched', passed: true });
+    }, { scenario: 'candidate-next-foreign-config-recovery', phase });
+    assert.equal(result.exit, retained ? 0 : 1, result.stderr);
+    if (!retained) assert.match(readFileSync(join(result.root, 'summary.md'), 'utf8'), /foreign-snapshot-retained/);
+  }
+});
 function followOnEvidence(data, directory, route = 'in-place') {
   const a = data.cell.sourceVersion, b = data.cell.targetVersion, c = data.cell.finalTargetVersion;
   freshNextEvidence(data, directory);
@@ -262,7 +278,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
   if (data.cell.followOnAction === 'self') {
     data.report.calls.push({ label: 'candidate follow-on self update under test', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], ...followUpdate });
   } else if (data.cell.followOnAction === 'npm') {
-    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update --self\` to reconcile this installation.\n`, stderr: '' };
+    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update\` to reconcile this home's extensions.\n`, stderr: '' };
     const reconciledVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n`, stderr: '' };
     const bareRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${b} and this cotal is ${c} - run \`cotal update --self\` to reconcile this installation` }] } }), stderr: '' };
     const reconciledRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null }] } }), stderr: '' };
@@ -279,7 +295,7 @@ function followOnEvidence(data, directory, route = 'in-place') {
       extensions: bareExtensions,
       installedExtensions: bareExtensions,
       launchGateRefusal: {
-        command: { exit: 1, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update --self\` to reconcile this installation\n` },
+        command: { exit: 2, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update --self\` to reconcile this installation\n` },
         extensions: bareExtensions,
         installedExtensions: bareExtensions,
       },

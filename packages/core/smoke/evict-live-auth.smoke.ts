@@ -33,7 +33,7 @@ import { connect, credsAuthenticator, tokenAuthenticator, type NatsConnection } 
 import {
   createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   mintMembershipObserverCreds, mintConnectionEvictorCreds,
-  principalKey, MEMBERSHIP_INBOX_PREFIX, bearerInboxConnId,
+  principalKey, MEMBERSHIP_INBOX_PREFIX,
 } from "../src/index.js";
 import { evictDeniedPrincipal, observePlaneLiveness, type PlaneConnTuple } from "../src/evict.js";
 import {
@@ -143,7 +143,7 @@ try {
   );
 
   // ---------- connect P USER-MODE (sentinel + bearer → the callout mints its scoped grant + principal tag) ----------
-  const nonceP = bearerInboxConnId(bearerP);
+  const nonceP = `ibx${randomUUID().replace(/-/g, "")}`;
   ncP = await connect({
     servers: SERVERS,
     authenticator: [credsAuthenticator(enc(callout.sentinelCreds)), tokenAuthenticator(bearerP)],
