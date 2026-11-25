@@ -193,7 +193,8 @@ broker connection view and durable members registry. When plain `cotal up` start
 broker for a stopped stack, it converts a legacy File-backed membership feed before starting the
 space's services and prints one conversion line. Durable members, channel metadata and message
 history are kept. A running stack, remote broker or adopted listener is not converted automatically.
-Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
+A refresh of a running legacy stack with a File-backed feed refuses with `LIFECYCLE_BLOCKED` (exit 2).
+Stop that stack, then repeat the original start with `--recreate-membership-store`.
 
 If you stopped the stack with `cotal down --preserve-state`, run
 `cotal up --recreate-membership-store` from the same project. It converts the derived feed
