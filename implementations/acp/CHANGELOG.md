@@ -1,5 +1,22 @@
 # @cotal-ai/acp
 
+## 0.181.0
+
+### Minor Changes
+
+- b05f907: In ACP clients such as T3 Code, choosing another model or reasoning level on a running thread now switches its agent from the next turn, with no `/despawn`.
+  
+  - The `agent` endpoint advances to revision 6 with the owner-only `set-model`, and presence `agentEndpoint` gains `setModel`. Reconnect clients after the auth callout is updated, so their sign-in carries the new command.
+  - Codex switches with `thread/settings/update`, OpenCode with the model each prompt carries (1.x) or its session model route (2.x), pi 0.84.3 or later with its session setters, Jcode with its model and effort calls, and Claude Code through its command mod for later turns of the session alone. Each checks the model against its own list first. Hermes does not switch yet, and the thread says to use `/despawn`.
+  - A Manager keeps the switch and restarts or resumes the agent on it.
+  - An agent whose role `modelPolicy` governs refuses every switch, since the policy is checked only at launch.
+
+### Patch Changes
+
+- cab5fd0: ACP threads now start the agent on a model named `default` when the application lists one, and `/open` updates the client's model list. Choosing `<application>/default` spawns the agent with `model: "default"` and the chosen reasoning when the application's catalog lists a model with that id, as a custom Hermes endpoint can; otherwise the spawn still names no model and the application picks its own. After `/open`, the client gets the opened agent's options in a `config_option_update`, as it does when an option changes.
+- 1916f86: `cotal acp` now recognises a manager service that an older release started on this machine, so a new thread uses it instead of failing to start a second one. A manager from before 0.180 names no machine, so when no listed manager names this machine the bridge reads `cotal manager status` for the space and takes the listed manager with the native instance that this machine's service record runs.
+- d760682: When an agent's turn fails in an ACP client such as T3 Code, the error now shows the application's own message and error kind, such as Codex's usage limit, in place of "run failed". The bridge reads the text and kind from the agent's presence condition, waiting up to 2 seconds for it after the run fails, because the run error on the event channel carries only the fixed text `run failed`. The prompt's error reads `<agent>'s turn failed: <message> (<kind>)`, without the `Internal error:` prefix, and its `data.condition` holds the condition's `code`, `source` and `message`. A condition the agent showed before the prompt, or one that waits on an approval or an input, is not taken as the reason. With no condition the error still says the turn failed.
+
 ## 0.180.0
 
 ### Minor Changes

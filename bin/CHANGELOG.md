@@ -1,5 +1,28 @@
 # cotal-ai
 
+## 0.181.0
+
+### Patch Changes
+
+- 0765424: The CLI flag inventory test now checks that `--idle-exit` is a string option for service starts and the manager service process.
+- 7a27285: When the Manager refuses macOS service repair preparation, show its reason and any recovery step in human and JSON output while keeping exit 3.
+- cadeb7f: Let you confirm moving a local space connection to a signed-in account when the previous holder is signed out or stops answering.
+- Updated dependencies [b05f907]
+- Updated dependencies [e22d95e]
+- Updated dependencies [b1590ac]
+- Updated dependencies [e88785e]
+- Updated dependencies [825f3a4]
+  - @cotal-ai/core@0.181.0
+  - @cotal-ai/connector-core@0.181.0
+  - @cotal-ai/manager@0.181.0
+  - @cotal-ai/cli@0.181.0
+  - @cotal-ai/runtime@0.181.0
+  - @cotal-ai/auth@0.181.0
+  - @cotal-ai/delivery@0.181.0
+  - @cotal-ai/registry@0.181.0
+  - @cotal-ai/workspace@0.181.0
+  - @cotal-ai/seat@0.181.0
+
 ## 0.180.0
 
 ### Patch Changes
