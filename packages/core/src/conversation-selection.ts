@@ -94,13 +94,42 @@ export function checkConversationSelection(value: unknown): ConversationSelectio
   return { v: 1, channels, role, capabilities, endpoints: [] };
 }
 
-/** Build a canonical selection from a caller's unordered choices: a role adds its own `role:<r>`
- *  capability, and every list is sorted. Duplicates and malformed items are refused, never merged. */
-export function conversationSelection(input: {
+/** What a `cotal_connect` call named, field by field, before any default fills a field it left out.
+ *  A field it left out is absent, so `{}` names nothing and `{ capabilities: [] }` names an empty list. */
+export type ConversationRequest = {
   channels?: { channel: string; access: ConversationChannelAccess }[];
   role?: string;
   capabilities?: ("run" | "spawn")[];
-}): ConversationSelection {
+};
+
+/** The selection a request names by itself, with no default: empty when it names only empty lists or
+ *  nothing. Only an issuer that grants without a person's approval reads an empty one; it never goes
+ *  on the wire, where an empty proposal is `null`. */
+export function requestedSelection(request: ConversationRequest): ConversationSelection {
+  if (!request.channels?.length && request.role === undefined && !request.capabilities?.length)
+    return { v: 1, channels: [], role: null, capabilities: [], endpoints: [] };
+  return conversationSelection(request);
+}
+
+/** Refuse anything a `cotal_connect` call could not have named: another key, a capability other than
+ *  `run` or `spawn`, or an item {@link conversationSelection} refuses. */
+export function checkConversationRequest(value: unknown): ConversationRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail("a request must be an object");
+  const r = value as Record<string, unknown>;
+  const unknown = Object.keys(r).filter((key) => !["channels", "role", "capabilities"].includes(key));
+  if (unknown.length) fail(`a request names only channels, role and capabilities, not ${unknown.join(", ")}`);
+  if (r.channels !== undefined) list(r.channels, "channels", SELECTION_MAX_ITEMS);
+  if (r.role !== undefined && typeof r.role !== "string") fail("role must be a role token");
+  if (r.capabilities !== undefined && list(r.capabilities, "capabilities").some((c) => c !== "run" && c !== "spawn"))
+    fail("a request's capabilities are run or spawn");
+  const request = value as ConversationRequest;
+  requestedSelection(request);
+  return request;
+}
+
+/** Build a canonical selection from a caller's unordered choices: a role adds its own `role:<r>`
+ *  capability, and every list is sorted. Duplicates and malformed items are refused, never merged. */
+export function conversationSelection(input: ConversationRequest): ConversationSelection {
   const capabilities = [...(input.capabilities ?? []), ...(input.role !== undefined ? [`role:${input.role}`] : [])];
   return checkConversationSelection({
     v: 1,

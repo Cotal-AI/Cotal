@@ -21,7 +21,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
+import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationRequest, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
 import { cotalToolSpecs, orientationCard, parseToolArgs, PATTERN_SEND_HELP, type CotalToolSpec, type ToolResult } from "./tool-specs.js";
 import { connectionNotReadyWarning } from "./tool-specs-inbox.js";
@@ -85,8 +85,13 @@ export interface GatewayHost {
    *  reuse an issued approval for another connection. `space`, when the native schema offers it, is
    *  the registered mesh the caller named. Omit it to keep the embedder's default resolution. A
    *  present value is already a non-blank token; resolve that mesh or refuse, and never substitute
-   *  another space's pending or live identity. */
-  open(account: string, name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection>;
+   *  another space's pending or live identity. `request`, present only when the embedder enables
+   *  selection, is what the call named field by field, built by the gateway from its validated input:
+   *  `{}` named nothing and `{ capabilities: [] }` named an empty list. `selection` is the proposal
+   *  made from it, with the gateway's default for omitted capabilities. An issuer that grants without
+   *  a person's approval, such as a local mesh, decides from the request; a person reviews the
+   *  selection. Neither is consent. */
+  open(account: string, name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string, request?: ConversationRequest): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. Throw, with the
    *  reason and the retry, when `account` owns `id` but it can no longer serve, such as a
    *  disconnected connection whose cleanup is unfinished. */
@@ -200,11 +205,22 @@ const SELECTION_SHAPE = {
     .describe("spawn: start and stop agents through a manager. run: start and manage workflow runs."),
 };
 
-/** The canonical selection a `cotal_connect` call names, or undefined when it names none. */
-function selectionOf(input: Record<string, unknown>): ConversationSelection | undefined {
-  const { channels, role, capabilities } = input as Parameters<typeof conversationSelection>[0];
-  if (channels === undefined && role === undefined && capabilities === undefined) return undefined;
-  return conversationSelection({ channels, role, capabilities });
+/** What a `cotal_connect` call that leaves `capabilities` out asks for. */
+const DEFAULT_CAPABILITIES: ("run" | "spawn")[] = ["run", "spawn"];
+
+/** The request a `cotal_connect` call names, built only from its validated input, and the proposal it
+ *  makes: the request, plus {@link DEFAULT_CAPABILITIES} when it leaves `capabilities` out. The proposal
+ *  is undefined when it then asks for nothing. */
+function requestOf(input: Record<string, unknown>): { request: ConversationRequest; selection?: ConversationSelection } {
+  const { channels, role, capabilities } = input as ConversationRequest;
+  const request: ConversationRequest = {
+    ...(channels === undefined ? {} : { channels }),
+    ...(role === undefined ? {} : { role }),
+    ...(capabilities === undefined ? {} : { capabilities }),
+  };
+  const asked = capabilities ?? DEFAULT_CAPABILITIES;
+  if (!channels?.length && role === undefined && !asked.length) return { request };
+  return { request, selection: conversationSelection({ channels, role, capabilities: asked }) };
 }
 
 /** How many names `cotal_connect` tries: the requested one, then `_2` up to this suffix. */
@@ -230,8 +246,9 @@ export interface GatewayOptions {
   /** The tools to register, within {@link NATIVE_GATEWAY_TOOLS}. Defaults to {@link GATEWAY_TOOLS}.
    *  Registering a tool offers it to no connection by itself: see {@link GatewayConnection.tools}. */
   tools?: ReadonlySet<string>;
-  /** `cotal_connect` takes the channels, role and capabilities a connection requests
-   *  within the person's own access, and hands the canonical selection to {@link GatewayHost.open}. */
+  /** `cotal_connect` takes the channels, role and capabilities a connection requests within the
+   *  person's own access. A call that leaves capabilities out asks for `run` and `spawn`. It hands
+   *  {@link GatewayHost.open} the canonical selection and the request it was made from. */
   selection?: boolean;
   /** A native embedder accepts an optional registered space name and passes it to
    *  {@link GatewayHost.open}. Hosted OAuth is bound to one space, so this stays off there. */
@@ -531,10 +548,13 @@ export function registerCotalGatewayTools(
         return refuse(`not authenticated: ${errorText(e)}`);
       }
       let selection: ConversationSelection | undefined;
-      try {
-        selection = selectionOf(input);
-      } catch (e) {
-        return refuse(`cotal_connect: ${errorText(e)}. Nothing was connected.`);
+      let request: ConversationRequest | undefined;
+      if (options.selection) {
+        try {
+          ({ request, selection } = requestOf(input));
+        } catch (e) {
+          return refuse(`cotal_connect: ${errorText(e)}. Nothing was connected.`);
+        }
       }
       const rawSpace = "space" in input && typeof input.space === "string" ? input.space : undefined;
       if (rawSpace !== undefined && !options.space) {
@@ -567,7 +587,7 @@ export function registerCotalGatewayTools(
           let lastPause = false;
           for (;;) {
             try {
-              const c = await host.open(account, candidate, context, selection, resumeId, space);
+              const c = await host.open(account, candidate, context, selection, resumeId, space, request);
               watch(c);
               const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
               const listening = wake ? `\n${wake.listening(c)}` : "";

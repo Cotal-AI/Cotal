@@ -6,6 +6,7 @@ import {
   acquireLock,
   acquireLockAsync,
   agentFilePath,
+  checkConversationRequest,
   checkConversationSelection,
   DEV_OWNER,
   deprovisionAgent,
@@ -19,10 +20,12 @@ import {
   patternInAllow,
   processStartToken,
   provisionAgent,
+  requestedSelection,
   resolveReadAcl,
   type AgentDef,
   type ConversationGrant,
   type ConversationPending,
+  type ConversationRequest,
   type ConversationSelection,
   type FlagSpec,
   type FlagValues,
@@ -63,6 +66,9 @@ export const appIdentityFlags = [
   { name: "session", type: "string", value: "<id>", description: "provision: the native conversation identity, required" },
   { name: "events", type: "boolean", description: "provision: a real native transcript source is bound" },
   { name: "selection", type: "string", value: "<json>", description: "provision: channels, role and capabilities to request within your own grant" },
+  // A gateway passes what the conversation's call named beside the proposal made from it, so a mesh
+  // that grants without a person can tell a field left out from an empty one.
+  { name: "request", type: "string", value: "<json>", description: "provision: the fields the cotal_connect call named, beside --selection" },
   // Every provision on a signed-in mesh needs a person's approval, with or without this flag. A caller
   // passes it so that an earlier CLI, which opened signed-in identities without approval, refuses
   // the unknown flag first.
@@ -130,6 +136,8 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
   const name = values.name?.trim();
   if (!name) return { ok: false, error: "provision needs --name <name>" };
   const selection = values.selection === undefined ? undefined : checkConversationSelection(JSON.parse(values.selection));
+  const request = values.request === undefined ? undefined : checkConversationRequest(JSON.parse(values.request));
+  if (request) assertProposedFrom(selection, request);
   const t = await target(values.space);
   if (t.mode === "user") {
     const connection = await provisionUserApp(t, name, values.session, values.events === true, selection);
@@ -137,7 +145,26 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
   }
   // What a host that died without retiring left behind is retired first.
   const retired = await retireOrphans();
-  return provisionLocal(t, name, values.session, values.events === true, selection, retired);
+  return provisionLocal(t, name, values.session, values.events === true, request ? localSelection(request) : selection, retired);
+}
+
+/** Refuse a proposal that is not the request plus capabilities it left out: a mismatch would let the
+ *  proposal and the local grant describe different permissions. */
+function assertProposedFrom(selection: ConversationSelection | undefined, request: ConversationRequest): void {
+  const named = requestedSelection(request);
+  const proposed = selection ?? requestedSelection({});
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (!same(named.channels, proposed.channels) || named.role !== proposed.role ||
+      (request.capabilities === undefined ? !named.capabilities.every((c) => proposed.capabilities.includes(c)) : !same(named.capabilities, proposed.capabilities)))
+    throw new Error("--request and --selection name different permissions; nothing was opened");
+}
+
+/** What a request asks of a mesh that grants without a person: nothing named keeps the default
+ *  persona's whole grant, as a bare spawn has it; anything named narrows to exactly that, an empty
+ *  list included. Capabilities the gateway filled in by default are not part of it. */
+function localSelection(request: ConversationRequest): ConversationSelection | undefined {
+  if (request.channels === undefined && request.role === undefined && request.capabilities === undefined) return undefined;
+  return requestedSelection(request);
 }
 
 /** What to run when the persona a bare spawn loads is missing. `up` in the root of a space this

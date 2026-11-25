@@ -5,7 +5,7 @@ import {
   configFromEnv, MeshAgent, NameTaken,
   type GatewayConnection, type GatewayHost,
 } from "@cotal-ai/connector-core";
-import type { ConversationSelection } from "@cotal-ai/core";
+import type { ConversationRequest, ConversationSelection } from "@cotal-ai/core";
 import { resolveTargetOrThrow } from "@cotal-ai/workspace";
 import { retireLocalAppIdentity } from "@cotal-ai/cli/app-identity";
 import { selfArgv } from "@cotal-ai/cli/self-exec";
@@ -49,7 +49,7 @@ export function createMcpHost(space?: string): GatewayHost & { closeAll(): Promi
     catch { throw new Error("identity cleanup is unfinished; call cotal_disconnect again to retry it"); }
     held = undefined;
   };
-  const open = async (name: string, selection?: ConversationSelection): Promise<GatewayConnection> => {
+  const open = async (name: string, selection?: ConversationSelection, request?: ConversationRequest): Promise<GatewayConnection> => {
     if (ending) throw new Error("the MCP host is shutting down");
     if (held && !held.stopped) throw new Error("this stdio host already has a connection; disconnect it before connecting again");
     await release();
@@ -57,7 +57,7 @@ export function createMcpHost(space?: string): GatewayHost & { closeAll(): Promi
     if (target.mode === "user")
       throw new Error("cotal mcp has no native conversation identity for a signed-in space; use its hosted connector or a native Cotal connector instead");
     const result = await plumbing(["provision", "--name", name, "--space", target.space, "--session", session,
-      ...(selection ? ["--selection", JSON.stringify(selection)] : [])]);
+      ...(selection ? ["--selection", JSON.stringify(selection)] : []), ...(request ? ["--request", JSON.stringify(request)] : [])]);
     if (!result.ok) {
       if (result.taken) throw new NameTaken(name);
       throw new Error(result.error ?? "identity provisioning failed");
@@ -90,9 +90,9 @@ export function createMcpHost(space?: string): GatewayHost & { closeAll(): Promi
   };
   return {
     account: () => account,
-    open: (caller, name, _context, selection) => serial(async () => {
+    open: (caller, name, _context, selection, _approvalId, _space, request) => serial(async () => {
       if (caller !== account) throw new Error("this connection belongs to another account");
-      return open(name, selection);
+      return open(name, selection, request);
     }),
     async find(caller, id) {
       if (caller !== account || held?.connection?.id !== id) return undefined;

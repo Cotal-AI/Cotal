@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
 import { ApprovalRequired, configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost, type HookEvent, type NativeTurnParticipationLease } from "@cotal-ai/connector-core";
-import type { ConversationApprovalPending, ConversationGrant, ConversationPending, ConversationSelection } from "@cotal-ai/core";
+import type { ConversationApprovalPending, ConversationGrant, ConversationPending, ConversationRequest, ConversationSelection } from "@cotal-ai/core";
 import { createClaudeHandle, type ClaudeHooks } from "./hooks.js";
 import { createClaudeEventPlane } from "./claude-events.js";
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
@@ -68,6 +68,9 @@ type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; 
 interface Watch {
   name: string;
   args: string[];
+  /** {@link args} without the call's own request: the request a person sees, compared to tell an
+   *  unchanged request from a new one. */
+  asked: string[];
   approval: ConversationApprovalPending;
   timer?: NodeJS.Timeout;
   /** The credential directory of an identity the authority issued that no connection has claimed. */
@@ -209,16 +212,16 @@ export function createAppHost(o: AppHostOptions): AppHost {
       w.timer.unref();
     });
   };
-  const startWatch = (session: string, name: string, args: string[], approval: ConversationApprovalPending): void => {
+  const startWatch = (session: string, name: string, args: string[], asked: string[], approval: ConversationApprovalPending): void => {
     const current = watches.get(session);
     if (current && current.approval.id === approval.id && !current.stopped) { current.approval = approval; return; }
     stopWatch(session);
-    const w: Watch = { name, args, approval, stopped: false };
+    const w: Watch = { name, args, asked, approval, stopped: false };
     watches.set(session, w);
     w.timer = setTimeout(() => replay(session, w), watch.pollMs);
     w.timer.unref();
   };
-  const open = async (name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection> => {
+  const open = async (name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string, request?: ConversationRequest): Promise<GatewayConnection> => {
     // The native hook binds this conversation before the connect call. It does not put the session
     // into the call's arguments: a host that blocks a hook for changing tool input would refuse the
     // first connect. One bound session is this server's conversation. More than one is not a guess.
@@ -245,9 +248,10 @@ export function createAppHost(o: AppHostOptions): AppHost {
       catch (error) { throw new Error(`this conversation's previous identity cleanup is not finished: ${reason(error)}. Call cotal_connect again to retry it`); }
       pending.delete(context!);
     }
-    const args = ["provision", "--require-approval", "--name", name, ...(space === undefined ? [] : ["--space", space]), ...(binding ? ["--session", binding.session, "--events"] : []),
+    const asked = ["provision", "--require-approval", "--name", name, ...(space === undefined ? [] : ["--space", space]), ...(binding ? ["--session", binding.session, "--events"] : []),
       ...(selection ? ["--selection", JSON.stringify(selection)] : [])];
-    if (watched && JSON.stringify(watched.args) !== JSON.stringify(args)) {
+    const args = [...asked, ...(request ? ["--request", JSON.stringify(request)] : [])];
+    if (watched && JSON.stringify(watched.asked) !== JSON.stringify(asked)) {
       if (approvalId !== undefined)
         throw new Error("approval_id resumes only the unchanged request; omit it to replace the pending name or permissions");
       stopWatch(context!);
@@ -263,7 +267,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
     if (!reply.ok) {
       if (reply.pending) {
         // A bound session can be told the decision, so the host follows the request for it.
-        if (binding) startWatch(binding.session, name, args, reply.approval);
+        if (binding) startWatch(binding.session, name, args, asked, reply.approval);
         throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
       }
       if ((reply.refused || reply.retryable === false) && binding) stopWatch(binding.session);
@@ -332,7 +336,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
   };
   return {
     account: () => "local",
-    open: (_account, name, context, selection, approvalId, space) => serial(() => open(name, context, selection, approvalId, space)),
+    open: (_account, name, context, selection, approvalId, space, request) => serial(() => open(name, context, selection, approvalId, space, request)),
     async find(_account, id) {
       const h = held.get(id);
       if (h?.stopped) throw new Error(h.closing ? "This conversation is disconnecting from the mesh." : unfinished(id, h.unfinished ?? "it was interrupted"));

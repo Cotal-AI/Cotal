@@ -8,7 +8,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { ApprovalRequired, configFromEnv, eventPlaneArmed, GATEWAY_TOOLS, JsonlFileSource, MeshAgent, NameTaken, type GatewayConnection, type GatewayHost } from "@cotal-ai/connector-core";
-import type { ConversationApprovalPending, ConversationGrant, ConversationPending, ConversationSelection } from "@cotal-ai/core";
+import type { ConversationApprovalPending, ConversationGrant, ConversationPending, ConversationRequest, ConversationSelection } from "@cotal-ai/core";
 import type { CodexThreadFacts } from "./native-queue.js";
 import { startCodexPersonalEvents, type CodexPersonalEvents } from "./personal-events.js";
 
@@ -56,6 +56,9 @@ type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; 
 interface Watch {
   name: string;
   args: string[];
+  /** {@link args} without the call's own request: the request a person sees, compared to tell an
+   *  unchanged request from a new one. */
+  asked: string[];
   cwd: string;
   approval: ConversationApprovalPending;
   timer?: NodeJS.Timeout;
@@ -186,7 +189,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
     next.timer = setTimeout(() => replay(thread, next), watch.pollMs);
     next.timer.unref();
   };
-  const open = async (thread: string, name: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection> => {
+  const open = async (thread: string, name: string, selection?: ConversationSelection, approvalId?: string, space?: string, request?: ConversationRequest): Promise<GatewayConnection> => {
     const refusal = refusals.get(thread);
     if (approvalId !== undefined && refusal) {
       if (refusal.id !== approvalId || refusal.name !== name) throw new Error("approval_id does not name this conversation's refused request");
@@ -206,9 +209,10 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
       catch (error) { throw new Error(`this conversation's previous identity cleanup is not finished: ${reason(error)}. Call cotal_connect again to retry it`); }
       pending.delete(thread);
     }
-    const args = ["provision", "--require-approval", "--name", name, ...(space === undefined ? [] : ["--space", space]), "--session", thread,
+    const asked = ["provision", "--require-approval", "--name", name, ...(space === undefined ? [] : ["--space", space]), "--session", thread,
       ...(facts.path ? ["--events"] : []), ...(selection ? ["--selection", JSON.stringify(selection)] : [])];
-    if (watched && JSON.stringify(watched.args) !== JSON.stringify(args)) {
+    const args = [...asked, ...(request ? ["--request", JSON.stringify(request)] : [])];
+    if (watched && JSON.stringify(watched.asked) !== JSON.stringify(asked)) {
       if (approvalId !== undefined) throw new Error("approval_id resumes only the unchanged request; omit it to replace the pending name or permissions");
       stopWatch(thread);
       // An approved replay may have issued an identity the conversation never claimed.
@@ -221,7 +225,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
     const reply = await plumbing(args, facts.cwd);
     if (!reply.ok) {
       if (reply.pending) {
-        startWatch(thread, { name, args, cwd: facts.cwd, approval: reply.approval });
+        startWatch(thread, { name, args, asked, cwd: facts.cwd, approval: reply.approval });
         throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
       }
       if (reply.refused || reply.retryable === false) stopWatch(thread);
@@ -288,7 +292,7 @@ export function createCodexPersonalHost(o: CodexPersonalHostOptions): CodexPerso
       if (thread !== served) throw new Error("this Cotal server serves another Codex conversation");
       return thread;
     },
-    open: (account, name, _context, selection, approvalId, space) => serial(() => open(account, name, selection, approvalId, space)),
+    open: (account, name, _context, selection, approvalId, space, request) => serial(() => open(account, name, selection, approvalId, space, request)),
     async find(account, id) {
       const h = owned(account, id);
       if (h?.stopped) throw new Error(h.closing ? "This conversation is disconnecting from the mesh." : unfinished(id, h.unfinished ?? "it was interrupted"));
