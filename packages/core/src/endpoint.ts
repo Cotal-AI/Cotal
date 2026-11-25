@@ -100,7 +100,7 @@ import {
   readChannelDefaults,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
-import type { EndpointIdentity } from "./endpoint-identity.js";
+import { OBSERVER_INBOX_NONCE_PREFIX, type EndpointIdentity } from "./endpoint-identity.js";
 import { newConnectionState, type ConnectionState } from "./endpoint-connection-state.js";
 import { newLifecycleState, type LifecycleState } from "./endpoint-lifecycle-state.js";
 import { newCredentialState, type CredentialState } from "./endpoint-credential-state.js";
@@ -298,7 +298,6 @@ export class CotalEndpoint extends EventEmitter {
   get presenceBindingDropCount(): number {
     return this.presence.bindingDropCount;
   }
-
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
    *  ⇒ loud refusal naming the operation (the hard cut of SPEC §13.1 — no alias-keyed fallback). */
   private requireLifecycleUid(what: string): string {
@@ -316,6 +315,7 @@ export class CotalEndpoint extends EventEmitter {
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
     this.identity.space = opts.space;
+    this.identity.omitFromLiveMembership = opts.omitFromLiveMembership === true;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
     // point every join/spawn path flows through. A role is an address too, refused here before
@@ -355,7 +355,7 @@ export class CotalEndpoint extends EventEmitter {
         this.identity.actor = claims.actor;
         this.cred.currentBearer = opts.bearer;
       }
-      this.identity.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
+      this.identity.connId = assertInboxConnId(`${this.identity.omitFromLiveMembership ? OBSERVER_INBOX_NONCE_PREFIX : "ibx"}${randomUUID().replace(/-/g, "")}`);
       this.identity.sentinelCreds = opts.sentinelCreds;
       // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
       // them), never self-minted — the ephemeral value here is the inbox nonce, which is the

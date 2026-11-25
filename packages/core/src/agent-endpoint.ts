@@ -1,12 +1,13 @@
 /**
- * The `agent` endpoint, revision 6 (SPEC 13.22): the fixed command set an agent serves about itself
+ * The `agent` endpoint, revision 7 (SPEC 13.22): the fixed command set an agent serves about itself
  * on the principal route (SPEC 13.21). `prompts`, `prompt` and `prompt-answer` serve the questions
  * an agent's harness stops to ask: a tool permission, a question, a plan, a form. `commands` lists
  * the harness commands and skills the agent runs, `command` queues one, `command-cancel` cancels a
  * queued one and `command-state` reads how far one got. `turn` queues the owner's own words as a
  * turn on the same queue. `interrupt` stops the turn the agent is running. `usage` reads what the
  * harness reports about its context window and cost. `set-model` switches the model or the variant
- * the harness runs from its next turn. `set-name` changes the agent's display name.
+ * the harness runs from its next turn. `set-name` changes the agent's display name, and `set-label`
+ * the label it shows in place of that name.
  *
  * The contract is a core constant, like the registry's: every agent serves the same cluster, a
  * caller embeds these artifacts and pins their digests, and nothing is published to the contract
@@ -16,12 +17,12 @@ import { contractDigest } from "./canonical.js";
 import { buildClusterArtifacts, buildClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
 import type { ContractClosureManifest } from "./contract-manifest.js";
 import { serviceContractTable } from "./schema-profile.js";
-import { MAX_NAME_LENGTH } from "./resolve.js";
+import { MAX_NAME_LENGTH, assertValidName } from "./resolve.js";
 import type { PrincipalAuthority } from "./endpoint-subjects.js";
 
 export const AGENT_ENDPOINT = "agent";
 export const AGENT_CLUSTER_URN = "ai.cotal.agent";
-export const AGENT_CLUSTER_REVISION = 6;
+export const AGENT_CLUSTER_REVISION = 7;
 
 export const AGENT_CMD_PROMPTS = "prompts";
 export const AGENT_CMD_PROMPT = "prompt";
@@ -32,6 +33,7 @@ export const AGENT_CMD_COMMAND_CANCEL = "command-cancel";
 export const AGENT_CMD_COMMAND_STATE = "command-state";
 export const AGENT_CMD_INTERRUPT = "interrupt";
 export const AGENT_CMD_SET_NAME = "set-name";
+export const AGENT_CMD_SET_LABEL = "set-label";
 export const AGENT_CMD_TURN = "turn";
 export const AGENT_CMD_USAGE = "usage";
 export const AGENT_CMD_SET_MODEL = "set-model";
@@ -77,15 +79,30 @@ export const AGENT_NAME_REFUSED_DETAIL = "ai.cotal.agent.name-refused";
  *  from launch until naming settles, then absent, whether it took a label or not (SPEC 13.22). */
 export const AGENT_NAMING_META_KEY = "ai.cotal.naming";
 
-/** The `AgentCard.meta` key that carries the label an agent took from its first message: one line
- *  of at most 40 code points, written only by the agent's own connector (SPEC 13.22). A reader shows
- *  it in place of `name`, which stays the address that mentions, DMs and name lookups resolve. */
+/** The `AgentCard.meta` key that carries the label an agent took from its first message or its
+ *  owner's `set-label`: one line of at most {@link AGENT_LABEL_MAX} code points, written only by the
+ *  agent's own connector (SPEC 13.22). A reader shows it in place of `name`, which stays the address
+ *  that mentions, DMs and name lookups resolve. */
 export const AGENT_LABEL_META_KEY = "ai.cotal.label";
 
 /** The `AgentCard.meta` key an agent's own connector writes when an owner's `set-model` switched its
  *  harness: `{ model, variant? }`, as `set-model` answered (SPEC 13.22). A launcher that starts the
  *  same lifecycle again launches it on that model in place of its launch model. */
 export const AGENT_MODEL_SET_META_KEY = "ai.cotal.model-set";
+
+/** The longest label, in code points (SPEC 13.22). */
+export const AGENT_LABEL_MAX = 40;
+
+/** Throw an Error saying which label rule `label` breaks (SPEC 13.22): the shared name rule, at most
+ *  {@link AGENT_LABEL_MAX} code points, and no whitespace but single spaces. */
+export function assertValidLabel(label: string): void {
+  assertValidName(label);
+  const points = Array.from(label).length;
+  if (points > AGENT_LABEL_MAX)
+    throw new Error(`invalid label ${JSON.stringify(label)}: ${points} characters exceeds the ${AGENT_LABEL_MAX}-character limit`);
+  if (label.replace(/\s+/g, " ") !== label)
+    throw new Error(`invalid label ${JSON.stringify(label)}: words must be separated by single spaces`);
+}
 
 /** Why `set-name` refused a name: `name-invalid` (`bad-request`) fails the shared name rule, and
  *  `name-taken` (`already-exists`) is the name of another live agent in the space. */
@@ -304,6 +321,11 @@ export interface SetNameIO {
   name: string;
 }
 
+/** What `set-label` takes and answers: the label, which the answer gives as the card now carries it. */
+export interface SetLabelIO {
+  label: string;
+}
+
 const COMMAND_NAME_PATTERN = "^[^\\s\\p{C}]{1,128}$";
 const COMMAND_NAME_RE = new RegExp(COMMAND_NAME_PATTERN, "u");
 
@@ -495,6 +517,9 @@ export const AGENT_INTERRUPT_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { stat
 // `name-invalid` refusal from the agent, a long one included.
 export const AGENT_SET_NAME_INPUT_SCHEMA = deepFreeze(closed(["name"], { name: anyString }));
 export const AGENT_SET_NAME_OUTPUT_SCHEMA = deepFreeze(closed(["name"], { name: { type: "string", minLength: 1, maxLength: MAX_NAME_LENGTH } }));
+// Any string again, so every label the rule refuses gets the agent's own `bad-request` saying why.
+export const AGENT_SET_LABEL_INPUT_SCHEMA = deepFreeze(closed(["label"], { label: anyString }));
+export const AGENT_SET_LABEL_OUTPUT_SCHEMA = deepFreeze(closed(["label"], { label: { type: "string", minLength: 1, maxLength: MAX_NAME_LENGTH } }));
 const IMAGE = closed(["mimeType", "data"], {
   mimeType: { enum: [...AGENT_TURN_IMAGE_TYPES] },
   data: { type: "string", minLength: 4, pattern: "^[A-Za-z0-9+/]+={0,2}$" },
@@ -520,11 +545,11 @@ export const AGENT_USAGE_OUTPUT_SCHEMA = deepFreeze({
   ],
 });
 
-/** The command rows of revision 6. Every command is untargeted. The prompt commands admit both
+/** The command rows of revision 7. Every command is untargeted. The prompt commands admit both
  *  authority words; `commands`, `command`, `command-cancel`, `command-state`, `interrupt`,
- *  `set-name`, `turn`, `usage` and `set-model` admit `owner` only, so only the owner's interactive
- *  session runs an agent's commands, gives it a turn, stops its turn, reads its usage, switches its
- *  model or renames it. */
+ *  `set-name`, `turn`, `usage`, `set-model` and `set-label` admit `owner` only, so only the owner's
+ *  interactive session runs an agent's commands, gives it a turn, stops its turn, reads its usage,
+ *  switches its model, renames it or labels it. */
 export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_PROMPTS, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPTS_INPUT_SCHEMA, output: AGENT_PROMPTS_OUTPUT_SCHEMA },
   { name: AGENT_CMD_PROMPT, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPT_INPUT_SCHEMA, output: AGENT_PROMPT_OUTPUT_SCHEMA },
@@ -538,6 +563,7 @@ export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_TURN, capability: "agent.turn.start", authorities: ["owner"], input: AGENT_TURN_INPUT_SCHEMA, output: AGENT_TURN_OUTPUT_SCHEMA },
   { name: AGENT_CMD_USAGE, capability: "agent.usage.read", authorities: ["owner"], input: AGENT_USAGE_INPUT_SCHEMA, output: AGENT_USAGE_OUTPUT_SCHEMA },
   { name: AGENT_CMD_SET_MODEL, capability: "agent.model.write", authorities: ["owner"], input: AGENT_SET_MODEL_INPUT_SCHEMA, output: AGENT_SET_MODEL_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_SET_LABEL, capability: "agent.profile.write", authorities: ["owner"], input: AGENT_SET_LABEL_INPUT_SCHEMA, output: AGENT_SET_LABEL_OUTPUT_SCHEMA },
 ].map((row) => ({ ...row, targeted: false, authorities: row.authorities as PrincipalAuthority[] })));
 
 const TABLE = serviceContractTable(AGENT_COMMANDS);
@@ -545,7 +571,7 @@ const TABLE = serviceContractTable(AGENT_COMMANDS);
 /** The compiled input and output pair per command, compiled on first access. */
 export const AGENT_CONTRACTS = TABLE.contracts;
 
-/** The cluster document of revision 6, deep-frozen. */
+/** The cluster document of revision 7, deep-frozen. */
 export const AGENT_CLUSTER: Readonly<ClusterDocument> = deepFreeze(buildClusterDocument(AGENT_CLUSTER_URN, AGENT_CLUSTER_REVISION, AGENT_COMMANDS));
 
 /** The cluster document's two digests: the root artifact and the closure manifest a caller pins
