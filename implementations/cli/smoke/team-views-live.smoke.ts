@@ -316,6 +316,10 @@ try {
 
   console.log("\nG. a fresh boot's records in words");
   check("space create prepares folder b", cotal(b, "space", "create", SPACE_B).status === 0);
+  const priorBootNotice = "This stopped root records an earlier team boot";
+  const firstPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run", "--json");
+  check("a newly prepared root previews without an earlier boot blocker", answered(firstPreview) &&
+    !envelope(firstPreview.stdout)?.warnings?.some((warning) => warning.code === "LIFECYCLE_BLOCKED"), firstPreview.out);
   bUp = true;
   const booted = cotal(b, "team", "boot", "boot.yaml");
   check("team boot starts the fresh stack in b, and its receipt names the auth mode in words",
@@ -359,12 +363,24 @@ try {
   check("its JSON keeps the recorded values", freshJson?.recordedState === "broker-boot-returned" && freshJson.nextAction === "inspect-selected-stack" && freshJson.authMode === "auth", freshJson);
   const freshList = cotal(b, "team");
   check("the inventory row names them in words", new RegExp(`${bootId}\\s+fresh boot\\s+boot returned\\s+inspect the stack`).test(freshList.stdout), freshList.stdout);
-  check("the boot preview names the requested auth mode in words", /Auth mode request:\s+static auth\n/.test(cotal(b, "team", "boot", "boot.yaml", "--dry-run").stdout));
+  const runningPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run");
+  check("the running boot preview names the auth mode without claiming a completed stop", runningPreview.status === 0 &&
+    /Auth mode request:\s+static auth\n/.test(runningPreview.stdout) && !runningPreview.out.includes(priorBootNotice), runningPreview.out);
   const stopped = cotal(b, "down", "--yes");
   const applyStoppedBoot = cotal(b, "team", "remove", bootId, "--space", SPACE_B, "--yes", "--json");
   check("the fresh boot refusal and remedy are unchanged after the separate whole-stack stop",
     stopped.status === 0 && /Controller stack stopped/.test(stopped.stdout) && applyStoppedBoot.status === 2 &&
       JSON.stringify(envelope(applyStoppedBoot.stdout)?.error) === JSON.stringify(bootRefusal), { down: stopped.out, remove: applyStoppedBoot.out });
+  const stoppedPreview = cotal(b, "team", "boot", "boot.yaml", "--dry-run", "--plain");
+  check("the stopped boot preview names the blocker even with a matched summary", reported(stoppedPreview, priorBootNotice) &&
+    new RegExp(`${bootId}\\s+${SPACE_B}\\s+matched`).test(stoppedPreview.stdout), stoppedPreview.out);
+  manifest("changed-boot.yaml", SPACE_B, { changed: "    deliveryClass: live\n" }, { dir: b, server: SERVER_B });
+  const changedPreview = cotal(b, "team", "boot", "changed-boot.yaml", "--dry-run", "--json");
+  const changedReceipt = envelope(changedPreview.stdout);
+  check("a changed manifest still previews the earlier boot blocker in JSON with no effect", answered(changedPreview) &&
+    changedReceipt?.result?.effectAttempted === false && changedReceipt.warnings?.some((warning) =>
+      warning.code === "LIFECYCLE_BLOCKED" && warning.target.space === SPACE_B && warning.target.root === realpathSync(b) &&
+      warning.message.includes(priorBootNotice)) === true, changedPreview.out);
   // A stopped stack that carried a team is not booted with another one. The refusal names the
   // earlier boot's ID and cotal up, which starts that stack again.
   const again = cotal(b, "team", "boot", "boot.yaml", "--json");
