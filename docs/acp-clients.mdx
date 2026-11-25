@@ -132,7 +132,7 @@ A new thread offers these options next to the model list. They apply when the fi
 
 | Option | What it sets |
 | --- | --- |
-| Model | The application and model, as `<application>/<model>`. On a running thread, choosing another model of the same application switches the agent ([above](#threads)). Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice has that model's name and reasoning choices. A model id the list does not show is passed to the manager as given. |
+| Model | The application and model, as `<application>/<model>`. On a running thread, choosing another model of the same application switches the agent ([above](#threads)). Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice is that model: it has that model's name and reasoning choices, and the agent starts on it. A model id the list does not show is passed to the manager as given. |
 | Harness | The application the agent runs, when more than one can. Choosing a model moves it to that model's application, and choosing another harness starts that application on its default model. |
 | Reasoning | The model's variant. Offered while any listed model has variants; for a model without them it holds only the model default. |
 | Persona | A persona from the manager's catalog. A catalog of 64 or more personas offers a short list: the default, the current choice, and up to 16 personas you own. `/persona` picks any other. |
@@ -149,7 +149,7 @@ The session's model list also gives each model its reasoning choices, so a clien
 | Command | What it does |
 | --- | --- |
 | `/name <new name>` | Before the first prompt, sets the name the agent starts with. On a running agent, changes the name it shows on the mesh. Its manager still lists it by the name it started with. |
-| `/open <name>` | In a thread with no agent, drives an agent that is already running, found by its name or the name it shows. The thread shows what the agent's event channel still holds, then follows it live. When you load the thread again, it opens that agent. |
+| `/open <name>` | In a thread with no agent, drives an agent that is already running, found by its name or the name it shows. The thread's options change to show that agent's model, and the thread shows what the agent's event channel still holds, then follows it live. When you load the thread again, it opens that agent. |
 | `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
 | `/channels` | Lists the space's channels. |
