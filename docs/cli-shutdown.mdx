@@ -808,12 +808,15 @@ name the parent and remove nothing. Correct `--store-dir`, or omit it to use the
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity. On a root deployed with `up -f`, plain
   `cotal up` then refuses and names `cotal up -f <manifest>` when the deployment ran at another
-  address, mode or space. A full backup is bound to the space trust it was taken under, so full
-  backups taken before `clean all` no longer restore into this root. Only the registry of such a
-  backup still restores, with `backup restore <dir> --only registry`, and chat and DM history start
-  empty. Its dry run and its receipt say so when it removes that trust; take a new full backup after
-  the next `cotal up`. On a user-auth space it also removes the space's IdP trust and its actor
-  ledger, so every actor grant is lost. Its dry run and its receipt say so, and a later `up` then
+  address, mode or space. When `clean all` removes space trust on a controller-owned stack, its dry
+  run and receipt warn that backup creation and restore, including registry-only restore, are
+  unavailable. On a root without a stack journal, a full backup is bound to the space trust it was
+  taken under, so full backups taken before `clean all` no longer restore into this root. Only the
+  registry of such a backup still restores, with `backup restore <dir> --only registry`, and chat
+  and DM history start empty. The dry run and receipt say so when the clean removes that trust, and
+  the receipt recommends taking a new full backup after the next `cotal up`. On a user-auth space
+  `clean all` also removes the space's IdP trust and its actor ledger, so every actor grant is lost.
+  Its dry run and its receipt say so, and a later `up` then
   needs `cotal up --user-auth --idp <auth base URL>` and each actor granted again with
   `cotal actor grant`.
 
