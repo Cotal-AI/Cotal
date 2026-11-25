@@ -636,7 +636,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
 }
 
 /** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. */
-function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
+function parseOrExit(cmd: Command, rest: string[], noMoreOperands = false): ParsedArgs {
   rest = stripGlobalFlags(cmd, rest);
   const seed = extSeedSubcommand(cmd, rest);
   const json = !seed && asksForJson(cmd, rest);
@@ -659,7 +659,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
+      const operandsFull = noMoreOperands || (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
         || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
         || (cmd.name === "ext" && selected.name === "root")
         || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
@@ -815,13 +815,13 @@ function printHelpFor(cmd: Command, rest: readonly string[]): void {
 
 /** A service invocation takes its preset's flags, and `manager <verb>` is `service <verb> manager`.
  *  Preset details can enrich a global flag refusal but cannot replace it. */
-async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[] }> {
+async function serviceSurface(found: Command | undefined, words: string[], forRefusal = false): Promise<{ cmd: Command | undefined; rest: string[]; noMoreOperands?: true }> {
   if (found?.name !== "service" && found?.name !== "manager") return { cmd: found, rest: words };
   try {
     const [{ servicePresetCommand }, { managerServiceCommand }] = await serviceSurfaces();
     if (found.name === "service") return { cmd: servicePresetCommand(found, words), rest: words };
     const lifecycle = managerServiceCommand(found, words, forRefusal);
-    return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv } : { cmd: found, rest: words };
+    return lifecycle ? { cmd: lifecycle.cmd, rest: lifecycle.argv, noMoreOperands: true } : { cmd: found, rest: words };
   } catch (error) {
     if (forRefusal || asksForHelp(words)) return { cmd: found, rest: words };
     const failure = isCommandFailure(error) ? error : new CommandFailure("refused", "SCHEMA_INVALID", "service preset metadata could not be read; no provider was imported or installed");
@@ -979,7 +979,8 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   if (repeated) return repeatedGlobalFlag(repeated, cmd, rest, pendingWarnings);
   routeCollisionWarnings(pendingWarnings, cmd, rest, wantsHelp);
   if (word === undefined) return paintFor(process.stdout, () => printEntry(commands));
-  ({ cmd, rest } = await serviceSurface(cmd, rest));
+  const scoped = await serviceSurface(cmd, rest);
+  ({ cmd, rest } = scoped);
   // The usage telemetry hook is armed as soon as the command is known, so a usage refusal below
   // counts too, and before anything runs, so the one-time notice precedes the command's output.
   const arm = (): void => {
@@ -1008,7 +1009,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
   // line, where `--help` is a word being completed, not a request.
   if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
-  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
+  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest, scoped.noMoreOperands) : undefined;
   // ---- Effects: only a validated invocation reaches this line. ----
   // A config folder that is a file fails every read and write of the preferences, the config file and
   // the extensions, so a command that could use them stops here, before the seed would write there.

@@ -262,7 +262,7 @@ try {
   const conflicting = cotal(["service", "add", "hello", "--exec", "echo hi", "--preset", "manager", "--space", SPACE]);
   check("service add --exec with --preset refuses and saves nothing", conflicting.status === 1 && JSON.stringify(definitions()) === "[]", out(conflicting));
   const addExec = ["service", "add", "hello", "--exec", "echo 'big world'", "--space", SPACE];
-  for (const args of [addExec, ["service", "list"], ["svc", "rm", "hello"]]) {
+  for (const args of [addExec, ["service", "list"], ["svc", "rm", "hello"], ["manager", "status"]]) {
     const unknown = cotal([...args, "--wibble"]);
     check(`cotal ${args.slice(0, 2).join(" ")} tells you to drop an unknown option when no operand fits`,
       unknown.status === 1 && unknown.stdout === "" && /Unknown option '--wibble'\n  drop the unknown option\n/.test(unknown.stderr), out(unknown));
@@ -273,6 +273,11 @@ try {
     unknownJson.status === 1 && unknownJson.stderr === "" && unknownError?.code === "USAGE_INVALID"
       && unknownError.message === "Unknown option '--wibble'" && unknownError.remedy === "drop the unknown option"
       && JSON.stringify(definitions()) === "[]", out(unknownJson));
+  const managerUnknown = cotal(["--json", "mgr", "--space", SPACE, "logs", "--tail", "1", "--wibble=3"]);
+  const { error: managerUnknownError } = JSON.parse(managerUnknown.stdout);
+  check("mgr logs gives the same remedy in JSON with its implicit service name",
+    managerUnknown.status === 1 && managerUnknown.stderr === "" && managerUnknownError?.code === "USAGE_INVALID"
+      && managerUnknownError.message === "Unknown option '--wibble'" && managerUnknownError.remedy === "drop the unknown option", out(managerUnknown));
   const added = cotal(addExec);
   check("service add <name> --exec saves a program of your own in one command", added.status === 0 && JSON.stringify(definitions()) === '["hello"]', out(added));
   const show = cotal(["service", "show", "hello", "--space", SPACE, "--json"]);
