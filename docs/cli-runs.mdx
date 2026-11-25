@@ -66,7 +66,10 @@ before anything is written; the refusal names the runs still activating, and the
 wait until one has activated and run it again. Any other refusal of `start`, `resume`, `answer` or
 `amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
-An unpinned hosted verb run by the operator reads the space's service registry first. When it
+Hosted `start` on a known open mesh refuses `UNSUPPORTED` (exit 2) before looking for a manager.
+Test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run.
+
+Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
 (exit 2) before waiting for a reply. If this machine started the stack at the requested broker,
 the next step names its project folder. A machine that only registered the space points you to
