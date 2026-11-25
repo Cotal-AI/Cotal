@@ -888,6 +888,8 @@ names the `cotal up` that starts it there.
 receipts, which only `up` and `down` read, so `status` does not name it. When `status` verifies
 that a controller startup still holds the root's maintenance lock, it reports `Startup in progress`.
 For a prepared space, `status --space <name>` checks that space's root even from another folder.
+In the project's own folder, this includes an open stack restart while it registers the space again.
+Next does not suggest a store reset or settlement for that restart.
 Wait for startup to finish, then run the status command shown under Next.
 An `up` or `down` that was interrupted before it recorded an outcome and left some members running
 and others stopped is
