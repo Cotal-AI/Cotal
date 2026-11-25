@@ -8,7 +8,8 @@
  *    frames;
  *  - a credential without the payload history row is refused the read the bridge makes;
  *  - when the payload history cannot be read, the thread fails to replay, saying that the seat's
- *    earlier tool inputs and results cannot be read, and why.
+ *    earlier tool inputs and results cannot be read, and why;
+ *  - with no manager registered, the agent list rejects with the error that names it.
  *
  * Run: pnpm smoke:acp-space-reads (needs nats-server on PATH).
  */
@@ -122,6 +123,9 @@ async function checkSpace(label: string, s: Space): Promise<void> {
     const unread = await mesh.frameHistory(seat).then(() => undefined, (e: Error) => e);
     check(`${label} when the payload history cannot be read: replay fails, saying the earlier tool inputs and results cannot be read, and why`,
       unread?.message.startsWith("seat's earlier tool inputs and results cannot be read from its payload history: ") === true && unread.message.length > 80, unread?.message);
+    const none = await mesh.seats().then(() => undefined, (e: Error) => e);
+    check(`${label} with no manager registered: the agent list rejects saying so, as NoManagerRegistered`,
+      none?.name === "NoManagerRegistered" && none.message === `No live manager is registered for ${s.name}`, none && { name: none.name, message: none.message });
   } finally {
     await nc.close();
     await mesh.close();

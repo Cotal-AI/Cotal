@@ -4,7 +4,6 @@
  * space the observer reads with the person's own sign-in, which reads the event channels of every
  * agent under their owner, so no admin grant is needed.
  */
-import { hostname } from "node:os";
 import {
   AGENT_CMD_SET_NAME,
   AGENT_CONTRACTS,
@@ -31,11 +30,12 @@ import {
   type Profile,
   type SetNameIO,
 } from "@cotal-ai/core";
-import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
-import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
+import { connectTargetOrThrow, isConnectRefusal, managerMachineId, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
+import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, presenceMachine, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
 import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
-import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
+import { startManager } from "./manager-start.js";
+import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
 /** A seat's retained event history is read up to this many frames. */
@@ -63,27 +63,45 @@ export function namesDeregister(op: string, instanceId: string | undefined, own:
   return instanceId !== undefined && own.has(instanceId) && READS.has(op) && !reply.ok && reply.unanswered === true;
 }
 
-/** A manager as a choice, its host read from the roster's current row for it. On a space where people
- *  sign in, `owner` is the person's, and only their own manager's row counts: another member may name
- *  an agent after it. An offline row says nothing about where the manager runs now, so it is not live
- *  and not local. */
-export function managerChoice(instanceId: string, roster: readonly Presence[], here: string, owner?: string): ManagerChoice {
+/** A manager as a choice, read from the roster's current row for it. It is local when the row names
+ *  `here`, this machine's {@link managerMachineId}; `here` is undefined when that could not be read,
+ *  and then none is. Its host is shown and decides nothing, since a machine's name can change while
+ *  its manager runs. On a space where people sign in, `owner` is the person's, and only their own
+ *  manager's row counts: another member may name an agent after it. An offline row says nothing about
+ *  where the manager runs now, so it is not live and not local. */
+export function managerChoice(instanceId: string, roster: readonly Presence[], here: string | undefined, owner?: string): ManagerChoice {
   const actor = remoteManagerActors(instanceId).supervisor;
   const row = roster.find((p) => (owner === undefined ? parsePrincipalKey(p.card.id)?.actor === actor : p.card.id === `${owner}.${actor}`) && p.status !== "offline");
   const seen = managerCandidate(instanceId, row).host;
-  return { instanceId, ...(seen ? { host: seen } : {}), local: seen === here, live: row !== undefined };
+  const machine = row ? presenceMachine(row) : undefined;
+  return { instanceId, ...(seen ? { host: seen } : {}), local: here !== undefined && machine === here, live: row !== undefined };
 }
 
-/** Managers as choices, each from its current roster row when that names its host, else from the
- *  host it reports in its own status. On a space where people sign in, the space's own manager has
- *  no row under the person's principal, so its report describes it. */
-export function managerChoices(ids: readonly string[], roster: readonly Presence[], here: string, owner: string | undefined, reported: (instanceId: string) => Promise<string | undefined>): Promise<ManagerChoice[]> {
-  return Promise.all(ids.map(async (instanceId) => {
-    const seen = managerChoice(instanceId, roster, here, owner);
-    if (seen.host) return seen;
-    const host = await reported(instanceId);
-    return { instanceId, ...(host ? { host } : {}), local: host === here, live: host !== undefined };
-  }));
+/** What a manager's own `status` reported about where it runs. */
+type Reported = { host?: string; machine?: string };
+
+/** A manager whose rail is not gone as a choice, from what it reported. */
+const railChoice = (instanceId: string, seen: Reported, here: string | undefined): ManagerChoice =>
+  ({ instanceId, ...(seen.host ? { host: seen.host } : {}), local: here !== undefined && seen.machine === here, live: seen.host !== undefined });
+
+/** Why this machine's identity could not be read, undefined when it could. Without it no manager is
+ *  known to run here, and the host name is no stand-in. */
+function machineUnreadable(): string | undefined {
+  try { managerMachineId(); }
+  catch (e) { return (e as Error).message; }
+  return undefined;
+}
+
+/** This machine as its managers name it, undefined when {@link machineUnreadable} says why not. */
+const thisMachine = (): string | undefined => (machineUnreadable() === undefined ? managerMachineId() : undefined);
+
+/** A signed-in person's listed manager as a choice. `seen` is what its rail reported, undefined when
+ *  the rail is gone. A manager with no current row under the person's principal, such as the space's
+ *  own, is described by its rail's report. */
+export function listedChoice(instanceId: string, seen: Reported | undefined, roster: readonly Presence[], here: string | undefined, owner: string): ManagerChoice | undefined {
+  if (!seen) return undefined;
+  const row = managerChoice(instanceId, roster, here, owner);
+  return row.live ? row : railChoice(instanceId, seen, here);
 }
 
 /** One connector row of a manager's `status`. */
@@ -344,6 +362,8 @@ function controls(options: LiveMeshOptions, c: Connected) {
     return askManager(client, t.space, t.server, op, args, t.auth, t.auth.bearer ? "owner" : "any", undefined, { instanceId, expectedSeat: { name: seat.name, ...run }, expectedTarget: run });
   };
 
+  const choice = (instanceId: string): ManagerChoice => managerChoice(instanceId, observer.getRoster(), thisMachine(), started?.owner);
+
   /** On a user-auth space, the person's managers as the space's auth service lists them. The list
    *  spends no selection, a manager whose presence has not arrived is still listed, and each later
    *  call is pinned to a manager it names, which the exchange authorizes again. */
@@ -352,20 +372,36 @@ function controls(options: LiveMeshOptions, c: Connected) {
     own = new Set(plan.own);
     return plan;
   };
-  return { ctx, client, resolve, ask, seatCommand, yourManagers, own: (): ReadonlySet<string> => own };
+  return { ctx, client, resolve, ask, seatCommand, choice, yourManagers, own: (): ReadonlySet<string> => own };
 }
 
 type Controls = ReturnType<typeof controls>;
 
+/** A listed manager the broker still routes to, with the host and machine it reports, or undefined
+ *  when its rail is gone: nothing is subscribed on it, as `cotal ps` reports a manager whose computer
+ *  is gone or that died without deregistering. Its report is not waited for. The probe answers only
+ *  for a gone rail, so a live manager's answer ends it. */
+async function railCheck(p: Controls, instanceId: string): Promise<Reported | undefined> {
+  // A per-instance call needs an instrument minted for that instance.
+  const pinned = await p.resolve("control-caller-privileged", instanceId);
+  const stop = new AbortController();
+  const reported = reportedManagerHost(p.client, pinned.space, pinned.server, pinned.auth, instanceId).finally(() => stop.abort());
+  if (await managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, stop.signal)) return undefined;
+  return reported;
+}
+
+/** The listed managers whose rail is not gone. When every one is gone, none may start a new thread,
+ *  so this rejects as a space with no manager does. */
+export function runningManagers<T>(space: string, listed: readonly string[], checked: readonly (T | undefined)[]): T[] {
+  const running = checked.filter((m): m is T => m !== undefined);
+  if (running.length === 0) throw new NoLaunchManager(`No manager for ${space} is running: the broker reports nothing on the rail of ${listed.join(", ")}.`);
+  return running;
+}
+
 /** The reads a new thread's options come from, and the launch. */
-function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "manager" | "personas" | "spawn"> {
+function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | undefined): Pick<Mesh, "catalogs" | "managers" | "startManager" | "machineUnreadable" | "manager" | "personas" | "spawn"> {
   const { target, started, observer } = c;
-  const { client, resolve, ask, yourManagers } = p;
-  /** The host one manager reports in its own status, pinned to it. */
-  const reportedHost = async (instanceId: string): Promise<string | undefined> => {
-    const t = await resolve("control-caller-privileged", instanceId);
-    return reportedManagerHost(client, t.space, t.server, t.auth, instanceId);
-  };
+  const { client, resolve, ask, choice, yourManagers } = p;
   return {
     async catalogs(instanceId) {
       const [status, models] = await Promise.all([ask("managerStatus", undefined, instanceId), ask("models", undefined, instanceId)]);
@@ -380,32 +416,33 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
       if (started) {
         const plan = await yourManagers();
         if (plan.why) throw new NoLaunchManager(plan.why);
-        return managerChoices(plan.launch, observer.getRoster(), hostname(), started.owner, reportedHost);
+        const here = thisMachine();
+        const checked = await Promise.all(plan.launch.map(async (instanceId) => listedChoice(instanceId, await railCheck(p, instanceId), observer.getRoster(), here, started.owner)));
+        return runningManagers(target.space, plan.launch, checked);
       }
       const t = await resolve("control-caller-privileged");
       const ids = await liveManagerIds(t.space, t.server, t.auth).catch((e: unknown) => {
         if (!noLiveInstances(e)) throw e;
         throw new NoLaunchManager(`The broker for ${t.space} is reachable, but no manager is registered. To open a thread, ${startStackManagerRemedy(t.space, t.server)}`);
       });
-      const here = hostname();
-      const choices = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
-        // A per-instance call needs an instrument minted for that instance.
-        const pinned = await resolve("control-caller-privileged", instanceId);
-        // A registration whose host is gone has nothing subscribed on its rail, as `cotal ps`
-        // reports it. It is not offered, and its host is not waited for. The probe answers only
-        // for a gone rail, so a live manager's host answer ends it.
-        const stop = new AbortController();
-        const reported = reportedManagerHost(client, pinned.space, pinned.server, pinned.auth, instanceId).finally(() => stop.abort());
-        if (await managerRailGone(pinned.space, pinned.server, pinned.auth, instanceId, stop.signal)) return undefined;
-        const host = await reported;
-        return { instanceId, ...(host ? { host } : {}), local: host === here, live: host !== undefined };
+      const here = thisMachine();
+      const checked = await Promise.all(ids.map(async (instanceId): Promise<ManagerChoice | undefined> => {
+        const seen = await railCheck(p, instanceId);
+        return seen && railChoice(instanceId, seen, here);
       }));
-      return choices.filter((m): m is ManagerChoice => m !== undefined);
+      return runningManagers(t.space, ids, checked);
     },
 
+    startManager: () => startManager(target.space),
+
+    machineUnreadable,
+
     async manager(instanceId) {
-      const [held] = await managerChoices([instanceId], observer.getRoster(), hostname(), started?.owner, reportedHost);
-      return held!;
+      const seen = choice(instanceId);
+      if (seen.host) return seen;
+      // A manager whose presence row is not found here, such as the space's own, is asked where it runs.
+      const t = await resolve("control-caller-privileged", instanceId);
+      return railChoice(instanceId, await reportedManagerHost(client, t.space, t.server, t.auth, instanceId), thisMachine());
     },
 
     async personas(instanceId) {
@@ -485,7 +522,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
       const removable: string[] = [];
       if (!started) {
         const reply = await controlPs(client, ctx, { readOnly: true });
-        if (!reply.ok) throw new Error(reply.error);
+        if (!reply.ok) throw reply.noLiveManager ? new NoManagerRegistered(target.space) : new Error(reply.error);
         answered = reply.answered;
         // A registration whose host is gone never answers, so it is not one that may still hold the agent.
         for (const id of reply.gone) options.log(`manager ${id} is registered, but nothing is behind its rail; its host is gone and never deregistered`);
@@ -494,7 +531,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
         // A user-auth bearer reads one manager per call, each pinned. A manager that does not answer
         // hides only its own agents, as `cotal ps` reports it.
         const plan = await yourManagers();
-        if (plan.read.length === 0) throw new Error(plan.why ?? "the space lists no live manager for you");
+        if (plan.read.length === 0) throw new NoManagerRegistered(target.space);
         const reads = await Promise.all(plan.read.map(async (instanceId) => {
           try {
             const reply = await ask("ps", undefined, instanceId);

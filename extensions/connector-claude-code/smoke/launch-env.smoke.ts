@@ -1,5 +1,6 @@
 /**
  * Claude seat env: the documented auth vars must reach the child; host-session markers must not.
+ * No seat launch turns Claude's mods off, so the command mod runs.
  *
  * THE BLOCKER THIS GRADES. After launchEnv stopped inheriting, CLAUDE_CODE_OAUTH_TOKEN (the name
  * docs/deploy.mdx and deploy/ tell operators a container Claude authenticates with) was silently
@@ -278,6 +279,11 @@ check(
     "the connector declares askPermissions where it serves prompts, and reasoningEvents",
     claudeConnector.supportsAskPermissions === (process.platform !== "win32") && claudeConnector.prompts === claudeConnector.supportsAskPermissions && claudeConnector.supportsReasoningEvents === true,
   );
+  // The command mod serves agent commands and set-model, and these turn mods off.
+  const modsOff = (args: string[]) => args.includes("--bare") || args.includes("--safe-mode") || settings(args).some((v) => v.includes("disableAllHooks"));
+  check("no seat launch turns Claude's mods off: no --bare, --safe-mode or disableAllHooks, and the plugin loads",
+    [defaultArgs, foregroundArgs, asking.args, plain.args, foreground.args].every((args) => !modsOff(args) && args.includes("--plugin-dir")),
+    [defaultArgs, asking.args].map((args) => args.filter((a) => a.startsWith("--"))));
   for (const spec of [asking, plain, foreground]) discardLaunchArtifacts(spec.artifacts ?? []);
 }
 

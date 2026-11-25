@@ -26,6 +26,33 @@ export function publishServiceStartup(path: string, value: { phase: string; spac
   writeSecretFileCreateOnly(path, JSON.stringify({ schemaVersion: 1, phase: value.phase, space: value.space, instanceId: value.instanceId, launchRequestId: value.launchRequestId, process: processIdentity, observedAt: new Date().toISOString() }) + "\n");
 }
 
+/** The most `cotal manager start --idle-exit` takes, in seconds: 30 days. */
+export const MAX_IDLE_EXIT_SECONDS = 30 * 24 * 60 * 60;
+
+const idleExitPath = (context: StartupContext): string => serviceStartupPath(context).replace(/\.ready\.json$/, ".idle-exit.json");
+
+/** Call from the native child once the stop that its `--idle-exit` began has completed, so status can
+ *  tell an idle exit from a crash. The receipt grants no authority. */
+export function publishServiceIdleExit(context: StartupContext, idleSeconds: number): void {
+  const path = idleExitPath(context);
+  validateServiceStartupPath(serviceStartupPath(context), context.instanceId, context.launchRequestId);
+  const processIdentity = identityRecord(process.pid);
+  if (!("token" in processIdentity)) throw new CommandFailure("refused", "UNSUPPORTED", "the native service child has no creation-pinned process identity");
+  writeSecretFileCreateOnly(path, JSON.stringify({ schemaVersion: 1, space: context.space, instanceId: context.instanceId, launchRequestId: context.launchRequestId, process: processIdentity, idleSeconds, observedAt: new Date().toISOString() }) + "\n");
+}
+
+/** The idle-exit receipt this launch's pinned process left, or undefined when it left none. A receipt
+ *  for another launch or process is refused, never read as this one's. */
+export function readServiceIdleExit(context: StartupContext, process: { pid: number; token: string }): { idleSeconds: number; observedAt: string } | undefined {
+  const bytes = readLocalRecordSource(idleExitPath(context), 8192, true);
+  if (!bytes) return undefined;
+  const row = decodeLocalJson(bytes) as Record<string, unknown>;
+  const identity = row?.process as { pid?: unknown; token?: unknown } | undefined;
+  if (!row || Object.keys(row).some((key) => !["schemaVersion", "space", "instanceId", "launchRequestId", "process", "idleSeconds", "observedAt"].includes(key)) || row.schemaVersion !== 1 || row.space !== context.space || row.instanceId !== context.instanceId || row.launchRequestId !== context.launchRequestId || !identity || identity.pid !== process.pid || identity.token !== process.token || !Number.isSafeInteger(row.idleSeconds) || Number(row.idleSeconds) < 1 || typeof row.observedAt !== "string" || !Number.isFinite(Date.parse(row.observedAt)))
+    throw new CommandFailure("refused", "SCHEMA_INVALID", "the idle-exit receipt does not match this launch and process; no stop was inferred from it");
+  return { idleSeconds: Number(row.idleSeconds), observedAt: row.observedAt };
+}
+
 /** A native startup receipt plus the controller's current process proof. This is not an HTTP
  *  health query, a native endpoint response or proof of ongoing application availability. */
 export function observeServiceStartup(context: ServiceAdapterContext & { process: { pid: number; token: string }; signal: AbortSignal }, phase: string): ServiceAdapterReadiness {

@@ -1,7 +1,7 @@
 /** A mesh agent's own presence writes: status with its turn-boundary yield, activity, condition,
  *  model and cwd, each queued on one chain so overlapping calls land in call order. The mesh agent
  *  keeps the status it reports and one forwarder per member called from outside the family. */
-import type { PresenceCondition, PresenceStatus } from "@cotal-ai/core";
+import { AGENT_MODEL_SET_META_KEY, type PresenceCondition, type PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent } from "./agent.js";
 
 
@@ -164,15 +164,30 @@ export class AgentPresence {
     }
   }
 
+  /** The model and variant an owner's `set-model` switched the harness to. They outrank the launch
+   *  pin from then on. */
+  private switched?: { model: string; variant?: string };
+
   /** Record the host's actual model and optional variant learned after launch, so peers see the
    *  selection in `cotal_roster` and the web roster even when the operator never pinned one. Explicit
-   *  `model:` / `variant:` config wins; this only fills the gap. `provider` is best-effort and
+   *  `model:` / `variant:` config wins, and a `set-model` switch wins over both; this only fills the
+   *  gap. `provider` is best-effort and
    *  reported independently of the model pin: a pinned seat can still report which provider is
    *  serving it, so the early return only short-circuits when no provider was given either. Best-
    *  effort presence mirror (no `requireConnected` — safe pre-connect; it rides the first publish). */
   async setModel(model: string, variant?: string, provider?: string): Promise<void> {
-    if (this.config.model && provider === undefined) return; // operator pin is authoritative for the model
-    await this.inOrder(() => this.ep.setCardModel(this.config.model ?? model, this.config.variant ?? variant, provider));
+    const pin = this.switched ?? { model: this.config.model, variant: this.config.variant };
+    if (pin.model && provider === undefined) return; // operator pin is authoritative for the model
+    const shown = this.switched ?? { model: this.config.model ?? model, variant: this.config.variant ?? variant };
+    await this.inOrder(() => this.ep.setCardModel(shown.model, shown.variant, provider));
+  }
+
+  /** Show the model and variant an owner's `set-model` switched the harness to, with the
+   *  `ai.cotal.model-set` mark a launcher relaunches it on, in one record. */
+  async switchModel(model: string, variant?: string): Promise<void> {
+    this.switched = { model, variant };
+    const set = { model, ...(variant !== undefined ? { variant } : {}) };
+    await this.inOrder(() => this.ep.setCardMeta({ model, variant, [AGENT_MODEL_SET_META_KEY]: set }));
   }
 
   /** Report the session's working directory as its harness supplied it. Advisory display data. */

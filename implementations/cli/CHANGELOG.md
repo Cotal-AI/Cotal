@@ -1,5 +1,19 @@
 # @cotal-ai/cli
 
+## 0.180.0
+
+### Minor Changes
+
+- bffdc47: `cotal acp` now starts this machine's manager for the space when no manager may start a new thread's agent, or when none of yours runs on this machine, and that manager stops itself after 10 minutes with no agents. The bridge runs `cotal manager start --idle-exit 600` and says so in one line at the start of the thread's first prompt, before the agent's reply. Another computer's manager runs a thread's agent only when the thread's Machine option names it. Threads that open at the same time share one start, and a failed start fails the new thread with its reason. With no manager registered for the space, listing, loading or deleting threads and `/open` now say so and that a new thread starts this machine's manager, in place of a bare internal error. A listed manager whose rail the broker reports empty, such as one whose computer is gone, is not offered. `cotal manager start` and `cotal service start manager` take `--idle-exit <seconds>` for that start only: the manager stops, and deregisters, once it has held no agent, call, workflow run, preservation or resume for that long, and no pending work over which `cotal manager stop` refuses, such as a name held until its retirement completes; `cotal status --components` lists that work on the manager row. `status` shows the value on an `Idle exit` row. A start with a different value while the manager runs refuses `LIFECYCLE_BLOCKED`. `@cotal-ai/workspace` probes a signed-in caller's pinned manager rail on the rail its credential was issued for. A manager that `cotal manager start`, `cotal acp` or a controller stack's `cotal up` starts now gets the `spawn.env` names that are set where it starts, so its seats get them, as seats of a manager the legacy launcher starts do; no value is printed. On Linux, a background service now starts in a systemd user scope of its own when the user manager answers, so it outlives an app that stops the scope its agent ran in, as T3 Code does when a thread's session ends; a scope that cannot be made fails the start, and each launch's scope has a name of its own, so a retry never meets an earlier attempt's scope. When `cotal acp` cannot read this machine's identity, as in a container with no `/etc/machine-id`, a thread still uses a manager its Machine option names, and it neither defaults to a manager nor starts one; a prompt with none chosen, or a new thread with none listed, fails and says why.
+- fcd33e4: `cotal acp` now recognises this machine's manager after the machine's host name changes, as macOS does when the network changes, so it no longer starts a second manager or defaults a thread to another computer. A Manager's `status` and presence card carry `machine`, an HMAC-SHA256 of the host's OS machine identity keyed by it over `cotal manager host`, and the bridge compares it with its own; the host name is only shown. A manager that names no machine counts as another computer's. The Manager cluster advances to revision 57, and its closed status schema of revision 56 rejects the field, so update Managers and their callers together, as revision 56 already requires. `@cotal-ai/workspace` exports `osMachineId()`, the OS machine identity read the CLI's service records use, and `managerMachineId()`; `reportedManagerHost` answers `{ host, machine }`.
+
+### Patch Changes
+
+- Updated dependencies [bffdc47]
+- Updated dependencies [fcd33e4]
+  - @cotal-ai/workspace@0.180.0
+  - @cotal-ai/core@0.180.0
+
 ## 0.179.0
 
 ### Minor Changes

@@ -3,7 +3,7 @@ import { lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { MeshLaunchSpec, ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, MANAGER_PIDFILE, answerServiceObservations, assertManagerName, assertRecordIdentity, canonicalLocalProcessPath,
+  CommandFailure, MANAGER_PIDFILE, MAX_IDLE_EXIT_SECONDS, answerServiceObservations, assertManagerName, assertRecordIdentity, canonicalLocalProcessPath,
   consumeManagerShutdownIntent, loadRoster, localRecordAccess, protectedCredentialReference, protectedLocalDirectory, publishServiceIdentity,
   publishServiceStopReceipt, readLocalRecordSource, readServiceIdentity,
   readServiceStopReceipts, readServiceStopRequest, resolveNativeServiceTarget,
@@ -19,6 +19,8 @@ export interface ManagerServiceChild {
   readonly launchSpec?: MeshLaunchSpec;
   /** The roster's agents, parsed once here like the launch spec. */
   readonly roster?: readonly StartAgentOpts[];
+  /** This launch's `--idle-exit`: stop once the manager has held no agents for this many seconds. */
+  readonly idleExitSeconds?: number;
 }
 
 /** Read one private, content-pinned manifest once. The child keeps these parsed bytes rather than
@@ -52,9 +54,9 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
   if (localRecordAccess() !== "windows-acl" && (directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", "the native manager launch state must be an owned private directory");
   const target = resolveNativeServiceTarget(root, String(values.space), String(values.server));
   const context = Object.freeze({ space: target.space, instanceId: serviceOperationId(values["service-instance"]), launchRequestId: serviceOperationId(values["launch-request"]), stateDirectory });
-  for (const [field, minimum, maximum] of [["console-port", 0, 65535], ["ws-port", 1, 65535], ["max-sessions", 1, Number.MAX_SAFE_INTEGER]] as const) {
+  for (const [field, minimum, maximum] of [["console-port", 0, 65535], ["ws-port", 1, 65535], ["max-sessions", 1, Number.MAX_SAFE_INTEGER], ["idle-exit", 1, MAX_IDLE_EXIT_SECONDS]] as const) {
     const value = values[field];
-    if (value !== undefined && (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum || Number(value) > maximum)) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires valid explicit ports and a positive session ceiling");
+    if (value !== undefined && (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < minimum || Number(value) > maximum)) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires valid explicit ports, a positive session ceiling and a positive idle exit");
   }
   if (values["console-host"] !== undefined && (typeof values["console-host"] !== "string" || !values["console-host"] || values["console-host"].length > 253 || /[\u0000- \u007f]/u.test(values["console-host"]))) throw new CommandFailure("refused", "USAGE_INVALID", "the native manager child requires a bounded explicit console host without controls");
   if (values.name !== undefined) assertManagerName(String(values.name));
@@ -74,7 +76,7 @@ export function managerServiceChild(args: ParsedArgs): ManagerServiceChild {
     catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `the manager roster was not loaded: ${(error as Error).message}`); }
   }
   serviceStopRequestPath(context);
-  return Object.freeze({ root: target.root, context, ...(launchSpec ? { launchSpec } : {}), ...(roster ? { roster } : {}) });
+  return Object.freeze({ root: target.root, context, ...(launchSpec ? { launchSpec } : {}), ...(roster ? { roster } : {}), ...(values["idle-exit"] !== undefined ? { idleExitSeconds: Number(values["idle-exit"]) } : {}) });
 }
 
 /** Shared by the native child and its caller-attributed controller preflight. Dynamic

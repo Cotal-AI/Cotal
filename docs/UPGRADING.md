@@ -4,13 +4,42 @@
 
 Updated clients set their NATS connection name to `<owner>-<actor>-<nonce>` and their inbox prefix to
 `_INBOX_<owner>-<actor>-<nonce>`. The owner and actor come from the bearer, and the nonce is fresh
-for each new client. Update a CLI installation with `npm install -g cotal-ai@latest` to use this form.
+for each new client. After the first release containing this change becomes the latest release,
+update a CLI installation with `npm install -g cotal-ai@latest` to use this form.
 Static and open meshes are unchanged. Existing user-auth clients that send a bare nonce still connect.
 
-If a custom client already sends a name in the principal-bound form, the auth callout refuses it
-when the owner or actor differs from the bearer. Set `name` to `<sub>-<act.actor>-<nonce>`, using
-the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or underscores.
-Set `inboxPrefix` to `_INBOX_` followed by that exact name.
+Update every auth callout replica before relying on the principal check or using a connection name
+longer than 120 characters. An older replica may accept a mismatched name or refuse a longer name.
+If a new replica refuses a mismatched name, the broker returns `Authorization Violation` to the
+client and the callout log gives the correct settings. Set `name` to `<sub>-<act.actor>-<nonce>`,
+using the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or
+underscores. Set `inboxPrefix` to `_INBOX_` followed by that exact name.
+
+## Switching a running agent's model
+
+The `agent` cluster advances to revision 6 with `set-model`, which the owner
+calls to switch a running agent's model and variant. The auth callout grants it, so update and
+restart every member of the callout queue, then reconnect each person's clients. A connect that an
+old member answers gets no `set-model` permission. An agent whose connector predates `set-model`
+omits `setModel` from its presence `agentEndpoint`, and a client reads that as not served.
+
+Presence `agentEndpoint` gains the optional boolean `setModel`. A reader older than this accepts the
+field, because it checks only the four flags it knows.
+
+A Manager keeps a switch the agent's presence shows and starts the agent on it when it restarts or
+resumes it. An older Manager starts it on its launch model. The Manager and `cotal spawn` also tell
+an agent whose role `modelPolicy` governs, through `COTAL_MODEL_POLICY`, so it refuses every switch.
+An agent launched by an older Manager or CLI is not told, so on a space whose cotal config sets
+`modelPolicy`, update the Manager and the CLI with the connectors.
+
+## Managers name their machine
+
+The Manager cluster advances to revision 57. A Manager's `status` and its presence card now carry
+`machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
+own machine by this value. The host name cannot decide it, because macOS changes it when the
+network changes. The closed status schema of revision 56 rejects the field, so update Managers and
+their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
+recognise it as running here.
 
 ## The agent endpoint on every space
 

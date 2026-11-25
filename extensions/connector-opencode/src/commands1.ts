@@ -5,11 +5,13 @@
  * has ended, so a dispatch resolves once that turn starts: OpenCode calls the
  * `command.execute.before` hook, stores the command's prompt, and reports the session busy. An
  * owner's turn goes out as a prompt, each image as a file part with a data URL, and `usage` reads
- * the session's messages the way T3 Code's OpenCode provider does.
+ * the session's messages the way T3 Code's OpenCode provider does. After an owner's `set-model`,
+ * every prompt and command names the model and variant they chose (model-switch.ts).
  */
 import { CommandRefused, type AgentTurn, type AgentUsage, type CommandDispatcher } from "@cotal-ai/connector-core";
 import type { CommandEntry, CommandTarget } from "@cotal-ai/core";
 import { RECONNECT_COMMAND } from "./reconnect-command.js";
+import { opencode1ModelChoice, type PromptModel1 } from "./model-switch.js";
 
 export interface Commands1Deps {
   /** The plugin's OpenCode HTTP client. An answer that is not 2xx throws an Error with its `status`. */
@@ -24,6 +26,8 @@ export interface Commands1Deps {
   firstTurnSystem(): string | undefined;
   /** A turn carrying the first-turn `system` field went out. */
   primed(): void;
+  /** The model and variant the launch pinned on the `cotal` agent, each absent when it pinned none. */
+  launch: { model?: string; variant?: string };
   warn(message: string): void;
 }
 
@@ -35,6 +39,8 @@ export interface Commands1 {
   turnStarted(sessionID: string): void;
   /** Teardown began: stop waiting on a command's answer. */
   close(): void;
+  /** What every prompt the plugin sends names besides its parts. */
+  promptModel(): PromptModel1;
 }
 
 const isReconnect = (c: { target: CommandTarget; name: string }) => c.target === "command" && c.name === RECONNECT_COMMAND.name;
@@ -89,6 +95,7 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
   let waiting: { session: string; name: string; hooked: boolean; hook(): void; start(): void } | undefined;
   // Each model's context window. `GET /provider` can be megabytes, and a window does not change.
   const windows = new Map<string, number | undefined>();
+  const models = opencode1ModelChoice(deps.api, deps.launch);
 
   async function list(): Promise<CommandEntry[]> {
     return opencode1CommandEntries(await deps.api<unknown>("/command"));
@@ -111,7 +118,7 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
     // once its turn ended.
     const answer = deps.api(`/session/${encodeURIComponent(session)}/command`, {
       method: "POST",
-      body: JSON.stringify({ command: command.name, arguments: command.args }),
+      body: JSON.stringify({ command: command.name, arguments: command.args, ...models.command() }),
       signal: controller.signal,
     });
     const ended = (e: Error) => deps.warn(`the ${command.target} "${command.name}" ended with ${e.message}`);
@@ -146,7 +153,7 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
       ...images.map(({ mimeType, data }) => ({ type: "file", mime: mimeType, url: `data:${mimeType};base64,${data}` })),
     ];
     try {
-      await deps.api(`/session/${encodeURIComponent(session)}/prompt_async`, { method: "POST", body: JSON.stringify({ parts, ...(system ? { system } : {}) }) });
+      await deps.api(`/session/${encodeURIComponent(session)}/prompt_async`, { method: "POST", body: JSON.stringify({ parts, ...models.prompt(), ...(system ? { system } : {}) }) });
     } catch (e) {
       const status = (e as { status?: unknown }).status;
       if (typeof status === "number" && status >= 400 && status < 500) throw new CommandRefused("failed-precondition", (e as Error).message);
@@ -190,6 +197,7 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
     turn,
     images: true,
     usage,
+    setModel: models.setModel,
     // Measured on 1.19.6: the route answers true whether or not a turn ran, so the plugin's own turn
     // state says whether one runs. The stopped turn ends with a `MessageAbortedError`.
     async interrupt() {
@@ -213,5 +221,6 @@ export function opencode1Commands(deps: Commands1Deps): Commands1 {
       if (waiting?.hooked && waiting.session === sessionID) waiting.start();
     },
     close: () => controller.abort(),
+    promptModel: models.prompt,
   };
 }
