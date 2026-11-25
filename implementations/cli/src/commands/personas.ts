@@ -14,7 +14,8 @@ import { targetWords } from "../lib/confirmation-required.js";
 import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { shellWord } from "../lib/endpoint-errors.js";
-import { catalogReadRefusal, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { backslashPersonaWarning, catalogReadRefusal, hasBackslashPersonaSelector, hasBlankPersonaSelector, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
+import { displayCmd } from "../lib/self-exec.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -177,7 +178,9 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
     const meta = [d.role && c.cyan(oneLine(d.role)), d.model && c.dim(`model=${oneLine(d.model)}`), d.owner && c.dim(`owner=${oneLine(d.owner)}`), live]
       .filter(Boolean)
       .join("  ");
-    console.log(`${c.bold(name)}  ${meta}`.trimEnd());
+    const invalidSelector = hasBackslashPersonaSelector(e);
+    console.log(`${c.bold(name)}  ${invalidSelector ? `${c.red("⨯ invalid selector")}  ` : ""}${meta}`.trimEnd());
+    if (invalidSelector) console.log(c.yellow(`  ! ${oneLine(backslashPersonaWarning(e.path, targetWords(values), displayCmd()))}`));
     if (e.link !== undefined) console.log(c.yellow(`  ! ${oneLine(e.path)} is a link to ${oneLine(e.link)}; persona show, edit and remove refuse a link`));
     const desc = d.description ?? firstLine(d.persona);
     // The preview wraps under its indent at the terminal's width, so none of it is cut off. Verbose
