@@ -110,7 +110,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" };
 const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
-  const r = spawnSync(process.execPath, [BIN, ...args, ...(args.includes("--json") ? [] : ["--json"])], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
+  const r = spawnSync(process.execPath, [BIN, ...args, ...(args.includes("--json") || args.includes("--plain") ? [] : ["--json"])], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout) as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope };
@@ -145,9 +145,22 @@ const workerAdded = run(["service", "add", "worker", "--file", workerFile, "--sp
 const neverRestarted = run(["service", "restart", "worker", "--space", "b1", "--yes"]);
 check("restart with no recorded instance refuses and names the first start of this service in this space",
   workerAdded.status === 0 && neverRestarted.status === 2 && neverRestarted.envelope?.outcome === "refused" && neverRestarted.envelope.error?.code === "TARGET_NOT_FOUND" && neverRestarted.envelope.error.remedy === "cotal service start worker --space b1", shown(neverRestarted));
-const firstPreview = run(["service", "start", "worker", "--space", "b1", "--foreground", "--dry-run"]);
-check("the advised start can allocate the first instance, and preview changes nothing",
-  firstPreview.status === 0 && firstPreview.envelope?.result?.newInstanceWouldBeAllocated === true && firstPreview.envelope.result.allocated === false && firstPreview.envelope.result.signalled === false, shown(firstPreview));
+const restartPreview = run(["service", "restart", "worker", "--space", "b1", "--dry-run", "--json"]);
+const previewRemedy = restartPreview.envelope?.error?.remedy;
+const expectedPreviewRemedy = "cotal service start worker --space b1 --dry-run --json";
+check("a restart preview with no recorded instance preserves preview and JSON in its remedy",
+  restartPreview.status === 2 && restartPreview.envelope?.outcome === "refused" && restartPreview.envelope.error?.code === "TARGET_NOT_FOUND" &&
+  previewRemedy === expectedPreviewRemedy, shown(restartPreview));
+const firstPreview = previewRemedy === expectedPreviewRemedy ? run(previewRemedy.split(" ").slice(1)) : undefined;
+check("following the start preview remedy succeeds without allocating or signalling",
+  firstPreview?.status === 0 && firstPreview.envelope?.result?.newInstanceWouldBeAllocated === true && firstPreview.envelope.result.allocated === false && firstPreview.envelope.result.signalled === false, firstPreview && shown(firstPreview));
+const plainPreview = run(["service", "restart", "worker", "--space", "b1", "--dry-run", "--plain"]);
+check("a plain restart preview keeps both flags in the printed Next command",
+  plainPreview.status === 2 && ["cotal", "pnpm cotal"].some((cli) => plainPreview.stderr.split("\n").some((line) =>
+    line.trim() === `${cli} service start worker --space b1 --dry-run --plain`)), shown(plainPreview));
+const foregroundPreview = run(["service", "start", "worker", "--space", "b1", "--foreground", "--dry-run"]);
+check("a foreground start preview can allocate the first instance and changes nothing",
+  foregroundPreview.status === 0 && foregroundPreview.envelope?.result?.newInstanceWouldBeAllocated === true && foregroundPreview.envelope.result.allocated === false && foregroundPreview.envelope.result.signalled === false, shown(foregroundPreview));
 const firstWorker = run(["service", "start", "worker", "--space", "b1"]);
 const secondWorker = run(["service", "start", "worker", "--new-instance", "--space", "b1"]);
 const [one, two] = [firstWorker, secondWorker].map((r) => r.envelope?.target?.instanceId);

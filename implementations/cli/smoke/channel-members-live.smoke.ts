@@ -166,6 +166,17 @@ try {
   check("the suggested confirmation removes the same channel with a JSON receipt",
     removed?.status === 0 && JSON.parse(removed.stdout).result?.removed === true, removed?.out);
 
+  const plainTarget = ["--space", SPACE, "--server", SERVER];
+  const plainCard = cotal("channel", "set", "plain.retry", "--desc", "Confirmation fixture", ...plainTarget, "--json");
+  const askedPlain = cotal("channel", "remove", "plain.retry", ...plainTarget, "--plain");
+  const retry = askedPlain.out.match(/confirm with `(?:pnpm )?cotal ([^`]+)`/)?.[1];
+  const confirmed = retry ? cotal(...retry.split(" ")) : undefined;
+  check("the suggested removal confirmation preserves --plain and gives a plain receipt",
+    plainCard.status === 0 && askedPlain.status === 1 && askedPlain.stdout === "" && askedPlain.out.includes("USAGE_INVALID")
+      && retry === `channel remove plain.retry ${plainTarget.join(" ")} --yes --plain`
+      && confirmed?.status === 0 && /^Channel removed - #plain\.retry$/m.test(confirmed.stdout),
+    { saved: plainCard.out, refused: askedPlain.out, confirmed: confirmed?.out });
+
   const other = join(base, "other");
   mkdirSync(other, { mode: 0o700 });
   const unstarted = "membership-unstarted";

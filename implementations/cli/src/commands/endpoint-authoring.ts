@@ -25,7 +25,14 @@ try {
 const CONTRACT_FILE = "contract.json";
 const AUTHORING_CONTROLS = /[\u0000-\u001f\u007f]/u;
 const RETRY_WITH_CONTRACT = "retry with the path to an existing endpoint contract file";
-const CHECK_SCAFFOLD_MANUALLY = "Use shell completion to enter the scaffold directory, then run `cotal endpoint check contract.json`.";
+
+function endpointCheckCommand(file: string, presentation: Presentation): string {
+  return `cotal endpoint check ${shellWord(file)}${presentation === "rich" ? "" : ` --${presentation}`}`;
+}
+
+function checkScaffoldManually(presentation: Presentation): string {
+  return `Use shell completion to enter the scaffold directory, then run ${codeSpan(endpointCheckCommand(CONTRACT_FILE, presentation))}.`;
+}
 
 export function validateEndpointAuthoringArguments(args: ParsedArgs): void {
   presentationOf(args.values);
@@ -67,12 +74,12 @@ function createDirectories(destination: string, changed: ScaffoldChange[]): void
   }
 }
 /** A check command only when its path can be passed and displayed unchanged. */
-export function scaffoldCheckCommand(directory: string, presentation: Presentation = "plain"): string | undefined {
+export function scaffoldCheckCommand(directory: string, presentation: Presentation = "rich"): string | undefined {
   if (process.platform === "win32") return undefined;
   const file = join(directory, CONTRACT_FILE);
   // Fish and POSIX shells interpret backslashes differently inside single quotes.
   if (file.includes("\\") || AUTHORING_CONTROLS.test(file) || (presentation !== "json" && oneLine(file) !== file)) return undefined;
-  return `cotal endpoint check ${shellWord(file)}`;
+  return endpointCheckCommand(file, presentation);
 }
 
 function inspectPath(path: string) {
@@ -86,7 +93,7 @@ function refuseContractDirectory(path: string, presentation: Presentation): void
   const command = hasContract ? scaffoldCheckCommand(path, presentation) : undefined;
   throw new CommandFailure("refused", "SCHEMA_INVALID", `${codeSpan(shellWord(path))} is a directory. Pass an endpoint contract file.`, {
     target: { path },
-    remedy: command ?? (hasContract ? CHECK_SCAFFOLD_MANUALLY : RETRY_WITH_CONTRACT),
+    remedy: command ?? (hasContract ? checkScaffoldManually(presentation) : RETRY_WITH_CONTRACT),
     remedyIsCommand: command ? true : undefined,
   });
 }
@@ -146,6 +153,6 @@ export async function endpointAuthoring(args: ParsedArgs): Promise<void> {
   const next = scaffoldCheckCommand(destination);
   writeResult(presentation, { command: "endpoint init", target: { path: destination }, result: { kind: "endpoint-scaffold", endpoint: source.endpoint, directory: destination, files: files.map((file) => ({ path: file.path, name: basename(file.path) })), changed, registered: false, handlerExecuted: false } }, (data): Report => ({ sections: [
     { title: "Endpoint files created", blocks: [{ kind: "fields", rows: [["Directory", data.directory], ["Example endpoint", data.endpoint], ...data.changed.filter((change) => change.kind === "directory" && change.path !== data.directory).map((change) => ["Created parent", change.path] as const), ...data.files.map((file) => [file.name, file.path] as const)] }, { kind: "lines", lines: [{ text: "The template declares one echo command. Choose your own reverse-DNS namespace before requesting serving authority. No handler was executed and nothing was registered or started.", tone: "hint" }] }] },
-    { title: "Next", blocks: [next ? { kind: "commands", items: [{ command: next, description: "Compile the edited contract offline before serving it" }] } : { kind: "lines", lines: [CHECK_SCAFFOLD_MANUALLY] }] },
+    { title: "Next", blocks: [next ? { kind: "commands", items: [{ command: next, description: "Compile the edited contract offline before serving it" }] } : { kind: "lines", lines: [checkScaffoldManually("rich")] }] },
   ] }));
 }

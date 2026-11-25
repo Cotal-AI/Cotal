@@ -114,7 +114,7 @@ export function printRestoreReceipt(restored: PreparedRestore, invokedRoot?: str
   for (const line of leftOutNotes(restored.attemptId, restored.selection, restoreOnlyCopy(restored.root, restored.attemptId), cleanupRoot, cmd)) console.log(c.yellow(line));
   const journal = readMaintenanceJournal(restored.root);
   if (journal && "restore" in journal && journal.restore.attemptId === restored.attemptId)
-    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, restoreLeftOut(journal), cleanupRoot, cmd)}`));
+    console.log(c.dim(`next: ${restoreNextStep(journal.state, restored.attemptId, journal, cleanupRoot, cmd)}`));
 }
 
 /** The address of a prepared stack that neither a journal nor a registration records, as after a
@@ -142,8 +142,8 @@ export function restoredBrokerRuns(root: string, attempt: string, pid: number, m
   });
 }
 
-/** The cleanup that retires an active restore. One that left something out keeps its only copy in the
- *  previous store, so its cleanup deletes that store only with `--discard-history`. */
+/** The cleanup that retires an active restore. If its previous store holds data the restore left
+ *  out, cleanup deletes that store only with `--discard-history`. */
 function retireRestore(attempt: string, leftOut: string | undefined): string {
   return leftOut
     ? `\`cotal backup cleanup-fallback ${attempt} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds`
@@ -155,7 +155,7 @@ export function assertOrdinaryUpAllowed(root: string, storeDir?: string, manifes
   const maintenance = readMaintenanceJournal(root);
   if (!maintenance) return;
   if (maintenance.state === "active") {
-    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, restoreLeftOut(maintenance));
+    const attempt = maintenance.restore.attemptId, retire = retireRestore(attempt, maintenance.restore.previousSource ? restoreLeftOut(maintenance) : undefined);
     if (!isManagerCommittedRestore(maintenance))
       throw new Error(`restore attempt ${attempt} is active without durable manager commit evidence`);
     if (!maintenance.listenerProof)

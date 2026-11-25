@@ -53,6 +53,7 @@ run-token shape. Keep the pin on later status, answer and resume calls.
 A run ID that is not 1 to 64 letters, digits, `_` or `-` is refused as `USAGE_INVALID`, exit 1,
 on every verb that takes one, before anything is contacted. When `run show` needs a valid ID,
 its list and journal commands keep the space, broker, manager or local endpoint you requested.
+If the manager has no record for that ID, the suggested lookup also keeps those selectors and your output format.
 A journal row limit applies only to the text journal. If you give both `--limit` and `--json`,
 choose a limited text view or the full JSON journal before looking up a missing run ID.
 A hosted verb the manager refuses reports the outcome and code as other commands do, and with
@@ -245,8 +246,9 @@ them, and nothing is sent. On a user-auth mesh where you run more than one
 live manager, an unpinned hosted verb is refused and `--on` picks one. `--local` takes no `--on`. `--local` drives in this process instead, over one
 connection per invocation under the run's own credential minted from the project folder's trust
 material, and is the path on a bare broker with no manager or for a run with no recorded program
-(`cotal run resume <runId> --local --file <program>`). If a local resume is missing the run ID, use
-`cotal run list --local` with the same target options, then add the ID to the original command.
+(`cotal run resume <runId> --local --file <program>`). If a local resume has a missing or malformed
+run ID, use `cotal run list --local` with the same target options. Then add or replace only the run
+ID in the original command.
 `answer --local` and `amend --local` take
 `--by <who>` and print the same receipt as the hosted path, and `start --local` requires
 `--admit-read` and `--admit-publish` (comma-separated
@@ -269,8 +271,8 @@ records the path. The guide is [workflows](workflows.mdx).
 
 ## Workflow command forms [#workflow-command-forms]
 
-`cotal run` (or `cotal r`) lists the authorized workflow records. On an open mesh, the text list
-points to offline simulation because that mesh cannot host runs. `run show <run-id>` reads
+`cotal run` (or `cotal r`) lists the authorized workflow records. On an open mesh, both the hosted
+and local text lists point to offline simulation because that mesh cannot host runs. `run show <run-id>` reads
 recorded state, open requests, each step's recorded error and the last 20 journal rows. `--limit <n>`
 prints the last `n` rows instead, from 1 to 1000, and is refused with `--json`. A settled
 `race` row names the branch it took, and a cancelled row in a branch that lost a race names the
@@ -358,6 +360,7 @@ before rerunning. For a list entry the path includes the array index.
 
 A missing script entry or an exhausted list raises L6001. If it goes uncaught, the error names the
 table and step, suggests what to add, and prints a retry command with shell-quoted paths where needed.
+If you requested JSON, the retry command includes `--json`.
 For an exhausted list it names the needed result, counted
 from 1, while the step key counts occurrences from 0. JSON includes `target.step` if a failed
 journal entry matches the error code. That can be a different step from the one in the message,
@@ -407,6 +410,9 @@ prompts an `unblock` turn, and the unnamed wait reads the `wait` entry.
 | `events` | `wait` results. `null` is a timeout |
 | `clock` | `{start, turn, ask, checkpoint, wait}`: `start` is a safe integer in milliseconds, between -9007199254740991 and 9007199254740991, so the virtual clock can advance by whole milliseconds. Effect durations take values such as `"5m"`. A turn takes 5 minutes and the others 1 minute unless set |
 | `faults` | `[{at, kind, code, message}]`: the step at `at`, a step key such as `turn:build#1`, fails with that error |
+
+An invalid clock value is refused with `SCHEMA_INVALID`, exit 1. The refusal names the field and
+results file and tells you how to correct the value before rerunning the simulation.
 
 To fail a race or a parallel step before any branch runs in `run simulate`, target its own step key,
 such as `/race:first#0` or `/parallel:batch#0`. To fail an effect inside a branch, use that effect's

@@ -44,7 +44,7 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
   const agents = resume ? undefined : await prepareAgentRetirement({ root, space, deploymentId, original, receipt });
   // The preview reads cards without a writer. The one-shot writer is issued only after retirement,
   // by a fresh card preparation that repeats every check, so a slow retirement cannot outlive it.
-  const previewCards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: false });
+  const previewCards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: false, values });
   await previewCards.close();
   let lockFailure: CommandFailure | undefined, closeUnconfirmed = previewCards.closeUnconfirmed();
   const preview = { kind: "mixed-team-removal-preview" as const, deploymentId, managerInstanceId: original.managerInstanceId, server: brokerAddressForDisplay(original.server) ?? "not displayable", remainingPhases: resume ? ["card-removal"] : ["agent-retirement", "card-removal"], agents: agents?.agents ?? null, cards: previewCards.preview, readConsistency: "ordered-not-atomic" as const, dryRun: values["dry-run"] === true, effectAttempted: false };
@@ -73,7 +73,7 @@ export async function removeMixedTeam(deploymentId: string, values: TeamValues):
         if (!agentRun.returned || abort.aborted) return { agentRun };
       }
       let cards: Awaited<ReturnType<typeof prepareCardRemoval>>;
-      try { cards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: true }); }
+      try { cards = await prepareCardRemoval({ root, space, deploymentId, original, receipt, apply: true, values }); }
       catch (error) { return { ...(agentRun ? { agentRun } : {}), cardRefusal: error instanceof CommandFailure ? error : new CommandFailure("refused", "TARGET_UNAVAILABLE", "the card phase could not establish an unchanged target; no card was deleted", { target }) }; }
       let cardRun: CardRemovalRun | undefined;
       try { cardRun = await cards.execute(); }
@@ -111,7 +111,7 @@ async function reconcileMixedTeam(input: { root: string; space: string; deployme
   const { root, space, deploymentId, original, receipt, agentIntent, cardIntent, values } = input, target = { root, space, deploymentId };
   if (cardIntent && !listAdditiveTeamAttempts(root).removal?.returned.some((row) => row.deploymentId === deploymentId)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a card removal intent exists without a complete retirement receipt; it was not reconciled", { target: { ...target, remainingPhase: "agent-retirement" } });
   const agents = agentIntent ? await prepareAgentReconcile({ root, space, deploymentId, original, receipt, intent: agentIntent }) : undefined;
-  let cards = cardIntent ? await prepareCardReconcile({ root, space, deploymentId, original, receipt, intent: cardIntent }) : undefined;
+  let cards = cardIntent ? await prepareCardReconcile({ root, space, deploymentId, original, receipt, intent: cardIntent, values }) : undefined;
   try {
     const preview = { kind: "mixed-team-removal-reconcile-preview" as const, deploymentId, managerInstanceId: original.managerInstanceId, agents: agents?.settlements ?? null, cards: cards?.settlements ?? null, remainingPhase: agentIntent ? "agent-retirement" as const : "card-removal" as const, effectAttempted: false as const, continuationOffered: false as const };
     const view = (data: typeof preview): Report => ({ sections: [
