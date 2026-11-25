@@ -608,8 +608,9 @@ On a legacy root, a restore uses the cap recorded in the preserved state unless 
 receives an explicit `--max-file-store <bytes>`. The restore journals the cap it uses so re-entry
 keeps it. If SIGINT, SIGTERM or SIGHUP interrupts a restore after commit intent and before the listener
 starts, the command names the attempt and tells you to run bare `cotal up` from that root. If SIGINT
-or SIGTERM makes foreground `up --restore` stop its listener before it answers, the command gives
-the same recovery step and exits 130 or 143, respectively. Bare `cotal up` continues the same attempt.
+or SIGTERM stops foreground `up --restore` before activation finishes, the command waits for its
+stack to stop, gives the same recovery step, and exits 130 or 143, respectively. Bare `cotal up`
+continues the same attempt.
 If no listener was bound to the attempt, it starts one only when no process of this account names
 the attempt and the recorded port is free. A listener spawned and never bound may still be opening
 the restored store, and NATS does not stop a second server from opening it too. While such a process

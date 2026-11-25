@@ -541,13 +541,14 @@ async function checkStoppedStore(mesh: string, env: NodeJS.ProcessEnv, space: st
     }
   } finally { chmodSync(jetstream, mode); }
 }
-async function restoreStartupCell(): Promise<void> {
-  const mesh = join(base, "restore-startup"), home = join(mesh, "home");
-  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
-  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME]) mkdirSync(p, { recursive: true, mode: 0o700 });
+async function restoreStartupCell(phase: "listener" | "manager"): Promise<void> {
+  const mesh = join(base, `restore-at-${phase}`), home = join(mesh, "home");
+  const env = { ...cleanEnv, HOME: home, COTAL_HOME: join(home, "machine"), XDG_CONFIG_HOME: join(home, "xdg"), XDG_RUNTIME_DIR: join(home, "run"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  for (const p of [mesh, home, env.COTAL_HOME, env.XDG_CONFIG_HOME, env.XDG_RUNTIME_DIR]) mkdirSync(p, { recursive: true, mode: 0o700 });
   const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
   const port = await freePort(), space = "foreground-restore";
   const server = `nats://127.0.0.1:${port}`;
+  const managerPath = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space });
   const journalPath = join(mesh, ".cotal", "maintenance", "v1", "journal.json");
   const journal = (): { state?: string; restore?: { attemptId: string }; listenerProof?: { processOwner: { pid: number } } } =>
     JSON.parse(readFileSync(journalPath, "utf8"));
@@ -559,7 +560,7 @@ async function restoreStartupCell(): Promise<void> {
   };
   const owned = new Map<string, ProcessIdentityRecord>();
   const collect = () => {
-    for (const file of [join(mesh, ".cotal/nats.pid"), canonicalLocalProcessPath(MANAGER_PIDFILE, { root: mesh, space })]) {
+    for (const file of [join(mesh, ".cotal/nats.pid"), managerPath]) {
       const row = token(file);
       if (row) owned.set(`${row.pid}:${row.token}`, row);
     }
@@ -586,6 +587,7 @@ async function restoreStartupCell(): Promise<void> {
     let broker: ProcessIdentityRecord | undefined;
     await until(() => {
       if (restore.state.error || restore.state.exited) throw new Error(restore.log());
+      if (phase === "manager" && !token(managerPath)) return false;
       const record = journal();
       if (record.state !== "commit-intent" || !record.listenerProof) return false;
       broker = token(join(mesh, ".cotal/nats.pid"));
@@ -600,8 +602,8 @@ async function restoreStartupCell(): Promise<void> {
     assert.equal(restore.state.code, 143, restore.log()); passed++;
     assert.ok(attempt && restore.log().includes(`Interrupted: restore attempt ${attempt}`), restore.log()); passed++;
     assert.match(restore.log(), /Continue it with bare `(?:pnpm )?cotal up`/); passed++;
-    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED/); passed++;
-    assert.ok(broker && !live(broker) && !await portOpen(port), "the interrupted restore stopped its own listener"); passed++;
+    assert.doesNotMatch(restore.log(), /before it answered|take it off PATH|OPERATION_FAILED|OPERATION_UNKNOWN/); passed++;
+    assert.ok(broker && ![...owned.values()].some(live) && !await portOpen(port), "the interrupted restore stopped its own manager and listener"); passed++;
 
     const recovery = run = foreground([]);
     await until(() => {
@@ -614,7 +616,7 @@ async function restoreStartupCell(): Promise<void> {
     await must(["down", "--yes"]);
     await until(() => recovery.state.exited, 20_000, recovery.log);
     assert.equal(recovery.state.code, 0, recovery.log()); passed++;
-    console.log("PASS foreground-up-signals restore-startup: SIGTERM preserves forward recovery of the same attempt");
+    console.log(`PASS foreground-up-signals restore-at-${phase}: SIGTERM preserves forward recovery of the same attempt`);
   } finally {
     if (run) await finishOwnedChild(run.child, run.state, collect, () => owned.values(), mesh);
     else if (await portOpen(port)) await must(["down", "--yes"]);
@@ -1436,7 +1438,8 @@ for (let attempt = 1; attempt <= 3 && !refusalObserved; attempt++) {
 }
 assert.ok(refusalObserved, "native unavailable-capability refusal must be observed within three owned attempts, never manufactured");
 await cell("crash", { crash: true });
-await restoreStartupCell();
+await restoreStartupCell("listener");
+await restoreStartupCell("manager");
 await controllerStartupCell();
 await controllerStartupCell("receipt");
 await controllerStartupCell("team");
