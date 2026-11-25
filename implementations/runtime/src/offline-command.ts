@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync, writeSync, type Stats } from "node:fs";
 import { hasDuplicateNames } from "@cotal-ai/core";
 import { dryRunOutcome, DurationError, Journal, journalEntryKeyString, LangErrors, parseDuration, validate, type SimScript } from "@cotal-ai/lang";
-import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Report } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, envelopeLine, exitCode, failureEnvelope, isCommandFailure, oneLine, presentationOf, recordOperationWarning, renderReport, shellPath, writeResult, type Presentation, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
 interface OfflineValues {
@@ -85,7 +85,15 @@ function scriptOf(file: string | undefined): SimScript {
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
-    if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
+    if (!fields.has(key)) {
+      const plural = `${key}s`;
+      const name = JSON.stringify(key);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field ${name} in the simulation results script ${file}`, {
+        target: { file }, remedy: fields.has(plural)
+          ? `replace ${name} in ${file} with "${plural}", then rerun the simulation`
+          : `remove ${name} from ${file} or use a supported top-level key: ${[...fields].join(", ")}`,
+      });
+    }
     if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item)) {
       const shape = key === "faults" ? "an array of fault objects" : key === "clock" ? "an object of clock settings"
         : `an object keyed by ${key === "checkpoints" ? "checkpoint" : "step"} name`;
@@ -98,7 +106,9 @@ function scriptOf(file: string | undefined): SimScript {
   const clock = script.clock as Record<string, unknown> | undefined;
   const start = clock?.start;
   if (start !== undefined && (typeof start !== "number" || !Number.isFinite(start)))
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "clock.start must be a finite number in milliseconds", { target: { file } });
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.start in the simulation results script ${file} must be a finite number in milliseconds`, {
+      target: { file }, remedy: `set clock.start in ${file} to a JSON integer such as 0 (without quotes), then rerun the simulation`,
+    });
   // A start the clock cannot step from by whole milliseconds reports a successful simulation
   // with the delay lost: 9007199254740992 + 1ms rounds back to the start, so elapsedMs is 0.
   // Refuse it before simulation, naming the supported range.
@@ -124,7 +134,9 @@ function scriptOf(file: string | undefined): SimScript {
     } catch (error) {
       if (!(error instanceof DurationError)) throw error;
     }
-    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, { target: { file } });
+    throw new CommandFailure("refused", "SCHEMA_INVALID", `clock.${key} in the simulation results script ${file} must be a duration string such as "5m"`, {
+      target: { file }, remedy: `replace clock.${key} in ${file} with a quoted duration such as "5m", then rerun the simulation`,
+    });
   }
   for (const [index, fault] of ((script.faults ?? []) as unknown[]).entries()) {
     const problem = faultProblem(fault);
@@ -252,7 +264,7 @@ function faultParts(error: unknown): { title: string; cause?: string; fix?: stri
 
 /** Why a simulation did not complete. An L6xxx code is the simulator's: the script does not cover
  *  the program, and `target.step` names the step it stopped at. */
-function simulationFailure(error: unknown, file: string, journal: Journal, handler?: string): CommandFailure {
+function simulationFailure(error: unknown, file: string, journal: Journal, presentation: Presentation, handler?: string): CommandFailure {
   const code = (error as { code?: unknown }).code;
   const native = typeof code === "string" && /^L[0-9]+$/.test(code) ? code : undefined;
   const failed = journal.entries().findLast((e) => e.state === "settled" && e.status === "failed" && e.error?.code === native);
@@ -264,7 +276,7 @@ function simulationFailure(error: unknown, file: string, journal: Journal, handl
   // only showing the result object. When a results file was passed, it names that file.
   const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
   const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
-  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}`);
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}${presentation === "rich" ? "" : ` --${presentation}`}`);
   const rerun = handler !== undefined
     ? `add it to ${oneLine(handler)} and rerun with ${command}`
     : `save it in a results file, for example results.json, and rerun with ${command}`;
@@ -349,7 +361,7 @@ export async function offlineWorkflow(mode: "validate" | "plan" | "simulate", fi
   catch (error) {
     for (const warning of warnings) recordOperationWarning(warning, { echo: presentation !== "json" });
     if (isCommandFailure(error)) throw error;
-    throw simulationFailure(error, file, journal, values.handler);
+    throw simulationFailure(error, file, journal, presentation, values.handler);
   }
   // A program that fails under its script is a completed simulation, and the failure is its outcome.
   const failure = "fault" in report ? programFailure(report.fault, journal) : null;

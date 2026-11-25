@@ -1,5 +1,25 @@
 # @cotal-ai/connector-claude-code
 
+## 0.178.0
+
+### Minor Changes
+
+- 59d8306: Claude Code agents can now be launched at a chosen effort level, and the Claude model list tells its aliases apart. `--variant <level>` renders Claude's `--effort` flag, an unknown level is refused before launch, and `cotal models --harness claude` lists each model's effort levels as variants and names an alias with the model it resolves to, such as `Opus 5.5 (claude-opus-5-5)`.
+
+### Patch Changes
+
+- 5935d73: Status names the owning Cotal home and its choices when the shared Claude profile's marketplace belongs to another home, instead of recommending `cotal setup --skills`, and no longer prints equal skills versions as a mismatch.
+
+## 0.177.0
+
+### Minor Changes
+
+- 0bb3186: A launcher can now list the commands and skills a harness offers in a directory before any agent starts, and start an agent with one of them as its first turn. The Manager's new `harness-commands` read (`{ agent, cwd }`) asks Claude Code, Codex, pi or OpenCode 2.x in that directory and answers the entries a seat's `command` takes, or `supported: false` with a reason for a harness whose seats run no commands; it starts no seat and is granted where `list-dir` is. `spawn` takes `firstCommand: { target, name, args? }` and its acceptance names `firstCommand.id`. The agent queues the command under that id before any other and runs it as its first turn through its own command lane once the harness runs commands, and `command-state` reports a refusal. The Manager cluster advances to revision 54.
+
+### Patch Changes
+
+- aefcd66: Self-update keeps the new CLI version when it skips a Claude integration owned by another Cotal home.
+
 ## 0.176.6
 
 No changes in this release.

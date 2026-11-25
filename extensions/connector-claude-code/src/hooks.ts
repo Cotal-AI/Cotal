@@ -411,9 +411,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     return () => (turnOpen && mark === turn ? endInterruptedTurn(agent, mark.path, false) : Promise.resolve());
   };
 
-  /** Stops the interrupt watch of the open main-agent turn. Claude Code fires no hook when its user
-   *  interrupts a turn, so the transcript is watched for the interrupt record while a turn is open,
-   *  and every terminal hook stops the watch. */
+  /** Stops the transcript watch of the open main-agent turn, which reads the interrupt record no hook
+   *  reports and wakes the event reader on growth, since a hook can run before its line is written.
+   *  Every terminal hook stops the watch. */
   let stopInterruptWatch: (() => void) | undefined;
   const unwatchTurn = (): void => {
     stopInterruptWatch?.();
@@ -427,7 +427,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       if (stopInterruptWatch !== stop) return;
       stopInterruptWatch = undefined;
       void endInterruptedTurn(agent, path, true);
-    });
+    }, () => flushEvents(path));
     stopInterruptWatch = stop;
   };
 

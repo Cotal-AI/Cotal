@@ -110,7 +110,7 @@ process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off" };
 const run = (args: string[], extra: NodeJS.ProcessEnv = {}) => {
-  const r = spawnSync(process.execPath, [BIN, ...args, ...(args.includes("--json") ? [] : ["--json"])], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
+  const r = spawnSync(process.execPath, [BIN, ...args, ...(args.includes("--json") || args.includes("--plain") ? [] : ["--json"])], { cwd: root, env: { ...env, ...extra }, encoding: "utf8", timeout: 120_000 });
   let envelope: Envelope | undefined;
   try { envelope = JSON.parse(r.stdout) as Envelope; } catch { envelope = undefined; }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope };
@@ -145,9 +145,22 @@ const workerAdded = run(["service", "add", "worker", "--file", workerFile, "--sp
 const neverRestarted = run(["service", "restart", "worker", "--space", "b1", "--yes"]);
 check("restart with no recorded instance refuses and names the first start of this service in this space",
   workerAdded.status === 0 && neverRestarted.status === 2 && neverRestarted.envelope?.outcome === "refused" && neverRestarted.envelope.error?.code === "TARGET_NOT_FOUND" && neverRestarted.envelope.error.remedy === "cotal service start worker --space b1", shown(neverRestarted));
-const firstPreview = run(["service", "start", "worker", "--space", "b1", "--foreground", "--dry-run"]);
-check("the advised start can allocate the first instance, and preview changes nothing",
-  firstPreview.status === 0 && firstPreview.envelope?.result?.newInstanceWouldBeAllocated === true && firstPreview.envelope.result.allocated === false && firstPreview.envelope.result.signalled === false, shown(firstPreview));
+const restartPreview = run(["service", "restart", "worker", "--space", "b1", "--dry-run", "--json"]);
+const previewRemedy = restartPreview.envelope?.error?.remedy;
+const expectedPreviewRemedy = "cotal service start worker --space b1 --dry-run --json";
+check("a restart preview with no recorded instance preserves preview and JSON in its remedy",
+  restartPreview.status === 2 && restartPreview.envelope?.outcome === "refused" && restartPreview.envelope.error?.code === "TARGET_NOT_FOUND" &&
+  previewRemedy === expectedPreviewRemedy, shown(restartPreview));
+const firstPreview = previewRemedy === expectedPreviewRemedy ? run(previewRemedy.split(" ").slice(1)) : undefined;
+check("following the start preview remedy succeeds without allocating or signalling",
+  firstPreview?.status === 0 && firstPreview.envelope?.result?.newInstanceWouldBeAllocated === true && firstPreview.envelope.result.allocated === false && firstPreview.envelope.result.signalled === false, firstPreview && shown(firstPreview));
+const plainPreview = run(["service", "restart", "worker", "--space", "b1", "--dry-run", "--plain"]);
+check("a plain restart preview keeps both flags in the printed Next command",
+  plainPreview.status === 2 && ["cotal", "pnpm cotal"].some((cli) => plainPreview.stderr.split("\n").some((line) =>
+    line.trim() === `${cli} service start worker --space b1 --dry-run --plain`)), shown(plainPreview));
+const foregroundPreview = run(["service", "start", "worker", "--space", "b1", "--foreground", "--dry-run"]);
+check("a foreground start preview can allocate the first instance and changes nothing",
+  foregroundPreview.status === 0 && foregroundPreview.envelope?.result?.newInstanceWouldBeAllocated === true && foregroundPreview.envelope.result.allocated === false && foregroundPreview.envelope.result.signalled === false, shown(foregroundPreview));
 const firstWorker = run(["service", "start", "worker", "--space", "b1"]);
 const secondWorker = run(["service", "start", "worker", "--new-instance", "--space", "b1"]);
 const [one, two] = [firstWorker, secondWorker].map((r) => r.envelope?.target?.instanceId);
@@ -160,6 +173,9 @@ check("its Next names the remove --instance command for each stopped record", [o
 const unconfirmed = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1"]);
 const confirm = unconfirmed.envelope?.error?.remedy?.match(/^confirm with `cotal (.+)`$/)?.[1];
 check("remove --instance in a script needs --yes and its confirmation keeps --json", unconfirmed.status === 1 && unconfirmed.envelope?.error?.code === "USAGE_INVALID" && confirm === `svc remove worker --space b1 --instance ${two} --yes --json`, shown(unconfirmed));
+const unconfirmedPlain = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--plain", "--no-input"]);
+const confirmPlain = unconfirmedPlain.stderr.match(/`(?:pnpm )?cotal (svc remove [^`]+)`/)?.[1];
+check("a plain remove --instance confirmation keeps both the instance and --plain", unconfirmedPlain.status === 1 && confirmPlain === `svc remove worker --space b1 --instance ${two} --yes --plain`, shown(unconfirmedPlain));
 const cleared = run(confirm?.split(" ") ?? []);
 check("remove --instance forgets that stopped record, exit 0", cleared.status === 0 && cleared.envelope?.result?.kind === "service-instance-record-removed" && cleared.envelope.result.instanceId === two, shown(cleared));
 const again = run(["service", "remove", "worker", "--instance", String(two), "--space", "b1", "--yes"]);
@@ -359,6 +375,15 @@ const answering = (port: number, status: number) => ({ type: "process", executab
   const after = run(["service", "status", "broken", "--space", "b1"]);
   check("status then shows it failed with exit code 1", after.envelope?.result?.recordedState === "failed" && (after.envelope.result.exit as { code?: number } | null)?.code === 1, after.envelope?.result);
   check("rig: the definition is forgotten", run(["service", "remove", "broken", "--space", "b1", "--yes"]).status === 0);
+  const silentFile = join(home, "silent.json");
+  writeFileSync(silentFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: node, args: ["-e", "process.exitCode = 1"], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));
+  check("rig: a service that exits silently is saved", run(["service", "add", "silent", "--file", silentFile, "--space", "b1"]).status === 0);
+  const silent = run(["service", "start", "silent", "--space", "b1"]);
+  const instance = String(silent.envelope?.target?.instanceId), logs = run(["service", "logs", "silent", "--instance", instance, "--space", "b1"]);
+  check("a silent early exit reports the unavailable line and points to its empty instance log", exited(silent) &&
+    silent.envelope?.error?.message.endsWith("no log line was available from this start") === true && silent.envelope.error.remedy?.includes(`--instance ${instance} --space b1`) === true &&
+    logs.status === 0 && Array.isArray(logs.envelope?.result?.lines) && logs.envelope.result.lines.length === 0, shown(silent));
+  check("rig: the silent definition is forgotten", run(["service", "remove", "silent", "--space", "b1", "--yes"]).status === 0);
   // A last line longer than the quote holds keeps its start and its next step.
   const line = `fatal: ${"cause ".repeat(200)}; next: run the step that clears it`, longFile = join(home, "long.json");
   writeFileSync(longFile, JSON.stringify({ schemaVersion: 1, space: "b1", launch: { type: "process", executable: "/bin/sh", args: ["-c", "printf '%s\\n' \"$0\"; exit 1", line], cwd: root }, readiness: { type: "process", timeoutMs: 3000 } }));

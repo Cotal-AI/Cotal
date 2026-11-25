@@ -229,7 +229,8 @@ Use a manager roster when you want the same personas started each time that mana
 cotal manager start --roster <file> --foreground
 ```
 
-`--roster` takes an absolute path. The manager retains it for later `manager start` calls.
+`--roster` takes an absolute path. `cotal manager start` checks the roster before saving its path for later starts.
+An invalid roster leaves any saved definition unchanged. A `--dry-run` preview reports the problem without saving or starting anything.
 Changing it while the manager runs refuses until `cotal manager stop`.
 Without `--foreground`, the manager runs in the background.
 The deprecated `cotal supervise --roster <file>` loads the same list.

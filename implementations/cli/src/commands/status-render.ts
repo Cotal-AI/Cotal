@@ -251,7 +251,8 @@ function extensionsCell(e: StatusResult["extensions"]): Cell | undefined {
  * A row in its good state says nothing a reader acts on, and a piece of an application this machine
  * does not have is what `cotal setup` adds, which the applications line already counts. So an
  * application's own rows (the Claude plugin, Desktop and skills) appear only for an application that
- * IS set up, and only when they are not current; an ACP client's entry appears when it is stale or
+ * IS set up, and only when they are not current. Cross-vendor skills that need repair or cannot be
+ * read appear regardless of application setup. An ACP client's entry appears when it is stale or
  * cannot be read; the broker executable appears when it is missing or
  * refused and local broker records make it relevant; the dashboard, which is optional, appears
  * when its record cannot be read. `--all` and
@@ -286,7 +287,9 @@ function machineOverview(r: StatusResult, wide: boolean, interactive: boolean, s
     (!r.selected.resolved && (r.selected.code === "not-started" || r.selected.code === "unregistered-root" || r.selected.code === "unreadable-auth"));
   if (wide || (localBroker && (m.nats === "missing" || m.natsProblem)))
     rows.push(["Broker executable", stateCell(m.nats === "missing" ? "not installed" : brokerExecutable(m), m.nats === "missing" ? "waiting" : m.natsProblem ? "failed" : "ok")]);
-  if (wide || (m.skills.state !== "current" && setUp.length)) rows.push(["Agent skills", skillsCell(m.skills)]);
+  const skillsState = m.skills.state;
+  if (wide || skillsState === "behind" || skillsState === "unreadable" || (skillsState === "not-installed" && setUp.length > 0))
+    rows.push(["Agent skills", skillsCell(m.skills)]);
   if (wide || m.web.installed === null)
     rows.push(["Dashboard", stateCell(m.web.installed === null ? "installation could not be read" : m.web.installed ? "installed" : "not installed · optional", m.web.installed === null ? "failed" : m.web.installed ? "ok" : "hint")]);
   const extensions = wide
@@ -407,13 +410,13 @@ function folderTargeted(r: StatusResult): boolean {
   return typeof r.meshes.folder === "string" && r.meshes.folder === r.selected.space;
 }
 
-function selectedOverview(r: StatusResult, stackStarting: boolean): Section | undefined {
+function selectedOverview(r: StatusResult, stackStarting: boolean, selectedStarting: boolean): Section | undefined {
   const s = r.selected;
   const title = !s.resolved && s.recordedRoot !== undefined ? "This folder" : folderTargeted(r) ? "This folder's space" : "Selected space";
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
   if (!s.resolved) return { title, blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
-    ...(servedStack(r.folder, s) ? stackLines(r.folder, stackStarting) : []),
+    ...(selectedStarting || servedStack(r.folder, s) ? stackLines(r.folder, selectedStarting) : []),
   ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
@@ -508,7 +511,7 @@ export function backupRecovery(maintenance: StatusResult["maintenance"], sourceM
   return maintenance && (maintenance.state === "claimed" || maintenance.state === "restore-ready" || sourceMissing) ? maintenance.next : null;
 }
 
-function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string, stoppedForeignListener = false, stackStarting = false): Section {
+function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean, recovery: string | null, preparedHarness?: string, stoppedForeignListener = false, stackStarting = false, selectedStarting = false): Section {
   if (seedFailed) return {
     title: "Next",
     blocks: [{ kind: "lines", lines: r.hints.flatMap(hint => hint.split("\n").map(line => cell(line, "hint"))) }],
@@ -569,6 +572,7 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   // This folder's own stack is blocked the same way under another selection, and its block leads too.
   const blocked = stack ?? folderStack(r.folder, r.selected);
   const block = blocked ? r.folder.stackBlock : undefined;
+  const startingSpace = selectedStarting ? r.selected.space : stackStarting ? blocked?.space : undefined;
   const origin = r.meshes.items.find((m) => m.space === dialed?.space)?.origin;
   const legacy = dialed && !r.folder.controllerStack && r.folder.root === dialed.root && r.folder.processSpace === dialed.space;
   const local = legacy && dialed.mode === "auth" && !["manual", "catalog"].includes(origin ?? "up");
@@ -576,8 +580,8 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
   const storeBlocked = !elsewhere && r.selected.resolved && r.selected.connection === "unreachable" && rootStoreProblem(r.selected.root) !== undefined;
   if (r.selected.resolved && r.selected.connection === "broker-stopped") items.unshift({ command: `kill -CONT ${r.selected.brokerPid}`, description: "Resume the stopped broker process so it answers again" });
   else if (stoppedForeignListener) { /* The address remedy in hints takes precedence over a restart. */ }
-  else if (stackStarting && blocked) {
-    items.unshift({ command: `${cmd} status --space ${shellWord(blocked.space)}`, description: "Wait for startup to finish, then check again" });
+  else if (startingSpace !== undefined) {
+    items.unshift({ command: `${cmd} status --space ${shellWord(startingSpace)}`, description: "Wait for startup to finish, then check again" });
   } else if (block && blocked) {
     const inspect = { command: `${cmd} service status ${block.definition} --instance ${block.instanceId} --space ${shellWord(blocked.space)}`, description: block.route.kind === "inspect" ? "Inspect the member that keeps up and down from settling" : "Inspect that member" };
     items.unshift(...(block.route.kind === "abandon" ? [{ command: `${cmd} down --abandon-stop ${block.route.requestId} --yes`, description: `Abandon the unconfirmed stop of ${block.definition}; up and down refuse until then` }, inspect] : [inspect]));
@@ -728,8 +732,8 @@ function maintenanceOverview(maintenance: StatusResult["maintenance"]): Section 
 
 /** The approved screen hierarchy; record-level diagnostics are opt-in. `wide` reports every row in
  *  full, as `--all` and `--wide` ask. */
-export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false, stackStarting = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean; stackStarting?: boolean } = {}): Report {
-  const selected = selectedOverview(r, stackStarting);
+export function statusView(r: StatusResult, verbose = false, wide = false, { interactive = false, preparedHarness, seed, recovery = backupRecovery(r.maintenance), stoppedForeignListener = false, stackStarting = false, selectedStarting = false }: { interactive?: boolean; preparedHarness?: string; seed?: ReturnType<typeof readCursor>; recovery?: string | null; stoppedForeignListener?: boolean; stackStarting?: boolean; selectedStarting?: boolean } = {}): Report {
+  const selected = selectedOverview(r, stackStarting, selectedStarting);
   // This folder's own stack under another selection, with the lines it has when it is selected.
   const held = folderStack(r.folder, r.selected), heldLines = held ? stackLines(r.folder, stackStarting) : [];
   const heldSection: Section | undefined = held && heldLines.length ? { title: `This folder's space  → ${held.space}`, blocks: heldLines } : undefined;
@@ -738,6 +742,6 @@ export function statusView(r: StatusResult, verbose = false, wide = false, { int
   const maintenance = maintenanceOverview(r.maintenance);
   const sections = [machineOverview(r, wide, interactive, seed), spacesOverview(r, wide, Boolean(seed)), ...(selected ? [selected] : []), ...(heldSection ? [heldSection] : []), ...(maintenance ? [maintenance] : []), ...(attempts ? [attempts] : []), ...(owned ? [owned] : [])];
   if (verbose) sections.push(machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected, r.folder, stackDeliveryPid(r), r.store?.state === "full"));
-  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness, stoppedForeignListener, stackStarting));
+  sections.push(nextActions(r, Boolean(seed), interactive, recovery, preparedHarness, stoppedForeignListener, stackStarting, selectedStarting));
   return { sections };
 }

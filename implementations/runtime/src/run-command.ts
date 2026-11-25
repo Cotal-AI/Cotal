@@ -506,7 +506,7 @@ async function ps(values: RunValues, planes: Planes): Promise<void> {
   const rows = await runHost.list(planes, values.endpoint !== undefined ? { endpoint: values.endpoint } : {});
   // An endpoint no run lives under is named, with the endpoints that hold runs.
   const unmatched = values.endpoint !== undefined && !rows.length ? { endpoint: values.endpoint, recordedUnder: recordedUnder(await runHost.list(planes, {})) } : undefined;
-  printRunList(planes.space, rows, values, unmatched);
+  printRunList(planes.space, rows, values, unmatched, planes.connection.mode === "open");
 }
 
 async function journal(values: RunValues, planes: Planes, endpoint: string, runId: string | undefined, takeoverId: string): Promise<void> {
@@ -754,8 +754,9 @@ const localJournal = (args: Record<string, unknown> | undefined): string => `cot
 
 /** A manager refusal under the CLI's outcome table, with the manager's own sentence. Any other code
  *  leaves a read failed and a start, resume or answer unconfirmed, because the manager may have
- *  recorded it. `on` is the caller's explicit manager pin, which a suggested command keeps. */
-export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, on?: string): CommandFailure {
+ *  recorded it. */
+export function managerRefusal(command: string, space: string, args: Record<string, unknown> | undefined, err: EpError | undefined, values: RunValues = {}): CommandFailure {
+  const { on } = values;
   const message = renderLifecycleBlocked(err?.message ?? err?.code ?? "the manager refused", err);
   const options = { target: { space }, native: { code: err?.code ?? "unreported" } };
   // A manager at its launch limit refuses `resource-exhausted` before writing anything, and says
@@ -769,6 +770,7 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   const missingRun = err?.message?.endsWith(": no run is recorded under that id") === true;
   const remedy = busy ? { remedy: `wait until one of them has activated, then run ${command === "run-resume" ? "the resume" : "the start"} again; \`cotal run\` lists a run once it has` }
     : resumeBlocked ? { remedy: `read the run's recorded state with \`cotal run show ${args.runId}${selection}\`` }
+    : err?.code === "not-found" && command === "run-status" ? { remedy: journalIdRemedy("show", { ...values, space }) }
     : err?.code !== "not-found" ? {} : { remedy: command === "run-answer" && typeof args?.runId === "string" && !missingRun ? `read the run's ${args.amend === true ? "answers" : "open requests"} with \`cotal run show ${args.runId}${selection}\`` : `list the recorded runs with \`cotal run${selection}\`` };
   if (code) {
     const problems = err?.details?.filter((d) => d.kind === LANG_PROBLEM_DETAIL_KIND);
@@ -825,6 +827,11 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       target: { space: t.space },
       remedy: "run it again without --creds: in the mesh's project folder, or with --space naming its registry entry, the CLI mints the one-shot caller itself",
     });
+  if (command === "run-start" && t.mode === "open")
+    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission", {
+      target: { space: t.space },
+      remedy: "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run",
+    });
   const auth: ControlAuth = t.auth;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
@@ -867,7 +874,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       // A validation refusal carries every problem as the language's own records; print them the
       // way the validator would, so the fix is the same edit either way.
       if (!values.json) for (const d of err?.details ?? []) if (d.kind === LANG_PROBLEM_DETAIL_KIND) console.error(renderLangProblem(d));
-      throw managerRefusal(command, t.space, args, err, values.on);
+      throw managerRefusal(command, t.space, args, err, values);
     }
     return r.reply.data;
   } catch (e) {
@@ -1170,6 +1177,13 @@ function journalIdRemedy(verb: string, values: RunValues): string {
   return `${codeSpan(`cotal run${target}${output}`)} lists the runs; run ${codeSpan(`cotal run ${verb} <run-id>${target}${retryFlag("limit", values.limit)}${output}`)}`;
 }
 
+function localRunInventory(values: RunValues): string {
+  if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
+    return "run `cotal run list --local` with the original target options";
+  const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
+  return `list the recorded runs with ${codeSpan(`cotal run list --local${target}`)}`;
+}
+
 /** Public workflow grammar, before catalog preparation or native requests. */
 export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: string; a?: string; b?: string } {
   const values = { ...args.values } as RunValues;
@@ -1190,6 +1204,8 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
     try { assertIdToken(first, "run id"); } catch {
       const message = `run ${raw}: ${JSON.stringify(boundedValue(first, SHOWN_VALUE_MAX))} is not a run id, which is 1 to 64 letters, digits, "_" or "-"`;
       if (verb === "journal") usage(message, journalIdRemedy(raw, values));
+      if (values.local === true && (verb === "resume" || verb === "answer" || verb === "amend"))
+        usage(message, `${localRunInventory(values)}. Then replace only the run ID in the original command`);
       usage(`${message}; \`cotal run\` lists them`);
     }
   }
@@ -1216,11 +1232,7 @@ export function workflowArguments(args: ParsedArgs): { values: RunValues; verb: 
   } else if (verb === "revoke" && first === undefined) {
     usage("run revoke takes one identifier", "add a run ID after `run revoke` in the original command. A revoke requires `--local --by <actor> --reason <text>`");
   } else if (verb === "resume" && !first && values.local === true) {
-    const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
-    const list = values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server
-      ? "run `cotal run list --local` with the original target options"
-      : `list the recorded runs with ${codeSpan(`cotal run list --local${target}`)}`;
-    usage("run resume takes one identifier", `${list}. Then add a run ID after \`run resume\` in the original command`);
+    usage("run resume takes one identifier", `${localRunInventory(values)}. Then add a run ID after \`run resume\` in the original command`);
   } else if (!first || second !== undefined) usage(`run ${raw} takes one identifier`, verb === "yield" ? "`cotal run turns` lists your turns. Run `cotal run yield <turn-id> --status <done|blocked|handoff>`. For a handoff, add `--to <agent>`." : `\`cotal run\` lists the runs; run \`cotal run ${raw} <run-id>\``);
   const scopes: Record<string, readonly string[]> = {
     timeout: ["start", "resume"], by: ["answer", "amend", "revoke"], reason: ["revoke"], value: ["answer", "amend"], artifact: ["answer", "amend"],

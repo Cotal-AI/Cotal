@@ -15,7 +15,7 @@ Cotal does not bundle the pi runtime.
 <Callout type="info" title="Alpha connector">
 
 This release targets pi `0.79.10`.
-Persona files, model selection, thinking levels as model variants, initial prompts, and session forks are supported.
+Persona files, model selection, thinking levels, initial prompts, and session forks are supported.
 MCP tool sharing and arbitrary launch options are refused.
 
 </Callout>
@@ -58,10 +58,21 @@ To use a persona file on the execution host, add `--file <persona-file>`.
 The connector passes the model name to pi unchanged.
 To list the models your pi can run, use `cotal models --harness pi`.
 It lists each model as `provider/id` for the providers pi holds credentials for.
-With no credentials, it reports `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
+With no credentials, the read fails with `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
 Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
 The list is read with the environment a seat gets, so a `PI_CODING_AGENT_DIR` named in `spawn.env` selects its models too.
 See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
+
+`--variant <level>` sets pi's thinking level, which the connector passes as `--thinking`:
+
+```bash
+cotal spawn --harness pi --model anthropic/claude-opus-4-6 --variant high
+```
+
+`cotal models --harness pi` lists the levels pi offers for each model as its variants.
+It needs pi 0.81.0 or later, the first pi that lists them; with an older pi the list is unavailable and names the command pi refused.
+A level that is not one of pi's own (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`) is refused before launch.
+A restarted or resumed seat passes the level again, so it runs the level it was launched with.
 
 To give pi an initial task, add `--prompt`:
 

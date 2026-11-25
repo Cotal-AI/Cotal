@@ -47,7 +47,6 @@ import {
   type MaintenanceLock,
   type MaintenanceReadyRecord,
   type ProcessOwner,
-  restoreLeftOut,
 } from "@cotal-ai/workspace";
 import { artifactStreams, BACKUP_MANIFEST_FORMAT, createArtifactWriter, isTrustBound, missingBackupPath, snapshotFileName, TRUST_BOUND_TEXT, type BackupFileRecord, type BackupStreamRecord } from "../lib/backup-artifact.js";
 import { assertControllerResumeEligible } from "../lib/controller-resume.js";
@@ -131,7 +130,7 @@ function notReady(root: string, record: ReturnType<typeof readMaintenanceJournal
   }
   return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `backup requires the stopped preserved cut; maintenance state is ${record.state}`, {
     target: { root, space: record.space, state: record.state },
-    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, restoreLeftOut(record)) : "finish this root's current maintenance attempt first; check it with `cotal status`",
+    remedy: "restore" in record ? restoreNextStep(record.state, record.restore.attemptId, record) : "finish this root's current maintenance attempt first; check it with `cotal status`",
   });
 }
 
@@ -379,12 +378,15 @@ function overlaps(a: string, b: string): boolean {
   return contained(fromA) || contained(fromB);
 }
 
-function assertBackupPaths(root: string, source: string, destination: string): void {
-  const artifact = canonicalFuturePath(destination);
+function assertBackupPaths(root: string, source: string, destinationPath: string): void {
+  const artifact = canonicalFuturePath(destinationPath);
   const attempts = resolve(root, ".cotal", "maintenance", "attempts");
   if (overlaps(source, attempts)) throw new Error("preserved source must not overlap the maintenance attempt directory");
   if (overlaps(artifact, source)) throw new Error("backup destination must not overlap the preserved source store");
-  if (overlaps(artifact, attempts)) throw new Error("backup destination must not overlap the maintenance attempt directory");
+  if (overlaps(artifact, attempts))
+    throw new CommandFailure("refused", "USAGE_INVALID", `the backup destination ${destinationPath} overlaps the maintenance attempt directory ${attempts}. No backup was created.`, {
+      target: { directory: destinationPath, attemptId: null, priorClaimAttemptId: null }, remedy: `name a destination outside ${attempts}`, selfContained: true,
+    });
 }
 
 async function snapshotStream(
@@ -506,6 +508,9 @@ export function validateBackupArguments(args: ParsedArgs): void {
       throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} does not accept ${flags}${selection}`);
     }
     throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
+  }
+  if (maintenance && args.values["dry-run"] && args.values.yes) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} cannot combine --dry-run and --yes`, { remedy: "use --dry-run to review or --yes to apply" });
   }
   if (mode === "create") selection(args.values.only as string | undefined);
   // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
@@ -656,7 +661,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
       observed.mutationAttempted = true;
     }
     ready = requireReady(root, storeDir, values["store-dir"] !== undefined);
-    assertBackupPaths(root, ready.source.path, destination);
+    assertBackupPaths(root, ready.source.path, destinationPath);
     // The journal is ready with no live claim, and the destination is proven disjoint from the
     // attempts directory: any attempts-dir content is dead-attempt residue.
     sweepAttemptResidue(root);

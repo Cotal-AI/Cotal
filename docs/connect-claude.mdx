@@ -223,18 +223,23 @@ cotal spawn --harness claude --model sonnet
 `--model` overrides the persona's model pin.
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
-A logged-out `claude` reports `claude is not logged in; run claude to log in`.
-`--variant` picks Claude's effort level, which the connector passes as `--effort`:
+With a logged-out `claude`, the read fails with `claude is not logged in; run claude to log in`.
+An alias such as `opus` is listed with the model it currently resolves to, for example `Opus 5.5 (claude-opus-5-5)`.
+The Claude connector rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
+Choose the corresponding connector for another provider's model.
+
+### Choose an effort level
+
+`--variant` sets Claude's effort level, which the connector passes as `--effort`:
 
 ```bash
-cotal spawn --harness claude --model sonnet --variant high
+cotal spawn --harness claude --model opus --variant high
 ```
 
-`cotal models --harness claude` lists each model's effort levels as its variants.
-A model Claude lists without effort has none.
-A variant that is not `low`, `medium`, `high`, `xhigh` or `max` fails the launch, and so does a variant together with `--opt effort=<level>`.
-It also rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
-Choose the corresponding connector for another provider's model.
+Claude accepts `low`, `medium`, `high`, `xhigh` and `max`, and the connector refuses any other value before launch.
+`cotal models --harness claude` lists the levels each model supports as its variants.
+Claude does not run a model at a level that model lacks, so pick one from that list.
+A launch option `--opt effort=<level>` wins over `--variant`, and the seat's roster entry then shows no variant.
 
 ### Choose a permission mode
 

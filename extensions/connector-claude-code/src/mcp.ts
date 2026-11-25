@@ -36,6 +36,7 @@ import { homedir } from "node:os";
 import { dirname, parse } from "node:path";
 import { createClaudeHandle, createWakePolicy, type ClaudeHooks, type WakePolicy } from "./hooks.js";
 import { createClaudePrompts, launchedSessionHooks } from "./prompts.js";
+import { claudeNaming } from "./naming.js";
 import { createClaudeEventPlane, type ClaudeEventHolder } from "./claude-events.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
@@ -226,6 +227,22 @@ export async function serveClaudeSession(opts: ClaudeSessionOptions): Promise<Cl
   }
 }
 
+/** Local control plane for the lifecycle hooks (presence + message injection) and the manager's
+ *  cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
+ *  come from the launch-material file that env points at, which is also where the hooks read them,
+ *  or from COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
+ *  what advance presence and inject peer messages, so a session without the endpoint is refused,
+ *  naming it, rather than served with an unauthenticated (or no) control plane. */
+function requireControl(env: NodeJS.ProcessEnv): NonNullable<ReturnType<typeof controlFromEnv>> {
+  const control = controlFromEnv(env);
+  if (!control) {
+    throw new Error(
+      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_KEY to a random secret and COTAL_CONTROL_VERSION to 1",
+    );
+  }
+  return control;
+}
+
 async function startSession(
   opts: ClaudeSessionOptions,
   setClose: (close: () => Promise<void>) => void,
@@ -263,7 +280,12 @@ async function startSession(
   const warn = (msg: string): void => void process.stderr.write(`[cotal-connector] ${msg}\n`);
   // The command mod's socket opens below, once the session's teardown is in place.
   const commands = sessionCommands(env, claude, () => agent, warn);
-  const agent: MeshAgent = new MeshAgent(config, env, { withholdProcessCwd: true, onceClaimBound: true, commands: commands.dispatcher });
+  const agent: MeshAgent = new MeshAgent(config, env, {
+    withholdProcessCwd: true,
+    onceClaimBound: true,
+    commands: commands.dispatcher,
+    naming: claudeNaming(env, config.model),
+  });
   const turns = commandTurns(agent);
   const plane = eventPlaneArmed(config, env) ? createClaudeEventPlane(agent, config, env) : undefined;
   events = plane?.events;
@@ -272,18 +294,7 @@ async function startSession(
   const prompts = createClaudePrompts({ desk: () => agent.prompts, warn });
   const hooks = launchedSessionHooks(prompts, claude, warn);
 
-  // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
-  // cooperative shutdown. The SOCKET PATH comes from the launch env; the KEY and exchange version
-  // come from the launch-material file that env points at, which is also where the hooks read them,
-  // or from COTAL_CONTROL_KEY and COTAL_CONTROL_VERSION in a session driven by hand. The hooks are
-  // what advance presence and inject peer messages, so a session without the endpoint is refused,
-  // naming it, rather than served with an unauthenticated (or no) control plane.
-  const control = controlFromEnv(env);
-  if (!control) {
-    throw new Error(
-      "no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path in a private directory, COTAL_CONTROL_KEY to a random secret and COTAL_CONTROL_VERSION to 1",
-    );
-  }
+  const control = requireControl(env);
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
   // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists

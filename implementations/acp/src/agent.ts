@@ -34,7 +34,7 @@ import { answer, permissionRequest, plainOptions, PromptFollower } from "./promp
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { launchManagers } from "./manager-start.js";
 import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
-import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, type Offer, type Selection } from "./options.js";
+import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -443,11 +443,10 @@ function launchOffers(options: CotalAgentOptions) {
       return seatOffer(row);
     });
     // Only the launch lists say whether an application has an event plane.
-    const why = launch ? refusal(offer.catalogs, row.agent) : undefined;
+    const why = launch ? seatRefusal(offer.catalogs, row.agent) : undefined;
     if (why) throw RequestError.invalidParams(undefined, why);
     const held = row.managerInstanceId ? offer.managers.find((x) => x.instanceId === row.managerInstanceId) : undefined;
-    const selection = { ...initialSelection(offer), model: `${row.agent}/${row.model ?? "default"}`, ...(row.managerInstanceId ? { machine: row.managerInstanceId } : {}) };
-    return { offer, selection, ...(held ? { held } : {}) };
+    return { offer, selection: seatSelection(offer, row), ...(held ? { held } : {}) };
   };
   return { seatOffer, offerFor, seatThread };
 }

@@ -5,9 +5,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { MANAGER_PIDFILE, canonicalLocalProcessPath, processStopped } from "@cotal-ai/workspace";
+import { MANAGER_PIDFILE, assertRecordIdentity, canonicalLocalProcessPath, processStopped, shellPath, spaceSegment } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import type { StatusResult } from "../src/commands/status.js";
+import { findNatsServer } from "../src/lib/nats-bin.js";
+import { readStackJournal } from "../src/lib/stack-journal.js";
 import { observeOwnedChild, waitForOwnedChild } from "./_foreground-owned-child.js";
 
 const scratch = mkdtempSync(join(tmpdir(), "cotal-status-broker-"));
@@ -288,6 +290,109 @@ if (process.platform !== "win32") {
     if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
   }
 }
+async function checkOpenRestartStatus() {
+  const space = "open-restart", project = join(scratch, space);
+  mkdirSync(project, { mode: 0o700 });
+  const sandbox = recordSmokeSandbox({ root: project, cotalHome, xdgConfigHome: config });
+  const local = (...args: string[]) => runInSandbox(sandbox, project, ...args);
+  const address = `nats://127.0.0.1:${await freePort()}`;
+  const realNats = resolve((await findNatsServer()).path);
+  // Gate the NATS version probes so status takes its selection before registration, then reads
+  // the folder after registration removes the prepared record. All probes run the real binary.
+  function gate(name: string, replace = false) {
+    const dir = join(project, name), probed = join(dir, "probed"), resume = join(dir, "resume");
+    mkdirSync(dir, { mode: 0o700 });
+    writeFileSync(join(dir, "nats-server"), `#!/bin/sh
+set -eu
+: > ${shellPath(probed)}
+i=0
+while [ ! -e ${shellPath(resume)} ]; do
+  i=$((i+1)); [ "$i" -lt 3000 ]; sleep .02
+done
+${replace ? `ln -sf ${shellPath(realNats)} "$0"\n` : ""}exec ${shellPath(realNats)} "$@"
+`, { mode: 0o700 });
+    return { probed, release: () => writeFileSync(resume, ""), path: `${dir}${delimiter}${env.PATH}` };
+  }
+  const restartGate = gate("restart-probe", true), plainGate = gate("plain-probe"), jsonGate = gate("json-probe");
+  function launch(path: string, ...args: string[]) {
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), cli, ...args], {
+      cwd: project, env: { ...env, PATH: path }, stdio: ["ignore", "pipe", "pipe"],
+    });
+    const state = observeOwnedChild(child);
+    let stdout = "", stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    return { child, state, output: () => ({ stdout, stderr }), alive: () => {
+      if (state.error || state.exited) throw state.error ?? new Error(`${stdout}\n${stderr}`);
+      return true;
+    } };
+  }
+  const up = ["up", "--foreground", "--open", "--server", address];
+  const prepared = local("space", "create", space);
+  if (prepared.status !== 0) throw new Error(prepared.stdout + prepared.stderr);
+  const first = launch(env.PATH, ...up);
+  try {
+    await waitForOwnedChild(() => first.alive() && first.output().stdout.includes("up completed"), 60_000, "first open start completes");
+  } finally {
+    const stopped = local("down", "--yes");
+    if (stopped.status !== 0) { first.child.kill("SIGTERM"); throw new Error(stopped.stdout + stopped.stderr); }
+    await waitForOwnedChild(() => first.state.closed, 60_000, "first open start stopped");
+  }
+  const preparedPath = join(cotalHome, "prepared", `${spaceSegment(space)}.json`);
+  const registeredPath = join(cotalHome, "meshes", `${spaceSegment(space)}.json`);
+  const lockPath = join(project, ".cotal", "maintenance", "lock.json");
+  const managerPidfile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: project, space });
+  const restart = launch(restartGate.path, ...up);
+  let plain: ReturnType<typeof launch> | undefined, json: ReturnType<typeof launch> | undefined;
+  try {
+    await waitForOwnedChild(() => restart.alive() && existsSync(restartGate.probed), 60_000, "restart is gated before registration");
+    const lock = readFileSync(lockPath, "utf8");
+    plain = launch(plainGate.path, "status", "--plain", "--space", space);
+    json = launch(jsonGate.path, "status", "--json", "--space", space);
+    await waitForOwnedChild(() => plain!.alive() && json!.alive() && existsSync(plainGate.probed) && existsSync(jsonGate.probed), 60_000, "both reports selected the prepared space");
+    if (!existsSync(preparedPath) || existsSync(registeredPath)) throw new Error("status did not select before registration");
+    restartGate.release();
+    await waitForOwnedChild(() => restart.alive() && !existsSync(preparedPath) && existsSync(registeredPath), 60_000, "registration replaced the prepared record");
+    const pid = restart.child.pid!;
+    restart.child.kill("SIGSTOP");
+    await waitForOwnedChild(() => processStopped(pid), 5_000, "restart suspended in its registration window");
+    const journal = readStackJournal(project)!;
+    const holder = JSON.parse(lock) as { owner: { id: string; pid: number }; processToken: string };
+    if (journal.journal.operation.kind !== "up" || journal.journal.operation.phase !== "applying" || holder.owner.id !== journal.journal.operation.id ||
+      holder.owner.pid !== pid || assertRecordIdentity({ pid, token: holder.processToken }).kind !== "match" ||
+      readFileSync(lockPath, "utf8") !== lock || existsSync(managerPidfile)) throw new Error("restart did not retain its applying operation and live lock before the manager PID was recorded");
+    plainGate.release();
+    jsonGate.release();
+    await waitForOwnedChild(() => plain!.state.closed && json!.state.closed, 60_000, "both startup reports finished");
+    if (readStackJournal(project)?.sha256 !== journal.sha256 || readFileSync(lockPath, "utf8") !== lock) throw new Error("the journal or lock changed while status read the folder");
+    const text = plain.output().stdout;
+    const result = (JSON.parse(json.output().stdout) as { result: StatusResult }).result;
+    const noRepair = (output: string) => !/reset store|clean store|has no recorded outcome|finishes or settles it/i.test(output);
+    check("plain status says to wait for the verified open restart, without reset or settlement advice",
+      plain.state.code === 0 && text.includes("Startup in progress") && text.includes("Wait for startup to finish, then check again") && noRepair(text), plain.output());
+    check("JSON attributes the restart to the local controller stack, without a legacy stored-state finding",
+      json.state.code === 0 && result.folder.processSpace === space && result.folder.controllerStack && !result.folder.storedState &&
+      result.folder.stackJournal === "present" && result.folder.stackBlock === null && result.folder.stackUnfinished === null &&
+      noRepair(json.output().stdout), { folder: result.folder, selected: result.selected, hints: result.hints });
+    restart.child.kill("SIGCONT");
+    await waitForOwnedChild(() => restart.alive() && restart.output().stdout.includes("up completed"), 60_000, "open restart completes");
+    const ready = local("status", "--json", "--space", space);
+    const selected = (JSON.parse(ready.stdout) as { result: StatusResult }).result.selected;
+    check("the same named open stack reaches readiness without intervention",
+      ready.status === 0 && selected.resolved && selected.space === space && selected.connection === "ok", ready.stdout);
+  } finally {
+    for (const probe of [restartGate, plainGate, jsonGate]) probe.release();
+    if (!restart.state.closed) restart.child.kill("SIGCONT");
+    for (const report of [plain, json]) if (report !== undefined) await waitForOwnedChild(() => report.state.closed, 60_000, "gated status exited");
+    if (!restart.state.closed && !restart.output().stdout.includes("up completed")) restart.child.kill("SIGTERM");
+    const stopped = local("down", "--yes");
+    if (stopped.status !== 0 && !restart.state.closed) restart.child.kill("SIGTERM");
+    await waitForOwnedChild(() => restart.state.closed, 60_000, "open restart owner exited");
+    if (stopped.status !== 0) throw new Error(stopped.stdout + stopped.stderr);
+    const cleared = local("use", "--clear");
+    if (cleared.status !== 0) throw new Error(cleared.stdout + cleared.stderr);
+  }
+}
 if (process.platform === "linux") {
   const legacyRoot = join(scratch, "legacy-zombie");
   mkdirSync(legacyRoot);
@@ -427,4 +532,5 @@ if (process.platform === "linux") {
     await waitForOwnedChild(() => brokerState.closed, 60_000, "the legacy foreground CLI exited");
   }
 }
+if (process.platform === "linux") await checkOpenRestartStatus();
 finish();

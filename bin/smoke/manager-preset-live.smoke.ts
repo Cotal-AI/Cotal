@@ -239,6 +239,23 @@ function launchPreview(space: string): void {
     && receipt.error?.code === "TARGET_NOT_FOUND" && receipt.error.message.includes("no manager has been started"), out(status));
 }
 const ptyEnv = Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+function malformedRosterStart(space: string): void {
+  const start = ["manager", "start", "--foreground", "--space", space, "--runtime", "pty", "--roster", misspelt];
+  const untouched = () => !serviceDefinitionStore(space).read("manager") && !serviceInstances(space, "manager").length;
+  const preview = cotal([...start, "--dry-run", "--json"]);
+  const { result, warnings } = JSON.parse(preview.stdout);
+  check("a malformed roster preview reports the invalid key and no planned save, without writing or allocating",
+    preview.status === 0 && result?.definitionWouldBeSaved === false && result.allocated === false
+      && warnings?.some((warning: { code: string; message: string }) => warning.code === "SCHEMA_INVALID" && warning.message.includes("share_tools is not a roster key"))
+      && untouched(), out(preview));
+  const attempt = cotal(start);
+  check("a malformed roster start fails before saving a definition or launching the native child",
+    attempt.status === 5 && out(attempt).includes("share_tools is not a roster key")
+      && !out(attempt).includes("Foreground service lifetime") && untouched(), out(attempt));
+  const show = cotal(["service", "show", "manager", "--space", space, "--json"]);
+  check("service show still finds no definition after the malformed start", show.status === 2 && JSON.parse(show.stdout).error?.code === "TARGET_NOT_FOUND", out(show));
+}
+
 const started: ChildProcess[] = [];
 let stackUp = false;
 /** An unreadable instance record a cell plants; teardown removes it so the final down can run. */
@@ -252,6 +269,7 @@ try {
     stackUp = up.status === 0;
     check("a broker-only open stack starts", stackUp, out(up));
     launchPreview(SPACE);
+    malformedRosterStart(SPACE);
     const manager = ["manager", "start", "--space", SPACE, "--json"];
     const stopManager = ["manager", "stop", "--space", SPACE, "--yes", "--with-agents"];
     const launch = join(root, "absent-launch.json");
@@ -264,6 +282,12 @@ try {
       const definition = () => serviceDefinitionStore(SPACE).read("manager");
       const instances = () => serviceInstances(SPACE, "manager");
       const before = definition(), stoppedBefore = instances();
+      const malformed = cotal([...manager, "--roster", misspelt]);
+      check("a malformed roster override preserves the saved definition and stopped instance",
+        malformed.status === 5 && JSON.parse(malformed.stdout).error?.message.includes("share_tools is not a roster key")
+          && before !== undefined && stoppedBefore.length === 1
+          && JSON.stringify(definition()?.record) === JSON.stringify(before.record)
+          && JSON.stringify(instances().map((row) => row.record)) === JSON.stringify(stoppedBefore.map((row) => row.record)), out(malformed));
       const wrong = cotal([...manager, "--launch", launch, "--launch-sha256", "0".repeat(64)]);
       const { error } = JSON.parse(wrong.stdout);
       check("a mismatched digest refuses without replacing the definition or stopped instance",
@@ -299,9 +323,14 @@ try {
     check("the instance records the native stop the manager returned", row?.state === "stopped" && row.nativeStop?.nativeStop === "returned", row);
 
     // ---- A manager that fails at boot names its cause ---------------------------------------------
+    const capRecord = join(root, ".cotal", `manager.${spaceKey(SPACE)}.seat-cap.json`);
+    writeFileSync(capRecord, JSON.stringify({ version: 1, seatCap: 0 }), { mode: 0o600 });
+    const supervise = cotal(["supervise", "--space", SPACE, "--server", SERVER, "--runtime", "pty"]);
+    check("supervise names the invalid saved seat cap and how to recover",
+      supervise.status === 1 && supervise.stderr.includes(`✗ the manager seat-cap record ${capRecord} holds neither a positive integer nor "unlimited"\n  Next: remove or repair that record, then start the manager again`), out(supervise));
+
     // The controller does not read the recorded seat cap, so a corrupt record fails the native child
     // inside its own startup, with a classified failure that wraps the record's refusal.
-    const capRecord = join(root, ".cotal", `manager.${spaceKey(SPACE)}.seat-cap.json`);
     writeFileSync(capRecord, "not a record\n", { mode: 0o600 });
     // The line names the record and ends in the one step that clears it.
     const cause = `✗ the manager did not start: OPERATION_UNKNOWN: the native manager child did not confirm startup; cause: SCHEMA_INVALID: the manager seat-cap record ${capRecord} is not valid JSON; next: remove or repair that record, then start the manager again\n`;

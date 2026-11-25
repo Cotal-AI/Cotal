@@ -30,7 +30,7 @@
  * Run: pnpm smoke:target-resolution
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -41,6 +41,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-target-resolution-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
 const { findMesh, getCurrent, recordMesh, removeMesh, recordPreparedSpace, removePreparedSpace, resolveOnPath, setCurrent, setAdoptedCurrent, clearCurrent } = await import("@cotal-ai/workspace");
+const { execWords } = await import("../src/lib/exec-words.js");
 const { observeServiceProcess, serviceInstances } = await import("../src/lib/service-instances.js");
 
 const { check, finish } = createSuite();
@@ -277,6 +278,35 @@ const QUESTION = "Which one?";
       const picked = run([...args, "--space", space]);
       check(`the ${format} retry for ${space} reads its roster without selecting a default`, picked.status === 0 && getCurrent() === undefined &&
         (format === "-j" ? envelope(picked)?.target?.space === space : picked.stdout.startsWith(`Mesh: ${space}\n`)), shown(picked));
+    }
+  }
+  for (const [args, beforeSpace, afterSpace] of [
+    [["history", "fleet-test", "--server", A, "--plain"], `history fleet-test --server ${A} --plain`, ""],
+    [["history", "--server", A, "--json", "--grep", "two words", "--", "fleet-test"], `history --server ${A} --json --grep 'two words'`, " -- fleet-test"],
+    [["history", "fleet-test", "--server", A, "--follow", "--json"], `history fleet-test --server ${A} --follow --json`, ""],
+    [["ps", "--server", A, "--plain", "--wide"], `ps --server ${A} --plain --wide`, ""],
+  ] as const) {
+    const refused = run([...args]);
+    const follow = args.some((arg) => arg === "--follow");
+    const json = args.some((arg) => arg === "--json");
+    const records = follow ? refused.stdout.trim().split("\n").map((line) => JSON.parse(line)) : [];
+    const error = follow ? records[0]?.data : envelope(refused)?.error;
+    const next = error?.remedy ?? refused.stderr.split("\nNext\n")[1] ?? "";
+    const retries = Array.from(String(next).matchAll(/`([^`]+)`/g), (match) => match[1]!);
+    check(`${beforeSpace} refuses and offers both exact reads`, refused.status === 2 &&
+      (json ? error?.code === "TARGET_AMBIGUOUS" : /Code:\s+TARGET_AMBIGUOUS/.test(refused.stderr)) &&
+      (!follow || records.length === 2 && records[0]?.type === "error" && records[1]?.type === "end") &&
+      retries.length === 2 && ["alpha", "shared"].every((space, index) =>
+        retries[index]?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)), shown(refused));
+    if (follow) continue;
+    for (const [index, space] of ["alpha", "shared"].entries()) {
+      const retry = retries[index];
+      if (!retry?.endsWith(` ${beforeSpace} --space ${space}${afterSpace}`)) continue;
+      const picked = run(execWords(retry).slice(-args.length - 2));
+      check(`the printed ${args[0]} retry reaches ${space} without selecting a default`, getCurrent() === undefined &&
+        (args[0] === "ps" ? picked.stderr.startsWith(`Mesh: ${space}\n`) && !picked.stderr.includes("TARGET_AMBIGUOUS")
+          : picked.status === 0 && (json ? envelope(picked)?.target?.space === space && envelope(picked)?.target?.channel === "fleet-test"
+            : picked.stdout.startsWith(`Mesh: ${space}\n`) && picked.stdout.includes(`#fleet-test of ${space}`))), shown(picked));
     }
   }
   const unchecked = run(["whoami", "--space", "shared", "--server", `${A}/`, "--json"]);
@@ -831,6 +861,18 @@ const QUESTION = "Which one?";
   const forgot = run(["space", "forget", "gone"], forgotten);
   check("control: a space prepared in a folder and then forgotten", prepared.status === 0 && forgot.status === 0 && existsSync(join(forgotten, ".cotal")), { prepared: shown(prepared), forgot: shown(forgot) });
   const root = realpathSync(forgotten);
+  const file = join(root, "reference.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "beta", endpoint: "example.offline" }));
+  const add = ["endpoint", "add", "offline", "--file", file, "--json"];
+  const refused = run(add, root);
+  const error = envelope(refused)?.error;
+  check("an import with no local space explains how to use the reference file's space",
+    refused.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy?.includes("--space <space>") &&
+      error.remedy.includes("cotal space create <space> --root <project-directory>"), shown(refused));
+  const retry = run([...add, "--space", "beta"], root);
+  const saved = run(["endpoint", "show", "offline", "--space", "beta", "--json"], root);
+  check("the scoped retry saves the same reference without changing the selection",
+    retry.status === 0 && envelope(saved)?.result?.reference?.endpoint === "example.offline" && getCurrent() === undefined, shown(retry));
   for (const command of [["whoami"], ["spawn", "--dry-run"]]) {
     const json = run([...command, "--json"], forgotten);
     const body = json.status === 2 ? JSON.parse(json.stdout) as { target?: Record<string, unknown> | null; error?: { code?: string; message?: string } } : undefined;
@@ -840,6 +882,45 @@ const QUESTION = "Which one?";
     const plain = run([...command, "--plain"], forgotten);
     check(`${command.join(" ")} there names no Mesh and says no space is registered here`,
       plain.status === 2 && !/^Mesh: /m.test(plain.stdout + plain.stderr) && (plain.stdout + plain.stderr).includes(`no space is registered or prepared here for ${root}`), shown(plain));
+  }
+}
+
+{
+  const root = realpathSync(mkdtempSync(join(home, "open-stack-")));
+  const space = "open-roster";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const registration = join(env.COTAL_HOME!, "meshes", `space.${Buffer.from(space).toString("hex")}.json`);
+  const saved = join(root, "registration.saved");
+  const roster = (address: string) => run(["who", "--server", address, "--json"], root);
+  const complete = (read: ReturnType<typeof run>, name: string) => {
+    const data = envelope(read);
+    return read.status === 0 && data?.target?.space === name && data.outcome === "ok" && data.completeness === "complete" && data.warnings?.length === 0;
+  };
+  const prepared = run(["space", "create", space], root);
+  anchors.set(root, recordSmokeSandbox({ root, cotalHome: env.COTAL_HOME!, xdgConfigHome: env.XDG_CONFIG_HOME! }));
+  try {
+    const started = run(["up", "--no-manager", "--open", "--server", server], root);
+    const cleared = run(["use", "--clear", "--json"], root);
+    const registered = roster(server);
+    check("a registered open stack answers the roster at its explicit address", prepared.status === 0 && started.status === 0 && cleared.status === 0 && complete(registered, space), { started: shown(started), roster: shown(registered) });
+    renameSync(registration, saved);
+    for (const address of [server, `${server}/`]) {
+      const read = roster(address);
+      check(`the running open stack still answers as ${space} without its registration at ${address}`, complete(read, space) && !existsSync(registration), shown(read));
+    }
+    const bare = run(["who", "--json"], root);
+    check("bare who still requires the open stack registration", bare.status === 2 && envelope(bare)?.error?.code === "TARGET_UNAVAILABLE", shown(bare));
+    const raw = await broker();
+    for (let i = 0; i < 30 && !(await isReachable(raw)); i++) await wait(50);
+    const unrelated = roster(raw);
+    check("another unregistered broker still answers as main from the open project", complete(unrelated, "main"), shown(unrelated));
+    renameSync(saved, registration);
+    const restored = roster(server);
+    check("restoring the registration preserves the same live target", complete(restored, space), shown(restored));
+  } finally {
+    if (existsSync(saved)) renameSync(saved, registration);
+    const down = run(["down", "--yes", "--json"], root);
+    check("the live open roster fixture stops cleanly", down.status === 0, shown(down));
   }
 }
 

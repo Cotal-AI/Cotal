@@ -77,6 +77,8 @@ import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
 import { ASKING_THREAD, configOverrides, mcpOverrides, reasoningTurn } from "./codex-config.js";
 import { launchTui } from "./tui.js";
+import { codexNaming } from "./naming.js";
+import { hostPresence } from "./host-presence.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
@@ -85,8 +87,6 @@ const MAX_BATCH_TURNS = 3;
  *  loop, not a blip, and the host dies loudly rather than respawning forever. */
 const RESTART_WINDOW_MS = 120_000;
 const MAX_RESTARTS = 3;
-/** How often a presence update latched while the endpoint was still connecting is retried. */
-const STATUS_FLUSH_MS = 500;
 /** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
 const SHUTDOWN_GRACE_MS = 5_000;
 /** A Codex peer is not ready until its mesh endpoint has completed every bind and published its
@@ -280,13 +280,15 @@ export async function runCodexHost(): Promise<void> {
   // app-server thread is up AND auth is validated — starting it connects and publishes idle
   // presence, and a peer must never advertise online before we know it can actually run a turn
   // (a later auth failure can't retract a presence interval already seen by the roster).
-  const agent = new MeshAgent(config, undefined, { commands: codexCommands(() => driver) });
-
   const codexHome = prepareCodexHome(config.space, config.name);
   const codexBin = process.env.COTAL_CODEX_BIN?.trim() || process.env.COTAL_CODEX_RESOLVED_BIN?.trim() || undefined;
   // Validate the operator's launch config BEFORE anything is listening, so a bad launch throws
   // with nothing left behind to reap.
   const baseOverrides = configOverrides(model, variant, config.askPermissions === true);
+  const agent = new MeshAgent(config, undefined, {
+    commands: codexCommands(() => driver),
+    naming: codexNaming({ bin: codexBin ?? "codex", codexHome, overrides: baseOverrides, model: () => driver.model, launchPrompt: process.env.COTAL_CODEX_PROMPT }),
+  });
   // The cotal_* tools must be LISTENING before the child spawns: the child's config names this
   // URL and codex dials it while starting the thread.
   const mcp = await startCotalMcp(agent, config, log, () => ready && !driver.stopped ? driver.thread : undefined);
@@ -307,92 +309,7 @@ export async function runCodexHost(): Promise<void> {
    *  gets a new holder rather than a second adopt (see `bindEvents`). */
   let rollout: string | undefined;
 
-  // Presence is best-effort and must never throw into the turn loop — but it must also never
-  // LIE. The mesh connect runs in the background, so an auto-prompt (`--prompt`) can open a real
-  // turn while the endpoint is still connecting; dropping that "working" would leave the roster
-  // showing the default `idle` for the whole first turn. So the latest desired status is latched
-  // and replayed once the endpoint is up (last write wins — a stale one is never resurrected).
-  type Presence = { status: "idle" | "working" | "waiting" | "offline"; activity?: string; presenceOnly?: boolean };
-  let desired: Presence | undefined;
-  let desiredCondition: PresenceCondition | null | undefined;
-  let flushTimer: ReturnType<typeof setInterval> | undefined;
-  // Presence writes go out IN CALL ORDER. `agent.setStatus("working")` clears the condition before
-  // it publishes, and it awaits the connection first, so two fire-and-forget writes from one tick
-  // can land in either order. Measured: a turn that failed in the tick it started published its
-  // failure condition and then its own start's clear one millisecond later, and the presence
-  // bucket (history 1) dropped the condition revision before any watcher read it. The chain keeps
-  // the start's clear ahead of the failure's condition, so the condition is what the roster shows
-  // until the NEXT turn starts.
-  let presenceChain: Promise<void> = Promise.resolve();
-  const inOrder = (write: () => Promise<void>): Promise<void> => {
-    const next = presenceChain.then(write, write);
-    presenceChain = next.catch(() => {});
-    return next;
-  };
-  function armStatusFlush(): void {
-    if (flushTimer) return;
-    flushTimer = setInterval(() => {
-      if ((!desired && desiredCondition === undefined) || !agent.connected) {
-        if (!desired && desiredCondition === undefined) {
-          clearInterval(flushTimer);
-          flushTimer = undefined;
-        }
-        return;
-      }
-      const want = desired;
-      const wantCondition = desiredCondition;
-      desired = undefined;
-      desiredCondition = undefined;
-      clearInterval(flushTimer);
-      flushTimer = undefined;
-      inOrder(async () => {
-        if (wantCondition !== undefined) await agent.setCondition(wantCondition);
-        if (want) {
-          if (want.presenceOnly) await agent.resetStatus(want.status, want.activity);
-          else await agent.setStatus(want.status, want.activity);
-        }
-      })
-        .catch(() => {
-          if (!desired) desired = want;
-          if (desiredCondition === undefined) desiredCondition = wantCondition;
-          armStatusFlush();
-        });
-    }, STATUS_FLUSH_MS);
-    flushTimer.unref?.();
-  }
-  const safeStatus = async (status: Presence["status"], activity?: string, presenceOnly = false): Promise<void> => {
-    desired = { status, activity, presenceOnly };
-    if (!agent.connected) return armStatusFlush();
-    const want = desired;
-    desired = undefined;
-    await inOrder(async () => {
-      try {
-        // Requests are answered by the driver, not host-turn boundaries. Keep their waiting
-        // presence from disarming the working-to-idle completion of the same native turn.
-        // A later command or MCP item is not required for a completed turn to yield done.
-        if (presenceOnly) await agent.resetStatus(status, activity);
-        else await agent.setStatus(status, activity);
-      } catch {
-        if (!desired) desired = want;
-        armStatusFlush();
-      }
-    });
-  };
-
-  const safeCondition = async (condition: PresenceCondition | null): Promise<void> => {
-    desiredCondition = condition;
-    if (!agent.connected) return armStatusFlush();
-    const want = desiredCondition;
-    desiredCondition = undefined;
-    await inOrder(async () => {
-      try {
-        await agent.setCondition(condition);
-      } catch {
-        if (desiredCondition === undefined) desiredCondition = want;
-        armStatusFlush();
-      }
-    });
-  };
+  const { safeStatus, safeCondition } = hostPresence(agent);
 
   let ready = false; // thread up — never drive before then
   /** Shared across app-server incarnations: a crash during launch must make the replacement await

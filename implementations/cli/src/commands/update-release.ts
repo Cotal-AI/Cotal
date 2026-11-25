@@ -226,9 +226,14 @@ export function offlineUpdateMessage(repaired: boolean): string {
 }
 
 export function deferStagingFailure(error: unknown, version: string, rt: UpdateRuntime, repaired: boolean): boolean {
-  if ((error instanceof RegistryUnavailable || error instanceof StagingTimeout || message(error).startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
+  const detail = message(error);
+  const fetchTimedOut = /^target staging failed: npm (?:error|ERR!) code FETCH_ERROR\r?\n/.test(detail) &&
+    /^npm (?:error|ERR!) network timeout at: \S/m.test(detail);
+  if (fetchTimedOut || (error instanceof RegistryUnavailable || error instanceof StagingTimeout || detail.startsWith("target staging failed: ")) && registryNetworkFailure(error)) {
     recordUpdateDeferral(version, "waiting for registry access", true);
-    rt.out(offlineUpdateMessage(repaired));
+    rt.out(fetchTimedOut
+      ? displayRemedy("The registry fetch timed out during package staging. The previous version remains installed. Run `cotal update --self` again when the registry responds.")
+      : offlineUpdateMessage(repaired));
   } else if (error instanceof StagingTimeout) {
     recordUpdateDeferral(version, error.message, true);
     rt.out(displayRemedy(`${error.message}. The previous version remains installed. Run \`cotal update --self\` again.`));

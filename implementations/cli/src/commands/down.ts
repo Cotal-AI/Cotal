@@ -65,7 +65,7 @@ import { interruptedStartBroker } from "../lib/legacy-start.js";
 import { downManifest } from "./down-manifest.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
-import { loadManifest } from "../lib/manifest/index.js";
+import { loadManifest, manifestPathFailure } from "../lib/manifest/index.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { retainedRemovalRemedy } from "../lib/team-text.js";
@@ -79,7 +79,7 @@ import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
-import { goneRootDown, goneRootStackDown, validateGoneRootDownArguments } from "./stack-gone.js";
+import { goneRootDown, goneRootStackDown, refuseInaccessibleDownRoot, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine, recordedProcessesUnder } from "../lib/stack-journal.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import { canPrompt } from "./meshes-wizard.js";
@@ -160,8 +160,7 @@ export function validateDownArguments(args: ParsedArgs): void {
   }
   if (typeof args.values.file === "string" && args.values.run === undefined && recordedStackPreview()) {
     if (args.values["dry-run"] === true) {
-      const reason = manifestRead(args.values.file);
-      if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: args.values.file } });
+      validatePreviewManifest(args.values.file);
     } else if (Object.entries(args.values).every(([name, value]) => value === undefined || ["file", "yes", "dry-run", "json", "plain"].includes(name))) {
       throw new CommandFailure("refused", "UNSUPPORTED", "file-form apply requires an additive deployment ledger; this folder records a stack started by up, so nothing was stopped", {
         target: { root: canonicalRoot(cotalRoot()), file: args.values.file },
@@ -187,9 +186,10 @@ export function validateDownArguments(args: ParsedArgs): void {
       });
     }
     refuseLegacySpaceMismatch(args.values);
-    if (args.values["dry-run"] === true && (args.values.file !== undefined || args.values.run !== undefined)) {
-      throw new CommandFailure("refused", "UNSUPPORTED", "a legacy deployment preview does not support --json or --plain", {
-        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep --dry-run and the same deployment selection`, selfContained: true,
+    if (args.values.file !== undefined || args.values.run !== undefined) {
+      const preview = args.values["dry-run"] === true;
+      throw new CommandFailure("refused", "UNSUPPORTED", `a legacy deployment ${preview ? "preview" : "teardown"} does not support --json or --plain`, {
+        remedy: `omit --${args.values.json ? "json" : "plain"} from the original command; keep ${preview ? "--dry-run and " : ""}the same deployment selection`, selfContained: true,
       });
     }
     const retry = bareStop(args.values) ? sameDown(args.values) : `${displayCmd()} down`;
@@ -212,7 +212,8 @@ function refuseStackElsewhere(values: ParsedArgs["values"]): void {
     space = typeof values.space === "string" ? values.space : getCurrent();
     root = space === undefined ? undefined : stackRootElsewhere(space, here);
   } catch { return; }
-  if (root === undefined) return;
+  if (root === undefined || space === undefined) return;
+  refuseInaccessibleDownRoot(root, space);
   throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, { target: { root: here, space, stackRoot: root }, remedy: `run \`${sameDown(values)}\` from ${root}` });
 }
 
@@ -301,11 +302,12 @@ function previewWholeStack(args: ParsedArgs): void {
   ] }));
 }
 
-/** Why a file-form dry-run cannot read its manifest, or undefined when the file resolves. A missing
- *  or malformed file is reported as itself, never as a missing ledger. */
-function manifestRead(file: string): string | undefined {
-  try { loadManifest(file); return undefined; }
-  catch (error) { return `cannot read ${file}: ${(error as Error).message}`; }
+/** Read the manifest before previewing a recorded stack without an additive ledger. */
+function validatePreviewManifest(file: string): void {
+  try { loadManifest(file); }
+  catch (error) {
+    throw manifestPathFailure(error, { file }) ?? new CommandFailure("refused", "SCHEMA_INVALID", `cannot read ${file}: ${(error as Error).message}`, { target: { file } });
+  }
 }
 
 /** A file-form dry-run previews this root's recorded stack when the manifest can be read and no
@@ -556,6 +558,7 @@ function refuseSpaceElsewhere(root: string, space: string, values: ParsedArgs["v
     target: { root, space, registeredRoot: at },
     remedy: `run ${codeSpan(sameDown(values))} in the project that started the stack`,
   });
+  refuseInaccessibleDownRoot(at, space);
   let controller = false;
   try { controller = readStackJournal(at)?.journal.space === space; } catch { /* named with the legacy stop */ }
   const stop = values["dry-run"] ? "cotal down --dry-run" : controller ? "cotal down --yes" : "cotal down";
@@ -644,8 +647,7 @@ async function downCommand(args: ParsedArgs): Promise<void> {
     throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
   if (values.file && values["dry-run"] && values.run === undefined && recordedStackPreview()) {
-    const reason = manifestRead(values.file);
-    if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: values.file } });
+    validatePreviewManifest(values.file);
     return previewWholeStack(args);
   }
   if (values.file || values.run) {

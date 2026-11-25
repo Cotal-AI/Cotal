@@ -99,6 +99,7 @@ interface Envelope {
   result: {
     findings: number;
     items: Item[];
+    exported: { path: string; state: string; repair: string | null }[];
     repair: { attempted: boolean; authority: string | null; results: { file: string; ok: boolean; reminted: boolean; reason: string | null }[] };
     renewal: { authority: string | null };
   };
@@ -302,25 +303,38 @@ try {
     writeFileSync(oldPath, expiredExport, { mode: 0o600 });
     recordCredentialExport(SPACE, { label: "old_export", profile: "agent", path: oldPath, root, identity: exportId.id });
     assert.equal(credentialExportStore(SPACE).list().find((entry) => entry.record.value.path === oldPath)?.record.value.provisioned, undefined, "old export records remain readable without a provisioning field");
-    const exportsReport = (await runDoctor({ json: true })).envelope as unknown as { result: { exported: { path: string; repair: string | null }[] } };
+    const exportsReport = (await runDoctor({ json: true })).envelope!;
     const repair = exportsReport.result.exported.find((entry) => entry.path === exportPath)?.repair ?? "";
     assert.match(repair, /auth mint exported --provision --identity/, "expired provisioned export repair keeps --provision");
     assert.ok(repair.includes("alice'\\''s file.creds'"), "repair shell-quotes an apostrophe in the exported path");
     assert.ok(!exportsReport.result.exported.find((entry) => entry.path === oldPath)?.repair?.includes("--provision"), "legacy records do not infer provisioning");
     const foreignAuth = await createSpaceAuth("foreign-export");
     writeFileSync(exportPath, await mintCreds(foreignAuth, exportId, "agent", { lifecycleUid: mintLifecycleUid(), expiresAt: now - 10 }), { mode: 0o600 });
-    const foreignReport = (await runDoctor({ json: true })).envelope as unknown as { result: { exported: { path: string; state: string; repair: string | null }[] } };
+    const foreignReport = (await runDoctor({ json: true })).envelope!;
     const foreignRow = foreignReport.result.exported.find((entry) => entry.path === exportPath);
     assert.equal(foreignRow?.state, "other-account", "changed-account exports ask for a fresh key");
     assert.match(foreignRow?.repair ?? "", /auth mint exported --provision/, "fresh-key repair keeps --provision too");
     writeFileSync(exportPath, expiredExport, { mode: 0o600 });
     const revokedAuth = await revokeAccountUser(auth, exportId.id, Math.floor(Date.now() / 1000));
     saveSpaceAuth(authDir(root), revokedAuth);
-    const revokedReport = (await runDoctor({ json: true })).envelope as unknown as { result: { exported: { path: string; state: string; repair: string | null }[] } };
+    const revokedReport = (await runDoctor({ json: true })).envelope!;
     const revokedRow = revokedReport.result.exported.find((entry) => entry.path === exportPath);
     assert.equal(revokedRow?.state, "revoked", "revoked exports ask for a new key rather than re-signing it");
     assert.match(revokedRow?.repair ?? "", /auth mint exported --provision/, "revoked-key repair also keeps --provision");
     saveSpaceAuth(authDir(root), auth);
+
+    writeFileSync(exportPath, "");
+    const emptyExport = await runDoctor({ json: true });
+    const emptyRow = emptyExport.envelope!.result.exported.find((row) => row.path === exportPath);
+    assert.equal(emptyRow?.state, "unreadable", "the empty exported file stays unreadable");
+    assert.equal(emptyExport.envelope!.outcome, "ok", "the unreadable export leaves the diagnostic outcome unchanged");
+    assert.equal(emptyExport.envelope!.result.findings, 0, "the unreadable export is not a managed finding");
+    assert.equal(emptyExport.code, 0, "the unreadable export leaves exit 0");
+    assert.match(emptyRow?.repair ?? "", /original grants cannot be determined.*Restore the complete credential file.*confirm the intended grants.*`(?:pnpm )?cotal auth mint`.*mint a replacement to a new private path/);
+    assert.doesNotMatch(emptyRow?.repair ?? "", /--(?:identity|allow-subscribe|allow-publish|role)|auth mint exported/);
+    const plainEmptyExport = await runDoctor({ plain: true });
+    assert.equal(plainEmptyExport.code, 0, "the plain report leaves exit 0");
+    assert.ok(plainEmptyExport.text.includes(`exported: ${emptyRow?.repair}`), "plain output includes the same export guidance");
 
     // #7542: if a root is registered as open even while leftover .cotal/auth files exist on disk,
     // doctor auth (with or without --fix) reports the open-space no-op rather than Mode: static or CONFLICT.

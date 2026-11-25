@@ -19,6 +19,7 @@ import { askCustodian, custodiedPlatform, custodyLog, removeCustodyCapability, s
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, privateLog } from "./private-log.js";
 import { inOwnScope } from "./service-scope.js";
+import { targetWords } from "./confirmation-required.js";
 
 export const PROCESS_SERVICE_CAPABILITIES = Object.freeze({ multiInstance: true, foreground: true, logs: true, install: false });
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
@@ -214,10 +215,13 @@ export function settleExitedInstances(definition: ServiceDefinitionSnapshot): vo
   finally { hold.release(); }
 }
 
-export function selectServiceInstance(rows: ServiceInstanceSnapshot[], id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
+export function selectServiceInstance(rows: ServiceInstanceSnapshot[], target: { space: string; name: string; requested?: string }, id: string | undefined, allowMissing = false): ServiceInstanceSnapshot | undefined {
   if (id !== undefined) {
     const found = rows.find((row) => row.name === id);
-    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space");
+    if (!found) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the full instance ID does not belong to this selected definition and space", {
+      target: { ...target, instanceId: id },
+      remedy: `cotal service${targetWords({ space: target.space })} --json`, remedyIsCommand: true,
+    });
     return found;
   }
   if (!rows.length) { if (allowMissing) return undefined; throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition"); }
@@ -609,7 +613,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       if (rows.some((row) => row.record.value.state !== "stopped" || !row.record.value.kernelStop || !gone(observeServiceProcess(row.record.value)))) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "another record of this broker definition is not a stopped one with its own kernel-exit receipt; no new broker instance was allocated");
     }
     if (options.replacement && rows.length) throw new CommandFailure("refused", "CONFLICT", "the definition already has an instance record; the journaled replacement was not launched beside it", { target: { space: value.space, definition: definition.name, candidates: rows.map((row) => row.name) } });
-    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, options.instance, true);
+    const chosen = options.newInstance || options.brokerInstance || options.replacement ? undefined : selectServiceInstance(rows, { space: value.space, name: definition.name }, options.instance, true);
     // A retained native stop is decided only by its own receipt, so no start probes, reuses or
     // replaces it, and its record is not written.
     const retained = chosen && retainedStopRequest(chosen.record.value);
@@ -797,7 +801,7 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
       const failed = transition(row, { state: "failed", readiness: "not-checked", ...(exited ? { exit: { code: exitCode, signal: exitSignal } } : {}) });
       const last = logFrom === undefined ? undefined : lastLoggedLine(path, logFrom);
       // A foreground child wrote to this terminal, so its log holds nothing from this launch.
-      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "its log records the cause";
+      const where = options.foreground ? "its output went to this terminal and was not captured in its log" : last ? `the last line it logged is: ${last}` : "no log line was available from this start";
       throw new CommandFailure("failed", "OPERATION_FAILED", `the owned service process exited before readiness was established${exited ? ` (exit code ${exitCode ?? "none"}, signal ${exitSignal ?? "none"})` : ""}; ${where}`, { target: instanceProjection(failed), ...(options.foreground ? {} : { remedy: `read its log with \`cotal service logs ${definition.name} --instance ${id} --space ${value.space}\`` }) });
     }
     return { instance: running, noOp: false, child, exit: { done: exit, observed: () => exited, result: () => ({ code: exitCode, signal: exitSignal }) } };

@@ -1,12 +1,9 @@
 /**
  * Import-failure remedy smoke (no NATS). Run: pnpm smoke:import-remedy
  *
- * An installed extension that imports a symbol its linked `@cotal-ai/*` peer does not export is a
- * SKEW between two installs. The remedy depends on which of them is behind, so these cells drive the
- * real entry point (`importInstalledExtension`) with real self-registering packages and read the
- * message it throws: each of the four rankings must name the missing symbol, the peer copy it
- * resolved against (path AND version), and a side — and only the ranking where the EXTENSION is
- * older may prescribe `cotal ext add`.
+ * A missing peer export can come from a stale install or a mistaken import. Exercise the real
+ * entry point with installed packages: identify the symbol and linked peer, and name an older
+ * side only when the versions support that conclusion.
  *
  * Fixtures live under a temp cotal config home (XDG_CONFIG_HOME) inside the repo, so each one's
  * `@cotal-ai/core` resolves to the repo copy this smoke also measures against.
@@ -92,13 +89,12 @@ try {
     check("declared floor above the linked core: targets the floor, not the extension's version", m.includes("99.0.0 or newer") && !m.includes("1.0.0 or newer"), m);
   }
 
-  // 3. Equal versions cannot be a version skew, so the remaining explanation is a stale BUILD — and
-  //    the remedy is to rebuild the launcher, never to reinstall the extension.
+  // 3. The fixture imports a nonexistent name. Equal versions do not tell us either build is stale.
   {
     const m = await failureFor({ scope: "@cotal-ai", version: CORE_VERSION, peerRange: ">=0.1.0" });
-    check("equal versions: reports a build skew, not a version skew", m.includes("Same version, different build"), m);
-    check("equal versions: prescribes rebuilding the install that owns the core", m.includes(`rebuild or reinstall the cotal that owns ${CORE_DIR}`), m);
-    check("equal versions: does NOT prescribe reinstalling the extension", !m.includes("cotal ext add"), m);
+    check("equal versions: identifies the missing export and the linked copy", m.includes("`notAnExportOfCore`") && m.includes(CORE_DIR) && m.includes(`Both packages report ${CORE_VERSION}`), m);
+    check("equal versions: advises checking the import and the peer exports", m.includes("Check the extension's import and the exports of the linked peer"), m);
+    check("equal versions: does not rank the builds or prescribe reinstalling one", !/predates|behind|older side|reinstall|cotal ext add/i.test(m), m);
   }
 
   // 4. The one ranking where reinstalling the extension IS the remedy.

@@ -10,7 +10,7 @@ import type { ModelCatalog, ModelInfo } from "@cotal-ai/core";
  * group lets a stop take down whatever it started.
  */
 const SERVE_ARGS = ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"];
-const CATALOG_SOURCE = "opencode serve --stdio: GET /api/model";
+const CATALOG_SOURCE = "opencode serve --stdio GET /api/model";
 /** One bound on the whole read: the server's start, the plugins' settling and the model read. */
 const CATALOG_TIMEOUT_MS = 10_000;
 /** OpenCode's own wait for its plugins (`opencode models` and its ACP catalog, 2.4.1) polls this often. */
@@ -48,6 +48,8 @@ function parseModels2(stdout: string): ModelInfo[] {
   });
 }
 
+/** Every 2.x install serves this list, so a read that does not produce one fails: the manager then
+ *  reports the catalog unreadable, never as an install without a catalog. */
 export function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promise<ModelCatalog> {
   const password = randomBytes(32).toString("base64url");
   // The password rides the environment only, never argv, where any local user could read it.
@@ -56,12 +58,10 @@ export function listOpenCode2Models(bin: string, env: NodeJS.ProcessEnv): Promis
   const deadline = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
   return readCatalog(child, password, deadline, stage).then(
     (models): ModelCatalog => ({ source: CATALOG_SOURCE, models }),
-    (e: Error): ModelCatalog => ({
-      models: [],
-      unavailable: `OpenCode 2.x did not list its models (${CATALOG_SOURCE}: ${
-        deadline.aborted ? `no answer within ${CATALOG_TIMEOUT_MS / 1000} seconds, waiting for ${stage.waitingFor}` : e.message
-      }); pass --model provider/model`,
-    }),
+    (e: Error) => {
+      const why = deadline.aborted ? `no answer within ${CATALOG_TIMEOUT_MS / 1000} seconds, waiting for ${stage.waitingFor}` : e.message;
+      throw new Error(`OpenCode 2.x did not list its models (${CATALOG_SOURCE}: ${why}); pass --model provider/model`);
+    },
   ).finally(() => stop(child));
 }
 

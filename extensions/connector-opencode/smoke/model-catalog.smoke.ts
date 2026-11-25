@@ -42,10 +42,11 @@ async function list(bin: string, opts: ModelCatalogOpts = {}) {
   return { returned, catalog, error, ms: Date.now() - started };
 }
 
-const unavailableOnly = (r: Awaited<ReturnType<typeof list>>, reason: RegExp) =>
-  r.error === "" && r.catalog?.models.length === 0 && reason.test(r.catalog.unavailable ?? "");
+/** The read failed with `reason` and the remedy, so the manager reports it as a failed read. */
+const failed = (r: Awaited<ReturnType<typeof list>>, reason: RegExp) =>
+  r.catalog === undefined && reason.test(r.error) && r.error.endsWith("; pass --model provider/model");
 
-const SOURCE2 = "opencode serve --stdio: GET /api/model";
+const SOURCE2 = "opencode serve --stdio GET /api/model";
 const FAKE_SERVE = fileURLToPath(new URL("./fixtures/fake-opencode2-serve.mjs", import.meta.url));
 
 /** A fake 2.x binary whose servers settle `settleMs` after their first request (never when null). */
@@ -86,8 +87,6 @@ try {
   recorded.data[0].settings.apiKey = SECRET;
   recorded.data[1].headers = { authorization: `Bearer ${SECRET}` };
   recorded.data[1].variants[0].headers = { authorization: `Bearer ${SECRET}` };
-  const replyFile = join(dir, "reply.json");
-  writeFileSync(replyFile, JSON.stringify(recorded, null, 2));
 
   const late = fakeServer("oc2", { settleMs: 300, modelBody: JSON.stringify(recorded) });
   const listed = await list(late.bin);
@@ -128,28 +127,31 @@ try {
   );
 
   const none = await list(fakeServer("oc2-none", { settleMs: 0, modelBody: JSON.stringify({ location: { directory: "/work" }, data: [] }) }).bin);
-  check("on 2.x a list still empty once the plugins settled is reported unavailable, not listed empty", unavailableOnly(none, /no models/), none);
+  check("on 2.x a list still empty once the plugins settled fails the read, not listed empty", failed(none, /no models/), none);
 
   const refused = await list(fakeOpenCode("oc2-refused", "opencode v2.2.5", `echo 'Error: Missing server password' >&2\nexit 1`));
-  check("on 2.x a server that fails to start is reported unavailable with OpenCode's reason, not thrown", unavailableOnly(refused, /Missing server password/), refused);
+  check("on 2.x a server that fails to start fails the read with OpenCode's reason", failed(refused, /Missing server password/), refused);
+
+  const database = await list(fakeOpenCode("oc2-database", "opencode v2.4.1", `echo 'Error: Database is not empty and has no session table' >&2\nexit 1`));
+  check("on 2.x a server that cannot open its database fails the read with that reason", failed(database, /Database is not empty and has no session table/), database);
 
   const status = await list(fakeServer("oc2-status", { settleMs: 0, modelStatus: 503, modelBody: '{"_tag":"ServiceUnavailableError"}' }).bin);
-  check("on 2.x a refused model read is reported unavailable with its HTTP status, not thrown", unavailableOnly(status, /HTTP 503/), status);
+  check("on 2.x a refused model read fails with its HTTP status", failed(status, /HTTP 503/), status);
 
   const notJson = await list(fakeServer("oc2-text", { settleMs: 0, modelBody: "opencode v2.2.5" }).bin);
-  check("on 2.x a reply that is not JSON is reported unavailable, not thrown", unavailableOnly(notJson, /not JSON/), notJson);
+  check("on 2.x a reply that is not JSON fails the read", failed(notJson, /not JSON/), notJson);
 
   const noProvider = await list(fakeServer("oc2-shape", { settleMs: 0, modelBody: '{"location":{"directory":"/work"},"data":[{"id":"big-pickle","name":"Big Pickle","variants":[]}]}' }).bin);
-  check("on 2.x a model without a providerID is reported unavailable, not thrown", unavailableOnly(noProvider, /providerID/), noProvider);
+  check("on 2.x a model without a providerID fails the read", failed(noProvider, /providerID/), noProvider);
 
   const noData = await list(fakeServer("oc2-nodata", { settleMs: 0, modelBody: '{"location":{"directory":"/work"}}' }).bin);
-  check("on 2.x a reply without a model list is reported unavailable, not thrown", unavailableOnly(noData, /model list/), noData);
+  check("on 2.x a reply without a model list fails the read", failed(noData, /model list/), noData);
 
   const unsettled = fakeServer("oc2-unsettled", { settleMs: null, modelBody: JSON.stringify(recorded) });
   const stuck = await list(unsettled.bin);
   check(
-    "on 2.x plugins that never settle are reported unavailable within the read's 10 seconds, not listed empty",
-    unavailableOnly(stuck, /10 seconds/) && stuck.ms >= 9_500 && stuck.ms < 15_000,
+    "on 2.x plugins that never settle fail the read within its 10 seconds, not listed empty",
+    failed(stuck, /10 seconds/) && stuck.ms >= 9_500 && stuck.ms < 15_000,
     { ...stuck, returned: undefined },
   );
   check("on 2.x a read that timed out leaves no server process or child behind", await gone(unsettled.pidFile));
@@ -157,8 +159,8 @@ try {
   const pidFile = join(dir, "slow.pid");
   const slow = await list(fakeOpenCode("oc2-slow", "opencode v2.2.5", `echo $$ > '${pidFile}'\nexec sleep 60`));
   check(
-    "on 2.x a server that does not start within 10 seconds is reported unavailable, not hung",
-    unavailableOnly(slow, /10 seconds/) && slow.ms >= 9_500 && slow.ms < 15_000,
+    "on 2.x a server that does not start within 10 seconds fails the read, not hung",
+    failed(slow, /10 seconds/) && slow.ms >= 9_500 && slow.ms < 15_000,
     { ...slow, returned: undefined },
   );
   check("on 2.x the timed-out read's process is killed", await gone(pidFile));

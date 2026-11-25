@@ -34,7 +34,7 @@ import {
   brokerAddressForDisplay, brokerUrlCredentialRefusal, brokerUrlHasUserinfo, CommandFailure, exitCode, inputDisabledByFlag, isCommandFailure, jsonFlag, plainFlag, presentationOf, renderReport, resolveNativeServiceTarget, writeResult, type Report,
   refreshRegistrationPolicy, publishServiceIdleExit, publishServiceStartup, serviceStartupPath, publishServiceStopReceipt, publishServedContract, protectedCredentialReference, readLocalRecordSource, type NativeServiceStopRequest,
   ConfirmationRequired, findMesh, folderSpace, folderSpaceHeld, getCurrent, targetErrorCode, targetErrorSpace, workspaceErrorParts, type MeshEntry, type MeshTargetError, type SeatCap,
-  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
+  deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY, loadRoster,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
@@ -43,7 +43,6 @@ import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { endpointDeregisterAction } from "./operator-deregister.js";
-import { loadRoster } from "./roster.js";
 import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./launch.js";
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
@@ -683,7 +682,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     seatCap = parseSeatCapFlag("--seat-cap", v["seat-cap"]) ?? readManagerSeatCap({ root: managerRoot, space });
   } catch (e) {
     if (service) throw unconfirmedStart(e);
-    console.error(c.red(`✗ ${rejectionText(e)}`));
+    const next = isCommandFailure(e) && e.remedy ? `\n  Next: ${e.remedy}` : "";
+    console.error(c.red(`✗ ${rejectionText(e)}`) + next);
     process.exit(1);
   }
   // A name given here is recorded for this root's manager once it is up, so a restart keeps it.

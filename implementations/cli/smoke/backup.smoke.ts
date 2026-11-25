@@ -599,6 +599,14 @@ try {
       (error: unknown) => isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && (error.remedy ?? "").includes("original project folder"),
       "a cleanup-fallback on a root with no restore attempt says to check the project folder",
     );
+    for (const [mode, attempt] of [["recover", "restore"], ["recover", "backup"], ["cleanup-fallback", "restore"]] as const) {
+      await assert.rejects(
+        backup({ positionals: [mode, `${attempt}-00000000-0000-4000-8000-000000000000`], values: { "dry-run": true, yes: true }, raw: [] }),
+        (error: unknown) => isCommandFailure(error) && error.outcome === "refused" && error.code === "USAGE_INVALID"
+          && error.remedy === "use --dry-run to review or --yes to apply",
+        `${mode} refuses conflicting preview and confirmation before looking up a ${attempt} attempt`,
+      );
+    }
   } finally {
     process.chdir(previousCwd);
     if (previousHome === undefined) delete process.env.COTAL_HOME;

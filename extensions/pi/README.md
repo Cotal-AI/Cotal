@@ -76,10 +76,10 @@ permission/sandbox extensions still run. Replies remain deliberate model actions
 Quiet-channel ambient is never included in automatic or continuation batches. It remains buffered
 until `cotal_inbox` explicitly surfaces and clears it; quiet `@mention`s remain automatic.
 
-MCP sharing and raw launch options are not implemented and fail loudly. Resume forks the named Pi
-session.
-Persona files, `--model` and `--variant` are supported; an explicit spawn model wins over the
-persona file. A variant is a Pi thinking level, passed as `--thinking`.
+MCP sharing and raw launch options are not implemented and fail loudly. Resume
+forks the named Pi session.
+Persona files and `--model` are supported; an explicit spawn model wins over the persona file.
+`--variant <level>` sets pi's thinking level through `--thinking`; a level pi does not name is refused.
 
 ## Project trust
 

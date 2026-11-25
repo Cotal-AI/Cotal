@@ -62,7 +62,7 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { execWords } from "../src/lib/exec-words.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 119;
+const EXPECTED = 120;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -525,11 +525,11 @@ try {
   // An empty recipient used to be told to choose one body, with a `-t` remedy whatever flag was given.
   const blanks = await Promise.all([["-t", ""], ["--to=", null], ["-r", ""], ["-c", "#"]].map(([option, value]) => run(["send", option!, ...(value === null ? [] : [value!]), "x", "--json"])));
   check("an empty --to, --role or --channel value is refused for that flag, with a remedy that keeps it",
-    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && !r.stdout.includes("exactly one body"))
-      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('run `cotal send -t <agent> \\"<message>\\"`')
+    blanks.every((r) => r.code === 1 && r.stdout.includes('"code":"USAGE_INVALID"') && r.stdout.includes("in the original command and keep the same message body and options"))
+      && blanks[0]!.stdout.includes('"message":"--to/-t is empty; name one agent or full instance id"') && blanks[0]!.stdout.includes('"remedy":"set --to/-t ')
       && blanks[1]!.stdout.includes('"message":"--to/-t is empty;')
-      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('run `cotal send -r <role> \\"<message>\\"`')
-      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('run `cotal send -c <channel> \\"<message>\\"`'), blanks);
+      && blanks[2]!.stdout.includes('"message":"--role/-r is empty; name one role"') && blanks[2]!.stdout.includes('"remedy":"set --role/-r ')
+      && blanks[3]!.stdout.includes('"message":"--channel/-c is empty; name one channel"') && blanks[3]!.stdout.includes('"remedy":"set --channel/-c '), blanks);
   // A channel or role name the subject rules refuse gets their reason; only a wildcard gets the wildcard one.
   const unsafe = await run(["send", "-c", "kanäle", "x", "--json"]);
   check("`cotal send -c` with a name that is not NATS-safe is USAGE_INVALID, exit 1, naming the segment",
@@ -605,6 +605,13 @@ try {
         && receipt.target?.space === space && receipt.result?.destination === "general" && receipt.result?.stored === true
         && receipt.result.bodySource === (body === "-" ? "stdin" : "argument"), { refused, retried });
   }
+  const verboseDash = await run(["send", "-c", "general", "--space", space, "--server", servers, "--plain", "--verbose", "-"]);
+  const verboseCommand = /run `(?:pnpm )?cotal (send [^`]+)`/.exec(verboseDash.stderr)?.[1];
+  const verboseRetry = verboseCommand ? await piped(execWords(verboseCommand), (stdin) => stdin.end("verbose-stdin")) : undefined;
+  check("the plain stdin retry stores the message and keeps the verbose sender details",
+    verboseDash.code === 1 && /Code: +USAGE_INVALID/.test(verboseDash.stderr) && verboseRetry?.code === 0
+      && verboseRetry.stdout.includes("Message stored") && /To: +#general/.test(verboseRetry.stdout)
+      && /^ +Sending principal: +\S+/m.test(verboseRetry.stdout) && /^ +Sender kind: +endpoint$/m.test(verboseRetry.stdout), { verboseDash, verboseRetry });
   const late = await piped(["send", "-c", "general", "--stdin", "--json"], (stdin) => {
     stdin.write("first half, ");
     setTimeout(() => stdin.end("second half after a pause"), 5_000);

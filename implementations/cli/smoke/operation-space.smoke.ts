@@ -28,6 +28,7 @@ import { agentFilePath } from "@cotal-ai/core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { recordMesh } from "@cotal-ai/workspace";
 import { execWords } from "../src/lib/exec-words.js";
+import { installNoVariantConnector, NO_VARIANT_HARNESS } from "./_no-variant-connector.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -48,7 +49,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-operation-space-"));
 const root = realpathSync(mkdtempSync(join(home, "project-")));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
-const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+const env: NodeJS.ProcessEnv & { XDG_CONFIG_HOME: string } = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
 
 const outcome = (r: ReturnType<typeof spawnSync>) => {
   const stdout = String(r.stdout ?? ""), stderr = String(r.stderr ?? "");
@@ -215,7 +216,7 @@ for (const [argv, rerun] of [
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
   [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
   [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
-  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --on <instance>"],
+  [["status", "default_agent", "--on", "bad"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
   [["ps", "--space", "elsewhere", "--on", "bad"], "cotal ps --json --space elsewhere --on <instance>"],
@@ -235,6 +236,14 @@ check("an empty slot pin names the JSON manager lookup and a separate JSON slot 
 const widePsPin = cotal("ps", "--wide", "--plain", "--on", "local.U123");
 check("a roster principal leaves the wide plain view on the pin retry", widePsPin.status === 1
   && widePsPin.stderr.includes("cotal ps --wide --plain --on <instance>"), shown(widePsPin));
+for (const [verb, ...args] of [["stop", "target"], ["attach", "target"], ["status", "target"], ["input", "target", "review"]] as const) {
+  for (const pin of ["", "local.U123"]) {
+    const server = "nats://127.0.0.1:39200";
+    const refused = cotal(verb, ...args, "--on", pin, "--space", "elsewhere", "--server", server);
+    check(`${verb} keeps the selected space and broker on the manager lookup for ${pin || "an empty pin"}`,
+      refused.status === 1 && refused.stderr.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !refused.stderr.includes("`cotal ps`"), shown(refused));
+  }
+}
 const createPin = cotal("persona", "create", "h1", "--prompt", "keep this definition private", "--on", "bad", "--space", "opsp", "--json");
 check("persona create with a malformed pin tells JSON callers to replace only the original --on value",
   createPin.status === 1 && createPin.envelope?.error?.code === "USAGE_INVALID" &&
@@ -245,18 +254,42 @@ check("persona create with a malformed pin tells JSON callers to replace only th
 // the --space it was given; it used to keep only the verb.
 for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
-  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --on <instance>"],
+  [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
   [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
   [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
-  [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance>"],
-  [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance>"],
+  [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance> --json"],
+  [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance> --json"],
   [["spawn", "--no-input", "-d", "--on=", "--name", "explicit", "--", "-persona"], "cotal spawn --no-input -d --name explicit --json --on <instance> -- -persona"],
 ] as const) {
   const refused = cotal("--json", ...argv);
   check(`${argv.join(" ")} names ${rerun}`,
     refused.status === 1 && refused.envelope?.error?.code === "USAGE_INVALID" && (refused.envelope.error.message ?? "").includes(`\`${rerun}\``), shown(refused));
 }
+for (const words of [["describe", "manager"], ["invoke", "ep:manager", "ps"]]) {
+  const server = "nats://127.0.0.1:39200";
+  const denied = cotal("endpoint", ...words, "--on", "bad", "--space", "elsewhere", "--server", server, "--json");
+  const message = denied.envelope?.error?.message ?? "";
+  check(`endpoint ${words[0]} names the requested Manager roster for a malformed pin`, denied.status === 1 &&
+    denied.envelope?.error?.code === "USAGE_INVALID" && message.includes(`\`cotal ps --space elsewhere --server ${server}\``) && !message.includes("`cotal ps`"), shown(denied));
+}
+const otherEndpoint = cotal("endpoint", "invoke", "ref:reviews", "read", "--args", '{"note":"fixture body"}', "--on", "bad", "--json");
+check("a saved endpoint pin keeps the original request and never suggests a Manager roster", otherEndpoint.status === 1 &&
+  otherEndpoint.envelope?.error?.message?.includes("Replace only the --on value") === true && !otherEndpoint.stdout.includes("cotal ps") && !otherEndpoint.stdout.includes("fixture body"), shown(otherEndpoint));
+for (const words of [["watch", "ref:reviews", "progress"], ["session", "ref:reviews", "read"], ["work", "lease", "ref:reviews", "pool"]]) {
+  const pin = "a".repeat(26), server = "nats://127.0.0.1:39200";
+  const denied = cotal("endpoint", ...words, "--space", "elsewhere", "--server", server, "--on", pin, "--json");
+  const lookup = `cotal endpoint describe ref:reviews --space elsewhere --server ${server} --on ${pin} --json`;
+  check(`unsupported endpoint ${words[0]} keeps the selected reference and route for discovery`, denied.status === 2 &&
+    denied.envelope?.error?.code === "UNSUPPORTED" && denied.envelope.error.remedy?.includes(`\`${lookup}\``) === true, shown(denied));
+}
+const privateDiscovery = cotal("endpoint", "watch", "ref:reviews", "progress", "--creds", "unopened.creds", "--json");
+check("endpoint discovery keeps an explicit caller without printing its file", privateDiscovery.status === 2 &&
+  privateDiscovery.envelope?.error?.remedy?.includes("same --space, --server, --creds and --on options") === true &&
+  !privateDiscovery.stdout.includes("unopened.creds"), shown(privateDiscovery));
+const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
+check("a malformed named status pin keeps plain output on the retry",
+  plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));
 const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
 check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
   attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
@@ -285,13 +318,24 @@ const editorScript = (file: string, body: string) => { const path = join(home, f
 const saved = readFileSync(persona, "utf8");
 for (const [label, editor, status, says] of [
   ["a draft the rules refuse", editorScript("ed-acl", 'printf -- "---\\nname: rev\\nsubscribe: [ops]\\nallowSubscribe: [general]\\n---\\nx\\n" > "$1"'), 1, 'subscribe "ops" is not within allowSubscribe [general] - not saved'],
-  ["an editor that exits 3", editorScript("ed-exit", 'printf -- "---\\nname: rev\\nrole: changed\\n---\\nx\\n" > "$1"; exit 3'), 0, "Edit cancelled: the editor exited with status 3."],
+  ...[3, 126, 127].map(code => [
+    `an editor that exits ${code}`, editorScript(`ed-exit-${code}`, `printf '\\nUnsaved instructions.\\n' >> "$1" || exit 4; exit ${code}`),
+    0, `Edit cancelled: the editor exited with status ${code}.`,
+  ] as const),
 ] as const) {
   const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
   const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
   check(`persona edit with ${label} keeps the draft, names it and leaves the catalog file unchanged`,
-    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+    edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) &&
+      readFileSync(kept[0]!, "utf8") !== saved && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
   for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+}
+if (process.platform !== "win32") {
+  const editor = join(home, "missing-editor");
+  const edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 }));
+  check("persona edit with a missing editor refuses without keeping a draft or changing the catalog file",
+    edit.status === 2 && edit.stderr.includes("DEPENDENCY_UNAVAILABLE") && edit.stderr.includes(`the editor ${JSON.stringify(editor)} was not found - not saved`) &&
+      readdirSync(drafts).length === 0 && readFileSync(persona, "utf8") === saved, shown(edit));
 }
 // A save refused because the catalog became unwritable while the editor was open keeps the edited
 // draft and names it beside the chmod that fixes the catalog. Root writes through any mode.
@@ -364,10 +408,10 @@ mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
 const previewExtensions = ["connector-claude-code", "connector-opencode"].map((pkg) => {
   const source = join(import.meta.dirname, "..", "..", "..", "extensions", pkg);
   symlinkSync(source, join(prefix, "node_modules", "@cotal-ai", pkg), "dir");
-  const name = pkg === "connector-claude-code" ? "claude" : "opencode";
+  const name = pkg === "connector-claude-code" ? "claude" : pkg.slice("connector-".length);
   return { pkg: `@cotal-ai/${pkg}`, version: JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version, commands: [], provides: [{ kind: "connector", name }], connectors: [{ name, requires: [name], eventPlane: true, setup: null }] };
 });
-writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: previewExtensions }));
+writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [...previewExtensions, installNoVariantConnector(prefix)] }));
 if (process.platform !== "win32") {
   const path = agentFilePath(alternate, "edit-receipt");
   const edited = '---\nname: "Review Bot"\nagent: claude\n---\n';
@@ -530,9 +574,10 @@ check("the opening Agent files example previews with Claude and validates its mo
 
 const variantPersona = join(root, "variant-persona.md");
 const previewVariant = (...flags: string[]) => cotal("spawn", "--file", variantPersona, "--dry-run", ...flags);
-const claudePersona = "---\nname: variant_check\nagent: claude\n";
+// The fixture connector takes no model variant, so a persona's variant is refused there.
+const noVariantPersona = `---\nname: variant_check\nagent: ${NO_VARIANT_HARNESS}\nmodel: test-model\n`;
 const removeVariantField = `remove the \`variant:\` field from ${JSON.stringify(variantPersona)}`;
-writeFileSync(variantPersona, `${claudePersona}variant: high\n---\n`);
+writeFileSync(variantPersona, `${noVariantPersona}variant: high\n---\n`);
 for (const [flags, remedy] of [[[], removeVariantField], [["--variant", "high"], `omit \`--variant\` and ${removeVariantField}`]] as const) {
   const denied = previewVariant("--json", ...flags);
   check(`direct preview names ${flags.length ? "both variant inputs" : "the persona variant field"} in its remedy`,
@@ -543,7 +588,7 @@ const variantPlain = previewVariant("--plain");
 check("plain preview prints the persona variant remedy as Next",
   variantPlain.status === 1 && variantPlain.stderr.split("\nNext\n")[1]?.includes("remove the `variant:` field") === true
     && variantPlain.stderr.split("\nNext\n")[1]?.includes(JSON.stringify(variantPersona)) === true, shown(variantPlain));
-writeFileSync(variantPersona, `${claudePersona}---\n`);
+writeFileSync(variantPersona, `${noVariantPersona}---\n`);
 const noVariant = previewVariant("--json");
 const noVariantResult = (noVariant.envelope as { result?: Preview } | undefined)?.result;
 check("direct preview passes connector validation after removing the persona variant",
@@ -662,5 +707,6 @@ for (const mode of [["--dry-run"], []]) {
     auto.status === 1 && auto.envelope?.error?.code === "USAGE_INVALID" && auto.envelope.error.message === "--runtime auto chooses a manager's own runtime, not the runtime of one seat", shown(auto));
 }
 
+check("the fixture does not create a reporting identity", !existsSync(join(home, ".cotal", "telemetry.json")));
 finish();
 process.exit(process.exitCode ?? 0);

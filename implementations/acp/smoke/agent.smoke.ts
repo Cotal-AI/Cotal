@@ -21,8 +21,10 @@
  *  - `session/list` hides deleted runs and matches a folder through symlinks;
  *  - `session/load` replays before it answers, marked as replay, then follows live; a seat whose
  *    launch lists the caller may not read loads with only its own model and cannot start another
- *    after `/despawn`; a seat no manager listed while one did not answer is not called missing,
- *    and deleting it fails;
+ *    after `/despawn`, and one running the model `default` offers it once; a seat no manager listed
+ *    while one did not answer is not called missing, and deleting it fails;
+ *  - a running seat whose application's models the manager could not read loads and opens on its
+ *    model, and after `/despawn` the thread still refuses to start that application;
  *  - with no manager registered, list, load, /open and delete say so, start none, and list nothing
  *    in its place;
  *  - with only another computer's manager live, a new session starts this machine's manager and
@@ -422,6 +424,65 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   check("a start that found it already running, as a second thread's does, says it is running", startLine("x", JSON.stringify({ outcome: "no-op" })) === "This machine's manager for x is running. It stops itself after 10 minutes with no agents.");
 }
 
+// An application whose models the manager could not read is refused with the read's reason.
+{
+  const why = "Database is not empty and has no session table";
+  const unread: AgentCatalog = { agent: "opencode", available: true, eventPlane: true, models: [], modelsUnread: why };
+  const only = new FakeMesh();
+  only.catalogList = [unread];
+  const alone = connect(async () => only);
+  await alone.init;
+  const e = await errorOf(alone.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] }));
+  check("a new thread whose only application's models could not be read fails with the read's reason",
+    e?.code === -32603 && (e as { data?: { details?: string } }).data?.details?.includes(why) === true, e);
+  alone.conn.close();
+  const beside = new FakeMesh();
+  beside.catalogList = [...CATALOGS, unread];
+  const both = connect(async () => beside);
+  await both.init;
+  const s = await both.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const select = s.configOptions?.find((o) => o.id === "model") as { options: { group: string }[] } | undefined;
+  check("beside another application, it is not offered", select?.options.some((g) => g.group === "opencode") === false, select?.options.map((g) => g.group));
+  const chosen = await errorOf(both.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId: "model", value: "opencode/default" }));
+  check("and choosing it fails with the read's reason", chosen?.message?.includes(why) === true, chosen);
+  both.conn.close();
+}
+
+// A running seat of such an application still opens, since driving it launches nothing.
+{
+  const why = "Database is not empty and has no session table";
+  const unread: AgentCatalog = { agent: "opencode", available: true, eventPlane: true, models: [], modelsUnread: why };
+  const seat: SeatRow = { name: "reader", owner: "local", actor: "r1", lifecycleUid: "life-r", managerInstanceId: "m1", agent: "opencode", model: "anthropic/claude-sonnet-4-5", cwd: dir, status: "running" };
+  const modelOf = (r: { configOptions?: unknown[] | null } | undefined) => {
+    const o = r?.configOptions?.find((x) => (x as { id: string }).id === "model") as { currentValue?: string; options?: { options?: { value: string }[] }[] } | undefined;
+    return { current: o?.currentValue, values: (o?.options ?? []).flatMap((g) => (g.options ?? []).map((c) => c.value)) };
+  };
+  const only = new FakeMesh();
+  only.catalogList = [unread];
+  only.rows = [seat];
+  const alone = connect(async () => only);
+  await alone.init;
+  let loadFailed: unknown;
+  const loaded = await alone.agent.request(methods.agent.session.load, { sessionId: "reader", cwd: dir, mcpServers: [] }).catch((e: unknown) => { loadFailed = e; return undefined; });
+  check("session/load opens a running seat whose application's models could not be read, on the seat's model, which the select lists",
+    loadFailed === undefined && modelOf(loaded).current === "opencode/anthropic/claude-sonnet-4-5" && JSON.stringify(modelOf(loaded).values) === JSON.stringify(["opencode/anthropic/claude-sonnet-4-5"]), loadFailed ?? modelOf(loaded));
+  if (loaded) await within(alone.agent.request(methods.agent.session.prompt, { sessionId: "reader", prompt: [{ type: "text", text: "/despawn" }] }));
+  const relaunch = loaded ? await errorOf(within(alone.agent.request(methods.agent.session.prompt, { sessionId: "reader", prompt: [{ type: "text", text: "again" }] }))) : undefined;
+  check("after /despawn, a prompt there still refuses to start that application, with the read's reason",
+    relaunch?.code === -32602 && relaunch.message?.includes(why) === true && only.spawned.length === 0, relaunch);
+  alone.conn.close();
+  const beside = new FakeMesh();
+  beside.catalogList = [...CATALOGS, unread];
+  beside.rows = [seat];
+  const both = connect(async () => beside);
+  await both.init;
+  const s = await both.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const opened = await errorOf(within(both.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "/open reader" }] })));
+  const said = both.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
+  check("/open drives such a seat too", opened === undefined && said.includes("now drives reader"), opened ?? said);
+  both.conn.close();
+}
+
 // session/new, options, delete of an unspawned session
 const mesh = new FakeMesh();
 const { agent, conn, updates, hidden, init } = connect(async () => mesh);
@@ -674,6 +735,12 @@ mesh.onInput = (seat) => {
 };
 const narrowTurn = narrow ? await within(agent.request(methods.agent.session.prompt, { sessionId: "outside", prompt: [{ type: "text", text: "go on" }] })) : undefined;
 check("its prompt is typed into the seat through the manager that holds it", narrowTurn?.stopReason === "end_turn" && mesh.typed.at(-1)?.text === "go on" && mesh.typedTo.at(-1) === "m2", { narrowTurn, typed: mesh.typed.at(-1), to: mesh.typedTo.at(-1) });
+mesh.rows = [{ ...outside, name: "plain", actor: "p1", lifecycleUid: "life-p", model: "default" }];
+const plain = await agent.request(methods.agent.session.load, { sessionId: "plain", cwd: dir, mcpServers: [] }).catch(() => undefined);
+const plainModel = plain?.configOptions?.find((o) => o.id === "model") as { currentValue?: string; options?: { options?: { value: string; name: string }[] }[] } | undefined;
+const plainChoices = (plainModel?.options ?? []).flatMap((g) => g.options ?? []);
+check("one whose seat runs the model default offers that model once, as its application's default",
+  plainModel?.currentValue === "claude/default" && JSON.stringify(plainChoices) === JSON.stringify([{ value: "claude/default", name: "claude: default" }]), plain?.configOptions);
 mesh.onInput = () => {};
 mesh.launchRefused = false;
 mesh.rows = rowsBefore;
