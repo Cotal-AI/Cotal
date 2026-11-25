@@ -30,6 +30,9 @@
  *  - with only another computer's manager live, a new session starts this machine's manager and
  *    defaults to it, and uses the other computer only when Machine names it; a failed start, or one
  *    whose manager is still not listed here, fails the session;
+ *  - the selects hold the chosen machine's applications: choosing a machine whose manager reports an
+ *    application unavailable offers it in neither select, moves the selection to that machine's
+ *    default, refuses the application with the manager's reason, and a prompt starts the default;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
  *  - a persona catalog or channel list longer than a client select offers a short select holding the
  *    caller's own personas, or the described and busiest channels, and `/persona` and `/join` pick
@@ -359,6 +362,46 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   check("with no manager listed, a new thread fails with the reason and starts none", space.starts === 0 && none?.code === -32603 && none.message === (linux
     ? "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Create /etc/machine-id with `systemd-machine-id-setup` and open a new thread, or start a manager with `cotal manager start --space fake` and choose it in the Machine option."
     : "This machine's identity could not be read (ENOENT: no such file or directory, open '/etc/machine-id'), so Cotal cannot tell which manager runs here and starts none. Start a manager with `cotal manager start --space fake` and choose it in the Machine option."), { starts: space.starts, none });
+  c.conn.close();
+}
+// Each manager reports its own applications. OpenCode runs on m1, and m2's status row says it is not
+// installed there. A thread that chooses m2 offers only what m2 can run and starts there on m2's
+// default, and choosing m1 again offers OpenCode again.
+{
+  const missing = "opencode harness needs opencode on PATH - not found";
+  const space = new FakeMesh();
+  space.managerList = [{ instanceId: "m1", host: "here", local: true, live: true }, { instanceId: "m2", host: "there", local: false, live: true }];
+  const byManager = new Map<string | undefined, AgentCatalog[]>([
+    ["m1", [...CATALOGS, { agent: "opencode", available: true, eventPlane: true, models: [{ id: "gpt", variants: ["high"] }] }]],
+    ["m2", [...CATALOGS, { agent: "opencode", available: false, eventPlane: true, reason: missing, models: [] }]],
+  ]);
+  space.catalogs = async (instanceId?: string) => { space.catalogsAsked.push(instanceId); return byManager.get(instanceId) ?? []; };
+  const c = connect(async () => space);
+  await c.init;
+  type Opts = readonly { id: string; currentValue?: unknown; options?: unknown }[] | null | undefined;
+  const offered = (o: Opts) => {
+    const model = o?.find((x) => x.id === "model") as { currentValue?: string; options?: { group: string; options: { value: string }[] }[] } | undefined;
+    const agent = o?.find((x) => x.id === "agent") as { options?: { value: string }[] } | undefined;
+    const variant = o?.find((x) => x.id === "variant") as { currentValue?: string } | undefined;
+    return { model: model?.currentValue, variant: variant?.currentValue, groups: (model?.options ?? []).map((g) => g.group), harnesses: (agent?.options ?? []).map((x) => x.value) };
+  };
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [] });
+  const set = (configId: string, value: string) => c.agent.request(methods.agent.session.setConfigOption, { sessionId: s.sessionId, configId, value });
+  check("on a machine that runs OpenCode, the selects offer it", offered(s.configOptions).groups.includes("opencode") && offered(s.configOptions).harnesses.includes("opencode"), offered(s.configOptions));
+  await set("model", "opencode/gpt");
+  await set("variant", "high");
+  const moved = await set("machine", "m2");
+  check("choosing a machine whose manager says OpenCode is unavailable offers it in neither select", !offered(moved.configOptions).groups.includes("opencode") && !offered(moved.configOptions).harnesses.includes("opencode"), offered(moved.configOptions));
+  check("and the selection moves to that machine's default", offered(moved.configOptions).model === "claude/default" && offered(moved.configOptions).variant === "default", offered(moved.configOptions));
+  const refused = await errorOf(set("model", "opencode/default"));
+  check("choosing OpenCode there is refused with the manager's reason", refused?.code === -32602 && refused.message?.includes(missing) === true, refused);
+  const back = await set("machine", "m1");
+  check("choosing the first machine again offers OpenCode again", offered(back.configOptions).groups.includes("opencode") && offered(back.configOptions).harnesses.includes("opencode"), offered(back.configOptions));
+  await set("model", "opencode/gpt");
+  await set("machine", "m2");
+  space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
+  const ran = await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }).catch((e: unknown) => e as undefined));
+  check("a prompt there starts that machine's default, not OpenCode", ran?.stopReason === "end_turn" && space.spawned.at(-1)?.managerInstanceId === "m2" && space.spawned.at(-1)?.agent === "claude", { ran, spawned: space.spawned.at(-1) });
   c.conn.close();
 }
 // a thread no manager may start starts this machine's manager
