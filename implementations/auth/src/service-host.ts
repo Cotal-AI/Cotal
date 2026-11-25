@@ -421,6 +421,8 @@ export async function startAuthService(inputs: HostedContextInputs & {
   /** Trusted-host only. Forwarded unchanged to {@link openAuthAuthorityPlane}, which bounds it to
    *  5..300 seconds. Absent: the five-minute default. No CLI flag and no request field sets it. */
   issuerSessionTtlSeconds?: number;
+  /** Trusted-host cleanup interval in milliseconds, 100..3600000. Default 60000. */
+  nativeIssuancePruneMs?: number;
   /** Opt-in trusted-host consent signer, with seed material already in the private store. */
   toolResultConsents?: ToolResultConsentSignerOptions;
   /** Default off. Forwarded unchanged to {@link openAuthAuthorityPlane}. No CLI flag sets it. */
@@ -475,6 +477,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     ...(inputs.platformSupervisor !== undefined ? { platformSupervisor: inputs.platformSupervisor } : {}),
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
     ...(inputs.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: inputs.issuerSessionTtlSeconds } : {}),
+    ...(inputs.nativeIssuancePruneMs !== undefined ? { nativeIssuancePruneMs: inputs.nativeIssuancePruneMs } : {}),
     ...(inputs.toolResultConsents !== undefined ? { toolResultConsents: inputs.toolResultConsents } : {}),
     ...(inputs.serviceEndpoints !== undefined ? { serviceEndpoints: inputs.serviceEndpoints } : {}),
     ...(inputs.registry !== undefined ? { registry: inputs.registry } : {}),
@@ -509,6 +512,7 @@ interface AuthContextOptions extends AuthServiceRuntimeOptions {
   platformSupervisor?: PlatformSupervisorInput;
   standingRenewableTtlSeconds?: number;
   issuerSessionTtlSeconds?: number;
+  nativeIssuancePruneMs?: number;
   serviceEndpoints?: OpenAuthAuthorityPlaneOptions["serviceEndpoints"];
   calloutLimits?: AuthCalloutLimits;
   connectLimits?: Partial<ConnectLimits>;
@@ -562,6 +566,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
     ...(o.issuerSessionTtlSeconds !== undefined ? { issuerSessionTtlSeconds: o.issuerSessionTtlSeconds } : {}),
+    ...(o.nativeIssuancePruneMs !== undefined ? { nativeIssuancePruneMs: o.nativeIssuancePruneMs } : {}),
     ...(o.serviceEndpoints !== undefined ? { serviceEndpoints: o.serviceEndpoints } : {}),
     ...(o.registry !== undefined ? { registry: o.registry, registryStore: secrets } : {}),
     ...(o.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.registryCredentialTtlSeconds } : {}),

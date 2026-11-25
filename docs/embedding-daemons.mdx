@@ -163,6 +163,11 @@ A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it.
 
+Native issuance cleanup checks existing receipts at startup in bounded batches. Later passes
+check new revisions and still-live receipts without rereading expired service evidence. A trusted
+host can set `nativeIssuancePruneMs` on `startAuthService` to control the delay between passes. It
+defaults to 60,000 milliseconds and accepts integers from 100 to 3,600,000.
+
 ### Endpoint registry
 
 Auth can host the space's permission-scoped endpoint registry. It is off by default. Import
