@@ -74,10 +74,10 @@
     {
       "name": "J6 a pattern's info says a prior send may have invented it",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  if (!isConcreteChannel(channel))\n    lines.push(\"  • a pattern: it has no registry entry of its own, and each channel it matches keeps its own.\");\n  else if (!info.registered)",
+      "find": "  if (!isConcreteChannel(channel))\n    lines.push(\"  • a pattern: it has no settings of its own; each channel it matches has its own.\");\n  else if (!info.registered)",
       "replace": "  if (!info.registered)",
-      "expectRed": "the family's info says a pattern has no registry entry of its own",
-      "cell": "the family's info says a pattern has no registry entry of its own",
+      "expectRed": "the family's info says a pattern has no settings of its own",
+      "cell": "the family's info says a pattern has no settings of its own",
       "note": "A send cannot create a pattern, so the unregistered-name line misleads."
     },
     {

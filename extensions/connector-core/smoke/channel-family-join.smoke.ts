@@ -62,8 +62,8 @@ const agentFor = (result: JoinResult): MeshAgent =>
     r.text,
   );
   check(
-    "the family's info says a pattern has no registry entry of its own",
-    r.text.includes("a pattern: it has no registry entry of its own") && !r.text.includes("A prior send may have invented it"),
+    "the family's info says a pattern has no settings of its own",
+    r.text.split("\n").includes("  • a pattern: it has no settings of its own; each channel it matches has its own.") && !r.text.includes("A prior send may have invented it"),
     r.text,
   );
 }
