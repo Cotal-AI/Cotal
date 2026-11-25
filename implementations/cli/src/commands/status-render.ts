@@ -416,7 +416,7 @@ function selectedOverview(r: StatusResult, stackStarting: boolean, selectedStart
   // Nothing running or selected is a state to start from, so it does not carry the mark of a live connection.
   if (!s.resolved) return { title, blocks: [
     { kind: "lines", lines: [stateCell(s.message, NOTHING_SELECTED.has(s.code) ? "hint" : "failed")] },
-    ...(selectedStarting || servedStack(r.folder, s) ? stackLines(r.folder, selectedStarting) : []),
+    ...(s.code !== "missing-stack-records" && (selectedStarting || servedStack(r.folder, s)) ? stackLines(r.folder, selectedStarting) : []),
   ] };
   // A broker named with `--server` is reported even when nothing on this machine is registered.
   if (s.source !== "flag-server" && !r.meshes.items.length && !r.meshes.currentPrepared && r.folder.auth.state === "none" && !r.folder.processes?.some((item) => item.pid !== null)) return undefined;
@@ -457,7 +457,8 @@ function selectedOverview(r: StatusResult, stackStarting: boolean, selectedStart
   }
   const blocks: Section["blocks"][number][] = [{ kind: "fields", rows }];
   if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.controllerStack) {
-    blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] }, ...stackLines(r.folder, stackStarting));
+    if (!r.folder.missingStackRecords) blocks.push({ kind: "lines", lines: [cell("Controller stack · its members are the stack-* rows under Owned services", "hint")] });
+    blocks.push(...stackLines(r.folder, stackStarting));
   } else if (r.folder.root === s.root && r.folder.stackJournal === "unreadable") {
     blocks.push({ kind: "lines", lines: [cell("Stack journal unreadable · no stack membership or stopped state was inferred; see Owned services and the journal warning", "failed")] });
   } else if (r.folder.root === s.root && r.folder.processSpace === s.space && r.folder.processes) {
@@ -491,6 +492,7 @@ export function folderStack(folder: StatusResult["folder"], s: SelectedResult): 
 /** The lines that name this folder's stack operation cut off with no recorded outcome: one that keeps
  *  `up` and `down` from settling it, or one that left the stack part way. */
 function stackLines(folder: StatusResult["folder"], stackStarting: boolean): Section["blocks"][number][] {
+  if (folder.missingStackRecords) return [{ kind: "lines", lines: [stateCell(folder.missingStackRecords.message, "waiting")] }];
   if (stackStarting) return [{ kind: "lines", lines: [stateCell("Startup in progress", "waiting")] }];
   const blocks: Section["blocks"][number][] = [];
   if (folder.stackBlock) blocks.push({ kind: "lines", lines: [stateCell(`Stack blocked · ${folder.stackBlock.reason}`, "waiting")] });
@@ -516,7 +518,9 @@ function nextActions(r: StatusResult, seedFailed: boolean, interactive: boolean,
     title: "Next",
     blocks: [{ kind: "lines", lines: r.hints.flatMap(hint => hint.split("\n").map(line => cell(line, "hint"))) }],
   };
-  if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
+  const missing = r.folder.missingStackRecords;
+  const recoveryStep = recovery ?? (missing && servedStack(r.folder, r.selected) ? missing.hint : undefined);
+  if (recoveryStep) return { title: "Next", blocks: [...new Set([recoveryStep, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];

@@ -71,6 +71,7 @@ import { deliveryResponderState, deliveryRowSuffix, type DeliveryResponderState 
 import { brokerStoreWrite, storeFull } from "../lib/broker-store-health.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { selectResetTarget } from "./reset-store-apply.js";
+import { lostBrokerRecord } from "./stack-lost-records.js";
 import { displayCmd } from "../lib/self-exec.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { readPersonas } from "../lib/personas.js";
@@ -254,6 +255,8 @@ export async function status(args: ParsedArgs): Promise<void> {
     ? { maintenance: { root, space: null, state: "unreadable", attemptId: null, next: null }, sourceMissing: false }
     : readMaintenance(root, gaps);
   const recovery = backupRecovery(maintenance, sourceMissing);
+  const missingRecords = folder.missingStackRecords;
+  if (missingRecords) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", missingRecords.space);
   const selectedHints: string[] = [], selectedStarting = selectedStackStarting(selected, folder, stackStarting);
   const target = await readSelected(selected, responder, folder, gaps, selectedHints, preflight, Boolean(values.all), selectedStarting);
   const stoppedForeignListener = preflight?.ok === false && preflight.kind === "non-nats-listener" && preflight.pid !== undefined;
@@ -280,7 +283,7 @@ export async function status(args: ParsedArgs): Promise<void> {
     readStackStoreWarnings(selected.target.root, gaps, hints, selected.target.space);
   // Replace the folder banner with the repair when startup is blocked under another selection.
   // `This folder's space` names any unsettled stack work, with the recovery step in Next.
-  const heldRestartBlocked = !blocked && reportHeldRestartProblem(root, hints);
+  const heldRestartBlocked = missingRecords !== undefined || (!blocked && reportHeldRestartProblem(root, hints));
   const held = folderStack(folder, target);
   if (held && folder.stackBlock) withdrawOperationNote("FOLDER_SPACE_NOT_RUNNING", held.space);
   if (!recovery && !heldRestartBlocked && held && !stackStarting && !folder.stackBlock && !folder.stackUnfinished && unsettledStackOperation(held.root, held.space)) hints.push(`start it with \`cotal up\` in ${held.root}`);
@@ -296,9 +299,11 @@ export async function status(args: ParsedArgs): Promise<void> {
     ? await managerEndpoint(selected.target)
     : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), ...(outsideStackManager ? { outsideStackManager } : {}), hints: seed?.failed !== undefined
+  const next = seed?.failed !== undefined
     ? [`Fix the recorded cause first:\n${seed.failed}`, `Then run \`${displayCmd()} ext seed --repair\` before starting a space`, ...(recovery ? [recovery] : [])]
-    : [...new Set(hints)] };
+    : hints;
+  if (missingRecords) next.unshift(missingRecords.hint);
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), ...(outsideStackManager ? { outsideStackManager } : {}), hints: [...new Set(next)] };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   // An unreadable preferences file is already a gap, so the variables are checked without it.
@@ -703,12 +708,21 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
     elsewhere = isCommandFailure(error) && error.code === "CONFLICT";
   }
   const activeStartup = journal !== undefined && stackUpInProgress(journal);
+  let missingStackRecords: StatusResult["folder"]["missingStackRecords"];
+  if (journal && !activeStartup && (auth === undefined || auth.space === journal.space) && cotalDirLink(root) === undefined) {
+    try { missingStackRecords = lostBrokerRecord(journal); }
+    catch (error) {
+      if (!isCommandFailure(error)) throw error;
+      gaps.add("SERVICE_INSTANCES_UNAVAILABLE", error.message, { root, space: journal.space });
+      if (error.remedy) hints.push(error.remedy);
+    }
+  }
   // A root whose records show two spaces running has no single answer, the
   // same shape as the multi-account case above. The process rows below are keyed by one space, so
   // report that state and stop rather than crashing in the recovery command that names it.
   let space: string;
   try {
-    space = auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined, activeStartup && journal?.mode === "open" ? journal.space : undefined);
+    space = missingStackRecords?.space ?? auth?.space ?? statusRuntimeSpace(root, selected.ok ? selected.target : undefined, activeStartup && journal?.mode === "open" ? journal.space : undefined);
   } catch (e) {
     hints.push((e as Error).message);
     return { folder: folder({ state: "none", spaces: [], userAuth: false, error: null }), stackStarting: false };
@@ -753,7 +767,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
   if (brokerIndex !== -1) processes[brokerIndex] = unusable
     ? { name: "nats", state: "unreadable", pid: null, detail: "stack journal unreadable; no broker stopped state was inferred" }
-    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps);
+    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps, missingStackRecords?.pid);
   const managerIndex = !unusable && !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
     ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
     : -1;
@@ -763,10 +777,10 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   const stackStarting = controllerStack && activeStartup;
   // Name settlement blocks only when no active startup writer holds the stack.
   let stackBlock: StackOperationBlock | null = null;
-  if (journal && controllerStack && !stackStarting) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
+  if (journal && controllerStack && !stackStarting && !missingStackRecords) try { stackBlock = stackOperationBlock(journal) ?? null; } catch { stackBlock = null; }
   // One that left the stack part way is named with the command that finishes it.
   let stackUnfinished: StatusResult["folder"]["stackUnfinished"] = null;
-  if (journal && controllerStack && !stackStarting && !stackBlock) try { stackUnfinished = unfinishedStackOperation(journal) ?? null; } catch { stackUnfinished = null; }
+  if (journal && controllerStack && !stackStarting && !stackBlock && !missingStackRecords) try { stackUnfinished = unfinishedStackOperation(journal) ?? null; } catch { stackUnfinished = null; }
   // A copy or a moved folder keeps the stack journal another folder recorded, and its store is that
   // stack's. Clean store refuses there with the step the journal's refusal names.
   let copiedStack = false;
@@ -785,7 +799,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   if (controllerStack && journal) try {
     heldServices = serviceHeldRecords(root, journal.space).map((row) => ({ definition: row.definition, instanceId: row.instanceId, record: row.record.name, pid: row.record.pid! }));
   } catch { heldServices = null; }
-  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices }, stackStarting };
+  return { folder: { ...folder({ state: auth ? "space" : "none", spaces: auth ? [auth.space] : [], userAuth: userDisk, error: null }, processes, storedState, space, controllerStack, noManager, stackBlock, stackUnfinished), managerService, heldServices, ...(missingStackRecords ? { missingStackRecords } : {}) }, stackStarting };
 }
 
 /** The folder's persona catalog, which must never let a catalog imply a `spawn` the operator does
@@ -843,10 +857,14 @@ function processRow(name: string, p: PidfileState, detail: string | null): Proce
 
 /** A controller broker has no legacy pidfile. Observe its saved process identity instead, keeping
  *  the pidfile result as a separate fact. A failed owned-record read never selects the legacy row. */
-function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps): ProcessRow {
+function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps, journalPid?: number): ProcessRow {
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
+  if (journalPid !== undefined) {
+    gaps.add("FOLDER_BROKER_UNAVAILABLE", "owned broker observation unavailable · the stack's recorded broker instance is missing", { root: journal.root, space: journal.space });
+    return { ...row, source: "stack-journal", state: "running", pid: journalPid, detail: "process verified from the stack journal; instance record missing" };
+  }
   const recordedHome = journal.recovery?.home;
   if (recordedHome !== homeCotalDir() && stackRunsUnderOtherHome(journal.root, journal)) {
     const detail = recordedHome === undefined ? "stack member records are missing from this Cotal home" : `stack member records belong to ${recordedHome}`;

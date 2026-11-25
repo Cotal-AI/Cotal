@@ -27,6 +27,7 @@ import {
   type BrokerCheck,
   type MeshEntry,
   type MeshTarget,
+  type MeshTargetError,
   movedProject,
   operationWarnings,
   spaceStreamsExpected,
@@ -223,10 +224,19 @@ export function selectedStackStarting(selected: Selected, folder: StatusResult["
   } catch { return false; } // The selection report names an unusable journal.
 }
 
+function missingRecordsSelection(error: MeshTargetError, folder: StatusResult["folder"], hints: string[]): SelectedResult | undefined {
+  const missing = folder.missingStackRecords;
+  if (!missing || error.code !== "not-started" || error.details.root !== folder.root || (error.details.space ?? error.details.stackSpace) !== missing.space) return undefined;
+  hints.push(missing.hint);
+  return { resolved: false, code: "missing-stack-records", space: missing.space, root: folder.root, message: missing.message };
+}
+
 export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
+    const missing = isWorkspaceTargetError(e) && missingRecordsSelection(e, folder, hints);
+    if (missing) return missing;
     if (isCommandFailure(e) && e.code === "SCHEMA_INVALID") {
       gaps.add(e.code, e.message, e.target);
       if (e.remedy) hints.push(e.remedy);

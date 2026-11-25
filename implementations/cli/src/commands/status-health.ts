@@ -693,6 +693,8 @@ async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResu
 
 export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string): Promise<void> {
   section("Component Health");
+  if (!report.resolved && report.code === "missing-stack-records")
+    return printComponents([{ name: "target", verdict: "refused", facts: [report.message, ...(selectedHint ? [selectedHint] : [])] }]);
   if (!selected.ok) {
     const error = selected.error;
     const e = isWorkspaceTargetError(error) && error.code === "not-started" && error.details.root !== undefined && !error.details.rootMissing

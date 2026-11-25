@@ -19,6 +19,7 @@ import { serviceDefinitionProjection } from "../lib/service-definitions.js";
 import { instanceProjection } from "../lib/service-instances.js";
 import { additiveTeamRecordedState } from "../lib/team-additive-attempt.js";
 import { type StackOperationBlock, type StackRole } from "../lib/stack-journal.js";
+import type { lostBrokerRecord } from "./stack-lost-records.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -80,7 +81,7 @@ export interface ProcessRow {
   pid: number | null;
   detail: string | null;
   /** The nats summary's source. Older serialized reports and other components may omit it. */
-  source?: "legacy-pidfile" | "owned-service";
+  source?: "legacy-pidfile" | "owned-service" | "stack-journal";
   legacyPidfile?: { state: ProcessRow["state"]; pid: number | null; detail: string | null };
   ownedService?: Pick<ReturnType<typeof instanceProjection>, "definition" | "instanceId" | "observedProcess" | "recordedState" | "pid"> | null;
 }
@@ -146,6 +147,8 @@ export interface StatusResult {
     /** That stack's last `up` or `down` when it ended with no recorded outcome part way, with the
      *  members left running and stopped. Null when there is none; older inputs may omit it. */
     stackUnfinished?: { kind: "up" | "down"; id: string; running: StackRole[]; stopped: StackRole[]; noManager: boolean } | null;
+    /** Live broker observed from the journal because its exact instance record is missing. */
+    missingStackRecords?: NonNullable<ReturnType<typeof lostBrokerRecord>>;
   };
   meshes: {
     current: string | null;
