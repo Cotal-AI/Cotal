@@ -50,6 +50,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { renderDetachedSummary } from "../../implementations/cli/src/lib/up-report.js";
+import { readStackJournal } from "../../implementations/cli/src/lib/stack-journal.js";
 import { shellWord } from "../../implementations/cli/src/lib/endpoint-errors.js";
 import { clean, cotalPty } from "../../implementations/cli/smoke/_console-pty.js";
 import { assertSmokeSandboxDown, freePort, killAndAwaitExit, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
@@ -650,19 +651,19 @@ process.report.getReport = () => {
     const prepared = cliIn(cloned, "space", "create", space, "--root", cloned);
     ok("the cloned root can be prepared without trusting its existing .cotal", prepared.status === 0 && !trustedRoots().includes(realpathSync(cloned)), plain(prepared.stdout + prepared.stderr));
     const args = ["up", "--detach", "--space", space, "--server", `nats://127.0.0.1:${await freePort()}`, "--json"];
-    const managerFile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: cloned, space });
     const clonedUp = cliIn(cloned, ...args);
-    const brokerFile = join(cloned, ".cotal", "nats.pid");
-    const broker = existsSync(brokerFile) ? Number(readFileSync(brokerFile, "utf8").trim()) : 0;
+    const before = readStackJournal(cloned)?.journal.members;
+    const broker = before?.find((row) => row.role === "broker")?.process?.pid ?? 0;
     if (broker) pids.push(broker);
     const result = clonedUp.stdout ? JSON.parse(clonedUp.stdout) : undefined;
     ok("up in an untrusted clone keeps the broker, refuses the manager, and gives the trust command as the next step",
       result?.error?.code === "OPERATION_PARTIAL" && result.error.remedy?.includes(`\`cotal trust ${realpathSync(cloned)}\``)
-      && broker > 0 && alive(broker) && !trustedRoots().includes(realpathSync(cloned)) && !existsSync(managerFile),
+      && broker > 0 && alive(broker) && !trustedRoots().includes(realpathSync(cloned))
+      && before?.find((row) => row.role === "manager")?.state === "refused",
       { status: clonedUp.status, out: plain(clonedUp.stdout + clonedUp.stderr).slice(-1000) });
     const trusted = cliIn(cloned, "trust", cloned);
     const retried = cliIn(cloned, ...args);
-    const manager = existsSync(managerFile) ? Number(readFileSync(managerFile, "utf8").trim()) : 0;
+    const manager = readStackJournal(cloned)?.journal.members.find((row) => row.role === "manager")?.process?.pid ?? 0;
     if (manager) pids.push(manager);
     ok("trusting the clone lets the same up invocation start its manager",
       trusted.status === 0 && retried.status === 0 && manager > 0 && alive(manager), plain(retried.stdout + retried.stderr).slice(-1000));
