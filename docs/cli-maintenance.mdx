@@ -421,18 +421,19 @@ broker and agents. Revoke a run before the stop if it must not resume when the s
 ([workflow operations](workflow-operations.mdx#revocation)).
 
 `--idle-exit <seconds>` applies to that start only. The manager stops itself once it has held no
-agents for that long: no agent running or starting, no spawn or control call in flight, no hosted
-workflow run, no preservation or resume open, and none of the pending work over which
-`cotal manager stop` refuses: a name reserved for a launch, a name held until its retirement
-completes, a deprovision in flight, or the startup reconcile of static agents. A retirement that
-failed holds its name until a spawn of that name retries it, and until then the manager does not
-stop itself. The clock starts when the manager serves and starts again whenever it holds an agent. The manager checks it every 5 seconds, so it stops within 5
-seconds after the period ends. The stop is the one
-`cotal manager stop` makes without `--with-agents`, so the manager also deregisters. The value is
-recorded on the instance and never in the saved definition, so a later start without it runs until
-stopped. While the manager runs, `status` shows it on the `Idle exit` row, and
-`cotal status --components` lists any pending work that holds the clock on its manager row, such as
-`pending retirements 1`. Once the manager stopped itself, `status` shows when on the `Stopped` row and names `cotal manager start` under Next, and the
+agents for that long: no agent running or starting, no hosted workflow run, no preservation or
+resume open, and none of the pending work over which `cotal manager stop` refuses.
+`cotal status --components` lists that work on the manager row by these labels, with a count:
+`lifecycle work` (a spawn or control call in flight), `reserved launches` (a name reserved for a
+launch), `pending retirements` (a name held until its retirement completes), `cleanup in flight` (a
+deprovision in flight) and `reconciliation in flight` (the startup reconcile of static agents). A
+retirement that failed holds its name until a spawn of that name retries it, and until then the
+manager does not stop itself. The clock starts when the manager serves and starts again whenever it
+holds an agent. The manager checks it every 5 seconds, so it stops within 5 seconds after the
+period ends. The stop is the one `cotal manager stop` makes without `--with-agents`, so the manager
+also deregisters. The value is recorded on the instance and never in the saved definition, so a
+later start without it runs until stopped. While the manager runs, `status` shows it on the
+`Idle exit` row. Once the manager stopped itself, `status` shows when on the `Stopped` row and names `cotal manager start` under Next, and the
 log's last lines say why. A start with `--idle-exit` while the manager runs with another value, or
 with none, refuses `LIFECYCLE_BLOCKED`. `--idle-exit` on another service refuses before anything
 launches. [`cotal acp`](acp-clients.mdx) passes `--idle-exit 600` when it starts a manager for a thread.
