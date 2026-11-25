@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { assertValidName, parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -78,6 +78,10 @@ const source = z.discriminatedUnion("kind", [
 const agent = z.strictObject({
   space: label,
   name: label,
+  // Absent when the seat kept its launch name, which every inventory written before the field means.
+  displayName: z.string().superRefine((v, ctx) => {
+    try { assertValidName(v); } catch (e) { ctx.addIssue({ code: "custom", message: (e as Error).message }); }
+  }).optional(),
   role: label.optional(),
   identity,
   launch: z.strictObject({
@@ -107,6 +111,9 @@ const agent = z.strictObject({
     // Older inventories and seat records carry no payload choice. Preserve that absence so the
     // connector applies its publication default, while an explicit false survives a restart.
     eventPayloads: z.boolean().optional(),
+    // Kept only when the spawn asked, so a record written before these fields reads as not asked.
+    askPermissions: z.literal(true).optional(),
+    reasoningEvents: z.literal(true).optional(),
     // Start takes any declared server key as written, empty or long, so a bound per name here would
     // refuse to preserve an agent that launched. The args byte cap bounds the list.
     shareTools: z.array(z.string()).optional(),
@@ -270,7 +277,7 @@ const releasedSeatReference = z.strictObject({
 
 export type ReleasedSeatReference = z.infer<typeof releasedSeatReference>;
 
-export function releasedSeatReferencePath(root: string, space: string, name: string): string {
+function releasedSeatReferencePath(root: string, space: string, name: string): string {
   return join(root, ".cotal", "seat-records", space, `${name}.runtime-ref`);
 }
 

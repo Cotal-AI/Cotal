@@ -15,7 +15,7 @@ export interface EnvironmentManagerAdmissionSource {
   expiresAt: number;
 }
 
-export interface EnvironmentManagerAdmissionIndex {
+interface EnvironmentManagerAdmissionIndex {
   reserve(source: EnvironmentManagerAdmissionSource): Promise<EnvironmentManagerAdmissionCoordinates>;
   get(environmentId: string): Promise<EnvironmentManagerAdmissionCoordinates | undefined>;
 }

@@ -104,7 +104,9 @@ const COMMAND_SURFACES = [
   "@cotal-ai/auth",
   "@cotal-ai/web",
   "@cotal-ai/linear",
+  "@cotal-ai/acp",
   "../../docs.js",
+  "../../mcp.js",
 ];
 
 /** Split `text` on `|` that sits outside any `<…>`, `[…]` or `(…)` group. */
@@ -216,7 +218,7 @@ export function modelItems(): CensusItem[] {
 
 /** The keys a manager roster file accepts: the top-level list and each entry's keys. */
 export function rosterItems(): CensusItem[] {
-  const file = "implementations/manager/src/roster.ts";
+  const file = "packages/workspace/src/manager-roster.ts";
   const sf = ts.createSourceFile(file, readFileSync(join(REPO, file), "utf8"), ts.ScriptTarget.Latest, true);
   let keys: string[] | undefined;
   sf.forEachChild((node) => {

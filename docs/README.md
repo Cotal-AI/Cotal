@@ -67,6 +67,7 @@ Task dispatch:
 | [Telemetry](telemetry.mdx) | CLI usage telemetry fields, levels, storage, delivery, and opt-outs. |
 | [Use the console](console.mdx) | Inspect a mesh from the terminal and use authorized operator controls. |
 | [Use the web dashboard](web-dashboard.mdx) | Configure the read-only dashboard and inspect a space through a protected browser session. |
+| [Use an ACP client](acp-clients.mdx) | Spawn and drive Cotal agents from T3 Code, Zed and other Agent Client Protocol clients. |
 | [Supervise a remote mesh](remote-supervision.mdx) | Separate broker and manager hosts, publish an exchange, and enroll remote agents. |
 | [Supervise the stack](supervise-processes.mdx) | Choose process ownership under systemd and monitor actual component health. |
 | [Deploy agent teams](deploy.mdx) | Review the container example, its current build limitation, and the credentials it needs. |
@@ -85,6 +86,7 @@ Task dispatch:
 | [Connect Hermes (alpha)](connect-hermes.mdx) | Run a Hermes gateway on a Cotal mesh with a managed profile or your own Hermes profile. |
 | [Connect Jcode (beta)](connect-jcode.mdx) | Launch a private Jcode session on a Cotal mesh, choose its model, and fork an existing transcript. |
 | [Connect pi (alpha)](connect-pi.mdx) | Launch pi on a Cotal mesh or load the Cotal extension into your own pi host. |
+| [MCP-only hosts](connect-mcp.mdx) | Serve the gateway tools to a stdio MCP application without a native connector. |
 
 #### Build integrations
 
@@ -116,7 +118,7 @@ Task dispatch:
 
 | Page | Covers |
 |---|---|
-| [Connector runtime reference](connector-runtime-reference.mdx) | Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, and resume records. |
+| [Connector runtime reference](connector-runtime-reference.mdx) | Shared connection recovery, presence display, send receipts, delivery acknowledgement, reply correlation, resume records, the agent endpoint, agent commands, and the prompt desk. |
 | [Claude connector reference](claude-connector-reference.mdx) | Binding, delivery, presence, event recording, and hosting contracts for the Claude Code connector. |
 | [OpenCode connector reference](opencode-connector-reference.mdx) | OpenCode version support, injected configuration, session delivery, and structured event limits. |
 | [Codex connector reference](codex-connector-reference.mdx) | Codex launch options, private credentials, delivery behavior, presence, and structured event limits. |

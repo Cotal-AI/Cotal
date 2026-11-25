@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { globalConfigDir } from "@cotal-ai/core";
-import { claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, canRecoverConnectorConfig, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -14,7 +13,7 @@ interface Promotion {
   readonly stageIdentity: { readonly dev: string; readonly ino: string; readonly birth: number };
   readonly oldIdentity?: { readonly dev: string; readonly ino: string; readonly birth: number };
 }
-const journalPath = (): string => join(globalConfigDir(), ".extensions-promotion.json");
+const journalPath = (): string => join(connectorConfigDir(), ".extensions-promotion.json");
 function save(record: Promotion): void {
   const path = journalPath(), temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });
@@ -28,19 +27,26 @@ function checkedRecord(): Promotion | undefined {
   const source = readLocalRecordSource(path, 64 * 1024);
   if (!source) throw new Error("extension promotion journal disappeared");
   const record = JSON.parse(Buffer.from(source).toString("utf8")) as Promotion;
-  const config = resolve(globalConfigDir());
+  const config = resolve(connectorConfigDir());
   if (record.v !== 1 || !record.stageIdentity || resolve(record.root) !== join(config, "extensions") ||
       dirname(record.stage) !== config || !record.stage.startsWith(join(config, ".extensions.stage-")) ||
       dirname(record.old) !== config || !record.old.startsWith(join(config, ".extensions.rollback-"))) throw new Error("invalid extension promotion journal");
   return record;
 }
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
-export function recoverExtensionPromotion(): void {
-  if (!checkedRecord()) return;
+export function recoverExtensionPromotion(prepareForUpdate = false, onChange?: () => void): boolean {
+  if (!canRecoverConnectorConfig(onChange) || !checkedRecord()) return false;
   const releaseClosure = claimUpdateClosureAccess(true);
   try {
+    if (!canRecoverConnectorConfig(onChange)) return false;
     const release = claimExtensionMutation();
-    try { const record = checkedRecord(); if (record) finish(record); }
+    try {
+      const record = checkedRecord();
+      if (!record) return false;
+      finish(record, prepareForUpdate);
+      onChange?.();
+      return true;
+    }
     finally { release(); }
   } finally { releaseClosure(); }
 }
@@ -48,7 +54,7 @@ function identity(path: string): Promotion["stageIdentity"] {
   const stat = lstatSync(path);
   return { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs };
 }
-function finish(record: Promotion): void {
+function finish(record: Promotion, prepareForUpdate = false): void {
   const root = existsSync(record.root), stage = existsSync(record.stage), old = existsSync(record.old);
   for (const path of [record.root, record.stage, record.old]) if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error("extension promotion directory is not a real directory");
   const verified = stage ? record.stage : root ? record.root : undefined;
@@ -61,11 +67,24 @@ function finish(record: Promotion): void {
   if (stage) renameSync(record.stage, record.root);
   // After promotion the journal can only name a complete verified new prefix. Old bytes remain
   // available until that rename is observable, including if the process exits between these calls.
-  rmSync(journalPath());
   if (existsSync(record.old)) {
-    try { rmSync(record.old, { recursive: true, force: true }); }
-    catch (error) { console.error(`! could not remove the previous copy of the extensions at ${record.old} (${error instanceof Error ? error.message : String(error)}); remove it by hand`); }
+    try {
+      if (prepareForUpdate && process.getuid) {
+        const writable = (path: string): void => {
+          const stat = lstatSync(path);
+          if (!stat.isDirectory() || stat.uid !== process.getuid!()) throw new Error(`cannot repair unowned rollback directory: ${path}`);
+          if ((stat.mode & 0o200) === 0) chmodSync(path, (stat.mode & 0o7777) | 0o200);
+          for (const entry of readdirSync(path, { withFileTypes: true })) if (entry.isDirectory()) writable(join(path, entry.name));
+        };
+        writable(record.old);
+      }
+      rmSync(record.old, { recursive: true, force: true });
+    } catch (error) {
+      if (prepareForUpdate) throw error;
+      console.error(`! could not remove the previous copy of the extensions at ${record.old} (${error instanceof Error ? error.message : String(error)}); remove it by hand`);
+    }
   }
+  rmSync(journalPath());
 }
 export interface ExtensionStage {
   readonly config: string;
@@ -76,7 +95,7 @@ export interface ExtensionStage {
 }
 /** Copy the prefix once. The caller holds the writer throughout staging, verification and promotion. */
 export function stageExtensions(): ExtensionStage {
-  const config = globalConfigDir(), root = join(config, "extensions");
+  const config = connectorConfigDir(), root = join(config, "extensions");
   if (checkedRecord()) throw new Error("an unfinished extension promotion must be recovered before staging");
   mkdirSync(config, { recursive: true, mode: 0o700 });
   protectedLocalDirectory(realpathSync(config));

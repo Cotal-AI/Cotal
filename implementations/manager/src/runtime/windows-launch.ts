@@ -19,7 +19,7 @@ export { buildCmdCommandLine, quoteCmdArg, resolveComspec } from "@cotal-ai/work
  *  `.exe` launch — node-pty quotes it for `CommandLineToArgvW`) or a pre-escaped command-line STRING
  *  (the `.cmd`/`.bat` path — node-pty's documented "pre-escaped CommandLine" form, appended verbatim
  *  after the program, which is what lets us own every byte cmd.exe sees). */
-export interface PreparedLaunch {
+interface PreparedLaunch {
   command: string;
   args: string[] | string;
 }

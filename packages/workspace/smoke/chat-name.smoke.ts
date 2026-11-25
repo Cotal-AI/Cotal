@@ -61,6 +61,22 @@ try {
   const ended = accepted.flatMap((v) => [`thanks @${v}.`, `ask @${v}...`, `@${v}-`, `@${v}.-`]);
   check("an @mention at the end of a sentence, or followed by a dash, gives the name back whole",
     ended.every((t, i) => JSON.stringify(mentionsIn(t)) === JSON.stringify([accepted[Math.floor(i / 4)]])), ended.map((t) => mentionsIn(t)));
+  const inWord = ["thanks@rover", "mail ana@example.com", "ops-lead@rover", "v1.2@rover", "a_b@rover"];
+  check("an @ inside a word, as in an email address, is not a mention",
+    inWord.every((t) => mentionsIn(t).length === 0), inWord.map((t) => mentionsIn(t)));
+  const bounded = ["@rover", "hi @rover", "(@rover)", "hi,@rover", "line\n@rover", "«@rover»"];
+  check("an @ at the start of the text or after a space or punctuation is a mention",
+    bounded.every((t) => JSON.stringify(mentionsIn(t)) === JSON.stringify(["rover"])), bounded.map((t) => mentionsIn(t)));
+  const slashed = ["/@rover", "example.com/@rover", "Done.@rover", "-@rover"];
+  check("an @ right after a /, . or - is not a mention",
+    slashed.every((t) => mentionsIn(t).length === 0), slashed.map((t) => mentionsIn(t)));
+  const unspaced = ["你好@rover", "日本@rover", "สวัสดี@rover"];
+  check("an @ right after text in a script written without spaces is a mention",
+    unspaced.every((t) => JSON.stringify(mentionsIn(t)) === JSON.stringify(["rover"])), unspaced.map((t) => mentionsIn(t)));
+  check("a command followed by an @name mentions the name",
+    JSON.stringify(mentionsIn("/assign @rover")) === JSON.stringify(["rover"]), mentionsIn("/assign @rover"));
+  check("a message with an email address still mentions the name it @s",
+    JSON.stringify(mentionsIn("mail ana@example.com and ask @rover")) === JSON.stringify(["rover"]), mentionsIn("mail ana@example.com and ask @rover"));
   check("the name preference is held to the same rule", preferenceValueProblem("name", "Ops Lead")?.endsWith(RULE) === true && preferenceValueProblem("name", "ops_lead") === undefined);
 
   console.log("2. open and static: the OS login, with no suffix");

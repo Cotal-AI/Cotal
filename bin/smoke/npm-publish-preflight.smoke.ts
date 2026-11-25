@@ -24,6 +24,7 @@ import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const repositoryPackages = workspacePackagesFromPnpm(ROOT);
@@ -31,12 +32,7 @@ const repositoryPackages = workspacePackagesFromPnpm(ROOT);
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
 
-let passed = 0;
-let failed = 0;
-function check(name: string, condition: unknown, detail?: unknown): void {
-  if (condition) { passed++; console.log(`  ✓ ${name}`); }
-  else { failed++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); }
-}
+const { check, finish, passed, failed } = createSuite();
 
 const fixed = ["@cotal-ai/core", "@cotal-ai/seat", "cotal-ai"];
 const workspace = fixed.map((name) => ({ name, version: "9.9.9", path: `/workspace/${name}` }));
@@ -2685,5 +2681,6 @@ check(
   [...branchesHit].filter((branch) => !CENSUS_STATE_BRANCHES.includes(branch)),
 );
 
-console.log(`\nSUITE COMPLETE: ${passed} passed, ${failed} failed`);
-if (failed) process.exit(1);
+console.log(`\nSUITE COMPLETE: ${passed()} passed, ${failed()} failed`);
+finish();
+if (failed()) process.exit(1);

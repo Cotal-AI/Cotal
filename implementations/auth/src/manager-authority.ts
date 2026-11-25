@@ -27,6 +27,8 @@ import {
   type RunRevocation,
   type RunAdmissionView,
   type RunStatusValue,
+  type RunJournalReplay,
+  lastActivation,
   type RunDriverGrantArgs,
   type RunOperatorGrantArgs,
   type RemoteRunAdmissionResult,
@@ -315,7 +317,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   };
 }
 
-export function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissionRequest {
+function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissionRequest {
   const registered = parseRegisteredRunRequest(raw, "manager-run-submission", "manager keyed submission", ["subject"]);
   const subject = (raw as { subject?: unknown }).subject;
   if (typeof subject !== "string") runRequestError("manager keyed submission", "requires observed subject");
@@ -661,7 +663,7 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
 /** What a served resume or answer asks the host to issue for: a resume names its run, an answer
  *  the endpoint it answers on, the run and step whose pause it answers, and whether it amends
  *  (SPEC 14.8). */
-export type RunRequestOperation =
+type RunRequestOperation =
   | { command: "run-resume"; runId: string }
   | { command: "run-answer"; endpoint: string; runId: string; stepKey: string; amend: boolean };
 
@@ -779,7 +781,7 @@ async function authorizeServedRunCaller(args: {
 
 /** The registered manager's declaration of a served command at a registration revision: the class
  *  and contract its serving endpoint admits. */
-export type RegisteredRunCommand = (
+type RegisteredRunCommand = (
   instanceId: string,
   registrationRevision: number,
   command: RunRequestOperation["command"],
@@ -794,7 +796,7 @@ export type RemoteRunAttemptGrant =
  * Host-only authorization for {@link RemoteRunAttemptRequest}. Every coordinate the returned grant
  * pins is derived from host stores: the admission must exist on this instance and be unrevoked
  * for an attempt or answer. A read-only operator can inspect a revoked run. The
- * attempt must be exactly the next epoch/fencing token the run record implies (1/1 for a first
+ * attempt must be exactly the next epoch/fencing token the status and journal imply (1/1 for a first
  * attempt with no record, as stock `start` launches), and an answer pins the pause the named run's
  * journal records at the named step, which must be waiting. Refuses before the host signs anything.
  */
@@ -808,8 +810,8 @@ export async function authorizeRemoteRunAttempt(args: {
   observeManagerGate: ObserveManagerGate;
   readAdmission: (runId: string) => Promise<RunAdmissionView>;
   readRunStatus: (runId: string) => Promise<RunStatusValue | undefined>;
-  /** The named run's journal step entries, in append order: what an answer's pause is read off. */
-  readJournal: (runId: string) => Promise<readonly JournalEntry[]>;
+  /** The named run's journal, including activations that have not noted their status yet. */
+  readJournal: (runId: string) => Promise<RunJournalReplay>;
   checkpointWaiting: (token: string) => Promise<boolean>;
   /** Whether the pause settled `resumed` naming an accepted answer: what an amendment amends. */
   checkpointSettled: (token: string) => Promise<boolean>;
@@ -850,7 +852,8 @@ export async function authorizeRemoteRunAttempt(args: {
     const status = await args.readRunStatus(a.runId);
     if (status?.state === "completed" || status?.state === "failed")
       throw new EpEnvelopeError("failed-precondition", `run ${a.runId} is ${status.state}; a terminal run gets no new attempt`);
-    if (a.epoch !== (status?.epoch ?? 0) + 1 || a.fencingToken !== (status?.fencingToken ?? 0) + 1)
+    const activation = lastActivation((await args.readJournal(a.runId)).records);
+    if (a.epoch !== Math.max(status?.epoch ?? 0, activation?.epoch ?? 0) + 1 || a.fencingToken !== Math.max(status?.fencingToken ?? 0, activation?.fencingToken ?? 0) + 1)
       throw new EpEnvelopeError("conflict", `run ${a.runId} attempt must be the next recorded epoch/fencing token`);
     const pin: RunDriverGrantArgs = { endpoint: args.endpoint, runId: a.runId, owner: admission.caller.owner, takeoverId: a.takeoverId, instanceId: r.instanceId, epoch: a.epoch };
     // The host never sees the program, and the only instance a signerless manager places a spawn on
@@ -865,7 +868,7 @@ export async function authorizeRemoteRunAttempt(args: {
     await admitted(runId);
     // The token is read off the run's own journal, never taken from the manager: every manager
     // instance's pauses share one token namespace, so a named token could be another run's.
-    token = pauseToken(await args.readJournal(runId), runId, stepKey, amend);
+    token = pauseToken((await args.readJournal(runId)).records.flatMap((stored) => stored.record.kind === "step" ? [stored.record.entry as JournalEntry] : []), runId, stepKey, amend);
     // The pause is checked first, then the caller. An answer needs a waiting pause; an amendment
     // needs the pause whose answer was accepted, and nothing else.
     if (amend ? !(await args.checkpointSettled(token)) : !(await args.checkpointWaiting(token)))

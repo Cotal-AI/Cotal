@@ -164,7 +164,7 @@ async function staticAuthority(v: Record<string, unknown>, root?: string): Promi
   return { target, auth };
 }
 
-export interface LinearServeLifecycle {
+interface LinearServeLifecycle {
   readonly root: string;
   readonly onInitialized: () => void | Promise<void>;
 }

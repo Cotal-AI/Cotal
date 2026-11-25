@@ -14,23 +14,14 @@ import {
   INFRASTRUCTURE_MARKERS,
   liveShapedCommandReason,
 } from "../../scripts/mutation-command-safety.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const COVERAGE = join(ROOT, "scripts", "mutation-coverage.mjs");
 const REPROOF = join(ROOT, "scripts", "mutation-reproof.mjs");
 const MARKER = INFRASTRUCTURE_MARKERS[0];
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const roots: string[] = [];
 const temp = (prefix: string) => {
@@ -354,5 +345,5 @@ check(
 );
 
 for (const root of roots) rmSync(root, { recursive: true, force: true });
-console.log(`\nMUTATION COMMAND SAFETY SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`\nMUTATION COMMAND SAFETY SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

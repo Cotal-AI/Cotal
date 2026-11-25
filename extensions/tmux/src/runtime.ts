@@ -45,15 +45,20 @@ export class TmuxRuntime implements Runtime {
     // refusal.
     let launch: { command: string; dir: string };
     let watch: ((pane: ConfirmPane) => void) | undefined;
+    // The shell window tmux opened a session with, when this spawn created the session. Nothing runs
+    // in it, so it is closed once the seat's window is open or has failed to open: the session then
+    // ends with its last seat, and tmux's server with its last session (#7116).
+    let bootstrap: string | undefined;
     try {
       if ((spec.confirmBefore?.length || spec.confirmReady?.length || spec.confirmBlockers?.length) && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
       watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore, spec.confirmReady, spec.confirmBlockers, spec.confirmNotice);
-      tmux.ensureSession(this.session, cwd);
+      bootstrap = tmux.ensureSession(this.session, cwd);
       // P3: env -i strips the tmux server's inherited environment; only the connector-declared
       // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
       // values out of tmux's command line (ps-visible) — they ride a 0o600 launcher script instead.
       launch = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
     } catch (err) {
+      this.closeBootstrap(bootstrap);
       throw new SpawnRefused((err as Error).message);
     }
     // Keep tmux's stable server, window and pane ids. Names can change, and panes can move.
@@ -63,6 +68,8 @@ export class TmuxRuntime implements Runtime {
     } catch (err) {
       rmSync(launch.dir, { recursive: true, force: true });
       throw err;
+    } finally {
+      this.closeBootstrap(bootstrap);
     }
     const { windowId, paneId, serverPid } = window;
 
@@ -86,6 +93,17 @@ export class TmuxRuntime implements Runtime {
     });
 
     return this.handle(name, windowId, paneId, serverPid, () => startup);
+  }
+
+  /** Close the shell window a spawn's new session opened with, by its exact `=session:@N` target. A
+   *  failure is reported rather than thrown, because the seat's own launch has already been decided. */
+  private closeBootstrap(windowId: string | undefined): void {
+    if (windowId === undefined) return;
+    try {
+      tmux.closeWindow(`=${this.session}:${windowId}`);
+    } catch (err) {
+      console.error(`tmux runtime: failed to close session ${this.session}'s first window ${windowId}:`, err);
+    }
   }
 
   /** The handle follows its seat's pane on the server that opened it, for both spawn and adoption. */

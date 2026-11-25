@@ -219,12 +219,12 @@ try {
     ep.on("warning", (error: Error) => warnings.push(error.message));
     await ep.start();
     const internal = ep as unknown as {
-      kv: unknown;
+      conn: { kv: unknown };
       publishPresence(): Promise<void>;
       presenceWriteFailure(): { consecutiveFailures: number; stuck: boolean } | undefined;
     };
-    const liveKv = internal.kv;
-    internal.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
+    const liveKv = internal.conn.kv;
+    internal.conn.kv = { put: () => Promise.reject(new Error("store refused presence write")) };
     await internal.publishPresence().catch(() => {});
     await internal.publishPresence().catch(() => {});
     ok("4.4 two immediate refused writes do not escalate before one full TTL",
@@ -243,17 +243,17 @@ try {
     ok("4.6 later refused heartbeats do not flood the named stuck condition",
       warnings.filter((message) => /presence writes .* consecutive times/.test(message)).length === 1,
       warnings);
-    internal.kv = liveKv;
+    internal.conn.kv = liveKv;
     await internal.publishPresence();
     ok("4.7 the next successful presence write clears the stuck condition and resets the consecutive count",
       internal.presenceWriteFailure() === undefined, internal.presenceWriteFailure());
-    internal.kv = { put: () => Promise.reject(new Error("new refused run")) };
+    internal.conn.kv = { put: () => Promise.reject(new Error("new refused run")) };
     await internal.publishPresence().catch(() => {});
     ok("4.8 a refusal after recovery starts a fresh run at one and is not already stuck",
       internal.presenceWriteFailure()?.consecutiveFailures === 1 &&
       internal.presenceWriteFailure()?.stuck === false,
       internal.presenceWriteFailure());
-    internal.kv = liveKv;
+    internal.conn.kv = liveKv;
     await ep.stop();
   }
 
@@ -284,7 +284,7 @@ try {
     ok("4.9 a below-floor INFO is refused at bind, before any control-surface resource, with the floor sentence",
       floorRejected !== undefined && /below the required floor 2\.12/.test(floorRejected.message), floorRejected?.message);
     ok("4.10 the refused bind closed its connection (the endpoint holds no nc)",
-      (floorEp as unknown as { nc?: unknown }).nc === undefined);
+      (floorEp as unknown as { conn: { nc?: unknown } }).conn.nc === undefined);
     server.close();
   }
 
@@ -317,7 +317,7 @@ try {
   type Held = { release?: () => void; bound: number };
   const holdWatch = (ep: CotalEndpoint): Held => {
     const held: Held = { bound: 0 };
-    const kv = (ep as unknown as { kv: { watch: (...a: unknown[]) => Promise<unknown> } }).kv;
+    const kv = (ep as unknown as { conn: { kv: { watch: (...a: unknown[]) => Promise<unknown> } } }).conn.kv;
     const real = kv.watch.bind(kv);
     kv.watch = async (...a: unknown[]) => {
       const it = await real(...a);
@@ -327,7 +327,7 @@ try {
     };
     return held;
   };
-  const iterOf = (ep: CotalEndpoint) => (ep as unknown as { presenceWatchIter?: unknown }).presenceWatchIter;
+  const iterOf = (ep: CotalEndpoint) => (ep as unknown as { presence: { presenceWatchIter?: unknown } }).presence.presenceWatchIter;
   const mkObserver = (name: string, registerPresence = true, heartbeatMs = HEARTBEAT_MS) => {
     const ep = new CotalEndpoint({
       space, servers: SERVERS,
@@ -511,7 +511,7 @@ try {
     ok("9.5 no offline verdict was emitted for the observer itself across the recreation",
       !regTypes.includes("offline:regmgr"), regTypes);
     ok("9.6 the view became current on a DELIVERY, not on a hold (the empty marker is not set for a registering observer)",
-      (ep as unknown as { presenceWatchEmpty: boolean }).presenceWatchEmpty === false);
+      (ep as unknown as { presence: { presenceWatchEmpty: boolean } }).presence.presenceWatchEmpty === false);
     // NEGATIVE CONTROL: the bystander's key was wiped too and it has not rewritten it; it ages
     // out by the ordinary rule (the watch delivered a full window after its last heartbeat).
     const bystanderAged = await until(() => ep.getRoster().find((p) => p.card.name === "bystander")?.status === "offline", TTL_MS * 3);

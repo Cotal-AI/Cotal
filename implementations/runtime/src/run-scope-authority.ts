@@ -73,8 +73,8 @@ export function isHold(kind: string, entry: JournalEntry, ctx: Pick<EffectContex
     && ctx.requestId === holdRequestId(entry.requestId) && ctx.attempt === 0;
 }
 
-export type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
-export type WaitOperation = "open" | "fetch" | "ack" | "close";
+type PauseOperation = "read" | "mint" | "attach" | "rearm" | "heartbeat" | "claim" | "fire";
+type WaitOperation = "open" | "fetch" | "ack" | "close";
 
 export class RunScopeDenied extends Error {
   constructor(runId: string, resource: string, operation: string) {

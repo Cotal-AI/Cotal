@@ -2,13 +2,16 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { parseCommandArgs, registry, token, writePrivateRecord, type ClientSetupProvider, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
+  codeSpan,
   isCommandFailure,
+  isConnectRefusal,
   renderReport,
   assertPreferencesFolderProtected,
+  brokerCheck,
   canonicalRoot,
   checkUserBundle,
   isCotalCloudIdp,
@@ -17,6 +20,7 @@ import {
   homeCotalDir,
   inputDisabledByFlag,
   jsonFlag,
+  knownHarnesses,
   loadMeshes,
   manifestExtensionNames,
   meshFile,
@@ -33,6 +37,7 @@ import {
   recordMesh,
   resolveOnPath,
   seedConnectorServers,
+  spaceNameTooLong,
   writePreference,
   writeResult,
   type Cell,
@@ -43,7 +48,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_CLIENT_APPS, OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, extensionNames, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { seedWriterKind } from "../seed/paths.js";
@@ -56,7 +61,8 @@ import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { seedDefaultPersona } from "../lib/default-persona.js";
-import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
+import { shellWord } from "../lib/endpoint-errors.js";
+import { cotalOnPath, displayCmd, displayRemedy, isNpx, isPnpmDlx, selfArgv } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
@@ -66,6 +72,7 @@ import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
+import { mkdirPrivate } from "../lib/private-directory.js";
 
 const ONBOARD_VERSION = "2";
 
@@ -181,18 +188,19 @@ interface SetupResult {
   /** The project folder: the space's root, whose `.cotal/agents` holds its personas. */
   readonly project: string;
   /** How setup found the space: prepared or registered by this run, or already in place. */
-  readonly spaceState: LocalSpaceState | "added" | "bound" | "registered";
+  readonly spaceState: LocalSetupState | "added" | "bound" | "registered";
   readonly harness: {
     readonly name: string;
     /** Host tools the harness needs that are not on PATH; its own setup did not run. */
     readonly missing: readonly string[];
+    readonly unavailable: boolean;
     readonly failed: ActionFailure | null;
   };
   /** Every connector-owned setup action that ran, in order. */
   readonly actions: readonly ActionRun[];
   /** Every runtime setup offers: `pty`, the official ones and each installed third-party one. */
   readonly runtimes: readonly RuntimeSetup[];
-  /** Every file or folder setup wrote, in order. Empty when a rerun changed nothing. */
+  /** Files and folders setup recorded writing. Empty when a rerun changed nothing. */
   readonly written: readonly Written[];
   readonly startup: SetupStartup;
   /** The command that comes next, and the folder to run it in when that matters. */
@@ -220,6 +228,7 @@ export function validateSetupArguments(args: ParsedArgs): void {
     return;
   }
   if (values.destination !== undefined) destinationOf(values.destination);
+  if (values.project === "") throw usage("--project cannot be empty", "pass a project directory, or use --project . for the current directory");
   if (values.start && values["configure-only"]) throw usage("choose --start or --configure-only, not both");
   if (values.detach && !values.start) throw usage("--detach requires an explicit --start");
   const interactive = presentationOf(values) === "rich" && !values.yes && canPrompt();
@@ -230,6 +239,10 @@ export function validateSetupArguments(args: ParsedArgs): void {
   }
   if (values.start && !values.detach && !interactive) throw usage("setup --start requires --detach when it cannot open an interactive terminal");
   if (!interactive) scriptedInputs(values, runtimeChoices());
+  if (values.harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, values.harness)) {
+    const known = knownHarnesses(extensionNames("connector"));
+    if (!known.includes(values.harness)) throw usage(`no harness ${JSON.stringify(values.harness)}; known harnesses: ${known.join(", ")}`, HARNESS_REMEDY);
+  }
 }
 
 /**
@@ -261,7 +274,7 @@ export async function setup(args: ParsedArgs): Promise<void> {
   const inputs = interactive ? await askInputs(values, runtimes) : scriptedInputs(values, runtimes);
   if (inputs === undefined) return cancelled(presentation, values.space);
   if (values.on !== undefined && inputs.destination !== "self-hosted") throw usage("--on selects a self-hosted manager; local startup pins the manager this root starts");
-  const plan = await planSetup(inputs, runtimes);
+  const plan = await planSetup(inputs, runtimes, values.start === true);
   await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation, start: values.start === true, detach: values.detach === true, configureOnly: values["configure-only"] === true, managerInstanceId: values.on }).catch(exitOnInterruptedAdd);
 }
 
@@ -283,14 +296,15 @@ function destinationOf(value: string): Destination {
   throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
 }
 
-/** The inputs of a run that asks nothing: every one is a flag, and the project folder exists. No
+/** The inputs of a run that asks nothing: every one is a flag. With `--yes`, a missing local project folder is created. No
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
   if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
   const project = resolve(v.project!);
-  if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
-  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
+  const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
+  if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
+  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 
 /**
@@ -522,16 +536,19 @@ function bundleSpace(file: string): string {
   return check.value.space;
 }
 
-/** The applications setup can set up: every installed connector. With none installed, a `harness`
- *  no official connector provides is refused as a usage error, and the remedy names `cotal ext seed`
- *  only where it runs: it refuses a source checkout unless a sandboxed release test opts in. */
+/** The applications setup can set up: every installed connector. For an explicitly named
+ *  built-in that is absent, point to its package without reinstalling removed connectors. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
-  if (candidates.length > 0) return candidates;
+  if (candidates.length > 0) {
+    if (harness !== undefined && Object.hasOwn(OFFICIAL_CONNECTORS, harness) && !candidates.some((candidate) => candidate.value === harness))
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the "${harness}" connector is not installed`, { remedy: `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\`` });
+    return candidates;
+  }
   if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
-    remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
+    remedy: seeds ? (harness === undefined ? "run `cotal ext seed --reset` to restore all built-in extensions, including any you removed" : `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\``) : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
   });
 }
 
@@ -560,36 +577,63 @@ function runtimeFlags(names: readonly string[], choices: readonly RuntimeChoice[
   return [...new Set(names)].filter((name) => name !== "pty");
 }
 
+type LocalSetupState = LocalSpaceState | "stopped" | "not-answering";
+
 interface SetupPlan {
   readonly inputs: SetupInputs;
   readonly runtimes: readonly RuntimeChoice[];
   readonly candidate: SetupConnectorCandidate;
-  readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
+  readonly space: { readonly kind: "local"; readonly state: LocalSetupState } | SelfHostedSpace;
 }
 
 /** Every check setup makes before it writes: the space name, the application, the preferences
- *  folder it saves the harness in, the space at the destination, and for a local space the NATS
- *  server `cotal up` will run. */
-async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]): Promise<SetupPlan> {
+ *  folder it saves the harness in, the space at the destination, and the NATS server if the
+ *  invocation explicitly requests local startup. */
+async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[], start: boolean): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
-  // A name with a letter or digit left after the others are replaced is offered as it would be spelled.
-  const spelled = token(inputs.space);
-  if (problem) throw usage(problem, /[A-Za-z0-9]/.test(spelled) ? `pass --space ${spelled}, or another name of letters, digits, - and _` : "pass a --space name of letters, digits, - and _");
+  if (problem) {
+    const spelled = token(inputs.space).replace(/^-+/, "");
+    throw usage(problem, /[A-Za-z0-9]/.test(spelled) && !spaceNameTooLong(spelled)
+      ? `pass --space ${spelled}, or another name of letters, digits, - and _`
+      : "choose a name that starts with a letter, digit or underscore and has only letters, digits, - and _");
+  }
   const candidates = await harnessCandidates(inputs.harness);
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness ${JSON.stringify(inputs.harness)}; known harnesses: ${candidates.map((c) => c.value).join(", ")}`, HARNESS_REMEDY);
   assertPreferencesFolderProtected();
   if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
-  const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);
-  try {
-    await resolveNatsServer();
-  } catch (e) {
-    if (e instanceof CommandFailure) throw e;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
+  let state: LocalSetupState = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  if (state === "started") {
+    const registered = findMesh(inputs.space);
+    const broker = registered?.origin === "up" && canonicalRoot(registered.root) === canonicalRoot(inputs.project)
+      ? await brokerCheck(registered.server, registered.tlsRequired)
+      : undefined;
+    if (broker === "slow-link") state = "not-answering";
+    else if (broker !== "reachable") state = "stopped";
+  }
+  if (start) {
+    try {
+      await resolveNatsServer();
+    } catch (e) {
+      if (e instanceof CommandFailure) throw e;
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22.10 or newer" });
+    }
   }
   return { inputs, runtimes, candidate, space: { kind: "local", state } };
+}
+
+function checkDemoPersonaPaths(inputs: SetupInputs): void {
+  const agents = personaDir(inputs.project);
+  for (const name of Object.keys(DEMO_AGENTS)) {
+    const path = join(agents, `${name}.md`);
+    if (isDir(path)) {
+      throw new CommandFailure("refused", "CONFLICT", `a directory at ${path} blocks the demo persona`, {
+        target: { space: inputs.space, path }, remedy: `move the directory at ${path} aside, then run the same setup again`,
+      });
+    }
+  }
 }
 
 /**
@@ -601,6 +645,7 @@ async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation; start: boolean; detach: boolean; configureOnly: boolean; managerInstanceId?: string }): Promise<void> {
   const { inputs, candidate } = plan;
   const target = { space: inputs.space };
+  if (opts.demo) checkDemoPersonaPaths(inputs);
   const written: Written[] = [];
   const wrote = (what: string, path: string): void => {
     written.push({ what, path });
@@ -624,7 +669,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (canonicalRoot(currentCustodyRoot) !== canonicalRoot(expectedCustodyRoot))
       throw new CommandFailure("refused", "CONFLICT", `the discovered registration for "${inputs.space}" changed its catalog custody root before its project was bound; nothing was written`, { target, remedy: "run the same setup again against the refreshed registration" });
     if (canonicalRoot(current.root) !== canonicalRoot(currentCustodyRoot) && canonicalRoot(current.root) !== canonicalRoot(plan.space.project))
-      throw new CommandFailure("refused", "CONFLICT", `"${inputs.space}" was bound to the project ${current.root} before this setup could bind ${plan.space.project}; nothing was written`, { target, remedy: `pass --project ${current.root}` });
+      throw new CommandFailure("refused", "CONFLICT", `"${inputs.space}" was bound to the project ${current.root} before this setup could bind ${plan.space.project}; nothing was written`, { target, remedy: `pass ${codeSpan(`--project ${shellWord(current.root)}`)}` });
     if (canonicalRoot(current.root) === canonicalRoot(currentCustodyRoot)) {
       recordMesh({ ...current, root: plan.space.project, catalogRoot: currentCustodyRoot, ts: new Date().toISOString() });
       written.push({ what: "project root binding", path: meshFile(inputs.space) });
@@ -633,15 +678,14 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   } else if (plan.space.kind === "registered") {
     spaceState = "registered";
   } else {
-    if (inputs.createProject) {
-      mkdirSync(inputs.project, { recursive: true });
+    if (inputs.createProject && mkdirPrivate(inputs.project, "the project root") !== undefined) {
       wrote("project folder", inputs.project);
     }
-    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
+    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project, "--project").file);
     spaceState = plan.space.state;
   }
 
-  const persona = seedDefaultPersona(inputs.project);
+  const persona = prepareDefaultPersona(inputs, spaceState, written);
   if (persona) wrote(persona.what, persona.path);
   if (opts.demo) {
     const agents = personaDir(inputs.project);
@@ -654,13 +698,22 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   if (prefs.defaults.harness === undefined && writePreference({}, "harness", inputs.harness, prefs.revision).changed) wrote("your harness preference", preferencesPath());
 
   const narrate = opts.presentation === "rich";
-  const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
+  const path = join(inputs.project, ".cotal", "setup.log");
+  let log: SetupLog;
+  try { log = openSetupLog(path); }
+  catch (error) {
+    const partial = written.length > 0;
+    const saved = partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not open the setup log: ${error instanceof Error ? error.message : String(error)}`, {
+      target: { ...target, path }, changed: written, cause: error, remedy: `check and repair the log path ${path}, then run the same setup again`,
+    });
+  }
   const actions = actionRunner(narrate, opts.interactive, log);
   if (candidate.missing.length === 0) {
     const provider = await connectorSetupProvider(candidate.connector);
     const entry = findMesh(inputs.space);
     const signedIn = provider?.connector && entry?.mode === "user" ? await signedInSpace(entry) : undefined;
-    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), ...(signedIn ? { signedIn } : {}) }, provider));
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, { cotal: selfArgv(), wrote, ...(signedIn ? { signedIn } : {}) }, provider));
     // Recheck inside each selected action so lost readiness is a recorded failure, never a skipped step.
     const share = await connectorSetupProvider(candidate.connector);
     if (share?.mcpServers) await actions.run(candidate.value, actionStep(share.mcpServers, connectorShareInput(candidate.connector), share));
@@ -669,17 +722,15 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
   }
   // A connector's skills action runs for every connector whose harness is present, so someone using
   // that harness gets Cotal's skills even without joining the mesh through it.
-  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
-    if (other.value === candidate.value || other.missing.length > 0) continue;
-    const provider = await connectorSetupProvider(other.connector);
-    if (provider?.skills) await actions.run(other.value, actionStep(provider.skills, connectorSkillsInput(), provider));
-  }
+  await reconcileOtherConnectorSkills(candidate.value, target, narrate, log, actions.ran, warnings);
   if (agentSkillsSkew().some((s) => s.state !== "current")) {
     const skills = seedAgentSkills(log);
     written.push({ what: "cross-vendor skills", path: agentSkillsHome() });
     if (narrate) p.log.success(`Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`);
     for (const b of skills.backedUp) warnings.push({ code: "SKILL_BACKED_UP", target, message: `your edited ${b.name} skill was backed up to ${b.path} before it was refreshed` });
   }
+  const clients = await setUpClients(inputs.space, narrate, opts.interactive, log, wrote);
+  actions.ran.push(...clients.ran);
   const runtimes = await setUpRuntimes(plan.runtimes, inputs.runtimes, narrate, wrote);
   if (!isOnboarded()) {
     markOnboarded(ONBOARD_VERSION);
@@ -696,12 +747,14 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     space: inputs.space,
     project: inputs.project,
     spaceState,
-    harness: { name: candidate.value, missing: candidate.missing, failed },
+    harness: { name: candidate.value, missing: candidate.missing, unavailable: candidate.unavailable && (candidate.connector.requires ?? []).every((bin) => !!resolveOnPath(bin)), failed },
     actions: actions.ran,
     runtimes: runtimes.rows,
     written,
     startup,
-    next: local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
+    next: candidate.missing.length > 0
+      ? { command: `install or repair ${candidate.missing.join(", ")}, then run the same setup again`, cwd: inputs.project }
+      : local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
@@ -709,6 +762,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       : failed
         ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
         : []),
+    ...clients.problems,
     ...runtimes.problems,
   ];
   const partial = problems.length === 0
@@ -742,18 +796,40 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");
     } catch (error) {
-      const known = isCommandFailure(error) ? error : undefined;
+      const connection = inputs.destination === "self-hosted" && isConnectRefusal(error) ? error : undefined;
+      const known = connection?.failure(displayRemedy) ?? (isCommandFailure(error) ? error : undefined);
+      const brokerUnavailable = connection?.kind === "transient" && connection.code === "TARGET_UNAVAILABLE";
       const unknown = known === undefined || known.outcome === "unknown";
       startup.state = unknown ? "unknown" : known.outcome === "refused" ? "refused" : known.outcome === "failed" ? "failed" : "partial";
       const failureTarget = setupFailureCoordinates(known?.target, inputs.space);
-      const diagnostic = known && startup.stackAttempted && !startup.stack ? known.message : undefined;
+      const diagnostic = connection || (startup.stackAttempted && !startup.stack) ? known?.message : undefined;
       startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) };
-      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
-      writeResult(opts.presentation, { command: "setup", target, result, warnings, failure }, setupView);
+      const message = connection ? "preparation is saved, but startup was refused before a launch was sent" : startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish";
+      const remedy = brokerUnavailable ? "start or restore the broker where the space runs, then run the same setup again"
+        : connection ? known?.remedy ?? "fix the connection problem, then run the same setup again"
+        : "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried";
+      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", message, { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy });
+      const reported = connection ? { ...result, next: { command: `${displayCmd()} space show ${shellWord(inputs.space)}`, cwd: null } } : result;
+      writeResult(opts.presentation, { command: "setup", target, result: reported, warnings, failure }, (r) => setupView(r, connection !== undefined));
       return;
     }
   }
   writeResult(opts.presentation, { command: "setup", target, result, warnings, ...(partial ? { partial } : { noOp: !startup.requested && written.length === 0 && actions.ran.length === 0 }) }, setupView);
+}
+
+function prepareDefaultPersona(inputs: SetupInputs, spaceState: SetupResult["spaceState"], written: readonly Written[]): ReturnType<typeof seedDefaultPersona> {
+  try { return seedDefaultPersona(inputs.project); }
+  catch (error) {
+    const dir = personaDir(inputs.project);
+    const native = error instanceof Error ? error as NodeJS.ErrnoException : undefined;
+    const blocked = native?.code === "EEXIST" && native.path === dir;
+    const partial = written.length > 0;
+    const saved = spaceState === "created" ? `prepared space "${inputs.space}" is saved, but ` : partial ? "setup saved some changes, but " : "";
+    throw new CommandFailure(partial ? "partial" : "failed", partial ? "OPERATION_PARTIAL" : "OPERATION_FAILED", `${saved}setup could not write the default persona: ${native?.message ?? String(error)}`, {
+      target: { space: inputs.space, path: blocked ? dir : join(dir, "default.md") }, changed: written, cause: error,
+      remedy: `${blocked ? `move the file at ${dir} aside` : `check and repair the persona path in ${dir}`}, then run the same setup again`,
+    });
+  }
 }
 
 /**
@@ -872,12 +948,14 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
   created: "prepared by this setup",
   prepared: "already prepared",
   started: "already started here",
+  stopped: "stopped",
+  "not-answering": "broker not answering",
   added: "registered by this setup",
   bound: "project bound by this setup",
   registered: "already registered",
 };
 
-function setupView(r: SetupResult): Report {
+function setupView(r: SetupResult, connectionRefused = false): Report {
   const unready = r.runtimes.filter((x) => x.selected && (x.state === "left-out" || x.error !== null || x.reachable === false)).map((x) => x.name);
   const head: Cell = r.startup.failure
     ? { text: `saved ${r.space}; requested startup ${r.startup.state}`, tone: "waiting", mark: "!" }
@@ -889,7 +967,9 @@ function setupView(r: SetupResult): Report {
         ? { text: `set up ${r.space} for ${r.harness.name}`, tone: "ok", mark: "✓" }
         : { text: `${r.space} is already set up for ${r.harness.name}`, tone: "ok", mark: "✓" };
   const leftOut = r.runtimes.filter((x) => !x.selected && x.state === "left-out").map((x) => x.name);
-  const application: Cell = r.harness.missing.length > 0
+  const application: Cell = r.harness.unavailable
+    ? { text: `${r.harness.name} · unavailable`, tone: "failed" }
+    : r.harness.missing.length > 0
     ? { text: `${r.harness.name} · ${r.harness.missing.join(", ")} not on PATH`, tone: "failed" }
     : r.harness.failed
       ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }
@@ -912,7 +992,7 @@ function setupView(r: SetupResult): Report {
   ];
   const agent = r.startup.agent;
   const concrete = agent && [agent.name, agent.managerInstanceId, r.space].every((value) => /^[A-Za-z0-9_-]+$/.test(value));
-  const nextCommand = r.startup.failure ? `${displayCmd()} status --space ${r.space}`
+  const nextCommand = connectionRefused ? r.next.command : r.startup.failure ? `${displayCmd()} status --space ${r.space}`
     : agent ? concrete ? `${displayCmd()} attach ${agent.name} --space ${r.space} --on ${agent.managerInstanceId}` : `${displayCmd()} attach <name> --space <space> --on <manager-instance>`
     : r.next.command;
   return {
@@ -921,7 +1001,7 @@ function setupView(r: SetupResult): Report {
       ...(prepared.length ? [{ title: "Prepared", blocks: [{ kind: "lines" as const, lines: prepared }] }] : []),
       ...(leftOut.length ? [{ blocks: [{ kind: "lines" as const, lines: [{ text: `Left out: ${leftOut.join(", ")}. Existing runtime installations were kept.`, tone: "hint" as const }] }] }] : []),
       startupSection(r.startup),
-      { title: "Next", blocks: [{ kind: "commands", items: [{ command: nextCommand, description: r.startup.failure ? "Inspect the selected space and original startup before requesting another launch" : agent ? concrete ? "Return to the joined agent's exact manager" : "Use the full identities recorded above" : r.next.cwd === null ? "Continue from this setup" : `Run from ${r.next.cwd}` }] }] },
+      { title: "Next", blocks: [{ kind: "commands", items: [{ command: nextCommand, description: connectionRefused ? "Inspect the registered space and its broker address" : r.startup.failure ? "Inspect the selected space and original startup before requesting another launch" : agent ? concrete ? "Return to the joined agent's exact manager" : "Use the full identities recorded above" : r.next.cwd === null ? "Continue from this setup" : `Run from ${r.next.cwd}` }] }] },
     ],
   };
 }
@@ -984,19 +1064,20 @@ function isDir(path: string): boolean {
   }
 }
 
-/** When run via `npx` without a global `cotal`, offer to install it so the user can just type
- *  `cotal`. Interactive: a Y/n prompt (default yes). Non-interactive (`--yes` / no TTY): takes the
- *  default and installs. Best-effort — `npm i -g` fails a lot (EACCES, nvm/fnm/volta), so on failure
- *  we warn with the manual command and continue; setup never aborts over a PATH convenience. */
+/** When run via `npx` or `pnpm dlx` without a global `cotal`, offer to install it so the user can
+ *  just type `cotal`. Interactive: a Y/n prompt (default yes). Non-interactive (`--yes` / no TTY):
+ *  takes the default and installs. Best-effort — `npm i -g` fails a lot (EACCES, nvm/fnm/volta), so on
+ *  failure we warn with the manual command and continue; setup never aborts over a PATH convenience. */
 export async function offerGlobalInstall(yes: boolean): Promise<void> {
-  if (!isNpx() || cotalOnPath()) return; // already have `cotal`, or not an npx run
+  if ((!isNpx() && !isPnpmDlx()) || cotalOnPath()) return; // already have `cotal`, or not an ephemeral runner
+  const runnerCmd = isPnpmDlx() ? "pnpm dlx cotal-ai" : "npx cotal-ai";
 
   if (!yes && process.stdin.isTTY && !inputDisabledByFlag()) {
     const go = abortIfCancel(
       await p.confirm({ message: "Install `cotal` globally so you can just type `cotal`?", initialValue: true }),
     );
     if (!go) {
-      p.log.info(`No problem - keep using ${dim("npx cotal-ai")}. Install later with ${dim("npm i -g cotal-ai")}.`);
+      p.log.info(`No problem - keep using ${dim(runnerCmd)}. Install later with ${dim("npm i -g cotal-ai")}.`);
       return;
     }
   }
@@ -1011,7 +1092,7 @@ export async function offerGlobalInstall(yes: boolean): Promise<void> {
     s.stop("Couldn't install globally");
     const tail = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim().split("\n").slice(-3).join("\n");
     p.log.warn(
-      `${tail ? `${tail}\n\n` : ""}Install it yourself with ${dim("npm i -g cotal-ai")}, or keep using ${dim("npx cotal-ai")}.`,
+      `${tail ? `${tail}\n\n` : ""}Install it yourself with ${dim("npm i -g cotal-ai")}, or keep using ${dim(runnerCmd)}.`,
     );
   }
 }
@@ -1103,7 +1184,7 @@ async function availableSetupProvider(connector: Connector): Promise<ConnectorSe
  * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
  * `I` from the action alone: inferring it from the input too widens it to accept a dropped
  * (`undefined`) input. */
-function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: ConnectorSetupProvider): Step {
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>, provider: Pick<ConnectorSetupProvider, "name" | "requires" | "available">): Step {
   return {
     name: setup.name,
     title: setup.title,
@@ -1134,20 +1215,129 @@ async function reconcileConnectorSkills(): Promise<void> {
   }
 }
 
-/** Run every present connector's refresh, so what an earlier setup installed in its harness moves to
- *  this release. Returns one line per connector that declares one; a refresh that fails throws. */
-export async function refreshConnectorInstalls(): Promise<string[]> {
+/**
+ * Refresh skills for every other available connector without attributing optional failures to the
+ * selected harness, blocking subsequent connectors, or halting setup.
+ */
+async function reconcileOtherConnectorSkills(
+  selectedHarness: string,
+  target: { space: string },
+  narrate: boolean,
+  log: SetupLog,
+  ran: ActionRun[],
+  warnings: OutputWarning[],
+): Promise<void> {
+  for (const other of await setupConnectorCandidates(await setupConnectorSurface())) {
+    if (other.value === selectedHarness || other.missing.length > 0) continue;
+    const provider = await connectorSetupProvider(other.connector);
+    if (!provider?.skills) continue;
+    const step = actionStep(provider.skills, connectorSkillsInput(), provider);
+    const spin = narrate ? p.spinner() : undefined;
+    spin?.start(step.title);
+    try {
+      const detail = await step.run();
+      spin?.stop(`${step.title}${detail ? dim(` · ${detail}`) : ""}`);
+      log.line(`${step.name}: ok${detail ? ` · ${detail}` : ""}`);
+      ran.push({ connector: other.value, action: step.name, title: step.title, detail: detail ?? null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      spin?.stop(`${step.title}: skipped`);
+      log.line(`${step.name}: skipped (${other.value}) · ${message}`);
+      warnings.push({
+        code: "DEPENDENCY_UNAVAILABLE",
+        target: { ...target, connector: other.value },
+        message: `optional skills refresh for ${other.value} did not finish (${message})`,
+      });
+    }
+  }
+}
+
+/** Explicit update reports completed refreshes and throws after the pass. Migration stops at the first failure. */
+export async function refreshConnectorInstalls(report?: (line: string) => void, selfUpdate = false): Promise<string[]> {
   const lines: string[] = [];
+  const failures: string[] = [];
   for (const connector of await setupConnectorSurface()) {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) {
-      const started = Date.now();
-      console.error(`Refreshing ${refresh.title}`);
-      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
-      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    if (!refresh) continue;
+    const input = { cotal: selfArgv(), skills: connectorSkillsInput() };
+    const started = Date.now();
+    console.error(`Refreshing ${refresh.title}`);
+    let detail: string;
+    try {
+      detail = await refresh.run(input);
+    } catch (error) {
+      if (selfUpdate && error instanceof Error && error.name === "ForeignConnectorRegistrationError") {
+        // The explicit refresh reports the skip once, even when seed migration also runs this pass.
+        if (report) console.error(`Skipped ${connector.name} integration refresh: ${error.message}`);
+        continue;
+      }
+      if (!report) throw error;
+      failures.push(`${connector.name}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
     }
+    console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    const line = `${refresh.title}: ${detail}`;
+    if (report) report(line);
+    else lines.push(line);
+  }
+  if (failures.length > 0) throw new Error(failures.join("\n"));
+  return lines;
+}
+
+/**
+ * Connects every ACP client on this machine to the space. An official client whose package is not
+ * installed gets it added at this cotal's version when the application is found, the way an official
+ * runtime is. Then each available client provider runs its own setup for the space. Each runs on its
+ * own, so one that fails or does not load leaves the others set up and the result partial.
+ */
+async function setUpClients(space: string, narrate: boolean, interactive: boolean, log: SetupLog, wrote: (what: string, path: string) => void): Promise<{ ran: ActionRun[]; problems: Problem[] }> {
+  const ran: ActionRun[] = [];
+  const problems: Problem[] = [];
+  const installed = new Set(extensionNames("client-setup"));
+  const found = new Map<string, string[]>();
+  for (const [name, app] of Object.entries(OFFICIAL_CLIENT_APPS)) {
+    if (installed.has(name) || (!app.tools.some((tool) => resolveOnPath(tool)) && !app.dirs().some(isDir))) continue;
+    found.set(app.package, [...(found.get(app.package) ?? []), app.title]);
+  }
+  for (const [pkg, titles] of found) {
+    try {
+      // With --json or --plain, stdout carries the result alone.
+      await addExtension(`${pkg}@${cliVersion()}`, pkg, false, narrate ? console.log : (line) => console.error(line));
+    } catch (e) {
+      if (e instanceof ExtensionAddInterrupted) throw e;
+      problems.push({ message: `${titles.join(" and ")} ${titles.length === 1 ? "is" : "are"} on this computer, but ${pkg} did not install (${(e as Error).message.split("\n")[0]})`, remedy: `run \`cotal ext add ${pkg}\`, then run the same setup again` });
+      continue;
+    }
+    wrote(`${titles.join(" and ")} integration`, extensionPackageDir(pkg));
+  }
+  for (const name of extensionNames("client-setup")) {
+    let provider: ClientSetupProvider;
+    try {
+      provider = await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name });
+    } catch (e) {
+      problems.push({ message: `the ${name} client setup did not load (${(e as Error).message.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
+      continue;
+    }
+    if (!provider.connector || !setupProviderAvailable(provider)) continue;
+    const runner = actionRunner(narrate, interactive, log);
+    await runner.run(provider.name, actionStep(provider.connector, { cotal: selfArgv(), wrote, space }, provider));
+    ran.push(...runner.ran);
+    if (runner.failed) problems.push({ message: `${runner.failed.title} did not finish (${runner.failed.message})`, remedy: "fix it, then run the same setup again" });
+  }
+  return { ran, problems };
+}
+
+/** Run every installed client provider's refresh, so the entries an earlier setup wrote in each
+ *  application run this cotal. `cotal update` calls it once the operator extensions are current, since
+ *  a client provider ships in one. Returns one line per provider that declares a refresh; a refresh
+ *  that fails throws. */
+export async function refreshClientInstalls(): Promise<string[]> {
+  const lines: string[] = [];
+  for (const name of extensionNames("client-setup")) {
+    const refresh = (await materializeExtension<ClientSetupProvider>({ kind: "client-setup", name })).refresh;
+    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv() })}`);
   }
   return lines;
 }

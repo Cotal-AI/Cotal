@@ -162,7 +162,7 @@ export function bindPins(recorded: RunPins, options: PinnableOptions, languageVe
   const suppliedCeilings = ceilingPins(options.ceilings);
   if (suppliedCeilings !== undefined && JSON.stringify(suppliedCeilings) !== JSON.stringify(recordedCeilings ?? {}))
     throw new PinMismatch("L5009", "ceilings", JSON.stringify(recordedCeilings ?? {}), JSON.stringify(suppliedCeilings),
-      "This run's per-kind effect ceilings differ from the caller's override. Resume without the override or fork the run under new ceilings.");
+      "This run's per-kind effect ceilings differ from the caller's override. Resume without the override, or start a new run with different ceilings.");
   const checks: readonly [keyof RunPins & string, string | number | undefined, string | number][] = [
     ["seed", options.seed, recorded.seed],
     ["startedAt", options.startedAt, recorded.startedAt],

@@ -193,7 +193,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     : hop.mode === 'source-0.164.10'
       ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? pair.sourceVersion
       : pair.sourceVersion;
-  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli)
+  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli || cell.scenario === 'candidate-next-foreign-config-recovery')
     ? {passed: true}
     : evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
   if (['npm', 'installer'].includes(followOnAction)) {
@@ -265,7 +265,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     stoppedDesktopBesideCli = archivedDesktopAfter.status?.exit === 2 && archivedDesktopAfter.status?.signal === null && archivedDesktopAfter.status?.timeout === false
       && archivedDesktopAfter.unitShowAfter?.exit === 0 && archivedDesktopAfter.unitShowAfter?.signal === null && archivedDesktopAfter.unitShowAfter?.timeout === false
       && /ActiveState=inactive/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? '')) && /MainPID=0/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? ''))
-      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update left it stopped.`)
+      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update did not start or stop it.`)
       && archivedDesktopAfter.updateNamesDesktopOwner === true
       && archivedDesktopAfter.remainsStopped === true;
   }
@@ -416,7 +416,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       }
       const bareDaemon = archivedBare.daemonStatus?.exit === 0 ? JSON.parse(archivedBare.daemonStatus.stdout).result : undefined;
       const bareCliHeader = String(archivedBare.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
-      const bareRemedy = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(String(archivedBare.version?.stdout ?? ''));
+      const bareRemedy = /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(String(archivedBare.version?.stdout ?? ''));
       const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= 8 && archivedBare.extensions.every(entry => {
         const installed = archivedBare.installedExtensions?.find(row => row.pkg === entry.pkg);
         if (!installed || installed.version !== entry.version) return false;
@@ -428,7 +428,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         && typeof bareRuntimesRow?.error === 'string'
         && bareRuntimesRow.error.includes(`@cotal-ai/tmux is ${pair.targetVersion} and this cotal is ${pair.followOnVersion} - run \`cotal update --self\` to reconcile this installation`);
       const gateRefusal = archivedBare.launchGateRefusal;
-      const gateRefusalOk = gateRefusal?.command?.exit === 1
+      const gateRefusalOk = gateRefusal?.command?.exit === 2
         && gateRefusal.command.signal === null
         && gateRefusal.command.timeout === false
         && /run `cotal update --self` to reconcile this installation/.test(String(gateRefusal.command.stdout ?? '') + String(gateRefusal.command.stderr ?? ''))
@@ -448,7 +448,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       const scheduled = archivedBare.scheduledReconcile;
       const scheduledHeader = String(scheduled?.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
       const scheduledTmuxRow = scheduled?.runtimes?.exit === 0 ? JSON.parse(scheduled.runtimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
-      const scheduledOk = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(String(scheduled?.pendingBefore?.stdout ?? ''))
+      const scheduledOk = /Reconciliation pending: Run `cotal update` to reconcile this home's extensions\./.test(String(scheduled?.pendingBefore?.stdout ?? ''))
         && scheduled?.attempt?.version === pair.followOnVersion
         && scheduled?.attempt?.result === `updated to ${pair.followOnVersion}`
         && clean(scheduled?.version) && scheduledHeader

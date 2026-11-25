@@ -148,15 +148,17 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
 
 // -- A: add --------------------------------------------------------------------------------------
 {
-  const goodFixture = fixture("cotal-ext-fixture", GOOD, { bin: { "fixture-bin": "bin.js" } });
+  const goodFixture = fixture("cotal-ext-fixture", GOOD, { main: "./index", bin: { "fixture-bin": "bin.js" } });
   writeFileSync(join(goodFixture, "bin.js"), "#!/usr/bin/env node\n");
   const r = cotal(["ext", "add", goodFixture]);
-  ok("add exits 0", r.status === 0, r.stderr.slice(-400));
+  ok("add resolves an extensionless npm main", r.status === 0, r.stderr.slice(-400));
   ok("add names the contributed command", /hello-ext/.test(r.stdout), r.stdout);
   ok("manifest written + announced", existsSync(manifestPath) && /→ wrote extensions manifest/.test(r.stderr), r.stderr.slice(-300));
   ok("core is linked to OUR copy", /→ wrote @cotal-ai\/core link/.test(r.stderr));
   const m = JSON.parse(readFileSync(manifestPath, "utf8"));
   ok("manifest pins name@version + caches flags and provider keys", m.extensions[0].version === "1.0.0" && m.extensions[0].commands[0].flags[0].name === "shout" && m.extensions[0].provides[0].kind === "command", m.extensions[0]);
+  const run = cotal(["hello-ext"]);
+  ok("a later command resolves the same npm main", run.status === 0 && run.stdout.trim() === "hello world", run);
 }
 
 // -- B: cache-only help/complete; run fails loud while broken -------------------------------------
@@ -284,7 +286,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   writeFileSync(manifestPath, "{ not json");
   const r = cotal(["--help"]);
   ok("corrupt manifest fails every invocation", r.status === 1, r.status);
-  ok("...as one red line naming the manifest + the fix", /corrupt extensions manifest/.test(r.stderr) && /ext add/.test(r.stderr), r.stderr.slice(0, 300));
+  ok("...as one red line naming the manifest and the repair command", /corrupt extensions manifest/.test(r.stderr) && /cotal ext seed --repair/.test(r.stderr), r.stderr.slice(0, 300));
   ok("...not an unhandled-rejection stack dump", !/ModuleJob|at async/.test(r.stderr), r.stderr.slice(0, 300));
   writeFileSync(manifestPath, good);
 }
@@ -317,7 +319,7 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   const staleRun = cotal(["hello-ext", "stale-lock"]);
   ok("lazy extension import ignores a dead owner's stale mutation lock", staleRun.status === 0 && /hello stale-lock/.test(staleRun.stdout), staleRun.stdout + staleRun.stderr);
   const staleClaim = cotal(["ext", "remove", "not-installed"]);
-  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 1 && /no installed extension/.test(staleClaim.stderr) && !existsSync(mutationLock), staleClaim.stderr);
+  ok("extension mutation reclaims a dead owner's stale lock", staleClaim.status === 0 && /already absent/.test(staleClaim.stdout) && !existsSync(mutationLock), staleClaim.stdout + staleClaim.stderr);
 
   mkdirSync(mutationLock); // a stray directory where the lock file belongs → unreadable
   const unreadableStarted = Date.now();
@@ -551,6 +553,21 @@ registry.register(
   const fixturePid = daemon();
   writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
   writeFileSync(join(sandbox, ".cotal", "fixture.secret"), "keep");
+  const liveRemoval = cotal(["ext", "remove", "cotal-ext-providers"]);
+  ok("remove preserves a live process and gives a readable refusal",
+    liveRemoval.status === 1 && liveRemoval.stderr.includes(`stop pid ${fixturePid}, then retry`)
+      && !liveRemoval.stderr.includes("\\u000a") && alive(fixturePid)
+      && readFileSync(join(sandbox, ".cotal", "fixture.pid"), "utf8") === String(fixturePid),
+    liveRemoval.stderr);
+  for (const raw of ["", "not-a-pid", "0", "2147483648", `removing:${process.pid}`]) {
+    writeFileSync(join(sandbox, ".cotal", "fixture.pid"), raw);
+    const refused = cotal(["ext", "remove", "cotal-ext-providers"]);
+    ok(`remove preserves unattributable or reserved record ${JSON.stringify(raw)}`,
+      refused.status === 1 && /UNATTRIBUTABLE|extension-removal reservation/.test(refused.stderr)
+        && readFileSync(join(sandbox, ".cotal", "fixture.pid"), "utf8") === raw,
+      refused.stderr);
+  }
+  writeFileSync(join(sandbox, ".cotal", "fixture.pid"), String(fixturePid));
   for (const name of ["fixture-worker", "manager", "nats", "managre"]) {
     const named = cotal(["down", name]);
     const reason = name === "manager" ? /no manager has been started/ : /no saved service definition resolves this name/;
@@ -577,7 +594,22 @@ registry.register(
   ok("bare down stops an installed extension's process with the stack and clears its artifacts",
     whole.status === 0 && !alive(fixturePid) && !existsSync(join(sandbox, ".cotal", "fixture.pid")) && !existsSync(join(sandbox, ".cotal", "fixture.secret")),
     whole.stdout + whole.stderr);
-  ok("provider extension removes cleanly", cotal(["ext", "remove", "cotal-ext-providers"]).status === 0);
+  const exited = await new Promise<number>((resolve, reject) => {
+    const child = spawn(realNode, ["-e", "process.exit(0)"], { stdio: "ignore" });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 && child.pid ? resolve(child.pid) : reject(new Error(`child exit ${code}`)));
+  });
+  ok("the stale record names a real process proven gone", !alive(exited));
+  const otherRoot = join(sandbox, "other-root");
+  mkdirSync(join(otherRoot, ".cotal"), { recursive: true });
+  recordMesh({ space: "other", server: "nats://127.0.0.1:1", root: otherRoot, mode: "open", ts: "2026-07-27T00:00:00.000Z" });
+  const stalePaths = [sandbox, otherRoot].map((root) => join(root, ".cotal", "fixture.pid"));
+  for (const path of stalePaths) writeFileSync(path, String(exited));
+  const staleRemoved = cotal(["ext", "remove", "cotal-ext-providers"]);
+  ok("remove reclaims proven-dead pidfiles in the current and registered roots",
+    staleRemoved.status === 0 && stalePaths.every((path) => !existsSync(path)), staleRemoved.stdout + staleRemoved.stderr);
+  ok("dead-pid removal drops the provider from the installed manifest",
+    !JSON.parse(readFileSync(manifestPath, "utf8")).extensions.some((entry: { pkg: string }) => entry.pkg === "cotal-ext-providers"));
 
   // A provider whose records sit in a folder of their own: remove reserves that folder before the
   // process has ever run, and under a group-writable umask, which the binary inherits, it is 0700.

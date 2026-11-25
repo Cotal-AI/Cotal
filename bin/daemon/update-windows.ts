@@ -11,7 +11,7 @@ import { daemonPaths } from "./endpoint.js";
 import { xmlText } from "./install-xml.js";
 import { windowsArgument } from "./install-win32.js";
 
-export interface WindowsUpdateReceipt {
+interface WindowsUpdateReceipt {
   v: 1; nonce: string; name: string; source: string; sha256: string; argv: string[]; bootId: number; failures: number;
   revoked: boolean; env: Record<string, string>; owner?: { pid: number; start: string; bootId: number }; drained?: boolean; done?: boolean;
 }

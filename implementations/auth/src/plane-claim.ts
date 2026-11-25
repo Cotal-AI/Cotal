@@ -128,7 +128,7 @@ export interface PlaneClaimHold {
 }
 
 /** The frozen provenance of one acquired hold: its space and the original held-check closure. */
-export interface GenuinePlaneHold { readonly space: string; readonly assertHeld: ScanGuard["assertHeld"] }
+interface GenuinePlaneHold { readonly space: string; readonly assertHeld: ScanGuard["assertHeld"] }
 /** Every hold `acquirePlaneClaim` returned. A structural object with the same fields is not a hold,
  *  and replacing a hold's `guard` later does not change the check its provenance carries. */
 const GENUINE_HOLDS = new WeakMap<PlaneClaimHold, GenuinePlaneHold>();

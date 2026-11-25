@@ -6,7 +6,7 @@ import { CotalEndpoint, isReachable, mintCreds, newIdentity, type SpaceAuth } fr
  * can still race onto one name. Reading presence in auth mode needs a credential (the
  * bucket is open only to agents), so it mints a short-lived least-privilege operator one.
  */
-export async function liveMeshNames({ space, server, auth }: { space: string; server: string; auth?: SpaceAuth }): Promise<Set<string> | undefined> {
+export async function liveMeshNames({ space, server, auth }: { space: string; server: string; auth?: SpaceAuth }, retired: ReadonlySet<string> = new Set()): Promise<Set<string> | undefined> {
   const creds = auth ? await mintCreds(auth, newIdentity(), "operator") : undefined;
   if (!(await isReachable(server, { creds }))) return undefined;
   const ep = new CotalEndpoint({
@@ -25,7 +25,7 @@ export async function liveMeshNames({ space, server, auth }: { space: string; se
   ep.on("warning", ignoreNameProbeWarning); // deliberate: this best-effort probe never owns the caller's success
   await ep.start();
   try {
-    return new Set(ep.getRoster().filter((p) => p.status !== "offline").map((p) => p.card.name));
+    return new Set(ep.getRoster().filter((p) => p.status !== "offline" && !retired.has(p.lifecycleUid ?? "")).map((p) => p.card.name));
   } finally {
     await ep.stop();
   }

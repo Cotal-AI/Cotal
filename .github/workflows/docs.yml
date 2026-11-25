@@ -3,11 +3,15 @@ name: Docs
 # Build and deploy the docs site (website/) to Cloudflare Pages, with the TypeScript reference
 # TypeDoc generates from the published packages' sources at /api/typescript/.
 #  - push to main touching docs sources   -> production deploy (docs.cotal.ai)
-#  - pull request touching docs sources   -> preview deploy (URL in the job summary)
+#  - pull request touching docs sources   -> build check only; the built site is attached to
+#                                             the run as the `docs-site` artifact
 #  - release published                    -> immutable snapshot on a branch alias
-#                                             (<tag>.cotal-docs.pages.dev)
+#                                             (the tag with every character outside
+#                                             letters, digits and `-` turned into `-`, so
+#                                             v1.2.3 is v1-2-3.cotal-docs.pages.dev)
 # Needs repo secrets CLOUDFLARE_API_TOKEN (Pages:Edit + Account Settings:Read)
-# and CLOUDFLARE_ACCOUNT_ID. Fork PRs build but skip the deploy (no secrets).
+# and CLOUDFLARE_ACCOUNT_ID. Only the `docs` job reads them, and it never runs for a pull
+# request: a pull request's own build scripts run in `pull-request-build`, which holds no secret.
 
 on:
   push:
@@ -64,20 +68,73 @@ on:
   release:
     types: [published]
 
-# A new push to a PR supersedes the preview build already running for it; main and release builds
-# queue behind each other, because a deploy result is the record for that commit.
+# A new push to a PR supersedes the build already running for it. Runs for main queue in order,
+# and so do runs for one release tag, because a deploy result is the record for that commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
+permissions:
+  contents: read
+
 jobs:
-  docs:
+  # A pull request's build runs the pull request's own scripts, so this job holds no secret and
+  # deploys nothing. The built site is kept as an artifact for whoever wants to look at it.
+  pull-request-build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: pnpm install --frozen-lockfile
+      # The site publishes the TypeScript reference; TypeDoc's warnings stay visible in this log.
+      - run: pnpm gen:tsdocs
+      - run: npm ci
+        working-directory: website
+      - run: npm run build
+        working-directory: website
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docs-site
+          path: website/dist
+          retention-days: 7
+
+  docs:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # The condition above lives in this file, so a pull request that edits the file can remove
+    # it. The lasting boundary is this environment: once the Cloudflare secrets are stored on it
+    # with a deployment rule that admits only `main` and release tags, no pull request run can
+    # read them, whatever its copy of this file says.
+    environment: docs-deploy
+    steps:
+      # A release builds the tagged commit with the deploy credentials in this job, so the tag
+      # must point at a commit that is already on main. Checked before anything is checked out.
+      - name: Refuse a release whose commit is not on main
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          status=$(gh api "repos/$REPO/compare/main...$SHA" --jq .status)
+          case "$status" in
+            identical|behind) echo "release commit $SHA is on main ($status)" ;;
+            *) echo "::error::release commit $SHA is not on main (compare status: ${status:-unknown}); refusing to build it with the deploy credentials"; exit 1 ;;
+          esac
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -93,21 +150,25 @@ jobs:
       - name: Pick the Pages branch
         id: target
         env:
+          EVENT: ${{ github.event_name }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-*$//')" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "branch=${{ github.head_ref }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = "release" ]; then
+            branch=$(echo "$TAG" | tr -c 'a-zA-Z0-9-' '-' | sed 's/^-*//; s/-*$//')
+            # The production branch is deployed only by a push to main. A tag that sanitizes to
+            # it, or to nothing, is refused.
+            if [ -z "$branch" ] || [ "$(printf %s "$branch" | tr '[:upper:]' '[:lower:]')" = "main" ]; then
+              echo "::error::release tag '$TAG' maps to the Pages branch '${branch}', which a release may not deploy"
+              exit 1
+            fi
+            echo "branch=$branch" >> "$GITHUB_OUTPUT"
           else
             echo "branch=main" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Deploy to Cloudflare Pages
-        # Fork PRs have no secrets; they stop at the build check above.
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         id: deploy
-        uses: cloudflare/wrangler-action@v4
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

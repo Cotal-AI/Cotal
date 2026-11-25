@@ -156,6 +156,26 @@ export function selectionRefusal(status: number, value: unknown): string | undef
   return `the selection exceeds your own access: ${items.join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
 }
 
+/** Only a request-bound, terminal name refusal proves that this unissued request can be dropped. */
+export function nameTakenRefusal(status: number, value: unknown, requestId: string): string | undefined {
+  if (status !== 409 || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  const keys = ["v", "requestId", "status", "error"];
+  if (Object.keys(body).length !== keys.length || keys.some((key) => !Object.hasOwn(body, key)) ||
+      body.v !== 1 || body.requestId !== requestId || body.status !== "refused" || body.error !== "name-taken") return undefined;
+  return "The name is already held by one of your agents in this space. No identity was issued for this request. " +
+    "Connect with another name, or retire the earlier agent you no longer use before connecting again.";
+}
+
+/** An older name conflict explains the refusal but does not prove that the saved request is terminal. */
+export function legacyNameTakenRefusal(status: number, value: unknown): string | undefined {
+  if (status !== 409 || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  if (body.error !== "name-taken" || Object.keys(body).some((key) => !["error", "reason", "agentsUrl"].includes(key))) return undefined;
+  return "The name is already held by one of your agents in this space. The original request was retained because " +
+    "this authority did not confirm a terminal refusal; no automatic retry will be made.";
+}
+
 /** A request-bound, terminal agent-cap refusal. Only this versioned answer proves that a replay
  *  cannot issue later. Display our explanation and pinned action URLs, never server prose. */
 export function agentCapRefusal(status: number, value: unknown, authority: ConversationAuthority, requestId: string): string | undefined {

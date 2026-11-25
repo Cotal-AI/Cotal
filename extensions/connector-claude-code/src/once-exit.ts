@@ -10,7 +10,7 @@ const KILL_WAIT_MS = 2_000;
 
 /** The `claude` process a managed once seat's MCP server runs under, as recorded at the server's
  *  start: its pid, its start token, and the real path of its executable. */
-export interface ClaudeHost {
+interface ClaudeHost {
   pid: number;
   start: string;
   exe: string;

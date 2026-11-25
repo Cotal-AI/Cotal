@@ -81,7 +81,7 @@ const cliBin = join(repoRoot, "bin", "cotal.ts");
 const tsxLoader = import.meta.resolve("tsx");
 const childEnv = (home: string): NodeJS.ProcessEnv => ({
   PATH: process.env.PATH ?? "", TMPDIR: tmpdir(), LANG: "C.UTF-8", HOME: home, COTAL_HOME: home,
-  XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1",
+  XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1",
 });
 const cli = (argv: string[], cwd: string, home: string, ms = 90_000) => new Promise<{ code: number | null; out: string }>((res) => {
   const p = spawn(process.execPath, ["--import", tsxLoader, cliBin, ...argv], { cwd, env: childEnv(home), stdio: ["ignore", "pipe", "pipe"] });

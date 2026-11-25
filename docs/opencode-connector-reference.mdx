@@ -17,7 +17,64 @@ on your PATH. (Claude Code, by contrast, installs a plugin because its wake chan
 
 The connector supports two OpenCode lines: 1.x (`opencode-ai` 1.16 and later) and 2.x
 (`@opencode/cli` 2.0 and later). It detects the line from `opencode --version` at spawn. An
-unsupported version is refused with an error naming the version and the two supported lines.
+unsupported version is refused in one line that names the `opencode` file found, its version, the
+two supported lines and how to install a supported one. The spawn exits 1.
+
+On a per-user mesh the 2.x plugin runs [agent commands](connector-runtime-reference.mdx#agent-commands)
+in the session it drives. It lists `GET /api/command` by each command's `name` and `GET /api/skill`
+by each skill's `id`, the field `/prompt` attaches a skill by. A built-in skill's `id` differs from
+its display `name`. Only each entry's name and description leave the plugin. OpenCode loads a
+location's commands and skills on the first request for them and answers that request with what it
+already holds, so the first list waits up to 3 s for OpenCode's `command.updated` and
+`skill.updated` events and then reads both lists again. A command posts to
+`/api/session/:id/command` and a skill rides `/api/session/:id/prompt` with the skill attached, each
+only while no other turn runs. One that runs the model runs as a turn of its own. OpenCode accepts
+some commands, such as `goal clear`, without starting a turn, so when no turn starts within 5 s of
+OpenCode's answer, the plugin stops waiting for one and sends what waits. OpenCode answers a command
+only once its template's shell snippets finish, and a client that leaves first cancels it, so the
+plugin waits for that answer with no timeout until it stops. The command reads `taken` until then,
+and `started` once OpenCode answers. Right after a command, waiting messages go before the next
+queued command. The first turn the plugin submits carries the agent's persona in the `system` field,
+also when that turn is a command. OpenCode 2.2.5 does not pass that field to the model, for a message
+or a command. An unknown name ends `refused` with `not-found`, any other 4xx answer ends `refused`
+with `failed-precondition`, and any other failure ends `unknown`. `interrupt` posts
+`/api/session/:id/interrupt` and answers what OpenCode answers: `interrupted`, or `idle` when no
+execution ran. A stopped execution ends as `session.execution.interrupted`, which the plugin handles
+as a Stop at the terminal: the messages the turn carried count as delivered, and the next queued
+command runs.
+
+The 1.x plugin runs agent commands too. `GET /command` lists commands and skills in one list, a
+skill with `source: "skill"` and an MCP prompt as a command, and only each entry's name and
+description leave the plugin. Both run through `/session/:id/command` by name, only while no other
+turn runs. A name OpenCode does not list ends `refused` with `not-found` without reaching OpenCode,
+because OpenCode 1.19.6 answers an unknown name with a 500. OpenCode answers a command only once the
+turn it started has ended, so the command reads `taken` until that turn starts: OpenCode calls its
+`command.execute.before` hook, stores the command's prompt, and reports the session busy. The
+command reads `started` from then. An error answer before the turn starts ends `refused` with
+`failed-precondition`. OpenCode 1.19.6 answers a 500 after the hook, with nothing stored, when a
+plugin's `chat.message` hook throws. A command whose turn has not started 5 s after the hook ends
+`unknown`, and the plugin sends what waits. The command route takes no `system` field, so when a
+command is the first turn the plugin submits, the persona rides the next message turn instead. Waiting messages go before the next queued command, as on 2.x.
+`interrupt` answers `idle` when no turn runs, by the plugin's own turn state, because OpenCode's
+`/session/:id/abort` answers `true` either way. Otherwise it posts that route and answers
+`interrupted`. The stopped turn ends with a `MessageAbortedError`, which the plugin handles as a
+Stop.
+
+On both lines the agent takes its owner's `turn` with images and answers `usage`. A turn waits in
+the same queue as a command and runs as a turn of its own, with the owner's words as the user's
+message and nothing from the inbox. On 1.x it posts `/session/:id/prompt_async` with a text part
+and each image as a `file` part whose `url` is a `data:` URL. On 2.x it posts
+`/api/session/:id/prompt` with the text and each image in `files` as a `data:` URI. When the turn
+is the first one the plugin submits, it carries the persona in the `system` field. A 4xx answer
+ends it `refused` with `failed-precondition`. OpenCode takes an image whatever the model. A model
+without image input reads an error note in its place and tells the user it cannot see the image.
+`usage` reports what T3 Code's OpenCode provider shows. `context.used` is the input, cache read,
+cache write and output tokens of the session's last model step: on 1.x the last `step-finish` part
+of the newest message by id, whatever order OpenCode lists the messages in, and on 2.x the newest
+assistant record. `context.size` is that model's `limit.input`, or its
+`limit.context` when it has no input limit, from `GET /provider` on 1.x and `GET /api/model` on
+2.x. A model with neither leaves `context` out. `cost` is the session's cost in USD once it is
+above zero: the sum of the assistant messages' `cost` on 1.x, and the session's `cost` on 2.x.
 
 ## Tool configuration
 
@@ -51,7 +108,9 @@ in-process plugin does everything.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
-  from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting).
+  from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting). An open
+  question also reads waiting, as does any open form on 2.x. On 2.x, an answered ask reads working
+  again while its turn runs. A failed turn also sets a presence condition; see below.
 - **A password on the server.** The OpenCode server accepts only requests carrying a password the
   launcher mints per launch, or one a headless host supplies as `OPENCODE_SERVER_PASSWORD`. It
   reaches the server and the TUI only through their environment, and the headless `[cotal-serve]`
@@ -74,6 +133,15 @@ in-process plugin does everything.
   example after its link was down for longer than the ack wait, and the broker may then
   redeliver it. Delivery stays at-least-once: see
   [Durable transport](presence-and-delivery.mdx#durable-transport).
+- **An unanswered direct message gets one reminder on 2.x.** When a turn that carried a live
+  direct message, role request or `@mention` ends cleanly and no `cotal_dm`, `cotal_send` or
+  `cotal_anycast` call succeeded in it, the connector submits one short turn. That turn reminds the
+  agent that its chat output reaches nobody, and asks it to reply with a Cotal tool if a reply is
+  warranted or to end the turn without one. Each directed message gets at most one reminder. When
+  new direct messages arrive meanwhile, the reminder goes out with them, and that turn can earn a
+  reminder for their senders. A failed or interrupted turn gets none. Senders are named as the
+  inbox names them, marked as unverified names. The connector never sends a reply on the agent's
+  behalf.
 - **A once task fails if its turn ends before the submission is answered.** The event stream
   reports a turn's end and the server's answer reports the submission landed, and the two can
   arrive in either order. When the end arrives first, the connector cannot tell the task's own
@@ -111,11 +179,40 @@ in-process plugin does everything.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
   injects a `/reconnect` command that calls the shared `cotal_reconnect` tool, rebuilding a wedged
   mesh link in-process.
+  It runs only at the agent's terminal. The agent endpoint's `commands` list leaves it out, and a
+  `command` that names it ends `refused` with `failed-precondition`, because a broken link never
+  delivers it and a working one would drop the connection its answer needs.
 - Spawned agents run autonomously (`permission: "allow"`) so a supervised agent never stalls on a
-  tool-approval prompt.
+  tool-approval prompt, unless the launch sets `askPermissions` (see [prompts](#prompts)).
 
 The generic tool surface and the inbound-message model are shared across connectors: see
 [mcp-tools.md](mcp-tools.mdx) and [connect-claude.md](connect-claude.mdx).
+
+## Prompts
+
+A seat launches with OpenCode's `permission` set to `allow`, so it asks nothing. A launch with
+[`askPermissions`](connectors.mdx#opt-in-launch-fields) sets T3 Code's approval-required rules
+instead: every tool asks except question, read, glob, grep, lsp, todowrite, task, skill and the
+agent's own `cotal_*` tools, and reading an `.env` file other than `.env.example` asks. Such a
+launch refuses a `permission` launch option, which would override those rules. A persona whose
+`launchOptions` set an asking permission, such as `{permission: {bash: ask}}`, also makes OpenCode
+ask. Each ask then opens a prompt on the agent's `agent` endpoint, on 1.x and 2.x, while
+OpenCode's own dialog stays open. The first reply wins.
+
+- **A permission ask** offers Allow once, Allow always and Reject. Its subject is the tool call it
+  gates, with the tool's name and input as the call started, so a client can show the command or
+  the edit. Its text says what the call would touch. On 1.x, Allow always allows the ask's
+  patterns for the rest of the OpenCode session. On 2.x it saves an allow rule for the project. A
+  note on Reject reaches the model as OpenCode's rejection message. An ask whose input is too large
+  to show leaves the input out and offers only Reject.
+- **A question** from OpenCode's question tool opens a form with one field per question. A
+  question's listed choices are offered as a choice, and typing an answer of your own works only
+  in OpenCode's dialog. Dismiss rejects the question. A 2.x form with a field the form profile has
+  no words for, such as an external link or a conditional field, stays with OpenCode's dialog.
+- An answer given in OpenCode's dialog closes the prompt, and the end of the turn withdraws a
+  prompt nobody answered.
+
+Asks from subagent sessions under the seat's session are served too, scoped to that session.
 
 ## Startup diagnostics
 
@@ -143,14 +240,16 @@ cotal models --harness opencode --refresh  # 1.x: refresh the provider cache fir
 ```
 
 On 1.x the catalog comes from `opencode models --pure --verbose`. On 2.x it comes from
-`opencode api --standalone GET /api/model`, which starts a private OpenCode server for that one
-request and stops it on exit. `--refresh` does not apply to 2.x. A 2.x read that fails, returns
-something other than a model list, or takes longer than 6 seconds reports the catalog unavailable
-with the reason.
+`opencode serve --stdio GET /api/model`. The connector starts a private OpenCode server on loopback
+and stops it with its process group when the read ends. OpenCode answers the model list empty or
+partial until its plugins load, so the connector waits until `GET /api/plugin` lists them, as
+OpenCode's own `opencode models` does, and then reads the list. `--refresh` does not apply to 2.x. A
+2.x read that fails, lists no models or something other than a model list, or takes longer than 10
+seconds fails with the reason, and `cotal models` reports the catalog as unreadable.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
-the absolute path the manager resolved at boot. A binary placed earlier on PATH after boot is not
-the one the catalog reads.
+the absolute path the manager resolved when OpenCode became available. A binary placed earlier on
+PATH after that does not replace the one the catalog reads.
 
 Pick one at spawn, or set `model:` / `variant:` in the agent file (the flags win over the file):
 
@@ -165,6 +264,8 @@ For an explicit model pin, the connector checks the running OpenCode server's `/
 listing before joining the mesh. If that server does not list the model, launch refuses with
 the id and names both the server listing and the `opencode models --pure --verbose` CLI catalog.
 The CLI catalog alone does not prove that the server serving this session has the model.
+On 2.x the check reads `GET /api/model` once the server's plugins have loaded, and refuses when
+they have not loaded within 10 seconds, because the list is incomplete until then.
 OpenCode's cold server bootstrap can take longer than the generic 30-second manager check;
 the connector declares a two-minute readiness window for this check and the mesh join.
 
@@ -194,7 +295,8 @@ change the append expectation or discard local logs.
 
 When OpenCode exits before its session is ready, the launcher's final line names the exit code and
 repeats the connector's last message. A host that reports only the last line of a failed launch,
-as the Manager does, then reports the reason and not a generic exit.
+as the Manager does, then reports the reason and not a generic exit. The launcher exits with
+OpenCode's status, or 1 when OpenCode exited 0, so the launch fails either way.
 
 The managed session is created and announced only after the mesh join completes. Its event boundary
 is captured at adopt, before any prompt is admitted.
@@ -202,9 +304,21 @@ is captured at adopt, before any prompt is admitted.
 Both OpenCode lines publish the same events. On 2.x the connector reads the session it launched
 through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes
 each item once it is final. Text and reasoning are final when their model step has finished
-streaming, and a tool call when it has completed or failed. OpenCode 2.x keeps a streaming text empty
-in that list until the text ends, so assistant text arrives whole at the end of each step. A 2.x
-session's activity on the event stream is what prompts each read.
+streaming. On both lines a tool call is published in two parts: its start and end once OpenCode runs
+the tool, so a client shows the call while it runs, and its result once it has completed or failed.
+OpenCode 2.x keeps a streaming text empty in that list until its step ends. A 2.x session's activity
+on the event stream is what prompts each read. Each finished tool call is followed by a
+`cotal.toolResult` marker, which carries the call id and whether OpenCode recorded the call as
+failed, and nothing the tool read or returned.
+
+A reply also streams. OpenCode 1.x creates a text or reasoning part empty, sends its text as
+`message.part.delta` events and then saves the part whole. OpenCode 2.x sends an element's text as
+`session.text.delta` and `session.reasoning.delta` events and saves it at its step's end. The
+connector journals that text as it arrives ([streamed text](connector-runtime-reference.mdx#streamed-text)),
+so the part publishes as one message under its own stream id while OpenCode writes it, and its saved
+record ends that message. Reasoning streams only for a seat launched with `reasoningEvents`. A stream
+the turn left without a saved part ends at the turn's end, before the run closes. A part OpenCode had
+begun before the event plane started publishes whole when it is saved.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 
@@ -222,6 +336,17 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   its own thread id on the one `events.<owner>.<actor>` channel. Before the switch, the session you
   are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
   On 2.x the connector does not follow `/new`, so only the session it launched is published.
+- **Failed turns set a presence condition.** A turn that failed reads `idle` with a `condition`, so
+  no observer reads it as a turn that finished. `condition.source` is OpenCode's own error kind,
+  verbatim: the 1.x `session.error` name (`ProviderAuthError`, `APIError`, ...) or the 2.x
+  `session.execution.failed` type (`provider.auth`, ...). `condition.message` is OpenCode's message,
+  on one line and cut to 500 characters. The provider's raw response body is not relayed. Only kinds
+  that name one category get a specific code: `ProviderAuthError` and `provider.auth` are `auth`,
+  `MessageOutputLengthError` is `context`, `provider.rate-limit` is `rate_limit`,
+  `provider.budget-limit` and `provider.model-budget-limit` are `budget`, `provider.invalid-request`
+  is `request`, `provider.no-route` and `provider.unknown` are `model`, and `provider.internal` is
+  `server`. Every other failure is `failed`. A turn you stopped sets none, and the next turn's start
+  clears it.
 - **Failed turns publish run errors.** OpenCode reports a turn that
   died (an upstream API error, a provider auth failure, or an output-length stop) on its own
   `session.error` event, and that turn ends its run with `RUN_ERROR` carrying the fixed message
@@ -236,9 +361,17 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   close on the events channel. OpenCode 2.x records how each turn ended in the session itself, as
   succeeded, failed or interrupted, and the connector closes the run from that record, after the
   turn's own records: a failed turn with the same `RUN_ERROR`, and an interrupted one as an ordinary
-  end. A turn that fails before any output opened no run, so it publishes nothing.
+  end. A turn that a rejected permission or a dismissed question interrupted has no such record, so
+  the connector closes its run as an ordinary end when the turn ends, and the next turn waits for
+  that close's position read as above. On 2.x a turn that ends before any output, such as one the
+  provider refused, publishes a run of its own when its end is recorded, so a failed one still ends
+  with `RUN_ERROR`. On 1.x the assistant message of a turn that failed before any output holds the
+  error and no parts. That message opens the turn's run, so its `session.error` still closes it with
+  `RUN_ERROR`.
 
-Reasoning is off by default.
+Reasoning is off by default. A seat launched with the
+[`reasoningEvents` field](connectors.mdx#opt-in-launch-fields) publishes each saved reasoning part,
+on 1.x and 2.x, as one `REASONING_*` message with its text, ahead of the text that follows it.
 
 ## Session lifecycle
 
@@ -249,9 +382,6 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
-- **On 2.x, `cotal models` lists no OpenCode catalog.** The 2.x catalog is served by a running
-  opencode server, not the CLI, so the connector reports `supported: false` with that reason. Pass
-  `--model provider/model` directly instead.
 
 ### Server state
 

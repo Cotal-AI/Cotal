@@ -18,7 +18,10 @@
  * `adopt` is the earliest moment the emitter is both constructible and needed.
  */
 import type { CotalMeta } from "./agui.js";
-import type { AguiEmitter, HeldTerminal, ReportedTerminal } from "./agui-emitter.js";
+import { AguiEmitterHalted, type AguiEmitter, type HeldTerminal, type ReportedTerminal } from "./agui-emitter.js";
+
+/** The longest wait between re-establish attempts while the emitter keeps halting. */
+const HALT_RETRY_CEILING_MS = 300_000;
 
 /**
  * The connector's hooks into an {@link AguiEmitterHolder}.
@@ -43,7 +46,8 @@ export interface AguiEmitterHolderHooks {
    */
   sourceEnd: (path: string) => Promise<string>;
   /** The wait between re-establish attempts while the plane stays down. The first attempt after
-   *  a failure is at once; this paces the ones after it. Default one second. */
+   *  a failure is at once; this paces the ones after it. Default one second. A halt waits this
+   *  long first, then twice as long each time it halts again, up to five minutes. */
   retryMs?: number;
   /**
    * Told which run {@link AguiEmitterHolder.closeRun} closed, so the connector's own mapper can
@@ -111,9 +115,11 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *
    * The re-establish runs AT ONCE, off the failing step: a seat whose plane is down is a seat
    * whose turns are missing from the wire, and nothing is gained by waiting to find out whether
-   * the fault has cleared. While it stays down the attempts follow every `retryMs`, a fixed wait
-   * that neither grows nor is capped: a standing fault costs one start a second, and the plane is
-   * back within that second of the fault clearing, whether or not the agent is doing anything. It
+   * the fault has cleared. While it stays down the attempts follow every `retryMs`, a fixed wait:
+   * a standing fault costs one start a second, and the plane is back within that second of the
+   * fault clearing, whether or not the agent is doing anything. A HALT is different: the emitter
+   * refused something a retry cannot clear by itself, and every start republishes the refused
+   * frame, so its wait doubles from `retryMs` up to {@link HALT_RETRY_CEILING_MS} (#7514). It
    * is the same recovery a connector restart runs, so it adds no path the emitter did not already
    * take, and a pending frame is settled by `start()` before anything new is read. The failure is
    * still reported, every time, with the delay; a plane that came back on its own is not a plane
@@ -125,6 +131,8 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   /** True from a failure until a re-establish has gone through in full. A failure under it is the
    *  plane still down, and the next attempt is paced by `retryMs`; without it, at once. */
   private retried = false;
+  /** Halts since the last re-establish that went through in full: the exponent of a halt's wait. */
+  private halts = 0;
   private reviveTimer?: ReturnType<typeof setTimeout>;
   /**
    * The turn terminals held while no emitter can take them: ones that arrived while the plane was
@@ -465,9 +473,13 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     }
     // AT ONCE for the first failure, off this step: a transient fault is over by the time the
     // start runs, and the turns it left unpublished are on the wire before the agent's next
-    // action. A failure under a re-establish is the plane still down, paced by `retryMs`, fixed:
-    // it neither doubles nor caps, so the plane is back within one wait of the fault clearing.
-    const delay = this.retried ? (this.hooks.retryMs ?? 1_000) : 0;
+    // action. A failure under a re-establish is the plane still down, paced by `retryMs`, fixed,
+    // so the plane is back within one wait of the fault clearing. A halt is paced from `retryMs`
+    // and doubles up to the ceiling, because each start republishes the frame it refused.
+    const retryMs = this.hooks.retryMs ?? 1_000;
+    const delay = e instanceof AguiEmitterHalted
+      ? Math.min(retryMs * 2 ** this.halts++, HALT_RETRY_CEILING_MS)
+      : this.retried ? retryMs : 0;
     this.retried = true;
     this.reviveTimer = setTimeout(() => this.revive(), delay);
     this.hooks.onError(e, delay);
@@ -532,6 +544,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       await this.settle(emitter);
       this.reviving = false;
       this.retried = false;
+      this.halts = 0;
     });
   }
 

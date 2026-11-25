@@ -26,7 +26,7 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const isMissingFile = (error: unknown): error is NodeJS.ErrnoException =>
   error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT";
 
-export interface ClaudeTranscriptSourceOpts {
+interface ClaudeTranscriptSourceOpts {
   /** Production defaults to five seconds for both the startup and the fork wait. Tests can shorten
    *  only the fail-loud deadline. */
   startupFileWaitMs?: number;

@@ -4,7 +4,8 @@
  * could write, as a group-writable Homebrew Cellar on macOS is. Such a file is never run, not even
  * for its version. One on PATH gives way to a bundled one that passes the rule. When neither passes,
  * the PATH one stays the choice with its refusal, status names it, and resolving the broker refuses
- * before anything runs. A protected one on PATH is still the choice, and the version floor holds.
+ * before anything runs. A protected one on PATH is still the choice, and the version floor holds. A
+ * start refuses one whose version it cannot read, saying why, before it renders or starts anything.
  *
  * Both files are stand-in scripts that append their name to a marks file when they run. A module
  * resolve hook points the bundled platform package at a stand-in package whose getBinaryPath() reads
@@ -20,7 +21,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { isCommandFailure } from "@cotal-ai/workspace";
-import { findNatsServer, natsServerLabel, natsServerProblem, resolveNatsServer } from "../src/lib/nats-bin.js";
+import { findNatsServer, natsServerLabel, natsServerProblem, resolveNatsServer, unreadVersion } from "../src/lib/nats-bin.js";
 import { machineStatus } from "../src/lib/status.js";
 
 if (process.platform === "win32") skipSuite("the executable protection rule is POSIX-only");
@@ -111,6 +112,19 @@ try {
   const old = await refusal(resolveNatsServer());
   assert.ok(isCommandFailure(old) && old.code === "DEPENDENCY_UNAVAILABLE" && old.message === `the nats-server on PATH at ${onPath} reports version 2.10.0, and this stack needs nats-server 2.12 or newer; nothing was started`, "a protected PATH one below the version floor is still refused for its version");
   assert.deepEqual(ran(), ["path"], "after only it ran");
+
+  // A start renders the broker configuration for the version it reads, so one it cannot read refuses
+  // before anything is rendered or started. Running out of open files for the `--version` run is
+  // reached for real by the fewfiles cell of `pnpm smoke:stack-settle:live`.
+  writeFileSync(bundled, `#!/bin/sh\necho 'bundled' >> '${marks}'\nexit 3\n`, { mode: 0o755 });
+  set(0o777, 0o755);
+  const silent = await resolveNatsServer();
+  assert.deepEqual({ path: silent.path, source: silent.source, version: silent.version, versionError: silent.versionError }, { path: bundled, source: "bundled", version: null, versionError: "exit status 3" }, "a bundled one whose --version run exits 3 resolves with no version, saying why");
+  assert.deepEqual(ran(), ["bundled"], "after it ran once");
+  const unread = unreadVersion(silent);
+  assert.ok(unread.outcome === "refused" && unread.code === "DEPENDENCY_UNAVAILABLE" && unread.message === `cannot read the nats-server version from ${bundled} (exit status 3), so the broker configuration was not rendered; nothing was started`, "a start refuses it DEPENDENCY_UNAVAILABLE, naming the exit status");
+  const starved = unreadVersion({ ...silent, versionError: "EMFILE" });
+  assert.ok(starved.outcome === "failed" && starved.code === "OPERATION_FAILED" && /ran out of open files/.test(starved.message) && (starved.remedy ?? "").includes("ulimit -n"), "one this process ran out of open files to run fails OPERATION_FAILED, naming the open-file limit");
 } finally {
   process.env.PATH = priorPath;
   rmSync(base, { recursive: true, force: true });

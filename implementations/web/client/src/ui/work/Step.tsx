@@ -22,7 +22,7 @@ export const Rise = createContext<(item: Keyed) => boolean>(() => false);
 
 /** What every step of one list shares: the agent's roster row, whether its connector reports tool
  *  status, the panel's size, the post the reader arrived at, and a display name for a roster id. */
-export interface StepContext {
+interface StepContext {
   row: RosterRow;
   toolStatus: boolean;
   payloadRead?: import("../../api/types.js").PayloadReadFailure;

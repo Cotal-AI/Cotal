@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type Presence = { loginEnabled: boolean; relocationOffer: boolean; pinOffer: boolean; pinMessage: string };
+type Presence = { loginEnabled: boolean; loginError?: string; relocationOffer: boolean; pinOffer: boolean; pinMessage: string; preferenceNotice?: string };
 let offerShown = false;
 let relocationShown = false;
 let working = false;
+let preferenceNoticeShown = false;
 let report: (message: string, error?: boolean) => void;
 
 function offer(id: string, message: string, primary: string, accept: () => Promise<void>, decline: () => Promise<void>): void {
@@ -29,8 +30,27 @@ export async function refreshPresence(connected = false): Promise<void> {
   working = true;
   try {
     const p = await invoke<Presence>("desktop_presence");
+    if (p.preferenceNotice && !preferenceNoticeShown) {
+      preferenceNoticeShown = true;
+      report(p.preferenceNotice, true);
+    }
     const checkbox = document.getElementById("autostart") as HTMLInputElement;
     checkbox.checked = p.loginEnabled;
+    let loginError = document.getElementById("login-error");
+    if (p.loginError) {
+      if (!loginError) {
+        loginError = document.createElement("p");
+        loginError.id = "login-error";
+        loginError.setAttribute("role", "alert");
+        document.getElementById("settings-startup")?.insertBefore(loginError, document.getElementById("pin-offer") ?? document.getElementById("pin-availability"));
+      }
+      if (loginError.textContent !== p.loginError) {
+        loginError.textContent = p.loginError;
+        report(p.preferenceNotice ? `${p.preferenceNotice}\n${p.loginError}` : p.loginError, true);
+      }
+    } else {
+      loginError?.remove();
+    }
     if (p.relocationOffer && !relocationShown) {
       relocationShown = true;
       offer("move-offer", "Move Cotal to Applications so its Dock icon and Open at login use a permanent location. Cotal will reopen there. An existing installation will not be replaced.", "Move to Applications", () => invoke("move_to_applications"), () => invoke("dismiss_presence_offer", { offer: "relocation" }));

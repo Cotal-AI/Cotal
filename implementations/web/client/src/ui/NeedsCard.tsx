@@ -78,7 +78,7 @@ export function needsDetail(row: RosterRow): string {
 /** The reported condition under the detail, with how long it has held (`approval for 8m`). The
  *  card already dates the status and names the activity, so this is the one presence fact it adds;
  *  empty without a condition. */
-export function needsCondition(row: RosterRow, now = Date.now()): string {
+function needsCondition(row: RosterRow, now = Date.now()): string {
   return row.condition ? presenceFacts({ condition: row.condition }, now) : "";
 }
 

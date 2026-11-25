@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { chmodSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 const root = mkdtempSync(join(tmpdir(), "autoupd-cache-"));
 mkdirSync(join(root, "home"));
@@ -32,5 +33,17 @@ try {
  failed = true; await check(); assert.ok(requests > initial);
  const after = requests; await check(); assert.equal(requests, after);
  await check({ COTAL_NO_UPDATE_CHECK: "1" }); assert.equal(requests, after);
+ if (process.platform !== "win32") {
+  const bin = join(root, "npm-shapes"); mkdirSync(bin);
+  const npm = join(bin, "npm");
+  for (const [payload, valid] of [["99.0.0", true], [["99.0.0"], true], [[], false], [["99.0.0", "98.0.0"], false], [[null], false], [[["99.0.0"]], false], [["invalid"], false]] as const) {
+   writeFileSync(npm, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(payload)}'\n`); chmodSync(npm, 0o700);
+   writeFileSync(file, JSON.stringify({ v: 1, attemptedAt: 0 }));
+   await check({ PATH: `${bin}:${process.env.PATH}` });
+   const result = JSON.parse(readFileSync(file, "utf8"));
+   if (valid) { assert.equal(result.latest, "99.0.0"); assert.equal(result.error, undefined); }
+   else { assert.equal(result.latest, undefined); assert.equal(result.error, "registry latest unavailable"); }
+  }
+ }
  emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { await new Promise<void>(resolve => registry.close(() => resolve())); }

@@ -27,14 +27,20 @@ if (basename(process.argv[1]) === "loginctl") {
   } else process.exit(88);
 } else if (args.includes("show-environment")) {
   operation = "directory-read";
-  console.log(`HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
+  console.log(context.environmentOutput ?? `HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
+} else if (args.includes("show")) {
+  operation = "unit-read";
+  const unit = args[args.indexOf("show") + 1];
+  if (!context.units.includes(unit)) process.exit(89);
+  console.log(`Id=${unit}\nLoadState=loaded\nFragmentPath=${context.config}/systemd/user/${unit}\nDropInPaths=\nNeedDaemonReload=no`);
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);
+  if (operation === "stop" && context.changeSourceDuringStop) appendFileSync(context.changeSourceDuringStop, "\n# changed during stop\n");
   if (operation === "start" && context.nativeEntry) {
     spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {
       cwd: context.home,
-      env: { ...process.env, HOME: context.home, COTAL_HOME: context.cotal, XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: context.rt, DO_NOT_TRACK: "1" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: context.home, COTAL_HOME: context.cotal, XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: context.rt, DO_NOT_TRACK: "1" },
       stdio: "ignore",
       timeout: 10_000,
     });

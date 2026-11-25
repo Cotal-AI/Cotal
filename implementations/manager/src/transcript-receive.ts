@@ -23,7 +23,7 @@ export interface TranscriptReceiveInput {
   title?: string;
 }
 
-export type TranscriptReceiveAnswer = { state: "upload" } | { state: "staged"; claim: string; fetched: boolean };
+type TranscriptReceiveAnswer = { state: "upload" } | { state: "staged"; claim: string; fetched: boolean };
 
 /** What a claim binds: the carried bytes, where they came from, and when they were staged. */
 export interface TranscriptClaim {

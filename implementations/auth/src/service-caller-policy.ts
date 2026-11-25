@@ -6,7 +6,7 @@ import {
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
 import type { ServiceCallerGrant, ServiceGrantRef, ServiceGrantSource, ServiceGrantState, ServiceParentRef } from "./service-host-contract.js";
 
-export interface ServiceCallerPolicyBinding {
+interface ServiceCallerPolicyBinding {
   accountPublicKey: string;
   space: string;
   grantee: ServicePrincipal;
@@ -15,7 +15,7 @@ export interface NativeServiceCallerPolicy extends ServiceCallerPolicyBinding {
   v: 1;
   grants: ServiceCallerGrant[];
 }
-export interface NativeServiceCallerPolicyRead { row: NativeServiceCallerPolicy; revision: number }
+interface NativeServiceCallerPolicyRead { row: NativeServiceCallerPolicy; revision: number }
 const enc = new TextEncoder(), dec = new TextDecoder("utf-8", { fatal: true });
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 function bad(): never { throw new EpEnvelopeError("bad-request", "invalid native service caller policy"); }
@@ -163,7 +163,7 @@ const maxStatusBytes = Math.max(...[
   { state: "revoked", operationId: "f".repeat(32), verifiedAt: Number.MAX_SAFE_INTEGER },
 ].map(byteSize));
 /** Whether every grant of `row` could still take its largest status within the byte bound. */
-export function callerPolicyHasRevocationHeadroom(row: NativeServiceCallerPolicy): boolean {
+function callerPolicyHasRevocationHeadroom(row: NativeServiceCallerPolicy): boolean {
   const worstBytes = byteSize(row) + row.grants.reduce((sum, g) => sum + Math.max(0, maxStatusBytes - byteSize(g.status)), 0);
   return worstBytes <= SERVICE_AUTHORITY_MAX_BYTES;
 }
@@ -175,7 +175,7 @@ export function callerPolicyHasRevocationHeadroom(row: NativeServiceCallerPolicy
 /** Appending `candidate` (status active) at `expectedRevision`. An existing grant with the same id
  *  answers present whatever its status, because the comparison leaves out status, which only
  *  advances: a replay after deny-new adopts the row and never reactivates the grant. */
-export type CallerAppendStep =
+type CallerAppendStep =
   | { kind: "present"; grant: ServiceCallerGrant }
   | { kind: "mismatch" }
   | { kind: "moved" }
@@ -192,7 +192,7 @@ export function callerAppendStep(found: NativeServiceCallerPolicyRead | undefine
 
 /** Deny-new: an active grant moves to `revoking` under `operationId` in phase `cutoff-required`. A
  *  grant already revoking or revoked names the operation that holds its intent. */
-export type CallerBeginStep =
+type CallerBeginStep =
   | { kind: "absent" }
   | { kind: "held"; grant: ServiceCallerGrant; operationId: string }
   | { kind: "write"; row: NativeServiceCallerPolicy; grant: ServiceCallerGrant };
@@ -207,7 +207,7 @@ export function callerBeginStep(row: NativeServiceCallerPolicy | undefined, gran
 /** The cutoff marker and its fixed deadline, on a grant whose deny-new intent `operationId` holds.
  *  The same marker again is a no-op; anything else is a conflict, so a recorded deadline is never
  *  reset. `notBefore` is in epoch seconds. */
-export type CallerCutoffStep =
+type CallerCutoffStep =
   | { kind: "absent" }
   | { kind: "same" }
   | { kind: "conflict"; detail: string }

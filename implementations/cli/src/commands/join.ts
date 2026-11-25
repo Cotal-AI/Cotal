@@ -2,16 +2,27 @@ import { userInfo } from "node:os";
 import * as readline from "node:readline";
 import {
   CotalEndpoint,
+  assertValidChannel,
   parseJoinLink,
   resolvePeer,
   AmbiguousPeerError,
   mintLifecycleUid,
   assertLifecycleToken,
   newIdentity,
+  mintCreds,
   provisionAgent,
+  deleteAcl,
+  deleteMember,
+  isChannelFamily,
+  isConcreteChannel,
+  openAclRegistry,
+  openMembersRegistry,
+  principalKey,
   partsToText,
   peerLabel,
   isConsumerNotFound,
+  DmDurableMissingError,
+  isPublishPermissionDenied,
   credsClaims,
   idFromCreds,
   DEV_OWNER,
@@ -22,6 +33,7 @@ import {
   chatSubject,
   importNativeSubjectPermissions,
   issuedPermitsPattern,
+  issuedPermitsSubject,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -30,7 +42,10 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { CommandFailure, activateTerminalSeat, issueTerminalSeat, retireTerminalSeat, seatExpiryAt, credsSpace, findMesh, inputDisabledByFlag, isConnectRefusal, preflightOrThrow, reachableOrThrow, readCredsFile, refreshRegistrationPolicy, refuseStaticCredsForKnownUserAuth, resolveTargetOrThrow, connectUserControlOrThrow, endpointAuth, type Connection, type MeshEntry, offlineRecipientNotice } from "@cotal-ai/workspace";
+import { withControlConnection } from "@cotal-ai/workspace/control";
 import { credentialEnded } from "../lib/connect.js";
+import { grantOption, shellWord } from "../lib/endpoint-errors.js";
+import { FlagValueRefusal } from "../lib/flag-value-refusal.js";
 import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
@@ -45,17 +60,18 @@ export function joinPeerLabel(card: { name: string; id?: string; role?: string }
 // refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
 // BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is classified here too.
 // Unexpected failures still propagate unchanged.
-function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): CommandFailure | undefined {
+function joinAuthFailure(e: unknown, space: string, credential?: { lifecycleUid: string; channel: string }): CommandFailure | undefined {
   const msg = (e as Error)?.message ?? String(e);
+  const missingInbox = e instanceof DmDurableMissingError || /consumer not found|no responders|not provisioned/i.test(msg);
   if (msg === "server does not support 'tls'")
     return new CommandFailure("refused", "UNSUPPORTED", `TLS is required to join ${space}, but this server does not support TLS`, { remedy: "ask the mesh operator for its TLS-enabled broker address" });
   // A --creds join binds the inbox its lifecycle was provisioned with. A credential minted without
   // --provision has none, and neither `cotal up` nor another --creds can make one from here.
-  if (credsLifecycle !== undefined && /consumer not found|no responders|not provisioned/i.test(msg))
-    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credsLifecycle}, so it cannot join with it`, {
-      remedy: "ask the space's owner to mint the credential with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports",
+  if (credential !== undefined && missingInbox)
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} has no inbox provisioned for this credential's lifecycle ${credential.lifecycleUid}, so it cannot join with it`, {
+      remedy: credentialInboxRemedy(space, credential.channel),
     });
-  if (/consumer not found|no responders|not provisioned/i.test(msg))
+  if (missingInbox)
     return new CommandFailure("refused", "TARGET_NOT_FOUND", `${space} isn't provisioned for a console session yet`, { remedy: "run `cotal up` first, or join with --creds/--token" });
   if (/authoriz|permission|not authorized/i.test(msg)) {
     // #1576. THIS USED TO NAME CREDENTIALS AND NOTHING ELSE, and an operator holding valid,
@@ -71,6 +87,11 @@ function joinAuthFailure(e: unknown, space: string, credsLifecycle?: string): Co
     });
   }
   return undefined;
+}
+
+function credentialInboxRemedy(space: string, channel: string): string {
+  const read = grantOption("--allow-subscribe", channel);
+  return `ask the space's owner to mint the credential with \`cotal auth mint <name> --provision ${read} --space ${shellWord(space)} --no-persona --out <file>\`, then join with the lifecycle UID that mint reports. To keep the original grants, replace \`${read}\` with \`--identity <original-file>\``;
 }
 
 /** Diagnose the lifecycle-keyed grants of a static agent credential. The broker still
@@ -91,7 +112,7 @@ function checkCredentialJoin(creds: string, space: string, uid: string, channel:
   const history = `$JS.API.CONSUMER.CREATE.${chatStream(space)}.${chatHistDurable(DEV_OWNER, actor, uid)}.${chatSubject(space, "*", "*", channel)}`;
   if (!issuedPermitsPattern(permission, history))
     throw new CommandFailure("refused", "PERMISSION_DENIED", `this credential does not grant read access to #${channel} in ${space}`, {
-      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision --allow-subscribe ${channel}\`, then join with the lifecycle UID that mint reports; add --allow-publish ${channel} if you also need to post`,
+      remedy: `ask the space's owner to mint it with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)}\`, then join with the lifecycle UID that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
     });
 }
 
@@ -115,10 +136,44 @@ export async function join(args: ParsedArgs): Promise<void> {
   }
 }
 
+function resolveJoinChannel(flag: string | undefined, linked: string | undefined): string {
+  const input = flag ?? linked ?? "general";
+  const displayed = input.startsWith("#");
+  const channel = displayed ? input.slice(1) : input;
+  try {
+    assertValidChannel(channel);
+  } catch (e) {
+    throw new CommandFailure("refused", "USAGE_INVALID", (e as Error).message, {
+      remedy: displayed ? "pass a valid channel, for example `--channel team.chat`" : undefined,
+      cause: e,
+      selfContained: true,
+    });
+  }
+  if (displayed && flag === undefined) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "the join link channel cannot start with #", {
+      remedy: `override the link channel with \`--channel=${shellWord(channel)}\``,
+      selfContained: true,
+    });
+  }
+  return channel;
+}
+
+function readJoinCreds(path: string, channel: string, space: string | undefined): string {
+  const read = grantOption("--allow-subscribe", channel);
+  const replacement = "If you need a replacement, ask the space's owner to mint it with " +
+    `\`cotal auth mint <name> --provision ${read}${space === undefined ? "" : ` --space ${shellWord(space)}`} --no-persona --out <file>\`, then join with --lifecycle-uid set to the new UID that mint reports`;
+  try {
+    return readCredsFile(path, { malformedRemedy: `pass the complete credential file as it was issued. ${replacement}` });
+  } catch (e) {
+    if (isConnectRefusal(e) && e.code === "TARGET_NOT_FOUND") throw e.failure(() => `check the path. ${replacement}`);
+    throw e;
+  }
+}
+
 async function joinSpace(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; name?: string; role?: string; channel?: string; server?: string; kind?: string; link?: string; token?: string; creds?: string; "lifecycle-uid"?: string; tls?: boolean; "expires-in"?: string; "expires-at"?: string };
   const expiresAt = seatExpiryAt(values);
-  const expiryRefusal = (why: string) => new CommandFailure("refused", "USAGE_INVALID", `--expires-in and --expires-at set the expiry of the credential a bare join mints on a static mesh; ${why}`, { remedy: "drop the flag", selfContained: true });
+  const expiryRefusal = (why: string) => new FlagValueRefusal(`--expires-in and --expires-at set the expiry of the credential a bare join mints on a static mesh; ${why}`, "drop the flag");
 
   // A join link carries server + auth + space; explicit flags still override it.
   let link: ReturnType<typeof parseJoinLink> | undefined;
@@ -131,12 +186,12 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // A HUMAN joining from a terminal, not a persona-driven agent: they typed `cotal join` to land
   // somewhere and talk, so a landing channel is the point of the command. `general` stays the
   // default HERE only - an agent's read set comes from its persona and defaults to no channel.
-  const channel = values.channel ?? link?.channels?.[0] ?? "general";
+  const channel = resolveJoinChannel(values.channel, link?.channels?.[0]);
   const auth = {
     token: values.token ?? link?.token,
     user: link?.user,
     pass: link?.pass,
-    creds: values.creds ? readCredsFile(values.creds) : undefined,
+    creds: values.creds ? readJoinCreds(values.creds, channel, values.space ?? link?.space) : undefined,
     tls: values.tls ?? link?.tls ?? false,
   };
   // The join session's lifecycle UID (SPEC 13.1). The pairing input (--lifecycle-uid /
@@ -154,6 +209,20 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // self-mints). Only WITH --creds is either read, as the launcher's pairing.
   if (flagUid !== undefined && !values.creds)
     throw new CommandFailure("refused", "USAGE_INVALID", "--lifecycle-uid applies only to an explicit --creds join - an open/token/link/bare join self-mints a fresh per-session lifecycle", { remedy: "drop the flag, or pass --creds", selfContained: true });
+  if (auth.creds !== undefined) {
+    let profile: string | undefined;
+    try { profile = credsClaims(auth.creds).name; } catch { /* leave undecodable credentials to preflight */ }
+    if (profile === "observer" || profile === "admin") {
+      throw new CommandFailure(
+        "refused",
+        "PERMISSION_DENIED",
+        `an ${profile}-profile credential cannot join as a mesh participant: \`cotal join\` requires a provisioned agent credential`,
+        {
+          remedy: `mint an agent credential with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} --out <file>\`, then join with the --lifecycle-uid that mint reports; add ${grantOption("--allow-publish", channel)} if you also need to post`,
+        },
+      );
+    }
+  }
   let lifecycleUid: string | undefined = values.creds ? (flagUid ?? envUid) : undefined;
   if (lifecycleUid !== undefined) {
     try {
@@ -189,7 +258,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   if (link || values.token || values.creds) {
     if (expiresAt !== undefined) throw expiryRefusal("this join connects with a credential it was given");
     // With no space or broker named, the credential goes to the selected space or this folder's.
-    space = values.space ?? link?.space ?? ((values.server ?? link?.servers) === undefined ? credsSpace(process.cwd())?.space : undefined) ?? resolveSpace(process.cwd());
+    const resolved = values.space === undefined && link?.space === undefined && values.server === undefined ? credsSpace(process.cwd()) : undefined;
+    space = values.space ?? link?.space ?? resolved?.space ?? resolveSpace(process.cwd());
     // The credential goes only to a broker the caller paired it with: `--server`, the link's own
     // address, or the address the space is registered at. The default address is never assumed for it.
     const recorded = (values.server ?? link?.servers) === undefined ? findMesh(space) : undefined;
@@ -208,7 +278,11 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // Preflight with the ACTUAL auth (probeConnect, not isReachable — which returns true on an auth
     // REJECT, so a bad --creds/token/link would skip the check and crash raw at ep.start()). One
     // sentence on unreachable vs credentials-rejected, then we connect with the same auth.
-    await reachableOrThrow(server, auth);
+    const addressFlags = values.server !== undefined ? (link ? "--server and --link" : "--server") : link ? "--link" : undefined;
+    await reachableOrThrow(server, auth, values.creds ? {
+      space, path: values.creds, named: values.space !== undefined || link !== undefined || resolved !== undefined,
+      addressFlags, provision: true,
+    } : undefined);
     if (values.creds) checkCredentialJoin(auth.creds!, space, lifecycleUid!, channel);
   } else {
     // Self-mint: a bare `cotal join` becomes a console on the running mesh. In auth mode it self-provisions
@@ -220,6 +294,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     // ConsumerNotFound (a self-minted console had no manager to pre-create its dm_<id> durable) AND drops
     // the last broad `manager` mint off the console. Open mode (no auth) is unchanged — connect bare.
     const target = await resolveTargetOrThrow({ server: values.server, space: values.space });
+    if (expiresAt !== undefined && target.mode === "user")
+      throw expiryRefusal(`mesh "${target.space}" is a user-auth mesh, where the session's bearer comes from your login`);
     await registrationPolicy(target);
     space = target.space;
     server = target.server;
@@ -233,14 +309,13 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     } else {
       await preflightOrThrow(target); // one refusal if the mesh is down / won't auth, + stale-prune
     }
-    if (expiresAt !== undefined && (target.mode === "user" || !target.auth))
-      throw expiryRefusal(`mesh "${space}" ${target.mode === "user" ? "is a user-auth mesh, where the session's bearer comes from your login" : "is open and mints no credential"}`);
+    if (expiresAt !== undefined && !target.auth)
+      throw expiryRefusal(`mesh "${space}" is open and mints no credential`);
     if (target.mode !== "user" && target.auth) {
       const spaceAuth = target.auth;
       const identity = newIdentity();
       // One lifecycle per join session (SPEC 13.1): the provisioned dm/dlv footprint, the minted
-      // grants, and the endpoint's binds all carry this uid; the session's exit orphans only its own
-      // lifecycle-keyed names (self-retired by the open-mode inactive threshold on the broker side).
+      // grants, and the endpoint's binds all carry this uid.
       // A launcher-supplied uid (flag/env, resolved above) wins; the session mints only when bare.
       lifecycleUid ??= mintLifecycleUid();
       // The session's credential is an issuance (SPEC 13.15) whose evidence names this lifecycle's
@@ -251,9 +326,24 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
       try {
         await withProvisioner({ space, servers: server, auth: spaceAuth }, "join-provisioner", async (prov) => {
           await activateTerminalSeat(seatTarget, thisSeat);
-          retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
-          // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
-          // (durableMembership:false) — the console reads live via its core-sub + receives DMs on its dm_<id>.
+          retireSeat = async () => {
+            await retireTerminalSeat(seatTarget, thisSeat);
+            if (!isConcreteChannel(channel) && !isChannelFamily(channel)) return;
+            const principal = principalKey(DEV_OWNER, thisSeat.actor).key;
+            try {
+              const creds = await mintCreds(spaceAuth, newIdentity(), "deprovisioner", {
+                deprovisionTarget: { principal, lifecycleUid: thisSeat.lifecycleUid, memberChannels: [channel] },
+              });
+              await withControlConnection(server, { creds, tls: seatTarget.tlsRequired }, async (nc) => {
+                // An in-flight boot join must not recreate the row after retirement.
+                await deleteAcl(await openAclRegistry(nc, space), principal, thisSeat.lifecycleUid);
+                await deleteMember(await openMembersRegistry(nc, space), channel, principal, thisSeat.lifecycleUid);
+              });
+            } catch (e) {
+              stderrLine("! ", `this session's durable channel membership was not retired: ${(e as Error).message}`, c.yellow);
+            }
+          };
+          // Record the read ACL so the endpoint can self-join its channel's durable backstop.
           auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
             acceptedToken = issue.issued.acceptedToken;
             return provisionAgent(prov, spaceAuth, identity, {
@@ -261,7 +351,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               allowSubscribe: [channel],
               allowPublish: [channel],
               role: values.role,
-              durableMembership: false,
               lifecycleUid,
               expiresAt: issue.expiresAt,
               issued: issue.issued,
@@ -322,31 +411,37 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     },
   });
   const me = ep.card.id;
+  const publishClaims = auth.creds === undefined ? undefined : credsClaims(auth.creds).nats?.pub;
+  const publishPermission = auth.creds === undefined ? undefined
+    : importNativeSubjectPermissions(publishClaims === undefined ? {} : { pub: publishClaims }).publish;
+  const concreteChannel = isConcreteChannel(channel);
+  const canBroadcast = concreteChannel && (publishPermission === undefined ||
+    issuedPermitsSubject(publishPermission, chatSubject(space, ep.card.owner!, ep.card.actor!, channel)));
+  const patternBroadcastNotice = "Broadcasts need a concrete channel, not a subscription pattern.";
+  const broadcastDenied = () => `this session is read-only on #${channel}: it lacks publish permission; nothing was sent. ` +
+    (userConnection
+      ? `ask the space's owner to grant this identity permission to post to #${channel}`
+      : `ask the space's owner to mint a credential with \`cotal auth mint <name> --provision ${grantOption("--allow-subscribe", channel)} ${grantOption("--allow-publish", channel)} --out <file>\`, then join with the lifecycle UID that mint reports`);
 
-  // Interactive only when attached to a real terminal; headless when spawned
-  // detached (manager) — then we just hold presence and log mesh events.
-  const interactive = process.stdin.isTTY === true && !inputDisabledByFlag();
+  // A headless join holds presence and logs mesh events without reading stdin.
+  const terminal = process.stdout.isTTY ? process.stdout : process.stderr.isTTY ? process.stderr : undefined;
   let rlClosed = false;
-  const rl = interactive
+  let promptReady = false;
+  const rl = terminal && process.stdin.isTTY && !inputDisabledByFlag()
     ? readline.createInterface({
         input: process.stdin,
-        output: process.stdout,
+        output: terminal,
         prompt: c.dim(`${name}> `),
       })
     : undefined;
-  rl?.on("close", () => {
-    rlClosed = true;
-  });
 
   const print = (line: string) => {
-    if (rl && !rlClosed) {
-      readline.cursorTo(process.stdout, 0);
-      readline.clearLine(process.stdout, 0);
-      console.log(line);
-      rl.prompt(true);
-    } else {
-      console.log(line);
+    if (terminal && rl && promptReady && !rlClosed) {
+      readline.cursorTo(terminal, 0);
+      readline.clearLine(terminal, 0);
     }
+    console.log(line);
+    if (rl && promptReady && !rlClosed) rl.prompt(true);
   };
 
   const who = (card: { name: string; id?: string; role?: string }) => c.bold(joinPeerLabel(card));
@@ -401,31 +496,66 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   // bearer renewal reports a changed trust, so it keeps re-establishing.
   const credential: Connection | undefined = auth.creds === undefined ? undefined
     : { server, space, tls: auth.tls, creds: auth.creds, ...(mintedFrom ? { auth: mintedFrom } : {}) };
-  let started = false, connected = false, checking = false;
+  let started = false, connected = false, checking = false, leaving = false;
+  let lifetimeTimer: ReturnType<typeof setTimeout> | undefined;
+  let finishSession!: () => void;
+  const sessionFinished = new Promise<void>((resolve) => { finishSession = resolve; });
   let lose!: (failure: Error) => void;
   const lost = new Promise<Error>((resolve) => { lose = resolve; });
+  const shutdown = async (code = 0) => {
+    if (leaving) return;
+    leaving = true;
+    if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
+    rl?.close();
+    print(c.dim("leaving…"));
+    try { await ep.stop(); } catch { /* closing */ }
+    await leaveSeat();
+    if (code === 0) {
+      finishSession();
+      return;
+    }
+    process.exit(code);
+  };
+  rl?.once("close", () => {
+    rlClosed = true;
+    if (started) void shutdown();
+  });
   const checkCredential = () => {
-    if (!started || checking || credential === undefined) return;
+    if (!started || leaving || checking || credential === undefined) return;
     checking = true;
     void credentialEnded(credential).catch(() => undefined).then((refusal) => {
       checking = false;
-      if (refusal) lose(refusal);
+      if (leaving || !refusal) return;
+      if (mintedFrom !== undefined && expiresAt !== undefined && Date.now() >= expiresAt * 1000 && refusal.code === "AUTH_REQUIRED") {
+        void shutdown(0);
+        return;
+      }
+      lose(refusal);
     });
   };
   ep.on("connection", ({ connected: up }: { connected: boolean }) => {
     connected = up;
-    if (!up) checkCredential();
+    if (!up && !leaving) {
+      if (mintedFrom !== undefined && expiresAt !== undefined && Date.now() >= expiresAt * 1000) void shutdown(0);
+      else checkCredential();
+    }
   });
   ep.on("error", (e: Error) => {
+    if (leaving) return;
+    if (mintedFrom !== undefined && expiresAt !== undefined && Date.now() >= expiresAt * 1000 && /authentication expired|credential expired/i.test(e.message)) {
+      void shutdown(0);
+      return;
+    }
     print(c.red(`! ${e.message}`));
     checkCredential();
   });
   ep.on("warning", (e: Error) => {
-    if (started && !connected && !userConnection && isConsumerNotFound(e))
+    if (leaving) return;
+    if (started && !connected && !userConnection && (isConsumerNotFound(e) || e instanceof DmDurableMissingError))
       return lose(new CommandFailure("refused", "TARGET_NOT_FOUND", "this join can no longer reconnect: its inbox is gone from the broker", {
         target: { space },
         remedy: values.creds
-          ? "ask the space's owner to mint the credential again with `cotal auth mint <name> --provision`, then join with the lifecycle UID that mint reports"
+          ? credentialInboxRemedy(space, channel)
           : "run the same `cotal join` again to start a new session",
       }));
     print(c.yellow(`! ${e.message}`));
@@ -433,6 +563,8 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   /** Leave once the session is lost: stop the endpoint and end with its refusal. */
   const whenLost = async (): Promise<never> => {
     const failure = await lost;
+    leaving = true;
+    if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer);
     rl?.close();
     try { await ep.stop(); } catch { /* it ends either way */ }
     await leaveSeat();
@@ -445,34 +577,38 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     await leaveSeat();
     // A bare `cotal join` binds a durable DM inbox nobody pre-created on an unprovisioned space;
     // surface that (and an auth reject) as ONE classified refusal, not a raw NATS stack.
-    throw joinAuthFailure(e, space, values.creds ? lifecycleUid : undefined) ?? e;
+    throw joinAuthFailure(e, space, values.creds ? { lifecycleUid: lifecycleUid!, channel } : undefined) ?? e;
   }
   started = true;
+  if (rlClosed) return shutdown();
+  if (mintedFrom !== undefined && expiresAt !== undefined) {
+    const endAtLifetime = () => {
+      if (leaving) return;
+      const remaining = expiresAt * 1000 - Date.now();
+      if (remaining <= 0) return void shutdown(0);
+      lifetimeTimer = setTimeout(endAtLifetime, Math.min(remaining, 2_147_483_647));
+      lifetimeTimer.unref();
+    };
+    endAtLifetime();
+  }
 
-  // `/quit` leaves with 0; a signal leaves the same way and exits with its code.
-  const shutdown = async (code = 0) => {
-    print(c.dim("leaving…"));
-    rl?.close();
-    await ep.stop();
-    await leaveSeat();
-    process.exit(code);
-  };
+  // `/quit`, terminal EOF and a requested session lifetime leave with 0. A signal leaves the same way with its code.
   process.on("SIGINT", () => void shutdown(130));
   process.on("SIGTERM", () => void shutdown(143));
 
-  if (!interactive || !rl) {
+  if (!terminal || !rl) {
     console.log(
-      c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
+      c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless, stdin is not read`),
     );
-    return whenLost(); // park; event handlers do the work
+    return Promise.race([whenLost(), sessionFinished]); // park; event handlers do the work
   }
 
-  console.log(
-    c.dim(`Joined ${c.bold(space)} as ${who({ name, role: values.role })} on #${channel}.`),
+  terminal.write(
+    `${c.dim(`Joined ${c.bold(space)} as ${who({ name, role: values.role })} on #${channel}.`)}\n`,
   );
-  console.log(
+  terminal.write(
     c.dim(
-      "Type to broadcast. Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <x>  /quit\n",
+      `${!concreteChannel ? patternBroadcastNotice : canBroadcast ? "Type to broadcast." : `Read-only on #${channel}; this credential has no publish permission.`} Commands: /who  /dm <name> <msg>  /anycast <role> <msg>  /working [x]  /waiting [x]  /idle  /me <activity>  /quit\n\n`,
     ),
   );
   setTimeout(() => {
@@ -483,8 +619,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           others.map((p) => who(p.card) + " " + statusBadge(p.status) + presenceDetail(p)).join(c.dim(", ")),
       );
   }, 400);
-  rl.prompt();
-
   const setStatus = async (status: PresenceStatus, activity?: string) => {
     if (activity) await ep.setActivity(activity);
     await ep.setStatus(status);
@@ -493,6 +627,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
   };
 
   rl.on("line", async (raw) => {
+    if (leaving || rlClosed) return;
     const line = raw.trim();
     if (!line) {
       rl.prompt();
@@ -513,15 +648,17 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
-      else if (line.startsWith("/working"))
+      else if (/^\/working(?:\s|$)/.test(line))
         await setStatus("working", line.slice(8).trim() || undefined);
-      else if (line.startsWith("/waiting"))
+      else if (/^\/waiting(?:\s|$)/.test(line))
         await setStatus("waiting", line.slice(8).trim() || undefined);
-      else if (line.startsWith("/me "))
-        await ep.setActivity(line.slice(4).trim()).then(() => print(c.dim("(activity updated)")));
-      else if (line.startsWith("/dm ")) {
-        const rest = line.slice(4).trim();
-        const sp = rest.indexOf(" ");
+      else if (/^\/me(?:\s|$)/.test(line)) {
+        const activity = line.slice(3).trim();
+        if (!activity) print(c.red("usage: /me <activity>"));
+        else await ep.setActivity(activity).then(() => print(c.dim("(activity updated)")));
+      } else if (/^\/dm(?:\s|$)/.test(line)) {
+        const rest = line.slice(3).trim();
+        const sp = rest.search(/\s/);
         if (sp < 1) print(c.red("usage: /dm <name> <message>"));
         else {
           const target = rest.slice(0, sp);
@@ -541,9 +678,9 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
             for (const cand of e.candidates) print(c.dim(`  ${joinPeerLabel({ name: cand.name, id: cand.id })} (${cand.status})  ${cand.id}`));
           }
         }
-      } else if (line.startsWith("/anycast ")) {
-        const rest = line.slice(9).trim();
-        const sp = rest.indexOf(" ");
+      } else if (/^\/anycast(?:\s|$)/.test(line)) {
+        const rest = line.slice(8).trim();
+        const sp = rest.search(/\s/);
         if (sp < 1) print(c.red("usage: /anycast <role> <message>"));
         else {
           const service = rest.slice(0, sp);
@@ -552,13 +689,24 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
           print(`${c.yellow("(@" + service + ")")} ${c.dim("you →")} ${text}`);
         }
       } else {
-        await ep.multicast(line, { channel });
-        print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
+        if (!concreteChannel) print(c.red(`! ${patternBroadcastNotice} Nothing was sent.`));
+        else if (!canBroadcast) print(c.red(`! ${broadcastDenied()}`));
+        else {
+          try {
+            await ep.multicast(line, { channel });
+            print(`${c.cyan("#" + channel)} ${c.dim("you:")} ${line}`);
+          } catch (e) {
+            if (!isPublishPermissionDenied(e)) throw e;
+            print(c.red(`! ${broadcastDenied()}`));
+          }
+        }
       }
     } catch (e) {
-      print(c.red(`! ${(e as Error).message}`));
+      if (!leaving) print(c.red(`! ${(e as Error).message}`));
     }
-    rl.prompt();
+    if (!leaving && !rlClosed) rl.prompt();
   });
-  await whenLost();
+  promptReady = true;
+  if (!leaving && !rlClosed) rl.prompt();
+  await Promise.race([whenLost(), sessionFinished]);
 }

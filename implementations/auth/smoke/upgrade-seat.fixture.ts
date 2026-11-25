@@ -38,7 +38,7 @@ try {
   const generated = new Function("core", `return ${expression}`)(core) as string;
   const seat = join(root, "seat.mjs"); writeFileSync(seat, generated, { mode: 0o600 });
   const bearerCmd = [process.execPath, fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "agent-bearer", "--exchange-url", auth.publicUrl!, "--space", account.space, "--owner", owner, "--actor", actor, "--token-file", tokenFile];
-  const env = { ...process.env, COTAL_SPACE: account.space, COTAL_SERVERS: fx.servers, COTAL_NAME: actor, COTAL_OWNER: owner, COTAL_ACTOR: actor, COTAL_LIFECYCLE_UID: uid, COTAL_SENTINEL_CREDS: sentinel, COTAL_BEARER_CMD: JSON.stringify(bearerCmd) };
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_SPACE: account.space, COTAL_SERVERS: fx.servers, COTAL_NAME: actor, COTAL_OWNER: owner, COTAL_ACTOR: actor, COTAL_LIFECYCLE_UID: uid, COTAL_SENTINEL_CREDS: sentinel, COTAL_BEARER_CMD: JSON.stringify(bearerCmd) };
   delete (env as Record<string, string | undefined>).COTAL_CREDS; delete (env as Record<string, string | undefined>).COTAL_ID;
   child = spawn(process.execPath, [seat], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout!.on("data", b => { output += String(b); }); child.stderr!.on("data", b => { output += String(b); });

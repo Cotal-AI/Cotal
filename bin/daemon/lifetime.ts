@@ -38,7 +38,7 @@ import { codeSpan, shellPath, win32ProcessBinding } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
 /** The socket a holder published, identified by the inode it is, not by its path alone. */
-export interface SocketGeneration {
+interface SocketGeneration {
   readonly path: string;
   readonly dev: number;
   readonly ino: number;
@@ -65,7 +65,7 @@ export function processBirth(pid: number): string | undefined {
 }
 
 /** What a holder writes through the locked descriptor. `socket` is absent until it publishes one. */
-export interface LockRecord {
+interface LockRecord {
   readonly v: 1;
   readonly pid: number;
   /** The holder's {@link processBirth} token, so a client can tell its pid from a reused one. */

@@ -6,10 +6,12 @@ import { resolveControlTarget, resolveSeatControlTarget } from "../control-targe
 import { askManager, managerFailure, type ControlClient, type ManagerPin } from "../control/manager.js";
 import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "../control/seat.js";
 import { presenceSeat } from "../control/seat-presence.js";
+import { shellPath } from "../local-record-source.js";
 import { isWorkspaceTargetError } from "../mesh-target.js";
-import { CommandFailure, recordOperationSpace } from "../output.js";
+import { CommandFailure, isCommandFailure, recordOperationSpace } from "../output.js";
 import { renderReport } from "../present.js";
 import { renderWorkspaceError } from "../render.js";
+import { codeSpan } from "../text-wrap.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, writeNotice, type AttachNotice, type TerminalHold, type TerminalTransport } from "./attach-client.js";
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
@@ -194,8 +196,28 @@ async function establishAttachSession(
   // The loop reuses this target. Keep the first selection even when the manager was pinned;
   // a fresh selection on reconnect could attach another incarnation under the same alias.
   // Picker and spawn targets already carry their own immutable principal/lifecycle fence.
-  if (!t.auth.bearer && !v.expectedSeat && !v.expectedTarget)
-    v.expectedSeat = presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name).expectedSeat;
+  if (!t.auth.bearer && !v.expectedSeat && !v.expectedTarget) {
+    try { v.expectedSeat = presenceSeat(await v.control.roster({ space: t.space, server: t.server }), v.name).expectedSeat; }
+    catch (error) {
+      if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
+      const info = await askManager(v.control, t.space, t.server, "status", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
+      if (!info.ok) {
+        if (!first) return { ok: false, kind: attachRefusal(info.code, info.details), message: info.error ?? "error", fromManager: true, code: info.code };
+        const manager = info.managerInstanceId ?? on;
+        if (info.code === "not-found") {
+          const roster = ["cotal ps", ...(on === undefined ? [] : ["--on", shellPath(on)]), ...(v.space === undefined ? [] : ["--space", shellPath(v.space)]), ...(v.server === undefined ? [] : ["--server", shellPath(v.server)])].join(" ");
+          throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no managed agent "${oneLine(v.name)}" on manager ${manager ?? "instance"}`, {
+            target: { space: t.space, agent: v.name, managerInstanceId: manager ?? null },
+            native: { code: info.code, detail: { phase: "target-resolution", actionSubmitted: false } },
+            remedy: `run ${codeSpan(roster)} to see the agents the manager runs`,
+          });
+        }
+        throw managerFailure({ ...info, preSubmitRefusal: true }, "terminal attach", { space: t.space, agent: v.name, managerInstanceId: manager ?? null });
+      }
+      const row = info.data as { id: string; lifecycleUid: string };
+      v.expectedTarget = { id: row.id, lifecycleUid: row.lifecycleUid };
+    }
+  }
   // A refusal's report names the mesh in its heading, so this block names it once, in a field.
   if (first) console.error(renderReport({ sections: [{ title: "Attach", blocks: [{ kind: "fields", rows: [["Space", t.space], ["Agent", v.name], ["Manager", on ?? t.auth.managerInstanceId ?? "native selection"]] }] }] }, "rich", process.stderr));
   const reply = await askManager(v.control, t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on, expectedTarget: v.expectedTarget, expectedSeat: v.expectedSeat });
@@ -672,7 +694,8 @@ async function runAttachLoop(
     }
     saidWhy = "";
     const from = est.resumedFrom ? ` (resumed from ${est.resumedFrom.host}:${est.resumedFrom.source})` : "";
-    notice({ tone: "status", text: first ? `attached to ${vv.name}${from} - ${key.label} to detach` : "[cotal: reconnected]" });
+    const detachHint = process.stdin.isTTY ? ` - ${key.label} to detach` : "";
+    notice({ tone: "status", text: first ? `attached to ${vv.name}${from}${detachHint}` : "[cotal: reconnected]" });
     first = false;
     let outcome;
     const startedAt = Date.now();

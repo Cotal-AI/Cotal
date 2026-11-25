@@ -29,7 +29,7 @@ export function isChatAlias(name: string): boolean {
 }
 
 /** A `chat-session-open` request, as {@link readChatOpenInput} reads it. */
-export interface ChatSessionOpenInput {
+interface ChatSessionOpenInput {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
@@ -117,7 +117,7 @@ export function chatOpenLists(input: {
 /** What `chat-session-open` seals to the caller's `sealTo`: the credential bound to the space,
  *  the admitting manager instance and every field of the reply. The client refuses any other key
  *  set and any field that differs from the reply or from what it asked. */
-export interface SealedChatAdmission {
+interface SealedChatAdmission {
   readonly v: 1;
   readonly space: string;
   readonly managerInstanceId: string;

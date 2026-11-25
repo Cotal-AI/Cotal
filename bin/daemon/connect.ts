@@ -19,10 +19,10 @@
 import { join } from "node:path";
 import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
-import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { claimIdentityRecord, codeSpan, findMesh, findPreparedSpace, hasUserAuthState, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
 import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
-import { daemonCommandCopy } from "./guidance.js";
+import { daemonCommandCopy, NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 
 /** The service name the daemon proposes for itself. Single-label names are reserved for reference
  *  endpoints and a third-party name must be reverse-DNS, so this is the reverse-DNS of cotal.ai.
@@ -47,7 +47,7 @@ export interface DaemonServiceIdentity {
 }
 
 /** Where this machine's daemon keeps its identity for `space`. */
-export function daemonIdentityFile(space: string, home: string = homeCotalDir()): string {
+function daemonIdentityFile(space: string, home: string = homeCotalDir()): string {
   return join(home, "daemon", spaceSegment(space), "service-identity.json");
 }
 
@@ -74,7 +74,6 @@ export function readDaemonServiceIdentity(space: string, home: string): DaemonSe
 /** The fixed sentence per failure. Nothing from the remote side is quoted. */
 const SENTENCE = {
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
-  "not-user-auth": "this space does not use user sign-in, so the daemon cannot connect to it as its own service",
   "not-signed-in": "this machine is not signed in to the space's provider",
   "unsupported-by-space": "the space's auth service does not host service endpoints, so the daemon cannot register with it",
   unreachable: "the space's auth service could not be reached",
@@ -86,9 +85,14 @@ const SENTENCE = {
 export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<ConnectCheckResult> {
   signal?.throwIfAborted();
   const entry = findMesh(space);
-  if (!entry) return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
-  const ua = entry.mode === "user" ? entry.userAuth : undefined;
-  if (!ua) return { outcome: "not-user-auth", space, message: SENTENCE["not-user-auth"] };
+  if (!entry) {
+    // Stopping a local stack replaces its mesh registration with a preparation record.
+    const prepared = findPreparedSpace(space);
+    if (!prepared || hasUserAuthState(prepared.root, space, { readOnly: true }))
+      return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
+  }
+  const ua = entry?.mode === "user" ? entry.userAuth : undefined;
+  if (!entry || !ua) return { outcome: "not-user-auth", space, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
   if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],

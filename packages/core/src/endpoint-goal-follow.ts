@@ -9,8 +9,15 @@ import { callerTokens, endpointToken, epGoalProgressGrantRow, type EpCaller } fr
 import { spacePrefix } from "./subjects.js";
 import { GOAL_FOLLOW_MARGIN_MS, dec } from "./endpoint-caller.js";
 
+/** How soon a result read that no responder received is sent again. Same pace as the describe
+ *  re-publish: the accepting instance can be back within moments, for example after its serve
+ *  connection reconnects in place. */
+const UNANSWERED_READ_RETRY_MS = 250;
+
 export interface SubmitAndFollowGoalOptions {
-  /** Read through the current authorized transport. Cancellation owns this read, not the goal. */
+  /** Read through the current authorized transport. Cancellation owns this read, not the goal. A read
+   *  that throws the broker's no-responder refusal (unanswered, `not-executed`) did not run, so it is
+   *  read again until the deadline. Any other failure ends the observation with an unknown outcome. */
   reconcile?: (goalId: string, attributed: EpAttributedReply, context: {
     caller: EpCaller; signal: AbortSignal; deadlineMs: number;
   }) => Promise<{ goalId: string; result?: GoalResultFact } | undefined>;
@@ -83,6 +90,8 @@ export async function submitAndFollowGoalWith(
   let abortPhase: (() => void) | undefined;
   let needsReconcile = false;
   let reading = false;
+  let readRetryAt: number | undefined;
+  let unansweredRead: Error | undefined;
   let progressReady = false;
   const aborted = new Promise<void>((resolve) => { abortPhase = resolve; });
   const onAbort = () => {
@@ -234,6 +243,7 @@ export async function submitAndFollowGoalWith(
           caller: { ...acceptingCaller }, signal: work.signal, deadlineMs: Math.max(1, deadline - Date.now()),
         });
         if (completed || stopped || Date.now() >= deadline) return;
+        unansweredRead = undefined;
         if (!result || typeof result !== "object" || result.goalId !== goalId)
           throw new EpEnvelopeError("internal", "goal-result reply is malformed or names a different goal; it cannot authorize this outcome (SPEC 13.6)");
         if (result.result !== undefined) {
@@ -246,8 +256,14 @@ export async function submitAndFollowGoalWith(
           terminals.set(acceptedKey, { state: fact.state, data: fact.data });
         }
       } catch (err) {
-        if (!completed && !stopped && Date.now() < deadline)
-          observationError = err instanceof Error ? err : new Error(String(err));
+        if (!completed && !stopped && Date.now() < deadline) {
+          // The broker says no responder received this read, so nothing ran and nothing was learned.
+          // Read again shortly; live progress and the deadline still decide the outcome.
+          if (err instanceof EpEnvelopeError && err.outcome === "not-executed" && unansweredRequest(err)) {
+            unansweredRead = err;
+            readRetryAt = Date.now() + UNANSWERED_READ_RETRY_MS;
+          } else observationError = err instanceof Error ? err : new Error(String(err));
+        }
       } finally {
         reading = false;
         if (!completed && !stopped) wake?.();
@@ -261,10 +277,14 @@ export async function submitAndFollowGoalWith(
         finalReadRequested = true;
         needsReconcile = true;
       }
+      if (readRetryAt !== undefined && Date.now() >= readRetryAt) {
+        readRetryAt = undefined;
+        needsReconcile = true;
+      }
       if (needsReconcile && !reading) void reconcile();
       if (terminals.has(acceptedKey) || stopped || observationError || subError) break;
       await new Promise<void>((resolve) => {
-        const until = finalReadRequested ? deadline : reconcileAt;
+        const until = Math.min(finalReadRequested ? deadline : reconcileAt, readRetryAt ?? Infinity);
         const timer = setTimeout(() => { timers.delete(timer); wake = undefined; resolve(); }, Math.max(0, Math.min(until - Date.now(), 2_147_483_647)));
         timers.add(timer);
         wake = () => { clearTimeout(timer); timers.delete(timer); wake = undefined; resolve(); };
@@ -273,7 +293,7 @@ export async function submitAndFollowGoalWith(
     const terminal = terminals.get(acceptedKey);
     const observationFailure = (code: "unavailable" | "permission-denied" | "deadline-exceeded", reason: string) => ({
       ...attributed,
-      reply: { ...attributed.reply, ok: false as const, data: undefined, error: {
+      reply: { ...attributed.reply, ok: false as const, error: {
         code, outcome: "unknown" as const,
         message: `the goal "${goalId}" was accepted, but ${reason}. THE GOAL IS UNAFFECTED - it may already have succeeded; this is not evidence the goal failed. Do NOT retry: another submission could duplicate the effect. Inspect 'ps'/'inspect' first (SPEC 13.6)`,
       } },
@@ -283,7 +303,7 @@ export async function submitAndFollowGoalWith(
     if (!terminal && subError) return subError instanceof PermissionViolationError
       ? observationFailure("permission-denied", `this caller is NOT PERMITTED to hear its outcome: the broker refused the per-goal progress subscription \"${progressSubject}\" (${subError.message}); grant this caller the per-goal progress read row`)
       : observationFailure("unavailable", `the per-goal progress subscription \"${progressSubject}\" FAILED (${subError.name}: ${subError.message}); this is NOT a grant refusal, so changing ACLs is the wrong remedy`);
-    if (!terminal) return observationFailure("deadline-exceeded", `no terminal arrived within ${followDeadlineMs}ms; this is a timeout on the WAIT`);
+    if (!terminal) return observationFailure("deadline-exceeded", `no terminal arrived within ${followDeadlineMs}ms; this is a timeout on the WAIT${unansweredRead ? `, and the last result read was not answered (${unansweredRead.message})` : ""}`);
     if (terminal.state === "succeeded")
       return { ...attributed, reply: { ...attributed.reply, ok: true, data: terminal.data, error: undefined } };
     const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown; details?: unknown };

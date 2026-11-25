@@ -43,7 +43,7 @@ const startCwd = process.cwd(); // restored before cleanup so Windows can rmdir 
 process.chdir(cwd); // a dir with no `.cotal` up-tree, so bare resolution falls through to the registry
 
 const { probeConnect, DEFAULT_SERVER } = await import("@cotal-ai/core");
-const { recordMesh, loadMeshes, resolveMeshTarget, spaceAccountPath, listSpaceAccounts } = await import("@cotal-ai/workspace");
+const { recordMesh, loadMeshes, resolveMeshTarget, spaceAccountPath, listSpaceAccounts, isWorkspaceTargetError, workspaceErrorParts } = await import("@cotal-ai/workspace");
 const { resolveControlTarget } = await import("@cotal-ai/workspace");
 
 let pass = 0;
@@ -55,7 +55,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function startBroker(port: number): ChildProcess {
-  const cp = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
+  const cp = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-sd", mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN))], { stdio: "ignore" });
   teardownOnSignal(cp);
   kids.push(cp);
   return cp;
@@ -90,6 +90,43 @@ try {
   ok("resolved space is preserved", bySpace.space === "team-alpha", bySpace.space);
   // The new preflight must NOT prune a LIVE registered entry — the load-bearing safety property.
   ok("live registered entry survives the preflight prune sweep", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
+
+  for (const server of [`${OTHER}/`, OTHER.replace("nats:", "NATS:")]) {
+    const target = await resolveControlTarget({ server }, "control-caller-privileged");
+    ok(`equivalent broker spelling retains the registered space: ${server}`, target.space === "team-alpha", target);
+    ok(`equivalent broker spelling preserves the requested transport: ${server}`, target.server === server, target);
+  }
+  for (const host of ["localhost", "[::1]"]) {
+    const server = `nats://${host}:${PORT_OTHER}`;
+    let mismatch: unknown;
+    try {
+      await resolveControlTarget({ server }, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    } catch (error) {
+      mismatch = error;
+    }
+    if (!isWorkspaceTargetError(mismatch)) throw new Error(`expected a target refusal for ${server}`, { cause: mismatch });
+    ok(`unmatched ${host} refuses instead of targeting the open default`, mismatch.code === "server-host-mismatch", mismatch);
+    const { message, remedy } = workspaceErrorParts({ kind: "target", error: mismatch });
+    ok(`unmatched ${host} names the registered space and address`, message.includes(`team-alpha (${OTHER})`), message);
+    ok(`unmatched ${host} suggests the listed address or explicit space`, remedy?.includes("--server <url>") === true && remedy.includes("--space <name>") && !remedy.includes("cotal up"), remedy);
+  }
+  const explicit = await resolveControlTarget({ server: `nats://localhost:${PORT_OTHER}`, space: "team-alpha" }, "control-caller-privileged");
+  ok("an explicit space still permits the localhost broker override", explicit.space === "team-alpha" && explicit.server === `nats://localhost:${PORT_OTHER}`, explicit);
+
+  recordMesh({ space: "same-broker", server: `${OTHER}/`, root: projectRoot, mode: "open", ts });
+  let ambiguous: unknown;
+  try {
+    await resolveControlTarget({ server: OTHER.replace("nats:", "NATS:") }, "control-caller-privileged");
+  } catch (error) {
+    ambiguous = error;
+  }
+  ok("equivalent broker spellings still refuse multiple registered spaces", (ambiguous as { code?: string })?.code === "ambiguous-target", ambiguous);
+  const { removeMesh } = await import("@cotal-ai/workspace");
+  removeMesh("same-broker");
+  const tlsTarget = resolveMeshTarget(cwd, { server: OTHER.replace("nats:", "tls:") });
+  ok("a different transport does not match the plaintext registration", tlsTarget.space !== "team-alpha", tlsTarget);
+  const tlsAlias = resolveMeshTarget(cwd, { server: `tls://localhost:${PORT_OTHER}` });
+  ok("a different transport gets no loopback registration hint", tlsAlias.space !== "team-alpha", tlsAlias);
 
   // 2. Bare (no flags) with a single registered mesh → still that mesh's broker.
   ok("bare resolves the single registered mesh", (await resolveControlTarget({}, "control-caller-privileged")).server === OTHER);

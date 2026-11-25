@@ -83,6 +83,36 @@ function prune(dir) {
 }
 prune(deploy);
 
+// A release build signs every Mach-O file of the runtime with the Developer ID before the inventory below hashes
+// it: Tauri signs only Contents/MacOS and the bundle, and notarization refuses unsigned nested code.
+function isMachO(path) {
+  const head = readFileSync(path).subarray(0, 8);
+  if (head.length < 8) return false;
+  const magic = head.readUInt32BE(0);
+  if ([0xcffaedfe, 0xcefaedfe, 0xfeedfacf, 0xfeedface].includes(magic)) return true;
+  return magic === 0xcafebabe && head.readUInt32BE(4) < 45; // fat binary, not a Java class file
+}
+function machOFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return machOFiles(path);
+    return entry.isFile() && isMachO(path) ? [path] : [];
+  });
+}
+const identity = process.env.COTAL_RUNTIME_SIGNING_IDENTITY;
+if (identity) {
+  const keychain = process.env.COTAL_RUNTIME_SIGNING_KEYCHAIN;
+  if (process.platform !== 'darwin' || !keychain || !existsSync(keychain)) throw new Error('Runtime signing needs macOS and the imported signing keychain.');
+  const signed = machOFiles(deploy);
+  if (signed.length === 0) throw new Error('Runtime signing found no Mach-O file to sign.');
+  for (const file of signed) {
+    const sign = spawnSync('codesign', ['--force', '--timestamp', '--options', 'runtime', '--keychain', keychain, '--sign', identity, file], { encoding: 'utf8' });
+    const verify = sign.status === 0 && spawnSync('codesign', ['--verify', '--strict', file], { encoding: 'utf8' });
+    if (!verify || verify.status !== 0) throw new Error(`codesign failed for ${relative(deploy, file)}: ${sign.stderr || verify?.stderr || ''}`);
+  }
+  console.log(`Signed ${signed.length} runtime Mach-O files with the release identity: ${signed.map((file) => relative(deploy, file)).join(', ')}`);
+}
+
 const contained = (path) => { const r = relative(deploy, path); return r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r); };
 const hashes = [];
 function inspect(dir) {
@@ -111,7 +141,19 @@ const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--vers
 });
 if (probe.status !== 0 || !probe.stdout.trim().startsWith(`cotal-ai ${version}`)) throw new Error('The deployed stock CLI did not report the expected version.');
 writeFileSync(join(deploy, 'desktop-runtime.json'), JSON.stringify({ schema: 1, version, target, node: process.versions.node, files: hashes }, null, 2) + '\n');
-renameSync(stagedBinary, binary);
+function renameProbedBinary(source, destination) {
+  const deadline = performance.now() + 5_000;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try { renameSync(source, destination); return; }
+    catch (error) {
+      const remaining = deadline - performance.now();
+      if (process.platform !== 'win32' || error.code !== 'EBUSY' || remaining <= 0) throw error;
+      Atomics.wait(signal, 0, 0, Math.min(50, remaining));
+    }
+  }
+}
+renameProbedBinary(stagedBinary, binary);
 renameSync(deploy, output);
 rmSync(staging, { recursive: true, force: true });
 console.log(`Prepared stock cotal-ai ${version} and Node ${process.versions.node} for ${target}. No service was installed or started.`);

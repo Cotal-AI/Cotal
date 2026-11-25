@@ -1,22 +1,14 @@
-import { existsSync } from "node:fs";
 import { drainAndClose } from "@cotal-ai/core";
-import { basename, dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   CotalEndpoint,
   DEFAULT_SERVER,
   LEASE_TTL_MS,
   accountFromCreds,
-  credsClaims,
-  deliveryBucket,
   dialerFor,
   idFromCreds,
-  injectedSecretStoreIdentity,
   isCasLoss,
-  isPermissionDenied,
-  isReachable,
-  leaseKey,
-  mintCreds,
-  newIdentity,
+  isStreamNotFound,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
   standaloneConnectOpts,
@@ -26,315 +18,33 @@ import {
   type NativeConnectionBinding,
   type ParsedArgs,
   type SecretStore,
-  type SecretStoreIdentity,
   type TimerWriterHandle,
 } from "@cotal-ai/core";
-import { PermissionViolationError } from "@nats-io/transport-node";
-import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, FsSecretStore, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, findCotalRoot, isStoreIdFile, isWorkspaceTargetError, listenForLocalStop, loadSpaceAuth, reclaimDeadPreUpgradeRecord, removePidPair, requireCotalRoot, resolveMeshTarget, segmentedKey, soleSpaceOf, spaceSegment, workspaceSecretStore, writePidPair, type MeshTarget } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, canonicalRoot, deliveryCredsKey, isWorkspaceTargetError, listenForLocalStop, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
-import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
+import { mayServeOn, leaseAction } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
 import { healConnectionEvictor } from "./sys-creds.js";
+import { acquireShardLease, ownLeaseReader, requireReachableBroker } from "./delivery-startup.js";
 import type { KickAuthority } from "./kick-authority.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
-
-type Values = Record<string, string | undefined>;
-
+import {
+  assertNoLocalCredSourceFlags,
+  assertUninjectedCredsSharesCwdRoot,
+  daemonRoot,
+  loadDeliveryCreds,
+  recordDeliveryPid,
+  reloadStoreIdentityOf,
+  resolveCredsStore,
+  type Values,
+} from "./delivery-creds.js";
 /** Re-exported for hosted compositions: the daemon cred's KIND, and the builder that turns it into
  *  the {@link SecretStore} key for a space. Defined once in workspace (the layout is the workspace's)
  *  so the writer, the renewal owner, and this reader can never drift apart. As of P7 the kind is NOT
  *  the key — the key is per-space — so a hosted store must be keyed with the builder; the flat kind
  *  is the pre-P7 key and putting there leaves this daemon reading an empty location. */
 export { DELIVERY_CREDS_KIND, deliveryCredsKey };
-
-type CredsSource = { store: SecretStore; key: string; where: string } & (
-  | { injected: true }
-  | { injected: false; identity: SecretStoreIdentity }
-);
-
-/**
- * The store identity THIS daemon will re-read on `reloadCreds`. It is the same store
- * `resolveCredsStore` returns: an injected coordinate, a `--creds` file that is
- * exactly `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (named as the
- * workstation root, matching the canonical arm), a `--creds` file that is not
- * that file (named as the file's own directory), or the workstation root.
- * Naming an ancestor via `findCotalRoot` would certify a two-root composition
- * as a same-store proof.
- */
-export function reloadStoreIdentityOf(
-  src: { injected: true; store: SecretStore } | { injected: false; identity: SecretStoreIdentity },
-): SecretStoreIdentity {
-  return src.injected ? injectedSecretStoreIdentity(src.store) : src.identity;
-}
-
-/**
- * Identity of the store a `--creds` file is reloaded from.
- *
- * With `--creds` the store object is deliberately FLAT (root = the file's own
- * directory, key = basename). The canonical store is `<root>/.cotal` with a
- * segmented key. Different store objects, but when `--creds` names THE FILE THE
- * MANAGER WRITES they resolve THE SAME FILE, so they are the same authority.
- * Identity names that authority, not the store object's root.
- *
- * The manager remints only `segmentedKey(DELIVERY_CREDS_KIND, space)` under
- * `<root>/.cotal`. Collapse only that exact path: basename is `delivery.creds`,
- * parent of the file dir is `.cotal`, and the file dir is `spaceSegment(space)`
- * for THIS space. Another space's segment, a decoy basename, `.cotal/auth/...`,
- * or a legacy `<root>/.cotal/delivery.creds` keep `dirname`. Never
- * `spaceFromSegment` ("a valid segment") and never `findCotalRoot`.
- */
-export function reloadStoreIdentityFromCredsPath(credsPath: string, space: string): SecretStoreIdentity {
-  const p = resolve(credsPath);
-  const fileDir = dirname(p);
-  const parent = dirname(fileDir);
-  const grand = dirname(parent);
-  const canonical =
-    basename(p) === DELIVERY_CREDS_KIND
-    && basename(parent) === ".cotal"
-    && basename(fileDir) === spaceSegment(space)
-    && grand !== parent;
-  // Naming the store reads or creates its id file, so this cannot wait for the store to refuse the key.
-  if (isStoreIdFile(canonical ? parent : fileDir, p))
-    throw new Error(`delivery: --creds ${p} is the file that holds its store id; move the credential to a file of its own`);
-  return canonical ? workspaceSecretStore(grand).identity : new FsSecretStore(fileDir).identity;
-}
-
-/**
- * Workstation root implied by a `--creds` path: the parent of the enclosing
- * `.cotal` directory. A path that is not under any `.cotal` tree names no
- * workstation (a flat mount, a container file) and returns undefined.
- *
- * Distinct from {@link reloadStoreIdentityFromCredsPath}, which names the
- * SecretStore the manager challenges. That identity stays the file's own
- * directory for a legacy shallow path; this helper answers a different
- * question so the cwd guard can compare two workspace roots.
- */
-export function workspaceRootFromCredsPath(credsPath: string): string | undefined {
-  let dir = dirname(resolve(credsPath));
-  for (;;) {
-    if (basename(dir) === ".cotal") {
-      const root = dirname(dir);
-      return root === dir ? undefined : root;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
-}
-
-/**
- * Uninjected `--creds` that names one real workstation root while process cwd
- * resolves another is a false same-store proof: membership-rw still resolves
- * via `findCotalRoot()` (cwd), not the `--creds` file. Fire only when BOTH
- * sides resolve real workstation roots and those differ. A path that is not
- * under a `.cotal` tree names no workstation, so this check does not fire
- * (the manager challenge already diverges on that composition). Injected
- * compositions skip this: both rails take the injected store. Never silently
- * prefer either root.
- */
-export function assertUninjectedCredsSharesCwdRoot(opts: {
-  injected: boolean;
-  credsPath: string;
-  cwdRoot?: string;
-  /** Where `cwdRoot` came from, for the refusal: the cwd walk unless `--root` named it. */
-  via?: "process cwd" | "--root";
-}): void {
-  if (opts.injected) return;
-  const cwdRoot = opts.cwdRoot ?? findCotalRoot();
-  if (!existsSync(join(cwdRoot, ".cotal"))) return;
-  const credsWorkspace = workspaceRootFromCredsPath(opts.credsPath);
-  if (credsWorkspace === undefined || credsWorkspace === resolve(cwdRoot)) return;
-  throw new Error(
-    `delivery: --creds names workstation ${credsWorkspace} while membership-rw resolves under ${cwdRoot} (${opts.via ?? "process cwd"}). Pass both the same workstation root, or inject one SecretStore.`,
-  );
-}
-
-/**
- * THE ORDERING-CRITICAL HALF of the cred-source decision, split out so it cannot drift below the
- * ambient reads. With an injected store the store is the ONLY credential source: every local-source
- * flag (`--creds`, `--dev-mint`) is rejected loudly HERE, before `runDelivery` derives a space —
- * because that derivation itself reads the local signer under `--dev-mint`. A hosted composition
- * must never cross back into workstation trust material, not even for a space label, and the space
- * is now an INPUT to the key, which is exactly the pressure that would otherwise pull the
- * derivation above this check.
- */
-function assertNoLocalCredSourceFlags(v: Values, injected?: SecretStore): void {
-  if (!injected) return;
-  const local = ["creds", "dev-mint"].filter((f) => v[f] !== undefined);
-  if (local.length)
-    throw new Error(
-      `delivery: ${local.map((f) => `--${f}`).join(" and ")} cannot be combined with an injected secret store — the store is the cred's only source`,
-    );
-}
-
-/** The workspace root a workstation daemon serves, chosen ONCE at start (#723). `--root` names it;
- *  otherwise it is the nearest `.cotal/` above the working directory. With neither, the daemon refuses
- *  here and names where it searched: the start directory is not a root anyone set up, and reading the
- *  cred, the registry and the $SYS pair from it only failed later, after the dial, on a symptom. An
- *  injected store is the composition's only credential source, so there the root holds no trust
- *  material and a missing `.cotal/` stays allowed, as {@link recordDeliveryPid} documents. */
-export function daemonRoot(v: Values, injected?: SecretStore): string {
-  if (v.root !== undefined) {
-    const root = resolve(v.root);
-    if (!existsSync(join(root, ".cotal")))
-      throw new Error(`delivery: --root ${v.root} holds no .cotal/ - name the directory that contains the workspace's .cotal/`);
-    return root;
-  }
-  if (injected) return findCotalRoot();
-  try {
-    return requireCotalRoot();
-  } catch (e) {
-    throw new Error(`delivery: ${(e as Error).message} - run the daemon from inside its workspace, or name the root with --root <dir>`);
-  }
-}
-
-/** Where the daemon's pre-minted cred lives — exactly ONE source: an injected {@link SecretStore}
- *  (a hosted composition), an explicit `--creds <file>` as an FS store over that exact file
- *  (uninjected `--creds` that names one real workstation while process cwd
- *  resolves another is refused, because membership-rw still uses
- *  `findCotalRoot`; a path that is not under any `.cotal` tree is not that
- *  case and is not refused here), or the default workstation location. `where` is the human label used
- *  in error messages so a local operator still sees a path, not an abstract key.
- *
- *  Called AFTER {@link assertNoLocalCredSourceFlags} has settled the injected/local conflict, which
- *  is what lets it take the derived `space`. The workstation arm goes through the per-kind RESOLVER:
- *  it is the reader whose "absent" answer sends `ensureDelivery` off to mint, so reading the
- *  canonical location past an unmigrated cred is how a root ends up with two live delivery creds.
- *  The injected arm builds the key without touching a filesystem it does not have. `--creds` names
- *  ONE file and is per-space by the operator's own choice of path, so it is neither segmented nor
- *  migrated — the store there is rooted at that file's own directory. */
-function resolveCredsStore(v: Values, space: string, root: string, injected?: SecretStore): CredsSource {
-  if (injected) {
-    const key = segmentedKey(DELIVERY_CREDS_KIND, space);
-    return {
-      store: injected,
-      key,
-      where: `secret-store key "${key}"`,
-      injected: true,
-    };
-  }
-  if (v.creds !== undefined) {
-    const p = resolve(v.creds);
-    return {
-      store: new FsSecretStore(dirname(p)),
-      key: basename(p),
-      where: p,
-      injected: false,
-      identity: reloadStoreIdentityFromCredsPath(p, space),
-    };
-  }
-  const key = deliveryCredsKey(space, { injected: false, root });
-  const store = workspaceSecretStore(root);
-  return {
-    store,
-    key,
-    where: join(root, ".cotal", key),
-    injected: false,
-    identity: store.identity,
-  };
-}
-
-/** The daemon's scoped `delivery` creds — the PRODUCTION path reads a PRE-MINTED cred through the
- *  {@link SecretStore} seam ({@link resolveCredsStore}; locally the CLI's `ensureDelivery` setup helper
- *  wrote it) and NEVER touches the signer: this runtime does not load `.cotal/auth`. Returned as
- *  `{ initial, source }`: the SOURCE is the D5 slice-5 class-2 reload seam — the endpoint re-invokes it
- *  at 75% of each JWT's lifetime, so the daemon renews from the renewal-owner-re-signed store entry
- *  without a restart or a signal. Adoption is IDEMPOTENT on an unchanged value while its cred is still
- *  ahead of the renewal point (explicit reload may race the backstop); past it, an unchanged value is a
- *  MISSED remint, surfaced loudly with the exact repair — never a silent ride to expiry. A standalone
- *  dev run with no stored cred can opt into `--dev-mint`, which loads the local signer and self-remints
- *  a scoped `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production
- *  contract. */
-async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, space: string): Promise<{ initial: string; source: () => Promise<string> }> {
-  const { store, key, where } = src;
-  const initial = await store.get(key);
-  if (initial !== undefined) {
-    let last: string | undefined; // set by the FIRST source call (the endpoint's initial fetch)
-    return {
-      initial,
-      source: async () => {
-        const content = await store.get(key);
-        if (content === undefined)
-          throw new Error(`delivery: the scoped delivery cred is gone (${where}) — restore it (locally: re-run \`cotal up\`) before the current JWT expires`);
-        if (last !== undefined && content === last) {
-          // Unchanged value: adoption is IDEMPOTENT while the cred is still ahead of its renewal
-          // point (the explicit reload may race the 75% backstop that just adopted the same
-          // re-sign — both succeeding is correct). Past the renewal point an unchanged value is a
-          // MISSED remint: fail loud with the exact repair, never a silent ride to expiry.
-          const { iat, exp } = credsClaims(content);
-          if (typeof exp === "number" && typeof iat === "number" && Date.now() / 1000 < iat + 0.75 * (exp - iat)) return content;
-          throw new Error(`${where} still holds the previous cred — the renewal owner has not re-signed it (the manager re-signs + reloads every half-TTL); run \`cotal doctor auth --fix\`, or restart the mesh's manager, before this JWT expires`);
-        }
-        last = content;
-        return content;
-      },
-    };
-  }
-  if (src.injected)
-    throw new Error(
-      `delivery: no cred in the injected secret store under key "${key}" — the hosted composition must put it before starting the daemon (local sources are never consulted when a store is injected). The key is PER-SPACE as of P7; a cred put under the bare kind "${DELIVERY_CREDS_KIND}" is not read here.`,
-    );
-  if (v["dev-mint"] !== undefined) {
-    // The signer is the served space's own account: on a multi-space root any other choice signs
-    // this daemon's cred with another tenant's authority.
-    const auth = loadSpaceAuth(authDir(root), space);
-    if (!auth) throw new Error(`delivery --dev-mint: no .cotal/auth for space "${space}" here to mint from`);
-    console.error("⚠ delivery: --dev-mint — minting a scoped delivery cred from the LOCAL SIGNER (DEV ONLY; production mounts a pre-minted delivery.creds and the daemon never sees the signer)");
-    const identity = newIdentity(); // stable across self-remints — the endpoint pins it
-    const initial = await mintCreds(auth, identity, "delivery");
-    return { initial, source: () => mintCreds(auth, identity, "delivery") };
-  }
-  throw new Error(
-    `delivery: no scoped creds at ${where}. Start the space with \`cotal up\`, which mints and writes them, or pass --creds <file>; for a standalone dev run use --dev-mint.`,
-  );
-}
-
-// Parsing lives in the dispatcher now, driven by the `deliver` command's declared flags.
-
-/**
- * RECORD THIS PROCESS as the space's delivery daemon, and un-record it on a clean exit (#1528).
- *
- * The daemon writes its OWN record because it is the only participant that always knows it is
- * running. Until now `delivery.<space>.pid` was written ONLY by the CLI launcher
- * (`startDeliveryDetached`), so every other route to a live daemon — a container entrypoint,
- * systemd, an operator typing `cotal deliver --space …`, a hosted composition calling
- * {@link runDelivery} — left whatever was on disk untouched and readers believed it. A record naming
- * a pid that died days ago does not merely under-report: `down`'s `mayBeRunning` check exists to
- * fail CLOSED, so a `down --preserve-state` cut neither skips fencing a live daemon nor calls the
- * stack down around it, and a stale record supplies the proof-of-death that check requires.
- *
- * The launcher's shape is followed rather than re-invented: the CANONICAL path (never a pre-upgrade
- * name), a provably dead pre-upgrade record reclaimed first so an upgraded root never holds both
- * spellings, then the #969 identity pin beside it. The pin goes with the record on the way out.
- *
- * The removal is pid-CHECKED, like the manager's: a daemon that exits must not delete a record that
- * already belongs to its successor (a fast restart writes the new pid before the old process has
- * finished unwinding), so the record goes only while it still names this process.
- *
- * A root with no `.cotal/` is not a workstation and gets no record — a hosted composition has none,
- * and creating one here would plant a stray workspace root wherever the daemon happened to run.
- */
-export function recordDeliveryPid(root: string, space: string): () => void {
-  if (!existsSync(join(root, ".cotal"))) {
-    console.error(`• delivery: no ${join(root, ".cotal")} here, so this daemon is not recorded in a pidfile (nothing local will find it by pid)`);
-    return () => {};
-  }
-  const ctx = { root, space };
-  reclaimDeadPreUpgradeRecord(DELIVERY_PIDFILE, ctx);
-  const pidPath = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx);
-  const mine = String(process.pid);
-  // #969/#1238: publish the pair by rename so a later teardown never sees a torn pairing.
-  writePidPair(pidPath, process.pid);
-  return () => {
-    try {
-      removePidPair(pidPath, mine); // a successor's record is not ours to remove
-    } catch {
-      /* already gone, or unreadable: leaving a record we cannot prove is ours is the safe error */
-    }
-  };
-}
-
 /**
  * Run the delivery daemon: the server-side Plane-3 durable backstop. A thin composition root that
  * builds a scoped `delivery` endpoint, acquires the single-flight lease, and runs the existing
@@ -589,45 +299,7 @@ async function runStartedDelivery(
     }
   }
 
-  // REQUIRE TLS when the operator said to, and when the record the server came from demands it
-  // (same rule as an explicit `--tls`). This daemon holds a STANDING credential and reconnects
-  // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
-  // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
-  // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
-  // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
-  // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
-  const tls = v.tls !== undefined || registered?.tlsRequired === true;
-  // SAY THE DIAL TARGET before anything can refuse on it, in every workstation shape: an operator
-  // (and a cell) can then assert WHAT the daemon dialed even when the default port is live on the
-  // host and the run gets past the reachability refusal. The hosted (injected-store) daemon learns
-  // its target from argv and stays silent here.
-  if (store === undefined)
-    log.err(
-      registered !== undefined
-        ? `• delivery: space "${space}" is registered at ${server} (meshes entry) - dialing it${tls ? " with TLS required" : ""}`
-        : `• delivery: no meshes entry for "${space}" - dialing ${server}${v.server !== undefined ? " (--server)" : " (the local default)"}${tls ? " with TLS required" : ""}`,
-    );
-  if (!(await isReachable(server, { creds: creds.initial, ...(tls ? { tls: true } : {}) }))) {
-    // The refusal names the URL actually dialed, and — when that URL came from a registry record —
-    // the remedy that fits the record's origin, in the same wording render.ts uses for preflight
-    // `unreachable`: an `up` record is THIS machine's mesh and `cotal up` restarts it; a `manual`
-    // record is a broker elsewhere that only its own operator can start, so `Run: cotal up` here
-    // would prescribe starting a DIFFERENT, local mesh under that name.
-    if (registered !== undefined) {
-      log.err(
-        registered.origin === "manual" || registered.origin === "catalog"
-          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; ${registered.origin === "catalog"
-            ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
-            : `start it where it runs, or \`cotal space forget ${space}\` to unregister it`}`
-          : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
-      );
-      if (held) throw new Error(`delivery: no broker answered at ${server}`);
-      process.exit(1);
-    }
-    log.err(`✗ delivery: can't reach NATS at ${server}. Run: \`cotal up\``);
-    if (held) throw new Error(`delivery: can't reach NATS at ${server}`);
-    process.exit(1);
-  }
+  const tls = await requireReachableBroker({ v, registered, store, server, space, creds, log, held });
 
   // PIN THE SCAN TARGET ONCE, HERE. The $SYS sweeps below resolve an ACCOUNT, and a complete sweep
   // of the WRONG account is indistinguishable from "the principal is gone" — a healthy-looking
@@ -769,41 +441,7 @@ async function runStartedDelivery(
     process.on("SIGTERM", holdSigterm);
   }
 
-  // Acquire the single-flight lease BEFORE binding the loops: a loud refusal-to-bind if another daemon
-  // already holds this shard (two clients binding the same durable name SPLIT delivery). The bucket TTL
-  // frees a crashed holder's lease so a fresh daemon re-acquires.
-  // THE REVISION THIS PROCESS OWNS, or `undefined` once it knows it does not own the row any more.
-  // `releaseDeliveryLease` takes it as a compare-and-swap, so a shutdown that no longer holds the
-  // shard releases NOTHING rather than deleting whatever row is there. The exits where that matters
-  // are exactly the takeover exits below: without it, the departing daemon removes the REPLACEMENT's
-  // lease on its way out and leaves the shard with no holder at all.
-  let revision: number | undefined;
-  try {
-    revision = await ep.acquireDeliveryLease(shard);
-  } catch (e) {
-    if (isCasLoss(e)) {
-      log.err(`✗ delivery: a live lease already exists for shard ${shard} — another delivery daemon is running. Not binding.`);
-    } else if (isPermissionDenied(e)) {
-      const typed = e instanceof PermissionViolationError
-        ? e
-        : (e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError
-          ? (e as { cause: PermissionViolationError }).cause
-          : undefined;
-      const refused = typed
-        ? `${typed.operation} "${typed.subject}"`
-        : (e as Error).message;
-      log.err(
-        `✗ delivery: the lease write for shard ${shard} was refused (${refused}) — this credential ` +
-          `cannot write ${deliveryBucket(space)}.${leaseKey(shard)}. Not binding. Use a credential ` +
-          `holding the "delivery" profile.`,
-      );
-    } else {
-      log.err(`✗ delivery: acquiring the lease for shard ${shard} failed: ${(e as Error).message}. Not binding.`);
-    }
-    await ep.stop();
-    if (held) throw e;
-    process.exit(1);
-  }
+  let revision: number | undefined = await acquireShardLease({ ep, shard, space, log, held });
 
   // SIGNAL HANDLING IS ARMED HERE, THE STATEMENT AFTER THE SHARD BECOMES OURS, not at the end of
   // start-up, and not merely before the readiness flip. From this line on there is a row on the
@@ -836,6 +474,8 @@ async function runStartedDelivery(
   /** Set once close() released the lease and proved every connection closed. */
   let closedClean = false;
   let membership: MembershipFeedHandle | undefined;
+  let membershipRetry: ReturnType<typeof setTimeout> | undefined;
+  let membershipAttempt: Promise<void> | undefined;
   let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>; native: ReturnType<typeof watchNativeConnection> } | undefined;
   /** Every timer writer connection that has not reported closed, the retry loop's earlier ones included. */
   const timerWriterConns = new Set<Awaited<ReturnType<ReturnType<typeof dialerFor>>>>();
@@ -923,6 +563,7 @@ async function runStartedDelivery(
   const close = (): Promise<void> => {
     if (closePromise !== undefined) return closePromise;
     stopping = true;
+    clearTimeout(membershipRetry);
     if (renew !== undefined) clearInterval(renew);
     health.stop();
     stopLeaseWatch?.();
@@ -960,6 +601,7 @@ async function runStartedDelivery(
         wakeTimerWriterBackoff?.();
         try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
         try { await ep.stop(); } catch { /* broker may be gone */ }
+        await membershipAttempt;
       }
       if (left !== undefined)
         throw new Error(`delivery: the lease for shard ${shard} is still held by ${ep.ownsDeliveryLease(left.info) ? "this instance" : left.info.holder} after close`);
@@ -1087,9 +729,9 @@ async function runStartedDelivery(
     : `✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: \`cotal down\``);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
-  // reader + data-account feed writer), isolated from Plane-3. Fail-soft — a missing cred / start error
-  // logs and the graph degrades to traffic-only; Plane-3 delivery is never affected.
-  try {
+  // reader + data-account feed writer), isolated from Plane-3. Retry a missing derived store
+  // without holding up lane startup or asking the feed's standing credential to create it.
+  const startGraphMembership = async (retryMs: number): Promise<void> => {
     // Pass the INJECTED store (hosted KMS/Vault), NOT credsSrc.store — that one may be an FS store over
     // an arbitrary `--creds` path, whereas membership-rw lives under the workstation `.cotal/` key. With
     // no injected store, startMembership falls back to the workstation FS store.
@@ -1097,22 +739,36 @@ async function runStartedDelivery(
     // `accountId` is the account THIS daemon's own cred authenticates as (pinned above), not a
     // `.cotal/membership.json` read: the file was never an independent source (same directory as the
     // creds, so a wrong root was wrong for both) and a hosted composition has none.
-    ({ handle: membership, down: membershipDown } = await startMembership(
-      { space, server, accountId: scanTarget.expectedAccount, root },
-      store,
-      log,
-    ));
-  } catch (e) {
-    membershipDown = (e as Error).message;
-    log.err(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected`);
-  }
+    try {
+      const { handle, down } = await startMembership(
+        { space, server, accountId: scanTarget.expectedAccount, root },
+        store,
+        log,
+      );
+      if (stopping) {
+        try { await handle?.stop(); } catch { /* broker may be gone */ }
+        return;
+      }
+      membership = handle;
+      membershipDown = down;
+    } catch (e) {
+      if (stopping) return;
+      membershipDown = (e as Error).message;
+      const missingStore = e instanceof Error && isStreamNotFound(e.cause);
+      log.err(`! membership: failed to start (${membershipDown}); graph membership degraded, delivery unaffected${missingStore ? `; retrying in ${retryMs / 1000}s` : ""}`);
+      if (missingStore) {
+        membershipRetry = setTimeout(() => {
+          membershipRetry = undefined;
+          membershipAttempt = startGraphMembership(Math.min(retryMs * 2, 60_000)).finally(() => {
+            membershipAttempt = undefined;
+          });
+        }, retryMs).unref();
+      }
+    }
+  };
+  await startGraphMembership(5_000);
 
-  // A store read can finish after a startup health fault closed the endpoint. Dispose the feed
-  // it just returned before rejecting; it did not exist when the original close ran.
-  if (heldStartupFailure !== undefined) {
-    await membership?.stop();
-    throw heldStartupFailure;
-  }
+  if (heldStartupFailure !== undefined) throw heldStartupFailure;
 
   // The TIMER WRITER (SPEC 13.2): the pump that turns workflow `.schedule` requests into armed
   // broker schedules. Hosted here because this daemon is the space's standing server-side process;
@@ -1177,6 +833,7 @@ async function runStartedDelivery(
     }
     if (stopping) return;
     stopping = true;
+    clearTimeout(membershipRetry);
     if (renew !== undefined) clearInterval(renew);
     health.stop();
     stopLeaseWatch?.();
@@ -1236,6 +893,7 @@ async function runStartedDelivery(
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
       try { if (timerWriter) await drainAndClose(timerWriter.nc); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
+      await membershipAttempt;
       process.exit(code);
     })();
   };
@@ -1274,45 +932,7 @@ async function runStartedDelivery(
     process.on("SIGINT", onSignal("SIGINT", shutdown));
     process.on("SIGTERM", onSignal("SIGTERM", shutdown));
   }
-  /** What the broker says about THIS shard's lease key right now, the verdict a failed renew does
-   *  NOT have. `unknown` never collapses into `gone`: not being able to look is not the same fact as
-   *  looking and finding nothing (#1318).
-   *
-   *  The ownership test is `ep.ownsDeliveryLease`, which compares the row against BOTH this
-   *  endpoint's wire identity and its per-run incarnation. Neither half is optional, and the two
-   *  failures they rule out are different:
-   *
-   *  1. Comparing against `ownId` (the bare connection nkey `U…`) is comparing across NAMESPACES:
-   *     the endpoint rewrites `card.id` in its constructor to the wire PRINCIPAL dot-form
-   *     `${owner}.${actor}` (`local.U…`), and that is what `encodeLease` stamps. That mismatch made
-   *     `held` UNREACHABLE, the daemon read its own row, failed to recognise itself, took the
-   *     `taken` branch and exited naming ITSELF as the thief, leaving a not-ready row and no
-   *     process. `held` is the one survivable reading ("your renew failed but the shard is still
-   *     yours"), so making it unreachable turned every recoverable renew failure into a permanent
-   *     withdrawal: #1318's own outage re-entering through the path built to prevent it.
-   *
-   *  2. Comparing on the principal ALONE is not sufficient either, and this is the one that looks
-   *     correct: the daemon's cred is a FILE that every restart re-reads, so a REPLACEMENT daemon
-   *     authenticates as the same nkey and writes the same `holder`. A displaced daemon would then
-   *     read its successor's row, conclude the shard was still its own, carry on serving a shard it
-   *     had lost (two daemons on one durable, which is the split this lease exists to prevent) and
-   *     CAS-release the live holder's row on the way out. Cells F and G stage exactly that, with two
-   *     daemons sharing one creds file, because that is what the product does. */
-  const readOwnLease = async (): Promise<LeaseReading> => {
-    let current: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
-    try { current = await ep.readDeliveryLeaseEntry(shard); }
-    catch (e) { return { kind: "unknown", why: (e as Error).message }; }
-    if (current === undefined) return { kind: "gone" };
-    if (!ep.ownsDeliveryLease(current.info)) return { kind: "taken", by: current.info.holder };
-    // Held by us, AND at the broker's own revision rather than the one this process last cached.
-    // That distinction is load-bearing: the renew that just failed may have been applied before its
-    // reply was lost, in which case the cached revision is permanently one behind and every later
-    // CAS is refused over a sequence this daemon moved itself. Adopting the read revision is what
-    // lets a survivable renew failure actually be survived. (An earlier comment here claimed the
-    // record carries no revision; it does, the KV entry's own `revision`, and that claim was
-    // wrong, which is why the stale token went unnoticed.)
-    return { kind: "held", revision: current.revision };
-  };
+  const readOwnLease = ownLeaseReader({ ep, shard });
 
   /** Print a lease state only when it CHANGES. The renew ticks every few seconds, so a broker
    *  outage would otherwise write the same line thousands of times into the daemon's log; an
@@ -1576,6 +1196,7 @@ async function runStartedDelivery(
     // While the writer is absent its retry loop is dialing, starting or backing off, so a
     // connection of its own may exist that nothing here can name yet.
     if (timerWriter === undefined || timerWriterConns.size !== 1) throw unsettled("the timer writer is not connected");
+    if (membershipAttempt !== undefined) throw unsettled("the membership feed is starting");
     return [
       ...ep.nativeConnections().map((binding) => ({ label: "endpoint" as const, ...binding })),
       ...(membership?.nativeDataConnections() ?? []).map((binding) => ({ label: "membership-rw" as const, ...binding })),

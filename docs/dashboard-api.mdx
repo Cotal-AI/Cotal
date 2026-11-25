@@ -10,7 +10,7 @@ HTTP interface of the @cotal-ai/web reference implementation. This description c
 
 Open the owner-private launch URL once to exchange its k query token for the cotal_web_session cookie. Keep the session on the same host. With the default bind, the permitted browser origins are [http://127.0.0.1](http://127.0.0.1):\<port>, [http://localhost](http://localhost):\<port> and [http://cotal.localhost](http://cotal.localhost):\<port>. A custom host uses its own HTTP origin. A cross-origin request is refused before session checks. The readiness nonce only opens /api/meta.
 
-Read operations use GET and take no request body. Some read handlers also accept other bodyless methods; this description does not promise a 405 response for them. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.
+Read operations use GET and take no request body. After authentication, a bodyless request using a different method gets 405 with the Allow header set to GET. The native web service is read-only and always refuses channel deletion with 403. Legacy direct dashboard instances can enable deletion; /api/meta reports channelDeleteSupported. Description version 1 identifies this document, not the wire or npm package version.
 
 ## Reading the contract
 
@@ -55,7 +55,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 401
 
@@ -153,7 +153,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 401
 
@@ -266,7 +266,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 401
 
@@ -342,11 +342,11 @@ Merge the newest chat messages selected by stream sequence with recent direct me
 
 ### Parameters
 
-| Name  | Location | Required | Schema                                                                    |
-| ----- | -------- | -------- | ------------------------------------------------------------------------- |
-| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+| Name  | Location | Required | Schema                                                        |
+| ----- | -------- | -------- | ------------------------------------------------------------- |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":200}` |
 
-**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -368,7 +368,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -456,11 +456,11 @@ Return recent direct messages visible to the dashboard observer. A failed or lat
 
 ### Parameters
 
-| Name  | Location | Required | Schema                                                                    |
-| ----- | -------- | -------- | ------------------------------------------------------------------------- |
-| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":500}` |
+| Name  | Location | Required | Schema                                                        |
+| ----- | -------- | -------- | ------------------------------------------------------------- |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":500}` |
 
-**limit:** Maximum requested messages. Absent or empty uses 500. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested messages. Absent or empty uses 500. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -485,7 +485,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -585,14 +585,14 @@ Percent-decode the channel once and validate it using the core channel grammar. 
 
 ### Parameters
 
-| Name    | Location | Required | Schema                                                                    |
-| ------- | -------- | -------- | ------------------------------------------------------------------------- |
-| channel | path     | yes      | `{"type":"string","minLength":1,"maxLength":4096}`                        |
-| limit   | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+| Name    | Location | Required | Schema                                                        |
+| ------- | -------- | -------- | ------------------------------------------------------------- |
+| channel | path     | yes      | `{"type":"string","minLength":1,"maxLength":4096}`            |
+| limit   | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":200}` |
 
 **channel:** Channel name or pattern accepted by the core channel grammar. Encode it as one URL path component.
 
-**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested messages. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -617,7 +617,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -764,7 +764,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 401
 
@@ -914,7 +914,7 @@ Each named event carries the following JSON data schema.
 GET /api/meta
 ```
 
-Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted. Other bodyless methods also reach this read handler; no 405 behavior is promised.
+Return the space, process ID and whether channel deletion is supported. An authenticated browser session, one-use launch token or the private readiness nonce can access this route. The readiness nonce is accepted only here and does not mint a session. Query strings are accepted.
 
 ### Parameters
 
@@ -940,7 +940,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 401
 
@@ -1069,7 +1069,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -1196,7 +1196,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -1293,7 +1293,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -1369,14 +1369,14 @@ Read the newest frames on the agent's event channel, bounded like its siblings: 
 
 ### Parameters
 
-| Name  | Location | Required | Schema                                                                    |
-| ----- | -------- | -------- | ------------------------------------------------------------------------- |
-| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}`                        |
-| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":9007199254740991,"default":200}` |
+| Name  | Location | Required | Schema                                                        |
+| ----- | -------- | -------- | ------------------------------------------------------------- |
+| agent | path     | yes      | `{"type":"string","minLength":3,"maxLength":4096}`            |
+| limit | query    | no       | `{"type":"integer","minimum":0,"maximum":2000,"default":200}` |
 
 **agent:** The agent's id, \<owner>.\<actor> with each part in \[A-Za-z0-9\_], percent-encoded as one URL path component. Any other text is refused with 400.
 
-**limit:** Maximum requested frames. Absent or empty uses 200. Accepts decimal digits naming a safe integer, including 0; negative, fractional, whitespace-padded and unsafe values are refused.
+**limit:** Maximum requested frames. Absent or empty uses 200. Accepts decimal digits for integers from 0 through 2000. Negative, fractional, whitespace-padded and larger values are refused.
 
 ### Responses
 
@@ -1398,7 +1398,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 
@@ -1582,7 +1582,7 @@ A valid one-use k query token is exchanged for a dashboard session. The response
 
 `Location`: The requested path without the query string.
 
-`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Strict. The default local listener uses HTTP.
+`Set-Cookie`: cotal_web_session=\<session>; Path=/; HttpOnly; SameSite=Lax. The default local listener uses HTTP.
 
 #### HTTP 400
 

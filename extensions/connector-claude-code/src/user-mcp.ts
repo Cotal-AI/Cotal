@@ -5,8 +5,10 @@ import { mcpServerProblem, type McpServerSpec } from "@cotal-ai/core";
 import { mcpServerEnvKeys } from "@cotal-ai/connector-core";
 
 /** The user-owned MCP declarations, shared by setup and launch-time environment selection. */
+export const claudeUserMcpPath = (): string => join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
+
 export function claudeUserMcpServers(): Record<string, unknown> {
-  const path = join(process.env.CLAUDE_CONFIG_DIR?.trim() || homedir(), ".claude.json");
+  const path = claudeUserMcpPath();
   if (!existsSync(path)) return {};
   let config: { mcpServers?: Record<string, unknown> } | null;
   try {
@@ -31,7 +33,7 @@ export function claudeUserMcpEnvKeys(): string[] {
  *  into the launch. Claude Code binds a `server:<name>` wake channel only to one of these (measured
  *  on 2.1.295: a server named only in `--mcp-config` reads "no MCP server configured with that name"
  *  and the session never wakes on a peer message). */
-export function claudeDeclaredServerNames(cwd: string): Set<string> {
+function claudeDeclaredServerNames(cwd: string): Set<string> {
   const names = new Set(Object.keys(claudeUserMcpServers()));
   const project = join(cwd, ".mcp.json");
   if (!existsSync(project)) return names;
@@ -52,6 +54,6 @@ export function assertChannelServerDeclared(name: string, cwd: string): void {
   throw new Error(
     `claude connector: Claude Code binds the server:${name} wake channel only to a server its own configuration declares, ` +
       `and neither the user config nor ${join(cwd, ".mcp.json")} declares one named ${name}; ` +
-      "run `cotal setup` or `cotal update`, which registers it at user scope",
+      "run `cotal setup` on a space host or `cotal daemon setup --space <space>` on a daemon-connected computer",
   );
 }

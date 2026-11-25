@@ -3,7 +3,7 @@ import { canonicalJson, mintLifecycleUid, type SecretStore } from "@cotal-ai/cor
 import { spaceKey } from "@cotal-ai/workspace";
 
 /** One unlaunched enrollment. Its token and request survive an unanswered host call together. */
-export interface PendingEnrollment<T> {
+interface PendingEnrollment<T> {
   v: 1;
   requestId: string;
   lifecycleUid: string;

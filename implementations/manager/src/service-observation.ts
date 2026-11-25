@@ -11,12 +11,12 @@ import {
 import type { ManagerServiceObservation } from "./manager.js";
 import { MANAGER_ENDPOINT, type ManagerStatus, type ManagerStopImpact } from "./manager-service-contract.js";
 
-export type ManagerObservationContext = ServiceAdapterContext & {
+type ManagerObservationContext = ServiceAdapterContext & {
   readonly process: { pid: number; token: string };
   readonly signal: AbortSignal;
 };
 
-export type ManagerServiceEvidence = ManagerServiceObservation & { readonly evidence?: ServiceAdapterNativeEvidence };
+type ManagerServiceEvidence = ManagerServiceObservation & { readonly evidence?: ServiceAdapterNativeEvidence };
 
 const plain = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value)));
 const closed = (value: unknown, keys: readonly string[]): value is Record<string, unknown> => plain(value) && Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));

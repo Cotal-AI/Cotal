@@ -487,7 +487,7 @@ function widenGrantCommand(
 }
 
 /** The managed-row input: every grant field plus the REQUIRED secret hash and custody. */
-export type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody"> & { tokenHash: string; custody: ManagedGrantCustody };
+type ManagedGrantInput = Omit<ActorRow, "grantedAt" | "custody"> & { tokenHash: string; custody: ManagedGrantCustody };
 
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
  *  with the secret hash and custody REQUIRED — and never shadowing an interactive row. Takes the
@@ -535,14 +535,8 @@ export function revokeManagedActor(dir: string, owner: string, actor: string): b
   return withManagedGrantTransaction(dir, (tx) => tx.revokeManaged(owner, actor));
 }
 
-/** Revoke a managed row only while it still names `lifecycleUid`: a caller releasing one lifecycle
- *  must never remove the grant a same-name successor holds. */
-export function revokeManagedActorAt(dir: string, owner: string, actor: string, lifecycleUid: string): boolean {
-  return withManagedGrantTransaction(dir, (tx) => tx.revokeManagedAt(owner, actor, lifecycleUid));
-}
-
 /** The outcome of a custody-pinned revoke. Only `revoked` removed a row. */
-export type ManagedRevokeIfResult = "revoked" | "absent" | "superseded" | "custody-mismatch";
+type ManagedRevokeIfResult = "revoked" | "absent" | "superseded" | "custody-mismatch";
 
 /** Revoke a managed row only while it still names BOTH `lifecycleUid` and exactly `custody`, read
  *  under the managed-grant lock. A row at another uid is a successor (`superseded`); a row at the

@@ -5,7 +5,6 @@ import {
   MessageScroller as MessageScrollerPrimitive,
   useMessageScroller,
   useMessageScrollerScrollable,
-  useMessageScrollerVisibility,
 } from "@shadcn/react/message-scroller"
 import { cn } from "cn"
 
@@ -127,5 +126,4 @@ export {
   MessageScrollerButton,
   useMessageScroller,
   useMessageScrollerScrollable,
-  useMessageScrollerVisibility,
 }

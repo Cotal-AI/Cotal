@@ -81,7 +81,7 @@ try {
   const cookie = exchange.headers.get('set-cookie')?.split(';')[0];
   assert(cookie);
   assert(cookie.startsWith('cotal_web_session='));
-  assert(exchange.headers.get('set-cookie')?.includes('HttpOnly; SameSite=Strict'));
+  assert(exchange.headers.get('set-cookie')?.includes('HttpOnly; SameSite=Lax'));
   const spent = await fetch(launchUrl, { redirect: 'manual' });
   assert.equal(spent.status, 401);
   conforms(responseSchema('/api/roster', 401), await spent.json());
@@ -99,8 +99,15 @@ try {
   });
   assert.equal(deletion.status, 403, 'Native dashboard cannot acquire channel purge authority');
   conforms(responseSchema('/api/channel/delete', 403, 'post'), await deletion.json());
+  const readPath = (path: string) => base + path.replace('{channel}', 'general').replace('{agent}', encodeURIComponent(seed!.card.id));
+  for (const path of Object.keys(spec.paths).filter((path) => spec.paths[path].get)) {
+    const response = await fetch(readPath(path), { method: 'PUT', headers, signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 405, `PUT ${path}`);
+    assert.equal(response.headers.get('allow'), 'GET', `PUT ${path}`);
+    assert.deepEqual(await response.json(), { error: 'GET only' }, `PUT ${path}`);
+  }
   for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed' && path !== '/api/meta' && spec.paths[path].get)) {
-    const response = await fetch(base + path.replace('{channel}', 'general').replace('{agent}', encodeURIComponent(seed!.card.id)), { headers });
+    const response = await fetch(readPath(path), { headers });
     assert.equal(response.status, 200, `${path}: ${response.status}`);
     const body = await response.json();
     conforms(responseSchema(path, 200), body);
@@ -112,6 +119,16 @@ try {
     assert.equal(response.status, 400);
     const path = target.includes('/channels/') ? '/api/channels/{channel}/history' : target.split('?')[0];
     conforms(responseSchema(path, 400), await response.json());
+  }
+  for (const path of ['/api/activity', '/api/dms', '/api/channels/{channel}/history', '/api/agents/{agent}/events']) {
+    const limit = spec.paths[path].get.parameters.find((param: { name: string }) => param.name === 'limit').schema;
+    assert.equal(limit.minimum, 0, path);
+    assert.equal(limit.maximum, 2000, path);
+    for (const [value, status] of [[0, 200], [2000, 200], [2001, 400]]) {
+      const response = await fetch(`${readPath(path)}?limit=${value}`, { headers });
+      assert.equal(response.status, status, `${path}?limit=${value}`);
+      conforms(responseSchema(path, status!), await response.json());
+    }
   }
   for (const query of ['?limit=', '?limit=0']) {
     const response = await fetch(base + '/api/dms' + query, { headers });
@@ -131,12 +148,14 @@ try {
   const events = new Set<string>();
   const timeout = setTimeout(() => streamAbort.abort(), 10_000);
   await seed.multicast('live-contract', { channel: 'general' });
-  // The tap enforces the subject's sender, but does not validate the whole wire message. Send a
-  // senderless frame first, then a sender-matched partial payload on the same subject. Seeing the
-  // latter bounds the refusal check without waiting for a frame the tap must drop.
+  // The tap enforces the subject's sender and drops a message whose parts cannot be read (#7060),
+  // but does not validate the rest of the wire message. Send a senderless frame and a sender-matched
+  // frame with no parts first, then a sender-matched partial payload with readable parts on the same
+  // subject. Seeing the last bounds both refusal checks without waiting for frames the tap must drop.
   const rawSubject = chatSubject(space, 'local', 'raw_json', 'general');
   const senderless = JSON.stringify({ probe: 'senderless' });
-  const rawMessage = { from: { id: 'local.raw_json' }, probe: 'partial-message' };
+  const partless = JSON.stringify({ from: { id: 'local.raw_json' }, probe: 'partless' });
+  const rawMessage = { from: { id: 'local.raw_json' }, parts: [{ kind: 'text', text: 'partial-message' }], probe: 'partial-message' };
   const rawPayload = JSON.stringify(rawMessage);
   await new Promise<void>((resolve, reject) => {
     const socket = connectTcp(brokerPort, '127.0.0.1');
@@ -150,6 +169,7 @@ try {
     });
     socket.once('connect', () => socket.write(
       `CONNECT {}\r\nPUB ${rawSubject} ${Buffer.byteLength(senderless)}\r\n${senderless}\r\n` +
+      `PUB ${rawSubject} ${Buffer.byteLength(partless)}\r\n${partless}\r\n` +
       `PUB ${rawSubject} ${Buffer.byteLength(rawPayload)}\r\n${rawPayload}\r\nPING\r\n`,
     ));
   });
@@ -171,6 +191,7 @@ try {
         conforms(schema, value);
         if (name === 'message') {
           assert(value.msg?.probe !== 'senderless', 'The tap must drop the frame without its subject sender');
+          assert(value.msg?.probe !== 'partless', 'The tap must drop the frame whose parts cannot be read');
           if (value.msg?.probe === rawMessage.probe) {
             assert.deepEqual(value.msg, { ...rawMessage, channel: 'general' });
             sawRaw = true;

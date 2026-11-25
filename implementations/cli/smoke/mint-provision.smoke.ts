@@ -18,7 +18,7 @@
  *      identity reads fix.x live but cannot join general
  *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, --signer on
  *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; `auth
- *      signer` into a missing folder → exit 2 naming it, nothing created; and
+ *      signer` into a missing folder → private directories and signer created; and
  *      the control that the same ACL flag on the agent profile still works
  *   6. --provision naming a mesh on another trust root; from a FRESH open root (no auth on disk, as
  *      `cotal up` leaves one), where mint and signer export refuse as unsupported; from a root holding
@@ -29,9 +29,9 @@
  *      beside its file
  *   8. --identity <creds> re-mints for the SAME nkey: the new credential's principal equals the
  *      original's; the seed file is read by core's own loader
- *   9. the refusals: both lifetime flags at once, or --no-expiry with either; --expires-in the seam would refuse (0, negative,
- *      fractional) without echoing it; an expiry past the last representable date; --identity on a file with no seed; --identity with a missing
- *      path → refused each, one sentence, nothing written
+ *   9. the refusals: incompatible lifetime flags; a zero lifetime with its minimum and retry;
+ *      malformed lifetimes without echoing them; an expiry past the last representable date;
+ *      --identity on a file with no seed or a missing path. Each refuses without writing anything.
  *  10. --replace: an existing label refuses CONFLICT, naming --replace; --replace swaps an expired
  *      standing credential and an unbounded one, whose no-expiry record goes with it; a still-valid
  *      one refuses CONFLICT naming its expiry and stays as it was; --replace with --out is refused
@@ -51,12 +51,15 @@
  * Run: pnpm smoke:mint-provision:auth
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer, type AddressInfo } from "node:net";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { codeSpan } from "@cotal-ai/workspace";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { shellWord } from "../src/lib/endpoint-errors.js";
 
 // The child `runCotal` starts: the composition root as the binary imports it (the CLI and the
 // `auth` command register themselves), one command line through `runCli`, then its exit code.
@@ -72,11 +75,12 @@ if (process.argv[2] === "cotal-child") {
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 const home = mkdtempSync(join(tmpdir(), "cotal-mint-prov-home-"));
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
 process.env.COTAL_NO_PROMPT = "1";
 
 const {
   CotalEndpoint, createSpaceAuth, jwtFromCreds, mintCreds, newIdentity, setupSpaceStreams,
-  seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER,
+  seedChannelRegistry, provisionAgent, mintLifecycleUid, principalKey, DEV_OWNER, dmStream,
 } = await import("@cotal-ai/core");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 const { agentSecretFilePaths, authDir, canonicalRoot, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
@@ -112,6 +116,16 @@ async function runCotal(words: string[]): Promise<{ out: string; code: number }>
   return { out: Buffer.concat(chunks).toString("utf8").replace(/\x1b\[[0-9;]*m/g, ""), code };
 }
 const runMint = (argv: string[]) => runCotal(["auth", "mint", ...argv]);
+
+async function hasDurableMember(space: string, principal: string): Promise<boolean> {
+  for (const deadline = Date.now() + 15_000; Date.now() < deadline; await wait(500)) {
+    const census = await runCotal(["channel", "members", "general", "--space", space, "--json"]);
+    const line = census.out.split("\n").find((text) => text.startsWith('{"schemaVersion"'));
+    const report = line ? JSON.parse(line) as { result?: { members: { id: string; live: boolean; durable: boolean }[] } } : undefined;
+    if (census.code === 0 && report?.result?.members.some((m) => m.id === principal && m.live && m.durable)) return true;
+  }
+  return false;
+}
 
 /** What a client recovers from the credential without connecting: the principal tag and the
  *  lifecycle uid its dm/dlv/chathist grants are named for (SPEC 13.1). */
@@ -159,6 +173,29 @@ try {
   process.chdir(root); // `auth mint` finds the root's `.cotal/` by walking up from cwd, like the binary
   cleanup.push(() => process.chdir(cwd0));
 
+  // Signer output protection is independent of provisioning and its consuming-connect checks.
+  {
+    // Output names are filesystem paths, never shell commands, even with spaces and expansions.
+    const missingParent = join(root, "signer parent $HOME 'quoted'"), missingFolder = join(missingParent, "nested");
+    const missingSigner = join(missingFolder, "signer.json");
+    const result = await runCotal(["auth", "signer", "--out", missingSigner, "--plain"]);
+    check("auth signer creates missing nested output folders", result.code === 0 && existsSync(missingSigner), result.out);
+    check("  new folders are private", [missingParent, missingFolder].every((p) => (statSync(p).mode & 0o777) === 0o700));
+    const signer = JSON.parse(readFileSync(missingSigner, "utf8"));
+    check("  signer is private and holds only the selected account signer", (statSync(missingSigner).mode & 0o777) === 0o600
+      && signer.account.signingSeed === auth.account.signingSeed && signer.operator.seed === "");
+    check("  no secret appears in output and no split path is created", !result.out.includes(auth.account.signingSeed) && !existsSync(join(root, "signer")));
+    const linkedParent = join(root, "signer-link");
+    symlinkSync(missingParent, linkedParent);
+    const linked = await runCotal(["auth", "signer", "--out", join(linkedParent, "not-created", "signer.json")]);
+    check("auth signer refuses a symlink ancestor before creating descendants", linked.code === 2 && /PERMISSION_DENIED/.test(linked.out)
+      && !existsSync(join(missingParent, "not-created")), linked.out);
+    chmodSync(missingFolder, 0o777);
+    const unsafe = await runCotal(["auth", "signer", "--out", join(missingFolder, "unsafe.json")]);
+    check("auth signer still refuses an unprotected existing folder", unsafe.code === 2 && !existsSync(join(missingFolder, "unsafe.json")), unsafe.out);
+    chmodSync(missingFolder, 0o700);
+  }
+
   // A second, ordinary peer that will DM and anycast the minted identity. Provisioned the launcher
   // way (the control): its footprint is what --provision must reproduce for the minted one.
   const peerIdent = newIdentity();
@@ -202,11 +239,27 @@ try {
     }
     await ep.stop().catch(() => {});
     check("  a consuming connect FAILS: the inbox durable was never pre-created (the negative control)",
-      /consumer not found|not found/i.test(failure), failure);
+      /dm-durable-missing|consumer not found|not found/i.test(failure), failure);
   }
 
   // ── 2. --provision: the same mint, and the identity can consume ─────────────────────────────
   {
+    const inboxCount = async () => {
+      const url = `${broker.monitorUrl}/jsz?accounts=true&streams=true`;
+      const data = await (await fetch(url)).json() as { account_details: { stream_detail: { name: string; state: { consumer_count: number } }[] }[] };
+      const dm = data.account_details.flatMap((account) => account.stream_detail ?? []).find((stream) => stream.name === dmStream(SPACE));
+      assert.ok(dm, "broker monitor must report the DM stream");
+      return dm.state.consumer_count;
+    };
+    const before = await inboxCount();
+    const shortPath = join(root, "too-short.creds");
+    for (const lifetime of ["0", "1"]) {
+      const short = await runMint(["too_short", "--provision", "--expires-in", lifetime, "--allow-subscribe", "general", "--out", shortPath, "--json"]);
+      check(`a ${lifetime}-second provisioned mint refuses up front and names the two-second minimum`,
+        short.code === 1 && short.out.includes("USAGE_INVALID") && short.out.includes("--expires-in 2"), short);
+      check("the refused mint leaves neither a credential nor an inbox", !existsSync(shortPath) && await inboxCount() === before);
+    }
+
     const out = join(root, "board.creds");
     const r = await runMint(["board", "--profile", "agent", "--provision", "--role", "board", "--out", out]);
     check("mint --provision --role board succeeds", r.code === 0 && existsSync(out), r.out);
@@ -323,13 +376,6 @@ try {
     const r3s = await runCotal(["auth", "signer", "--provision", "--role", "board", "--out", signerOut]);
     check("auth signer with --provision/--role exits 1 with the reason", r3s.code === 1 && /use auth signer --out <private-file>/.test(r3s.out), r3s.out);
     check("  and writes no signer file", !existsSync(signerOut));
-    // No folder is created for signing material: a missing one is named, with the command that makes it.
-    const missingFolder = join(root, "no-such-folder");
-    const r3m = await runCotal(["auth", "signer", "--out", join(missingFolder, "signer.json")]);
-    check("auth signer into a missing folder exits 2 TARGET_NOT_FOUND naming the folder and how to make it",
-      r3m.code === 2 && /^\s*Code:\s+TARGET_NOT_FOUND$/m.test(r3m.out) && r3m.out.includes(`the --out folder ${missingFolder} does not exist; nothing was written`)
-        && r3m.out.includes(`(umask 077 && mkdir -p ${missingFolder})`), r3m.out);
-    check("  and creates nothing", !existsSync(missingFolder));
     // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
     // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
     // whole chat plane, and the command read `--allow-subscribe` only inside its agent branch. So
@@ -425,7 +471,7 @@ try {
     process.chdir(root);
     await new Promise<void>((resolve) => holder.close(() => resolve()));
     check("--provision naming no mesh, from an unrecorded root, stays local and is refused at the preflight of the broker it dials",
-      r3.code === 2 && /provisioning preflight/.test(r3.out) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
+      r3.code === 2 && r3.out.includes(`nothing answered at ${held}, the broker address --server named`) && /^\s*Space:\s+same$/m.test(r3.out) && !/CONFLICT/.test(r3.out) && !r3.out.includes(rootB), r3.out);
     check("  and mints nothing", !existsSync(out3));
     check("  and does not mint under the other root's authority", !r3.out.includes(rootB), r3.out);
 
@@ -542,6 +588,15 @@ try {
       try { envelope = JSON.parse(json.out); } catch { /* not one envelope; the check below shows it */ }
       check("  and --json carries the same message and Next", json.code === 1 && envelope.error?.code === "USAGE_INVALID" && envelope.error.message === said && envelope.error.remedy === next && !existsSync(out), json.out);
     }
+    const dashRole = await runMint(["reader", "--role=-review!", "--out", out, "--json"]);
+    const dashError = JSON.parse(dashRole.out).error;
+    const roleOption = /such as `(--role=[^`]+)`/.exec(dashError?.remedy ?? "")?.[1];
+    check("auth mint gives the corrected dash-leading role as one option word",
+      dashRole.code === 1 && dashError?.code === "USAGE_INVALID" && roleOption === "--role=-review_" && !existsSync(out), dashRole.out);
+    const dashOut = join(root, "dash-role.creds");
+    const dashRetry = await runMint(["reader", roleOption!, "--out", dashOut, "--json"]);
+    check("the printed role option mints a credential with the corrected role",
+      dashRetry.code === 0 && JSON.parse(dashRetry.out).result?.grants?.role === "-review_" && existsSync(dashOut), dashRetry.out);
     for (const flag of [["--expires-in", "3600"], ["--expires-at", "2000000000"]]) {
       const r = await runMint(["x", "--profile", "observer", "--no-expiry", ...flag, "--out", out]);
       check(`--no-expiry with ${flag[0]} exits 1 with the reason and mints nothing`, r.code === 1 && /--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at/.test(r.out) && !existsSync(out) && !existsSync(`${out}.no-expiry.json`), r.out);
@@ -557,14 +612,23 @@ try {
       check(`${flags[0]} past the last representable date exits 1 with the reason and mints nothing`,
         r.code === 1 && /the credential would expire after \+275760-09-13T00:00:00\.000Z, the last date Cotal can represent; nothing was written/.test(r.out) && !existsSync(out), r.out);
     }
-    for (const bad of ["0", "-5", "1.5", "abc"]) {
+    const zeroOut = join(root, "zero-lifetime", "refused.creds");
+    const zero = await runMint(["zero_lifetime", "--expires-in", "0", "--out", zeroOut, "--json"]);
+    const zeroReport = JSON.parse(zero.out);
+    check("a zero file-only lifetime refuses before creating its output directory and names a valid retry",
+      zero.code === 1 && zeroReport.outcome === "refused" && zeroReport.error?.code === "USAGE_INVALID"
+      && zeroReport.error.message === "--expires-in must be at least 1 second for a file-only mint"
+      && zeroReport.error.remedy === "use --expires-in 1 or a larger whole number, or use --no-expiry instead to mint without an expiry"
+      && !existsSync(join(root, "zero-lifetime")), zero.out);
+    const retry = await runMint(["zero_lifetime", "--expires-in", "1", "--out", zeroOut, "--json"]);
+    check("retrying with --expires-in 1 mints the file", retry.code === 0 && existsSync(zeroOut), retry.out);
+    for (const bad of ["-5", "1.5", "abc"]) {
       // A leading-dash value needs the `=` form to get past parseArgs' strict token parser; the
-      // point is that it reaches THE COMMAND's validation and is refused there. The refusal does not
-      // echo the value, so a single digit such as 0 is not looked for in the output.
+      // point is that it reaches THE COMMAND's validation and is refused there.
       const r = await runMint(["x", "--profile", "observer", bad.startsWith("-") ? `--expires-in=${bad}` : "--expires-in", ...(bad.startsWith("-") ? [] : [bad]), "--out", out]);
       check(`--expires-in ${bad} exits 1 without echoing the value (a TTL the seam would refuse)`,
         r.code === 1 && /credential expiry needs an integer in native seconds; the supplied value was not echoed/.test(r.out)
-          && (bad.length === 1 || !r.out.includes(bad)), r.out);
+          && !r.out.includes(bad), r.out);
       check("  and mints nothing", !existsSync(out));
     }
     // Private, so the protected-reference check passes and the refusal is about the contents.
@@ -579,13 +643,24 @@ try {
       r3.code === 2 && r3.out.includes(`the referenced credential ${join(root, "missing.creds")} does not exist`), r3.out);
     check("  and mints nothing", !existsSync(out));
     // An --out folder that cannot hold the credential is named, with the cause and the step.
+    const unsafe = join(root, "out-unsafe");
+    mkdirSync(unsafe, { mode: 0o700 });
+    chmodSync(unsafe, 0o777);
+    const unsafeOut = join(unsafe, "newdir", "deeper", "x.creds");
+    const unsafeMint = await runMint(["x", "--out", unsafeOut]);
+    check("--out refuses an unsafe existing ancestor without creating missing folders",
+      unsafeMint.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(unsafeMint.out) && unsafeMint.out.includes(`${unsafe} is writable by every local account`) && readdirSync(unsafe).length === 0, unsafeMint.out);
+    chmodSync(unsafe, 0o700);
+    const safeMint = await runMint(["x", "--out", unsafeOut]);
+    check("--out creates missing folders and writes the credential after the ancestor is protected",
+      safeMint.code === 0 && existsSync(unsafeOut), safeMint.out);
     const real = join(root, "out-real"), link = join(root, "out-link");
     mkdirSync(real, { mode: 0o700 });
     symlinkSync(real, link);
     const linked = await runMint(["x", "--profile", "observer", "--out", join(link, "sub", "x.creds")]);
     check("--out through a symbolic link exits 2 PERMISSION_DENIED, naming the link, where it points and the path without it",
       linked.code === 2 && /^\s*Code:\s+PERMISSION_DENIED$/m.test(linked.out) && linked.out.includes(`the --out path goes through ${link}, a symbolic link to ${real}`)
-        && linked.out.includes(`such as ${join(real, "sub", "x.creds")} if that folder is yours`), linked.out);
+        && linked.out.includes(`such as ${codeSpan(shellWord(join(real, "sub", "x.creds")))} if that folder is yours`), linked.out);
     check("  and creates nothing through the link", readdirSync(real).length === 0);
     const file = join(root, "out-file");
     writeFileSync(file, "", { mode: 0o600 });
@@ -723,14 +798,282 @@ try {
     const unreadable = "/.cotal/agents/broken.md for this label could not be read as a persona, so no credential was minted; file values and secret material were not printed";
     const broken = await runMint(["broken"]);
     check("a persona file that cannot be read as a persona refuses the mint, naming the file and persona show",
-      broken.code === 1 && broken.out.includes(unreadable) && broken.out.includes("see what is wrong with it with `cotal persona show broken`, then fix it and mint again") && !broken.out.includes("geheim") && !existsSync(standing("broken")), broken.out);
+      broken.code === 1 && broken.out.includes(unreadable) && broken.out.includes(`see what is wrong with it with \`cotal persona show broken --space ${SPACE}\`, then fix it and mint again`) && !broken.out.includes("geheim") && !existsSync(standing("broken")), broken.out);
     const flagged = await runMint(["broken", "--allow-subscribe", "general", "--allow-publish", "general", "--role", "ok"]);
     check("  every grant flag still reads the file, so the same refusal comes", flagged.code === 1 && flagged.out.includes(unreadable) && !existsSync(standing("broken")), flagged.out);
     const spaced = await runMint(["spaced"]);
     check("a persona role that is not one word refuses, naming the file and persona edit without the role",
-      spaced.code === 1 && spaced.out.includes("/.cotal/agents/spaced.md for this label sets a role that is not one word of letters, digits, _ or -") && spaced.out.includes("give it such a role with `cotal persona edit spaced`, then mint again") && !spaced.out.includes("bau meister") && !existsSync(standing("spaced")), spaced.out);
+      spaced.code === 1 && spaced.out.includes("/.cotal/agents/spaced.md for this label sets a role that is not one word of letters, digits, _ or -") && spaced.out.includes(`give it such a role with \`cotal persona edit spaced --space ${SPACE}\`, then mint again`) && !spaced.out.includes("bau meister") && !existsSync(standing("spaced")), spaced.out);
     const roled = await runMint(["spaced", "--role", "ok"]);
     check("  a --role flag replaces that role and mints", roled.code === 0 && existsSync(standing("spaced")), roled.out);
+  }
+
+  // ── 13. invalid channels in --allow-subscribe / --allow-publish fail USAGE_INVALID without touching disk (#7528)
+  {
+    const unwantedDir = join(home, "unwanted_mint_out_dir");
+    const unwantedOut = join(unwantedDir, "alice.creds");
+    const hashBad = await runMint(["alice_bad", "--allow-subscribe", "#general", "--out", unwantedOut]);
+    check("#7528: --allow-subscribe '#general' exits 1 without creating --out parent folder or lock",
+      hashBad.code === 1 && !existsSync(unwantedDir) && !existsSync(`${unwantedOut}.mint.lock`) &&
+        hashBad.out.includes('--allow-subscribe channel "#general" starts with "#", which is not part of a channel name') &&
+        hashBad.out.includes("`--allow-subscribe general`"), hashBad.out);
+    const wildcardBad = await runMint(["alice_bad", "--allow-subscribe", "#team.>", "--out", unwantedOut]);
+    check("#7528: wildcard correction is shell-quoted and creates no output folder",
+      wildcardBad.code === 1 && !existsSync(unwantedDir) && wildcardBad.out.includes("`--allow-subscribe 'team.>'`"), wildcardBad.out);
+    for (const [flag, val, hint] of [
+      ["--allow-publish", "foo/bar", "`--allow-publish foo_bar`"],
+      ["--allow-subscribe", "foo..bar", "`--allow-subscribe foo.bar`"],
+      ["--allow-subscribe", "foo bar", "`--allow-subscribe foo_bar`"],
+    ] as const) {
+      const bad = await runMint(["alice_bad", flag, val, "--out", unwantedOut]);
+      check(`#7528: ${flag} '${val}' exits 1 naming the flag and channel without creating folders`,
+        bad.code === 1 && !existsSync(unwantedDir) && bad.out.includes(`${flag} channel "${val}" is not a valid channel pattern`) && bad.out.includes(hint), bad.out);
+    }
+  }
+
+  {
+    const openRoot = mkdtempSync(join(tmpdir(), "cotal-stopped-open-"));
+    const openHome = mkdtempSync(join(tmpdir(), "cotal-stopped-open-home-"));
+    const out = join(openRoot, "open.creds");
+    cleanup.push(() => { for (const folder of [openRoot, openHome]) rmSync(folder, { recursive: true, force: true }); });
+    const env = { ...process.env, COTAL_HOME: openHome, XDG_CONFIG_HOME: join(openHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+    const anchor = recordSmokeSandbox({ root: openRoot, cotalHome: env.COTAL_HOME, xdgConfigHome: env.XDG_CONFIG_HOME });
+    const options = { cwd: openRoot, env, encoding: "utf8" as const, timeout: 120_000 };
+    const cli = (args: string[]) => {
+      assertSmokeSandboxDown(anchor, args, options);
+      return spawnSync(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), ...args], options);
+    };
+    const prepared = cli(["space", "create", "stoppedopen"]);
+    check("the open stack is prepared", prepared.status === 0, prepared.stdout + prepared.stderr);
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    const started = cli(["up", "--open", "--no-manager", "--space", "stoppedopen", "--server", server]);
+    try {
+      check("the prepared stack starts open", started.status === 0 && started.stdout.includes("open, no authentication"), started.stdout + started.stderr);
+    } finally {
+      const stopped = cli(["down", "--yes"]);
+      check("the prepared open stack stops", stopped.status === 0 && stopped.stdout.includes("Controller stack stopped"), stopped.stdout + stopped.stderr);
+    }
+    const refused = cli(["auth", "mint", "agentcase", "--space", "stoppedopen", "--out", out, "--plain"]);
+    check("a stopped open space refuses minting without recommending a restart",
+      refused.status === 2 && refused.stderr.includes("UNSUPPORTED") && refused.stderr.includes("connect to it without credentials") &&
+      !refused.stderr.includes("cotal up") && !existsSync(out), refused.stdout + refused.stderr);
+  }
+
+  // A legacy down removes a registration unless the space is named after its folder.
+  // File-only signing still belongs to the retained local authority, not the default broker.
+  {
+    const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-offline-signing-"));
+    const exports = mkdtempSync(join(tmpdir(), "cotal-offline-exports-"));
+    mkdirSync(join(stoppedRoot, ".cotal"), { mode: 0o700 });
+    const anchor = recordSmokeSandbox({ root: stoppedRoot, cotalHome: home, xdgConfigHome: process.env.XDG_CONFIG_HOME! });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    process.chdir(stoppedRoot);
+    const up = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "up", "--foreground", "--no-manager", "--space", "offlinecheck", "--server", server], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    up.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    up.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    const exited = new Promise<number | null>((resolve, reject) => { up.on("close", resolve); up.on("error", reject); });
+    const down = async () => {
+      const args = ["down", "--yes"];
+      assertSmokeSandboxDown(anchor, args, { cwd: stoppedRoot, env: process.env });
+      return runCotal(args);
+    };
+    try {
+      check("offline rig: foreground static up completes", await until(() => output.includes("--no-manager starts no local"), 30_000), output);
+      const live = await runMint(["live", "--provision", "--allow-subscribe", "test", "--allow-publish", "test"]);
+      check("offline rig: live provisioned mint succeeds", live.code === 0, live.out);
+
+      // #7565: bare join with --expires-in retires cleanly at its requested lifetime instead of exiting 2 AUTH_REQUIRED.
+      const timedJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "alice", "--expires-in", "2"]);
+      check("#7565: bare join --expires-in 2 exits 0 cleanly without AUTH_REQUIRED or doctor auth advice",
+        timedJoin.code === 0 && /leaving/.test(timedJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(timedJoin.out), timedJoin);
+
+      const displayedJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "displayed", "--channel", "#general", "--expires-in", "3"]);
+      check("bare static join accepts the displayed channel name and retires cleanly",
+        displayedJoin.code === 0 && /holding presence/.test(displayedJoin.out) && /leaving/.test(displayedJoin.out) && !/was not retired/.test(displayedJoin.out), displayedJoin);
+
+      const absoluteJoin = await runCotal(["join", "--space", "offlinecheck", "--name", "absolute", "--expires-at", String(Math.floor(Date.now() / 1000) + 15)]);
+      check("#7565: bare join --expires-at exits 0 without an authentication refusal",
+        absoluteJoin.code === 0 && /leaving/.test(absoluteJoin.out) && !/AUTH_REQUIRED|doctor auth|re-mint/i.test(absoluteJoin.out), absoluteJoin);
+      const longJoin = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "long_join", "--expires-in", "3000000"], { stdio: ["ignore", "pipe", "pipe"] });
+      let longOut = "";
+      longJoin.stdout.on("data", (c: Buffer) => { longOut += c.toString(); });
+      longJoin.stderr.on("data", (c: Buffer) => { longOut += c.toString(); });
+      const longClosed = new Promise<void>((resolve) => longJoin.once("close", () => resolve()));
+      const longStarted = await until(() => longOut.includes("holding presence in offlinecheck"), 15_000);
+      await wait(200);
+      const longStillRunning = longJoin.exitCode === null && longJoin.signalCode === null;
+      longJoin.kill("SIGTERM");
+      await longClosed;
+      check("#7565: a lifetime beyond Node's timer limit stays connected rather than overflowing to immediate expiry",
+        longStarted && longStillRunning && !/TimeoutOverflowWarning/.test(longOut), longOut);
+
+      // #7563: control commands refuse --creds before dialing as UNSUPPORTED (exit 2) with a remedy,
+      // and status --help / bare status --creds do not advertise --creds as a working named-agent read.
+      const admCreds = join(exports, "adm-ctrl.creds");
+      const admMinted = await runMint(["adm_ctrl", "--profile", "admin", "--out", admCreds]);
+      check("#7563 fixture: admin cred minted", admMinted.code === 0 && existsSync(admCreds), admMinted.out);
+      const statusHelp = await runCotal(["status", "--help"]);
+      check("#7563: status --help does not advertise --creds as a working named-agent credential",
+        statusHelp.code === 0 && !/named agent: use an explicit connection credential/.test(statusHelp.out), statusHelp.out);
+      const bareStatusCreds = await runCotal(["status", "--creds", admCreds]);
+      check("#7563: bare status --creds exits 2 UNSUPPORTED with Next to remove only --creds and its value",
+        bareStatusCreds.code === 2 && /Code:\s+UNSUPPORTED/.test(bareStatusCreds.out)
+          && /Next\s+remove --creds and its value, then rerun the same command with the remaining arguments unchanged/.test(bareStatusCreds.out)
+          && !/select a named agent read/.test(bareStatusCreds.out), bareStatusCreds);
+      for (const [label, argv] of [
+        ["status <agent>", ["status", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
+        ["ps", ["ps", "--space", "offlinecheck", "--creds", admCreds]],
+        ["stop", ["stop", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
+        ["input", ["input", "some_agent", "hi", "--space", "offlinecheck", "--creds", admCreds]],
+        ["attach", ["attach", "some_agent", "--space", "offlinecheck", "--creds", admCreds]],
+        ["models", ["models", "--space", "offlinecheck", "--creds", admCreds]],
+      ] as const) {
+        const res = await runCotal([...argv]);
+        check(`#7563: ${label} --creds exits 2 UNSUPPORTED with Next to drop --creds`,
+          res.code === 2 && /Outcome:\s+refused/.test(res.out) && /Code:\s+UNSUPPORTED/.test(res.out) && /Next[\s\S]*without --creds/.test(res.out), res);
+      }
+
+      // Exported credentials carry a provisioning record. Standing credentials do not.
+      const spacedJoinCreds = join(exports, "with space", "exp1s.creds");
+      const provMinted = await runMint(["j_exp", "--expires-in", "2", "--provision", "--allow-subscribe", "general", "--allow-publish", "general", "--out", spacedJoinCreds, "--json"]);
+      check("the two-second minimum still provisions and writes a credential", provMinted.code === 0 && existsSync(spacedJoinCreds), provMinted.out);
+      const standingMint = await runMint(["standing_join", "--expires-in", "4", "--provision", "--allow-subscribe", "general", "--json"]);
+      type MintReceipt = { result: { expiresAt: number; lifecycleUid: string; provisioned: boolean } };
+      check("mint issues a short-lived standing join credential", standingMint.code === 0, standingMint.out);
+      const { result: standing } = JSON.parse(standingMint.out) as MintReceipt;
+      check("the standing credential was provisioned with an expiry", standing.provisioned && Number.isInteger(standing.expiresAt), standing);
+      await wait(2100);
+      await wait(Math.max(0, standing.expiresAt * 1000 - Date.now() + 100));
+      const docExp = await runCotal(["doctor", "auth", "--space", "offlinecheck", "--json"]);
+      const docExpLine = docExp.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
+      type DoctorRow = { label: string; path: string; state: string; repair: string | null };
+      const docExpEnv = docExpLine ? JSON.parse(docExpLine) as { result?: { exported?: DoctorRow[]; items?: DoctorRow[] } } : {};
+      const standingRow = docExpEnv.result?.items?.find((r) => r.label === "standing_join.creds");
+      check("doctor auth distinguishes a file-only standing replacement from a join-ready one",
+        docExp.code === 5 && standingRow?.state === "expired"
+          && standingRow.repair?.includes("auth mint standing_join --replace --space offlinecheck --allow-subscribe general --allow-publish '' --no-persona`") === true
+          && /file-only replacement.*join-ready replacement.*`--provision`.*broker.*lifecycle UID/.test(standingRow.repair), standingRow);
+      const standingReplaced = await runMint(["standing_join", "--replace", "--space", "offlinecheck", "--provision", "--allow-subscribe", "general", "--allow-publish", "", "--no-persona", "--json"]);
+      check("the join-ready standing replacement succeeds", standingReplaced.code === 0, standingReplaced.out);
+      const { result: replacement } = JSON.parse(standingReplaced.out) as MintReceipt;
+      check("the standing replacement provisions a fresh lifecycle",
+        replacement.provisioned && /^[a-z0-9]{26,32}$/.test(replacement.lifecycleUid) && replacement.lifecycleUid !== standing.lifecycleUid, replacement);
+      const expRow = (docExpEnv.result?.exported ?? []).find((r) => r.path === spacedJoinCreds);
+      check("#7541: doctor auth expired repair includes --provision and shell-quotes the exported path",
+        expRow?.state === "expired" && expRow.repair?.includes("--provision") === true && expRow.repair.includes(`'${spacedJoinCreds}'`), expRow);
+      const remintedProv = await runMint(["j_exp", "--provision", "--identity", spacedJoinCreds, "--out", spacedJoinCreds, "--json"]);
+      const remintLine = remintedProv.out.split("\n").find((t) => t.startsWith('{"schemaVersion"'));
+      const remint = JSON.parse(remintLine ?? "{}").result as { lifecycleUid: string; principal: string } | undefined;
+      const newUid = remint?.lifecycleUid ?? "";
+      check("#7541: re-minting with --provision allocates and provisions a new lifecycleUid",
+        remintedProv.code === 0 && /^[a-z0-9]{26,32}$/.test(newUid), remintedProv.out);
+      const joinChild = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "cotal-child", "join", "--space", "offlinecheck", "--name", "alice", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"], { stdio: ["ignore", "pipe", "pipe"] });
+      let joinOut = "";
+      joinChild.stdout.on("data", (c: Buffer) => { joinOut += c.toString(); });
+      joinChild.stderr.on("data", (c: Buffer) => { joinOut += c.toString(); });
+      const joinClosed = new Promise<void>((resolve) => joinChild.once("close", () => resolve()));
+      const joined = await until(() => joinOut.includes("holding presence in offlinecheck"), 15_000);
+      const dm = await runCotal(["send", "--to", "alice", "renewed-inbox-proof"]);
+      const received = await until(() => joinOut.includes("renewed-inbox-proof"), 10_000);
+      const durable = remint !== undefined && await hasDurableMember("offlinecheck", remint.principal);
+      joinChild.kill("SIGTERM");
+      await joinClosed;
+      check("#7541: renewed provisioned credential binds its new inbox and receives a DM",
+        joined && dm.code === 0 && received && !/dm-durable-missing/i.test(joinOut), { joinOut, dm });
+      check("the renewed credential establishes durable membership on general",
+        durable && !/resolves to .* live lifecycle rows|boot durable self-join not yet established/.test(joinOut), joinOut);
+
+      const complete = readFileSync(spacedJoinCreds, "utf8");
+      const early = await runMint(["j_exp", "--provision", "--identity", spacedJoinCreds, "--out", spacedJoinCreds, "--json"]);
+      check("renewing a provisioned credential before expiry leaves it in place and names a fresh-key alternative",
+        early.code === 2 && /CONFLICT/.test(early.out) && /mint a fresh key/.test(early.out)
+          && readFileSync(spacedJoinCreds, "utf8") === complete, early.out);
+      const seedAt = complete.indexOf("-----BEGIN USER NKEY SEED-----");
+      assert.ok(seedAt > 0, "minted credential must contain a user seed block");
+      writeFileSync(spacedJoinCreds, complete.slice(0, seedAt));
+      const truncatedJoin = await runCotal(["join", "--space", "offlinecheck", "--creds", spacedJoinCreds, "--lifecycle-uid", newUid, "--channel", "general"]);
+      check("join refuses the provisioned export with no complete user seed block", truncatedJoin.code === 1 && truncatedJoin.out.includes("no complete user nkey seed block"), truncatedJoin.out);
+      const docTruncated = await runCotal(["doctor", "auth", "--space", "offlinecheck", "--json"]);
+      const docTruncatedLine = docTruncated.out.split("\n").find((line) => line.startsWith('{"schemaVersion"'));
+      assert.ok(docTruncatedLine, docTruncated.out);
+      const diagnostics = JSON.parse(docTruncatedLine) as { outcome: string; result: { findings: number; exported: { path: string; state: string; repair: string | null }[] } };
+      const damaged = diagnostics.result.exported.find((row) => row.path === spacedJoinCreds);
+      check("doctor flags a truncated export without turning it into a local-store finding",
+        docTruncated.code === 0 && diagnostics.outcome === "ok" && diagnostics.result.findings === 0 && damaged?.state === "unreadable", diagnostics);
+      check("doctor names the missing seed and offers restoration or a provisioned replacement with the original grants",
+        damaged?.repair?.includes("no complete user nkey seed block") === true && damaged.repair.includes("Restore the complete credential file") && damaged.repair.includes("auth mint j_exp --provision --allow-subscribe general --allow-publish general") && !docTruncated.out.includes(jwtFromCreds(complete)!), damaged);
+
+      const stopped = await down();
+      check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
+
+      const issued = await runMint(["example", "--json"]);
+      const success = JSON.parse(issued.out.trim()) as { command: string; outcome: string };
+      check("auth mint success names the operation in its JSON envelope",
+        issued.code === 0 && success.command === "auth mint" && success.outcome === "ok", issued.out);
+      for (const [args, status, code] of [
+        [["--json"], 1, "USAGE_INVALID"],
+        [["example", "--json"], 2, "CONFLICT"],
+        [["example", "--json", "--out"], 1, "USAGE_INVALID"],
+      ] as const) {
+        const refused = await runMint([...args]);
+        const failure = JSON.parse(refused.out.trim()) as { command: string; outcome: string; error?: { code: string } };
+        check(`auth mint ${args.join(" ")} names the operation on refusal`,
+          refused.code === status && failure.command === "auth mint" && failure.outcome === "refused" && failure.error?.code === code, refused.out);
+      }
+
+      for (const profile of ["agent", "observer", "admin"]) {
+        const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
+        const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;
+        check(`stopped root mints ${profile} without repeating --server`, minted.code === 0 && existsSync(file) && /Broker footprint:\s+not provisioned by this command/.test(minted.out), minted.out);
+        check(`offline ${profile} credential retains the original account`, credsClaims(readFileSync(file, "utf8")).nats?.issuer_account === credsClaims(readFileSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds, "utf8")).nats?.issuer_account);
+      }
+      const named = await runMint(["named_offline", "--space", "offlinecheck", "--plain"]);
+      const namedFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "named_offline").creds;
+      const liveFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds;
+      check("#8302: naming the stopped local space mints from its original account without provisioning",
+        named.code === 0 && existsSync(namedFile) && /Broker footprint:\s+not provisioned by this command/.test(named.out) &&
+        credsClaims(readFileSync(namedFile, "utf8")).nats?.issuer_account === credsClaims(readFileSync(liveFile, "utf8")).nats?.issuer_account, named.out);
+      const wrongName = await runMint(["wrong_name", "--space", "not_offlinecheck", "--plain"]);
+      check("#8302: a different name does not mint from the stopped local account",
+        wrongName.code === 2 && wrongName.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_name").creds), wrongName.out);
+      const namedServer = await runMint(["named_offline_server", "--space", "offlinecheck", "--server", server, "--plain"]);
+      const namedServerFile = agentSecretFilePaths(stoppedRoot, "offlinecheck", "named_offline_server").creds;
+      check("naming the stopped local space with its recorded --server mints from its original account without provisioning",
+        namedServer.code === 0 && existsSync(namedServerFile) && /Broker footprint:\s+not provisioned by this command/.test(namedServer.out) &&
+        credsClaims(readFileSync(namedServerFile, "utf8")).nats?.issuer_account === credsClaims(readFileSync(liveFile, "utf8")).nats?.issuer_account, namedServer.out);
+      const wrongServer = await runMint(["wrong_server", "--space", "offlinecheck", "--server", "nats://127.0.0.1:39999", "--plain"]);
+      check("a different --server does not mint from the stopped local account",
+        wrongServer.code === 2 && wrongServer.out.includes("TARGET_NOT_FOUND") && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "wrong_server").creds), wrongServer.out);
+      const signer = join(exports, "signer.json");
+      const exported = await runCotal(["auth", "signer", "--space", "offlinecheck", "--out", signer, "--plain"]);
+      check("stopped root exports its signer without a broker", exported.code === 0 && existsSync(signer) && (statSync(signer).mode & 0o777) === 0o600, exported.out);
+      for (const space of [[], ["--space", "offlinecheck"]]) {
+        const provision = await runMint(["needsbroker", "--provision", ...space, "--plain"]);
+        check(`stopped root ${space.length ? "with" : "without"} --space names the restart and publishes no provisioned credential`,
+          provision.code === 2 && provision.out.includes("TARGET_UNAVAILABLE") && provision.out.includes("start it again with `cotal up`") &&
+          !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
+        check(`  #8379: ${space.length ? "with" : "without"} --space it says the mesh is not running and offers a file-only mint without --provision`,
+          /the mesh "offlinecheck" in .* last ran at/.test(provision.out) && /omit --provision to mint only the private credential file/.test(provision.out), provision.out);
+      }
+      const provisionServer = await runMint(["needsbroker_server", "--provision", "--space", "offlinecheck", "--server", server, "--plain"]);
+      check("stopped root with --space and its recorded --server still requires a live broker for --provision",
+        provisionServer.code === 2 && provisionServer.out.includes("TARGET_UNAVAILABLE") && provisionServer.out.includes("start it again with `cotal up`") &&
+        !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker_server").creds), provisionServer.out);
+      check("  with --space and --server it says the mesh is not running and offers a file-only mint without --provision",
+        /the mesh "offlinecheck" in .* last ran at/.test(provisionServer.out) && /omit --provision to mint only the private credential file/.test(provisionServer.out), provisionServer.out);
+      const endpoint = await runMint(["caller", "--space", "offlinecheck", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds"), "--plain"]);
+      check("stopped root still refuses named endpoint discovery and publishes no caller",
+        endpoint.code === 2 && endpoint.out.includes("TARGET_UNAVAILABLE") && !existsSync(join(exports, "caller.creds")) && !endpoint.out.includes("omit --provision"), endpoint.out);
+      check("offline signing started no stack process", !(await down()).out.includes("✓ stopped"));
+    } finally {
+      await down();
+      if (up.exitCode === null) up.kill("SIGTERM");
+      await exited;
+      process.chdir(root);
+      rmSync(stoppedRoot, { recursive: true, force: true });
+      rmSync(exports, { recursive: true, force: true });
+    }
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

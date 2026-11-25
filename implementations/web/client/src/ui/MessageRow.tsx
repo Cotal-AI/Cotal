@@ -51,7 +51,7 @@ export function harnessName(connector: string): string {
 
 /** Where a row sits in a run of messages from one verified sender, which the caller draws as one
  *  `MessageGroup`: the first draws the header, the last the avatar, and a row alone draws both. */
-export type RunPlace = "alone" | "first" | "middle" | "last";
+type RunPlace = "alone" | "first" | "middle" | "last";
 
 /** One message, on shadcn's chat parts: `Message` with the sender's character in `MessageAvatar`,
  *  the header (name, role, harness, time) in `MessageHeader`, the body in a `Bubble`, and for an

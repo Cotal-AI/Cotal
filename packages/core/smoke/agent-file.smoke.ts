@@ -173,8 +173,36 @@ const throws = (name: string, body: string) => {
 };
 throws("launchOptions as scalar throws", "---\nname: x\nlaunchOptions: nope\n---\n");
 throws("launchOptions as sequence throws", "---\nname: x\nlaunchOptions:\n  - a\n---\n");
+throws("launchOptions with an empty YAML value throws", "---\nname: x\nlaunchOptions:\n---\n");
+const emptyOptions = join(dir, "empty-options.md");
+writeFileSync(emptyOptions, "---\nname: x\nrole: worker_1-a\nlaunchOptions: {}\n---\n");
+const empty = loadAgentFile(emptyOptions);
+ok("an empty launchOptions mapping and a valid role are retained", JSON.stringify(empty.launchOptions) === "{}" && empty.role === "worker_1-a");
+ok("omitting launchOptions leaves it unset", bare.launchOptions === undefined);
 throws("renamed field 'channels' still fails loud", "---\nname: x\nchannels: [general]\n---\n");
 throws("malformed YAML fails loud", "---\nname: x\n  bad: : indent\n\t- weird\n---\n");
+
+for (const key of ["name", "role", "description", "model", "variant", "agent", "owner", "kind"]) {
+  for (const [value, type] of [["42", "number"], ["false", "boolean"], ["{}", "mapping"], ["[]", "array"], ["null", "null"]]) {
+    const file = join(dir, "wrong-type.md");
+    writeFileSync(file, `---\n${key === "name" ? "" : "name: typed\n"}${key}: ${value}\n---\n`);
+    let error = "";
+    try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+    ok(`${key} refuses YAML ${type} with file and expected type`, error.includes(file) && error.includes(`"${key}" must be a string`) && error.includes(`got ${type}`), error);
+  }
+}
+for (const key of ["subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "tags", "capabilities"]) {
+  for (const [value, type] of [["42", "number"], ["true", "boolean"], ["general", "string"], ["{}", "mapping"], ["null", "null"], ["[42]", "number"], ["[false]", "boolean"], ["[{}]", "mapping"], ["[[]]", "array"], ["[null]", "null"]]) {
+    const file = join(dir, "wrong-list.md");
+    writeFileSync(file, `---\nname: typed\n${key}: ${value}\n---\n`);
+    let error = "";
+    try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+    ok(`${key} refuses ${value} with file and expected type`, error.includes(file) && error.includes(`"${key}"`) && error.includes("array of strings") && error.includes(`got ${type}`), error);
+  }
+}
+writeFileSync(join(dir, "quoted.md"), '---\nname: "42"\nmodel: "false"\nsubscribe: ["true"]\nallowPublish: ["true"]\ntags: ["42", "false"]\n---\n');
+const quoted = loadAgentFile(join(dir, "quoted.md"));
+ok("quoted scalar-like strings retain their declared types", quoted.name === "42" && quoted.model === "false" && quoted.subscribe?.[0] === "true" && quoted.tags?.join() === "42,false", quoted);
 
 // 6b) #869: a HAND-WRITTEN `agent:` pin parses as a modelled field, not meta. Half this fleet's
 //     personas already carry the key; before the fix it swept into the verbatim meta bag and no
@@ -262,6 +290,25 @@ for (const [label, text] of [["CRLF", lf.replaceAll("\n", "\r\n")], ["a BOM", "\
   let read: AgentDef | undefined;
   try { read = loadAgentFile(file); } catch { read = undefined; }
   ok(`a file with ${label} reads as the LF file`, JSON.stringify(read) === JSON.stringify(plain), read);
+}
+
+for (const trailing of [" ", "\t", " \t"]) {
+  const file = join(dir, "closing-fence.md");
+  writeFileSync(file, lf.replace("\n---\n", `\n---${trailing}\n`));
+  const read = loadAgentFile(file);
+  ok(`closing fence accepts ${JSON.stringify(trailing)} without changing the body`, read.persona === plain.persona, read);
+  writeFileSync(file, lf.replace(/^---\n/, `---${trailing}\n`));
+  let error = "";
+  try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+  ok(`opening fence rejects ${JSON.stringify(trailing)}`, error === `agent file ${file}: missing "---" frontmatter block`, error);
+}
+{
+  const file = join(dir, "malformed-closing-fence.md");
+  writeFileSync(file, lf.replace("\n---\n", "\n---oops\n"));
+  let error = "";
+  try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+  ok("a malformed closing fence names the missing closing delimiter",
+    error === `agent file ${file}: missing closing "---" frontmatter fence on its own line`, error);
 }
 
 // 11) A file saved as UTF-16, as Windows PowerShell 5.1 writes it, is refused by its encoding, with
@@ -363,6 +410,7 @@ ok("the refusal reads as the rule the file broke",
     try { loadAgentFile(f); } catch (e) { err = (e as Error).message; }
     ok(`endpoints refuses ${label}`, want.test(err), err);
   };
+  refuse("an explicit null", "null", /"endpoints" must be a list, not null/);
   refuse("a scalar", "com.example.orders", /must be a list/);
   refuse("an unknown entry key", "[{ endpoint: com.example.orders, commands: [list], target: self }]", /unknown key target/);
   refuse("a journal flag", "[{ endpoint: com.example.orders, commands: [list], journal: true }]", /unknown key journal/);

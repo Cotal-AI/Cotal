@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultStartToken } from "../src/pid.js";
 import {
   acquireMaintenanceLock,
   assessRestoreClaim,
@@ -376,10 +377,20 @@ if (process.platform !== "win32") {
   const holder = readMaintenanceLockHolder(p.root);
   check("the refused writer can read the holder's process, start and operation",
     holder?.owner.pid === process.pid && holder.owner.startedAt === first.owner.startedAt && holder.operation === "backup create");
+  const token = defaultStartToken(process.pid);
+  check("the lock pins the calling process independently of its operation label", token === undefined ? holder?.process === undefined : holder?.process?.pid === process.pid && holder.process.token === token);
   releaseMaintenanceLock(first);
   check("no holder is read once the lock is released", readMaintenanceLockHolder(p.root) === undefined);
 
+  const unlabelled = acquireMaintenanceLock(p.root);
+  const unlabelledHolder = readMaintenanceLockHolder(p.root);
+  check("a lock without an operation label also pins the calling process",
+    unlabelledHolder?.owner.pid === process.pid && unlabelledHolder.operation === undefined && unlabelledHolder.process?.token === token);
+  releaseMaintenanceLock(unlabelled);
+
   const stale = acquireMaintenanceLock(p.root, { owner: owner("stale") });
+  const staleHolder = readMaintenanceLockHolder(p.root);
+  check("a supplied owner is not attributed to the calling process", staleHolder?.owner.id === stale.owner.id && staleHolder.process === undefined);
   expectCode("unknown stale owner fails closed", "lock-owner-ambiguous", () =>
     acquireMaintenanceLock(p.root, { ownerStatus: () => "unknown" }));
   const recovered = acquireMaintenanceLock(p.root, { ownerStatus: () => "dead" });
@@ -1263,9 +1274,12 @@ if (process.platform !== "win32") {
   // A full restore that replaced a cut preserved after its artifact was made left out what was
   // written since.
   const newer = { ...active, launch: { restoredStreams: [wfjStreamName("space-cleanup-runs")], previousCutNewer: true } };
-  check("a full restore that replaced a newer cut left out the newer history and runs", restoreLeftOut(newer) === "newer chat and DM history and workflow runs");
+  check("a full restore that replaced a newer cut left out newer state", restoreLeftOut(newer) === "newer space state");
+  const newerEmpty = { ...newer, launch: { ...newer.launch, previousCutNewer: false } };
+  check("verified empty newer history needs no consent", restoreLeftOut(newerEmpty) === undefined);
+  check("empty newer history does not waive consent for a different account", restoreLeftOut({ ...newerEmpty, launch: { ...newerEmpty.launch, otherAccounts: ["$G"] } }) === "streams of account $G");
   check("its reason names the older artifact", restoreLeftOutReason(newer) === "this restore's artifact was made before the state it replaced was preserved");
-  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer chat and DM history"
+  check("with no workflow journal it also left out every run", restoreLeftOut({ ...active, launch: { previousCutNewer: true } }) === "workflow runs and newer space state"
     && restoreLeftOutReason({ ...active, launch: { previousCutNewer: true } }) === "this restore's artifact was made before the state it replaced was preserved and held no workflow runs");
   expectCode("its old source is not deleted without discardHistory", "cleanup-forbidden", () => cleanupRestoreFallback(p.lock, "restore-runs"));
   check("the refused cleanup keeps the old source and the active journal", exists(fallback) && readMaintenanceJournal(p.root)?.state === "active");

@@ -53,16 +53,22 @@ function hasSession(session: string): boolean {
 /** Ensure a detached tmux session exists. It is created only when tmux says the session is absent or
  *  no server is running; a failed check throws instead of creating. A detached session has no client
  *  to size it, and some tmux builds then treat its window as sizeless, so `split-window` fails with
- *  "size missing". Give it an explicit initial size; tmux resizes to the real client on attach. */
-export function ensureSession(session: string, cwd: string): void {
-  if (hasSession(session)) return;
+ *  "size missing". Give it an explicit initial size; tmux resizes to the real client on attach.
+ *  Returns the id (`@N`) of the shell window tmux opens a new session with, or undefined when the
+ *  session was already there. */
+export function ensureSession(session: string, cwd: string): string | undefined {
+  if (hasSession(session)) return undefined;
+  let out: string;
   try {
-    execFileSync("tmux", ["-u", "new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", cwd], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+    out = execFileSync("tmux", ["-u", "new-session", "-d", "-P", "-F", "#{window_id}", "-s", session, "-x", "200", "-y", "50", "-c", cwd], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
   } catch (err) {
     throw new Error(`tmux: couldn't create session ${session}: ${failureText(err)}`, { cause: err });
   }
+  if (!/^@\d+$/.test(out)) throw new Error(`tmux: couldn't read the window ID from new-session ("${out}")`);
+  return out;
 }
 
 /** True if a window named `name` exists in `session`. Name-based — fragile under renames; prefer

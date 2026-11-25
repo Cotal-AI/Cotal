@@ -251,7 +251,7 @@ export const LINEAR_COMMANDS: readonly string[] = ROWS.map((r) => r.name);
 
 /** Map a forwarded reply onto the endpoint reply. Only `result` succeeds; everything else is an
  *  error carrying the outcome the upstream layer established, never a stronger one. */
-export function resultOrThrow(reply: UpstreamReply): { result: Record<string, unknown>; inventoryDigest: string } {
+function resultOrThrow(reply: UpstreamReply): { result: Record<string, unknown>; inventoryDigest: string } {
   if (reply.kind === "result") return { result: reply.result, inventoryDigest: reply.inventoryDigest };
   if (reply.kind === "refused") {
     const code: EpErrorCode = reply.reason === "queue-full" ? "resource-exhausted"

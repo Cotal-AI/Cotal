@@ -44,7 +44,7 @@ try {
   // absence alone would also pass on a launch that minted no control endpoint at all.
   check(
     "control socket path in env, token NOT in env",
-    base.env?.COTAL_CONTROL_SOCKET === base.control?.path && base.env?.COTAL_CONTROL_TOKEN === undefined,
+    base.env?.COTAL_CONTROL_SOCKET === base.control?.path && base.env?.COTAL_CONTROL_KEY === undefined,
   );
   check(
     "control token recoverable from the launch material, matching the spec",

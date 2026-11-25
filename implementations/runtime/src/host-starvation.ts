@@ -56,7 +56,7 @@ import { delay } from "./delay.js";
  * `Date.now()` left all 41 cells GREEN. One clock means a test steps THE HOST, and which member the
  * window reads becomes the implementation's own choice, which a cell can therefore grade.
  */
-export interface HostClock {
+interface HostClock {
   /**
    * Never steps, counts only forward at its own rate, origin arbitrary. Every window is measured
    * on this. Not `Date.now()`, and that is the whole correction above: a wall clock states what
@@ -69,7 +69,7 @@ export interface HostClock {
 }
 
 /** The real host. */
-export const systemClock: HostClock = {
+const systemClock: HostClock = {
   monotonic: () => performance.now(),
   wall: () => Date.now(),
 };
@@ -80,10 +80,10 @@ export const systemClock: HostClock = {
 
 /** How often the observer checks in. Short enough that a window of a few seconds carries enough
  *  ticks for a shortfall to mean something, long enough that the observer is not itself load. */
-export const LOOP_TICK_MS = 250;
+const LOOP_TICK_MS = 250;
 
 /** A point in the observer's history. Windows are differences between two of these. */
-export interface LoopLagMark {
+interface LoopLagMark {
   /** Monotonic. The window's length is a difference of these, never of wall readings. */
   readonly at: number;
   /** The WALL reading at the same instant, carried only so a step can be NOTICED. */
@@ -277,7 +277,7 @@ export function wasStarved(w: LoopLagWindow): boolean {
  *   - `transient`, when the loop WAS running (#1619). The deadline fired honestly and the reply
  *     was merely late, which is a property of one request and not of the pause behind it.
  */
-export type PauseCondition =
+type PauseCondition =
   | { readonly condition: "starved"; readonly window: LoopLagWindow }
   | { readonly condition: "transient"; readonly window: LoopLagWindow }
   | { readonly condition: "fault" };
@@ -313,7 +313,7 @@ export const STARVED_ATTEMPTS = 6;
  * and a starved loop cannot run a timer either, so waiting on one is itself a small measurement of
  * whether scheduling has returned.
  */
-export const STARVED_YIELD_MS = 250;
+const STARVED_YIELD_MS = 250;
 
 /**
  * How many CONSECUTIVE late replies a pause operation gets before the plane is declared unable to
@@ -336,8 +336,8 @@ export const POLL_ATTEMPTS = 6;
  * cadence adds to exactly the queue that is already behind. Each attempt additionally costs the
  * client's own deadline before it can fail again, so the bound is real wall-clock time either way.
  */
-export const POLL_BACKOFF_MS = 250;
-export const POLL_BACKOFF_MAX_MS = 2_000;
+const POLL_BACKOFF_MS = 250;
+const POLL_BACKOFF_MAX_MS = 2_000;
 
 /**
  * Perform an idempotent plane operation, and do not let this host's own starvation, or one late reply

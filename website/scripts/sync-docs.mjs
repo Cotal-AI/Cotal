@@ -46,6 +46,7 @@ const navigation = [
         page('docs/telemetry.mdx'),
         page('docs/console.mdx'),
         page('docs/web-dashboard.mdx'),
+        page('docs/acp-clients.mdx'),
         page('docs/remote-supervision.mdx'),
         page('docs/supervise-processes.mdx'),
         page('docs/deploy.mdx'),
@@ -53,7 +54,7 @@ const navigation = [
         page('docs/recover-a-mesh.mdx'),
         page('docs/upgrade-cotal.mdx'),
       ]),
-      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
+      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi', 'connect-mcp'].map(name => page(`docs/${name}.mdx`))),
       group('Build integrations', [
         ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.mdx`)),
         group('Embedding reference', ['exports', 'endpoints', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'service-custody', 'service-host', 'service-access', 'service-callers', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),

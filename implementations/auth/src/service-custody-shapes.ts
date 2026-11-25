@@ -11,7 +11,7 @@ import {
 
 export interface Mirror { v: 1; uidDigest: string }
 export interface RootPlan { credentialId: string; expMs: number }
-export interface CreateOp { kind: "service-create"; opId: string; requestDigest: string }
+interface CreateOp { kind: "service-create"; opId: string; requestDigest: string }
 export interface CancelOp { kind: "service-cancel"; opId: string; requestDigest: string }
 interface HeadBase {
   owner: string; actor: string; lifecycleUid: string; managerInstance: string; processEpoch: 1; serviceCustody: Mirror;

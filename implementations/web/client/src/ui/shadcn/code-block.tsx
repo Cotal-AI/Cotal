@@ -2,10 +2,6 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 
-import { Button } from "#client/ui/shadcn/button.tsx"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { Tick02Icon, Copy01Icon } from "@hugeicons/core-free-icons"
-
 const codeBlockVariants = cva(
   "group/code-block relative flex w-full min-w-0 flex-col overflow-hidden rounded-2xl text-sm has-[>[data-slot=code-block-content]:focus-visible]:ring-3 has-[>[data-slot=code-block-content]:focus-visible]:ring-ring/30 data-[size=sm]:rounded-xl data-[size=sm]:text-xs",
   {
@@ -54,19 +50,6 @@ function CodeBlockHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-function CodeBlockTitle({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="code-block-title"
-      className={cn(
-        "min-w-0 truncate font-sans text-sm font-medium text-foreground group-data-[size=sm]/code-block:text-xs group-data-[variant=destructive]/code-block:text-destructive [&_svg]:pointer-events-none [&_svg]:inline-block [&_svg]:align-middle [&_svg:not([class*='size-'])]:size-4 group-data-[size=sm]/code-block:[&_svg:not([class*='size-'])]:size-3.5 *:[svg]:me-1.5",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
 function CodeBlockActions({
   className,
   ...props
@@ -80,59 +63,6 @@ function CodeBlockActions({
       )}
       {...props}
     />
-  )
-}
-
-function CodeBlockCopyButton({
-  value,
-  variant = "ghost",
-  size = "icon-xs",
-  className,
-  onClick,
-  ...props
-}: React.ComponentProps<typeof Button> & { value: string }) {
-  const [copied, setCopied] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!copied) {
-      return
-    }
-
-    const timeout = setTimeout(() => setCopied(false), 2000)
-    return () => clearTimeout(timeout)
-  }, [copied])
-
-  return (
-    <>
-      <Button
-        data-slot="code-block-copy-button"
-        data-copied={copied || undefined}
-        variant={variant}
-        size={size}
-        aria-label={copied ? "Copied" : "Copy"}
-        className={cn(
-          "hover:bg-foreground/5 dark:hover:bg-foreground/10",
-          className
-        )}
-        onClick={(event) => {
-          onClick?.(event)
-          navigator.clipboard
-            .writeText(value)
-            .then(() => setCopied(true))
-            .catch(() => {})
-        }}
-        {...props}
-      >
-        {copied ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
-        ) : (
-          <HugeiconsIcon icon={Copy01Icon} strokeWidth={2} />
-        )}
-      </Button>
-      <span aria-live="polite" className="sr-only">
-        {copied ? "Copied" : ""}
-      </span>
-    </>
   )
 }
 
@@ -224,26 +154,10 @@ function CodeBlockLine({
   )
 }
 
-function CodeBlockFooter({ className, ...props }: React.ComponentProps<"div">) {
-  return (
-    <div
-      data-slot="code-block-footer"
-      className={cn(
-        "flex min-w-0 shrink-0 items-center gap-2 px-4 pb-4 text-muted-foreground group-data-[size=sm]/code-block:px-3 group-data-[size=sm]/code-block:pb-3",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
 export {
   CodeBlock,
   CodeBlockHeader,
-  CodeBlockTitle,
   CodeBlockActions,
-  CodeBlockCopyButton,
   CodeBlockContent,
   CodeBlockLine,
-  CodeBlockFooter,
 }

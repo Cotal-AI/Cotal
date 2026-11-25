@@ -23,7 +23,6 @@ import {
   managerBucket,
   membersBucket,
   membershipBucket,
-  permissionBucket,
   presenceBucket,
   spacePrefix,
   taskStream,
@@ -92,7 +91,6 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
     { name: `KV_${deliveryBucket(space)}`, class: "lease" },
     { name: `KV_${managerBucket(space)}`, class: "lease" },
     { name: `KV_${anycastBucket(space)}`, class: "control" },
-    { name: `KV_${permissionBucket(space)}`, class: "control" },
     ...endpointPlaneStreamNames(space).filter((name) => !workflow.has(name)).map((name) => ({ name, class: "control" as const })),
     { name: objectStoreStream(artifactBucket(space)), class: "artifact" },
   ];
@@ -446,6 +444,17 @@ export function validateCanonicalBackupStreamConfig(
       throw new Error(`${stream} config is not canonical: max_age=${JSON.stringify(actual.max_age)}, max_msgs_per_subject=${JSON.stringify(actual.max_msgs_per_subject)} is not a history limit it may hold`);
   }
   const expected = canonicalBackupStreamConfig(space, stream, limit);
+  validateStreamReadConfig(stream, actual, { ...expected, ...INERT_CONFIG_DEFAULTS });
+  return expected;
+}
+
+/** Compare a native stream read with first-party configuration, rejecting unknown active fields.
+ * This validates observations only; it creates or repairs no stream. */
+export function validateStreamReadConfig(
+  stream: string,
+  actual: Readonly<Record<string, unknown>>,
+  expected: Readonly<Record<string, unknown>>,
+): void {
   const known = new Set([...Object.keys(expected), ...Object.keys(INERT_CONFIG_DEFAULTS)]);
   const unknown = Object.keys(actual).filter((key) => !known.has(key));
   if (unknown.length) throw new Error(`${stream} config has unsupported fields: ${unknown.sort().join(", ")}`);
@@ -466,14 +475,13 @@ export function validateCanonicalBackupStreamConfig(
     Object.entries(comparable.metadata as Record<string, unknown>)
       .every(([key, value]) => key.startsWith("_nats.") && typeof value === "string")
   ) comparable.metadata = {};
-  const target: Record<string, unknown> = { ...expected, ...INERT_CONFIG_DEFAULTS };
+  const target: Record<string, unknown> = { ...INERT_CONFIG_DEFAULTS, ...expected };
   if (JSON.stringify(normalize(comparable)) !== JSON.stringify(normalize(target))) {
     const drift = Object.keys(target).filter(
       (key) => JSON.stringify(normalize(comparable[key])) !== JSON.stringify(normalize(target[key])),
     );
     throw new Error(`${stream} config is not canonical: ${drift.map((key) => `${key}=${JSON.stringify(comparable[key])}`).join(", ")}`);
   }
-  return expected;
 }
 
 export function validateBackupStreamState(state: Readonly<Record<string, unknown>>): BackupStreamState {

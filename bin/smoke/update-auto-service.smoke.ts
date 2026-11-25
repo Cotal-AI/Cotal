@@ -1,7 +1,7 @@
 /** Exercise update preferences through the shipped CLI without touching the host supervisor. */
 import strictAssert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,23 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const cli = join(repo, "bin/dist/cotal.js");
 const root = mkdtempSync(join(tmpdir(), "uas-"));
 const home = join(root, "home"), config = join(root, "config"), runtime = join(root, "run"), native = join(root, "native");
-for (const dir of [home, config, runtime, native, join(root, "tmp")]) mkdirSync(dir, { mode: 0o700 });
+const missing = join(root, "missing");
+for (const dir of [home, config, runtime, native, missing, join(root, "tmp")]) mkdirSync(dir, { mode: 0o700 });
 const nativeLog = join(root, "native.log");
+const platform = join(root, "platform.mjs");
+writeFileSync(platform, `
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const { existsSync, lstatSync } = fs;
+fs.existsSync = (file) => file === '/run/systemd/system' ? process.env.SMOKE_SYSTEMD !== 'absent' : existsSync(file);
+fs.lstatSync = (file, ...args) => {
+  if (file === '/run/user/' + process.geteuid() && !process.env.XDG_RUNTIME_DIR)
+    throw Object.assign(new Error('missing default runtime directory'), { code: 'ENOENT' });
+  return lstatSync(file, ...args);
+};
+syncBuiltinESMExports();
+process.execArgv = [];
+`);
 const env: NodeJS.ProcessEnv = {
   PATH: `${native}:${process.env.PATH}`, HOME: home, USER: "smoke", LOGNAME: "smoke",
   XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, XDG_DATA_HOME: join(root, "data"),
@@ -27,7 +42,7 @@ const env: NodeJS.ProcessEnv = {
   COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
 };
 for (const tool of ["systemctl", "loginctl", "launchctl", "schtasks"]) {
-  writeFileSync(join(native, tool), `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(nativeLog)}, JSON.stringify({tool:${JSON.stringify(tool)},args})+'\\n');\nif (${JSON.stringify(tool)} === 'systemctl' && args.join(' ') === '--user show-environment') { console.log(${JSON.stringify(`HOME=${home}\nXDG_CONFIG_HOME=${config}`)}); } else { process.exit(99); }\n`, { mode: 0o700 });
+  writeFileSync(join(native, tool), `#!${process.execPath}\nconst fs = require('node:fs'); const args = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(nativeLog)}, JSON.stringify({tool:${JSON.stringify(tool)},args})+'\\n');\nif (${JSON.stringify(tool)} === 'systemctl' && args.join(' ') === '--user show-environment') { if (process.env.SMOKE_SYSTEMD === 'bus-down') process.exit(1); console.log(${JSON.stringify(`HOME=${home}\nXDG_CONFIG_HOME=${config}`)}); } else { process.exit(99); }\n`, { mode: 0o700 });
 }
 const version = JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")).version as string;
 const seed = join(config, "cotal/seed");
@@ -36,7 +51,7 @@ for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(
 writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
 writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: version }), { mode: 0o600 });
 function run(args: string[], overrides: NodeJS.ProcessEnv = {}) {
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 15_000 });
+  const result = spawnSync(process.execPath, ["--import", platform, cli, ...args], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 15_000 });
   assert.ifError(result.error);
   return { code: result.status, text: `${result.stdout}${result.stderr}`.trim() };
 }
@@ -53,6 +68,10 @@ assert.equal(preference(["--auto", "off"]), "Automatic updates: off");
 assert.equal(preference(["--auto"]), "Automatic updates: off");
 assert.equal(saved().auto, false);
 assert.equal(preference(["--notify", "on"]), "Update notices: on");
+const emptyManager = run(["update", "--notify", "off", "--on", ""]);
+assert.equal(emptyManager.code, 1, emptyManager.text);
+assert.match(emptyManager.text, /without other update flags/);
+assert.equal(preference(["--notify"]), "Update notices: on");
 assert.equal(existsSync(nativeLog), false);
 console.log("PASS off/read and notify preserve preferences without native service calls");
 const enabled = preference(["--auto", "on"]);
@@ -68,7 +87,91 @@ for (const text of [enabled, read]) {
 }
 assert.equal(existsSync(nativeLog), false, "missing daemon guidance must not call a service manager");
 assert.match(preference(["--auto"], { XDG_RUNTIME_DIR: undefined }), /cotal daemon install/);
+for (const overrides of [{ PATH: missing }, { SMOKE_SYSTEMD: "absent", XDG_RUNTIME_DIR: undefined }]) {
+  for (const args of [["install", "--dry-run"], ["setup", "--no-input"]]) {
+    const result = run(["daemon", ...args, "--json"], overrides);
+    assert.equal(result.code, 2, result.text);
+    const { error } = JSON.parse(result.text);
+    assert.equal(error.code, "UNSUPPORTED");
+    assert.match(error.message, /requires systemd/);
+    assert.match(error.remedy, /If no daemon is installed or running.*cotal daemon serve/);
+    assert.match(error.remedy, /cotal update --self/);
+  }
+  const advice = preference(["--auto"], overrides);
+  assert.match(advice, /requires systemd/);
+  assert.doesNotMatch(advice, /cotal daemon install/);
+}
+const noRuntime = JSON.parse(run(["daemon", "status", "--json"], { XDG_RUNTIME_DIR: undefined }).text);
+assert.equal(noRuntime.error.cause.code, "NO_RUNTIME_DIR");
+assert.match(noRuntime.error.remedy, /systemd-logind or pam_rundir.*0700.*XDG_RUNTIME_DIR/);
+assert.equal(existsSync(nativeLog), false, "unsupported installs and setup do not query the supervisor");
 assert.equal(preference(["--auto"], { COTAL_NO_UPDATE_CHECK: "1" }), "Automatic updates: on (disabled by COTAL_NO_UPDATE_CHECK=1)");
+{
+  const notifyJson = JSON.parse(preference(["--notify", "--json"]));
+  assert.equal(notifyJson.outcome, "ok");
+  assert.deepEqual(notifyJson.result, {
+    kind: "update-preference", preference: "notify", enabled: true, effective: true,
+    disabledByEnv: false, advice: null, file: join(home, "update-settings.json"),
+  });
+  const autoJson = JSON.parse(preference(["--auto", "--json"]));
+  assert.equal(autoJson.outcome, "ok");
+  assert.equal(autoJson.result?.preference, "auto");
+  assert.equal(autoJson.result?.enabled, true);
+  assert.match(String(autoJson.result?.advice ?? ""), /cotal daemon install/);
+  assert.equal(preference(["--notify", "--plain"]), "Update notices: on");
+  const noopJson = JSON.parse(preference(["--notify", "on", "--json"]));
+  assert.equal(noopJson.outcome, "no-op");
+}
+
+const settingsFile = join(home, "update-settings.json");
+const backups = () => readdirSync(home).filter(name => name.startsWith("update-settings.json.corrupt."));
+const damaged = ["{garbage", "", "[]", "null", '{"auto":"yes"}', '{"v":1,"auto":"off","notify":false}', '{"v":2,"auto":false,"notify":false}', Buffer.from([0xff, 0x7b])];
+for (const contents of damaged) {
+  for (const args of [["--notify", "on"], ["--notify", "off"], ["--notify"], ["--auto", "off"], ["--auto", "on"], ["--auto"]]) {
+    const before = backups();
+    writeFileSync(settingsFile, contents, { mode: 0o600 });
+    const text = preference(args);
+    const added = backups().filter(name => !before.includes(name));
+    assert.equal(added.length, 1, "each damaged file gets a separate named copy");
+    const backup = join(home, added[0]!);
+    assert.deepEqual(readFileSync(backup), Buffer.from(contents), "backup preserves original bytes");
+    assert.equal(statSync(backup).mode & 0o777, 0o600);
+    assert.equal(statSync(settingsFile).mode & 0o777, 0o600);
+    assert.equal(text.split("\n").filter(line => line.startsWith("Damaged update settings saved to ")).length, 1);
+    assert.ok(text.includes(backup), "recovery line names the full backup path");
+    const key = args[0] === "--auto" ? "auto" : "notify";
+    const expected = { v: 1, auto: true, notify: true, [key]: args[1] !== "off" };
+    assert.deepEqual(saved(), expected, "requested choice is applied over defaults");
+    assert.equal(preference([args[0]!]).includes("Damaged update settings"), false, "repaired reads do not recover again");
+    assert.deepEqual(readFileSync(backup), Buffer.from(contents), "later reads leave backup intact");
+    assert.equal(backups().length, before.length + 1);
+  }
+}
+preference(["--notify", "off"]);
+preference(["--auto", "off"]);
+assert.deepEqual(saved(), { v: 1, auto: false, notify: false }, "valid choices preserve the independent preference");
+const backupCount = backups().length;
+rmSync(settingsFile);
+mkdirSync(settingsFile, { mode: 0o700 });
+try {
+  const result = run(["update", "--notify", "on"]);
+  assert.notEqual(result.code, 0, "filesystem read errors must not reset settings");
+  assert.equal(statSync(settingsFile).isDirectory(), true);
+  assert.equal(backups().length, backupCount);
+  assert.doesNotMatch(result.text, /Damaged update settings/);
+} finally { rmSync(settingsFile, { recursive: true }); }
+writeFileSync(settingsFile, "{garbage", { mode: 0o600 });
+chmodSync(settingsFile, 0o000);
+try {
+  const result = run(["update", "--auto", "off"]);
+  assert.notEqual(result.code, 0, "an unreadable file must not reset settings");
+  assert.equal(backups().length, backupCount);
+  assert.doesNotMatch(result.text, /Damaged update settings/);
+} finally { chmodSync(settingsFile, 0o600); }
+assert.equal(readFileSync(settingsFile, "utf8"), "{garbage");
+writeFileSync(settingsFile, JSON.stringify({ v: 1, auto: true, notify: true }), { mode: 0o600 });
+assert.equal(existsSync(nativeLog), false, "recovery does not invoke native service tools");
+console.log("PASS damaged preference reads and writes preserve bytes, restore defaults and keep filesystem failures visible");
 
 let child: ChildProcess | undefined;
 async function stop() {
@@ -90,6 +193,23 @@ try {
   await start(false);
   assert.equal(JSON.parse(run(["daemon", "status", "--json"]).text).result.update.automatic, false);
   assert.match(preference(["--auto"]), /cotal daemon install/, "foreground daemon cannot own the unattended schedule");
+  const otherHome = join(root, "other-home");
+  mkdirSync(otherHome, { mode: 0o700 });
+  const otherEnv = { COTAL_HOME: otherHome };
+  const foreign = run(["daemon", "status", "--json"], otherEnv);
+  assert.equal(foreign.code, 2, foreign.text);
+  assert.equal(JSON.parse(foreign.text).error.cause.code, "PEER_NOT_LOCK_OWNER");
+  const ownerSettings = readFileSync(settingsFile, "utf8");
+  assert.equal(JSON.parse(preference(["--auto", "off", "--json"], otherEnv)).result.enabled, false);
+  for (const args of [["--auto", "on", "--json"], ["--auto", "--json"]]) {
+    const result = JSON.parse(preference(args, otherEnv));
+    assert.equal(result.outcome, "ok");
+    assert.equal(result.result.enabled, true);
+    assert.equal(result.result.file, join(otherHome, "update-settings.json"));
+    assert.match(result.result.advice, /^Could not check the automatic update schedule: .*nothing was sent\.$/);
+  }
+  assert.equal(JSON.parse(readFileSync(join(otherHome, "update-settings.json"), "utf8")).auto, true);
+  assert.equal(readFileSync(settingsFile, "utf8"), ownerSettings);
   await stop();
   // Render a receipt and unit only. No install, start or registration command is invoked.
   const originalEnv = { ...process.env }, argv = process.argv, execArgv = process.execArgv;
@@ -114,6 +234,7 @@ try {
   assert.equal(typeof status.nextAttempt, "string");
   assert.equal(preference(["--auto", "on"]), "Automatic updates: on");
   assert.equal(preference(["--auto"]), "Automatic updates: on");
+  assert.equal(preference(["--auto"], { PATH: missing, SMOKE_SYSTEMD: "absent" }), "Automatic updates: on");
   await stop();
   writeFileSync(join(home, "update-attempt.json"), "{unreadable", { mode: 0o600 });
   await start(true);
@@ -130,6 +251,10 @@ try {
   console.log("PASS unreadable attempt record retains inactive-schedule advice despite automatic eligibility");
   assert.equal(preference(["--auto", "off"]), "Automatic updates: off");
   assert.equal(saved().auto, false);
+  const busDown = run(["daemon", "install", "--dry-run", "--json"], { SMOKE_SYSTEMD: "bus-down" });
+  assert.equal(busDown.code, 2, busDown.text);
+  assert.equal(JSON.parse(busDown.text).error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.match(JSON.parse(busDown.text).error.remedy, /logged-in session/);
   const calls = readFileSync(nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
   assert.ok(calls.length > 0);
   assert.ok(calls.every(call => call.tool === "systemctl" && call.args.join(" ") === "--user show-environment"), "only read-only ownership observation is allowed");

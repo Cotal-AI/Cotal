@@ -16,11 +16,44 @@ export function isOwnedUnitName(unit: string): boolean {
   return /^cotal-[0-9a-f]{64}\.service$/.test(unit) || /^cotal-daemon(?:-[0-9a-f]{16})?\.service$/.test(unit);
 }
 
+/** Decode systemctl's shell_maybe_quote(..., SHELL_ESCAPE_POSIX), never shell evaluation. */
+function systemdDirectoryValue(value: string): string {
+  if (!value.startsWith("$'")) return value;
+  const invalid = () => new CommandFailure("refused", "SCHEMA_INVALID", "the user manager returned an invalid quoted directory; no directory was selected");
+  if (!value.endsWith("'")) throw invalid();
+  const bytes: Buffer[] = [];
+  const escapes: Record<string, string> = { a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"' };
+  const body = value.slice(2, -1);
+  for (let i = 0; i < body.length;) {
+    if (body[i] === "'") throw invalid();
+    if (body[i] !== "\\") {
+      const end = body.indexOf("\\", i);
+      const text = body.slice(i, end < 0 ? undefined : end);
+      if (text.includes("'")) throw invalid();
+      bytes.push(Buffer.from(text));
+      i += text.length;
+      continue;
+    }
+    const escaped = body[++i];
+    if (escaped !== undefined && Object.hasOwn(escapes, escaped)) {
+      bytes.push(Buffer.from(escapes[escaped]!));
+      i++;
+    } else {
+      const octal = body.slice(i, i + 3);
+      if (!/^[0-3][0-7]{2}$/.test(octal)) throw invalid();
+      bytes.push(Buffer.from([Number.parseInt(octal, 8)]));
+      i += 3;
+    }
+  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(bytes)); }
+  catch { throw invalid(); }
+}
+
 /** The user manager's own config directory, never this CLI shell's XDG override. A missing
  *  bus or malformed environment is a refusal, not permission to guess a home path. */
-export function systemdUserUnitDirectory(): string {
+export function systemdUserUnitDirectory(env?: NodeJS.ProcessEnv): string {
   if (process.platform !== "linux") throw new CommandFailure("refused", "UNSUPPORTED", "this native unit directory read requires a Linux systemd user manager");
-  const result = spawnSync("systemctl", ["--user", "show-environment"], { encoding: "utf8", timeout: 2000, maxBuffer: 64 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync("systemctl", ["--user", "show-environment"], { env, encoding: "utf8", timeout: 2000, maxBuffer: 64 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the systemd user manager did not answer `systemctl --user show-environment`; no unit directory was guessed", { remedy: "run from a logged-in session whose XDG_RUNTIME_DIR is the user manager's runtime directory (systemd-logind sets it), where `systemctl --user show-environment` answers" });
   const paths = new Map<string, string>();
   for (const line of result.stdout.split("\n")) {
@@ -30,7 +63,7 @@ export function systemdUserUnitDirectory(): string {
     const name = line.slice(0, index);
     if (name !== "HOME" && name !== "XDG_CONFIG_HOME") continue;
     if (paths.has(name)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the user manager returned duplicate directory variables; no directory was selected");
-    paths.set(name, line.slice(index + 1));
+    paths.set(name, systemdDirectoryValue(line.slice(index + 1)));
   }
   const xdg = paths.get("XDG_CONFIG_HOME"), home = paths.get("HOME");
   const config = xdg === undefined || xdg === "" ? home && join(home, ".config") : xdg;
@@ -72,18 +105,18 @@ export function observeRecordedSupervisor(instance: ServiceInstance, recorded: P
 
 /** One bounded user-manager mutation. A nonzero/timeout is unknown because native effects may
  *  have landed. Never copy systemctl output or retry the command after an uncertain result. */
-export function submitSystemdUnitRegistration(step: "reload" | "enable" | "disable", unit: string): void {
+export function submitSystemdUnitRegistration(step: "reload" | "enable" | "disable", unit: string, env?: NodeJS.ProcessEnv): void {
   if (process.platform !== "linux" || !isOwnedUnitName(unit)) throw new CommandFailure("refused", "USAGE_INVALID", "the native install step needs an exact owned service-unit name");
   const argv = ["--user", "--no-ask-password", "--no-pager", ...(step === "reload" ? ["daemon-reload"] : [step, unit])];
-  const result = spawnSync("systemctl", argv, { encoding: "utf8", timeout: 15_000, maxBuffer: 32 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync("systemctl", argv, { env, encoding: "utf8", timeout: 15_000, maxBuffer: 32 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.signal || result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native ${step} request did not confirm completion; its exact user-unit state must be inspected before reconciliation`, { target: { unit, step } });
 }
 
 /** A verified source file and exact native fragment are prerequisites; a nominally enabled
  *  name cannot stand in for an inactive, unchanged unit with no drop-ins. */
-export function submitSystemdUnitControl(operation: "start" | "stop", unit: string): void {
+export function submitSystemdUnitControl(operation: "start" | "stop", unit: string, env?: NodeJS.ProcessEnv): void {
   if (process.platform !== "linux" || !isOwnedUnitName(unit)) throw new CommandFailure("refused", "USAGE_INVALID", "the native service control needs one exact owned unit");
-  const result = spawnSync("systemctl", ["--user", "--no-ask-password", "--no-pager", operation, unit], { encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const result = spawnSync("systemctl", ["--user", "--no-ask-password", "--no-pager", operation, unit], { env, encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   if (result.error || result.signal || result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the native ${operation} request did not confirm completion; it was not retried`, { target: { unit, operation } });
 }
 

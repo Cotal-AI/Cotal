@@ -9,10 +9,12 @@ import {
   classifyJoinTarget,
   findCotalRoot,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   homeCotalDir,
   listSpaceAccounts,
   loadSpaceAuth,
+  openSpaceNames,
   personaDir,
   pinnedFetch,
   PinnedFetchRefused,
@@ -140,7 +142,7 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
     const dir = resolve(flag);
     return isDir(dir)
       ? good(dir)
-      : bad(`✗ --root ${dir} is not a directory - it must be the folder holding this mesh's .cotal/auth and .cotal/agents`, "USAGE_INVALID");
+      : bad(`✗ --root ${dir} is not a directory - pass an existing folder; for an open space it may be empty`, "USAGE_INVALID");
   }
   const root = findCotalRoot(cwd);
   if (!isDir(join(root, ".cotal")) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
@@ -207,13 +209,18 @@ export async function probeEnforcement(server: string): Promise<"auth" | "open" 
  *  arm reads the refusal as the evidence: a user-mode target has no probe credential by design,
  *  so a credless probe against a user-auth broker reporting auth-required IS the pass — the one
  *  fact a bare connect can prove about a broker whose admission runs through the callout. */
-export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string): Check<void> {
+export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string, { recheck }: RegistrationCheckOptions = { recheck: false }): Check<void> {
   if (mode === "auth" && enforces === "open")
     return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`, "CONFLICT");
   if (mode === "open" && enforces === "auth") {
-    // A root that holds another space's trust is the reason, and nothing there needs copying.
     const held = spacesAtRoot(root);
     const others = held.ok ? held.value.filter((s) => s !== space) : [];
+    if (recheck) return {
+      ok: false,
+      code: others.length ? "DEPENDENCY_UNAVAILABLE" : "CONFLICT",
+      message: `the broker at ${server} requires auth, but "${space}" is registered in open mode`,
+      remedy: `restore the broker at ${server} to its recorded open mode, then rerun the check unchanged`,
+    };
     if (others.length)
       return bad(`✗ the broker at ${server} requires auth, and ${authDir(root)} holds the trust for "${others.join('", "')}", not "${space}" - register the space it holds under its own name, or point --root at where "${space}"'s trust is`, "DEPENDENCY_UNAVAILABLE");
     return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST + SEEDLESS, "CONFLICT");
@@ -346,6 +353,13 @@ export function candidateTarget(space: string, server: string, root: string, mod
  *  nothing is recorded yet — the operator is being told what to fix in the command they just ran. */
 export function verifyFailureMessage(kind: PreflightFailure, space: string, server: string, root: string, pid?: number): string {
   switch (kind) {
+    case "auth-unsupported":
+      return `✗ the NATS server at ${server} does not enforce the recorded authentication - enable Cotal authentication or check the broker address`;
+    case "jetstream-unsupported":
+      return `✗ the NATS server at ${server} does not have JetStream enabled - enable JetStream or check the broker address`;
+    case "non-nats-listener":
+      return pid === undefined ? `✗ a non-NATS listener holds ${server} - stop it or choose another broker address`
+        : `✗ the broker address ${server} is held by stopped process ${pid}, which is not a NATS server. Free that address or choose another broker address.`;
     case "unreachable":
       return `✗ no broker answered at ${server} - check the address and that the mesh is up on that machine`;
     case "creds-rejected":
@@ -369,12 +383,35 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
   }
 }
 
+interface RegistrationCheckOptions { recheck: boolean }
+
 /** Probe the candidate for real (liveness + credentials), after {@link checkEnforcement} has
  *  settled what the broker is. */
-export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
+export async function verifyTarget(target: MeshTarget, options?: RegistrationCheckOptions): Promise<Check<void>> {
   const r = await preflightTarget(target);
   if (r.ok) return good(undefined);
-  return (r.kind === "unreachable" && (await unreachableAt(target.server))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
+  return (r.kind === "unreachable" && (await unreachableAt(target.server, "--server", options))) || bad(verifyFailureMessage(r.kind, target.space, target.server, target.root, r.pid), preflightCode(r.kind));
+}
+
+export { openSpaceNames };
+
+/** A bare connection alone cannot establish that an open broker serves this space. */
+export async function checkOpenSpace(server: string, name: string, tlsRequired: boolean, options?: RegistrationCheckOptions): Promise<Check<void>> {
+  let served: string[];
+  try { served = await openSpaceNames(server, tlsRequired); }
+  catch {
+    return {
+      ok: false, code: "TARGET_UNAVAILABLE", message: `the broker at ${server} answered, but the spaces it serves could not be read`,
+      remedy: options?.recheck ? "check that JetStream is available on that broker, then retry" : `retry, or pass --force to add "${name}" unchecked`,
+    };
+  }
+  if (served.includes(token(name))) return good(undefined);
+  return {
+    ok: false, code: "TARGET_NOT_FOUND",
+    message: served.length ? `the broker at ${server} serves no space named "${name}"; it serves ${served.map((space) => `"${space}"`).join(", ")}` : `the broker at ${server} serves no space yet, so "${name}" is not running there`,
+    remedy: options?.recheck ? `start or restore "${name}" on that broker, then retry`
+      : served.length ? `add one of those names, or pass --force to add "${name}" before it starts there` : `pass --force to add "${name}" unchecked, or start the space on that broker first`,
+  };
 }
 
 /** The {@link verifyTarget} sentence for a TLS broker at `server` whose certificate this machine
@@ -395,7 +432,7 @@ const DEFAULT_PORTS: Readonly<Record<string, number>> = { nats: 4222, tls: 4222,
 /** Why no broker answered at a single `server` address: nothing took a connection at its port, or a
  *  broker answers there under another scheme, which the remedy names. `undefined` for an address
  *  this cannot take apart, such as a list, so the general sentence stands. */
-async function unreachableAt(server: string, what = "--server"): Promise<Check<never> | undefined> {
+async function unreachableAt(server: string, what: string, { recheck }: RegistrationCheckOptions = { recheck: false }): Promise<Check<never> | undefined> {
   if (server.includes(",")) return undefined;
   let url: URL;
   try { url = new URL(server.includes("://") ? server : `nats://${server}`); } catch { return undefined; }
@@ -406,9 +443,10 @@ async function unreachableAt(server: string, what = "--server"): Promise<Check<n
   const refused = (message: string, remedy: string): Check<never> => ({ ok: false, message: `✗ ${message}`, code: "TARGET_UNAVAILABLE", remedy });
   const answer = await portAnswer(url.hostname.replace(/^\[|\]$/g, ""), port);
   if (answer === "unresolved")
-    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, `check the host name in ${what}`);
+    return refused(`no broker answered at ${server}: the host name ${url.hostname} does not resolve`, recheck ? `restore DNS resolution for ${url.hostname}, then retry` : `check the host name in ${what}`);
   if (answer === "silent")
-    return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}, or pass --server with the port it listens on`);
+    return refused(`no broker answered at ${server}: nothing accepted a connection at ${at}`, `check that the mesh is up and listening on port ${port} of ${url.hostname}${recheck ? ", then retry" : ", or pass --server with the port it listens on"}`);
+  const restore = `restore the broker listener at ${server} with its recorded transport, then rerun the check unchanged`;
   // A websocket route keeps its path, which a TCP address cannot have.
   const route = url.pathname === "/" ? "" : url.pathname;
   const schemes = ["nats", "tls", "ws", "wss"].filter((other) => !route || other.startsWith("ws"));
@@ -418,9 +456,9 @@ async function unreachableAt(server: string, what = "--server"): Promise<Check<n
     const probe = await probeConnect(candidate, { timeoutMs: SCHEME_PROBE_TIMEOUT_MS });
     if (!probe.ok && probe.reason !== "auth-required") continue;
     const plain = (scheme === "tls" || scheme === "wss") && (other === "nats" || other === "ws") ? ", without TLS" : "";
-    return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, `run it again with --server ${candidate}`);
+    return refused(`no broker answered at ${server}, but one answers at ${candidate}${plain}`, recheck ? restore : `run it again with --server ${candidate}`);
   }
-  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, `check that ${what} names the broker's own address and port`);
+  return refused(`no broker answered at ${server}: something accepted the connection at ${at}, but no broker answered there as ${schemes.slice(0, -1).join(", ")} or ${schemes.at(-1)}`, recheck ? restore : `check that ${what} names the broker's own address and port`);
 }
 
 /** Whether anything accepts a TCP connection at `host:port`: `silent` when the port refuses or does
@@ -439,7 +477,7 @@ function portAnswer(host: string, port: number): Promise<"accepted" | "silent" |
  *  when there is no usable one, and never silently redirect a default that still resolves. */
 export function writeRecord(entry: MeshEntry): { adoptedCurrent: boolean; keptCurrent?: string } {
   const cur = getCurrent();
-  const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording
+  const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording
   recordMesh(entry);
   if (!usableCurrent) {
     setAdoptedCurrent(entry.space);

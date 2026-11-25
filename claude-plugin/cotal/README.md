@@ -17,9 +17,8 @@ This directory is generated at each release by `scripts/materialize-claude-plugi
   when a message arrives in a supported Code session.
 - 11 lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
   `PostToolUse`, `PostToolBatch`, `Notification`, `SubagentStop`, `Stop`, `StopFailure`,
-  `SessionEnd`) running
-  `node dist/hook.cjs`. They report the session's presence, deliver queued peer messages, and hold
-  permission prompts for the agent's owner.
+  `SessionEnd`) running `node dist/hook.cjs`. They report the session's presence, deliver queued
+  peer messages, and serve tool permissions on the agent endpoint.
 
 The bundles are prebuilt in this directory. Nothing is installed from npm at runtime.
 

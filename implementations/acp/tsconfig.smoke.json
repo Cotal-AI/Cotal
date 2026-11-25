@@ -1,0 +1,7 @@
+{
+  // Typecheck-only companion to tsconfig.json, because rootDir decides what lands in dist and
+  // the smoke file must not.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "../.." },
+  "include": ["smoke/**/*.ts"]
+}

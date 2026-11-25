@@ -14,7 +14,7 @@ try {
   const entry = fileURLToPath(new URL("../dist/daemon/ownership-win32.js", import.meta.url));
   const workerSource = `import(${JSON.stringify(pathToFileURL(hook).href)}).then(()=>import(${JSON.stringify(pathToFileURL(entry).href)})).then(m=>{const {parentPort}=require('node:worker_threads');parentPort.postMessage(m.observeWindowsOwnedService({state:${JSON.stringify(root)}},[]));});`;
   const script = `const {Worker}=require('node:worker_threads'); const worker=new Worker(${JSON.stringify(workerSource)},{eval:true}); worker.once('message',m=>{if(m.state!=='not-owned'||m.reason!=='marker-absent')process.exitCode=1;});`;
-  const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 15_000, env: { ...process.env, COTAL_DAEMON_NATIVE_SERVICE: "0" } });
+  const result = spawnSync(process.execPath, ["-e", script], { encoding: "utf8", timeout: 15_000, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_DAEMON_NATIVE_SERVICE: "0" } });
   assert.equal(result.error, undefined, "ownership import observation completed");
   assert.equal(result.status, 0, result.stderr);
   const modules = [...new Set(readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as string))];

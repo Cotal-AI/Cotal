@@ -16,6 +16,7 @@ import { createServer } from "node:http";
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 // Every account file this run touches lives under a throwaway home.
 const home = mkdtempSync(join(tmpdir(), "linear-smoke-"));
@@ -26,8 +27,13 @@ const { credentialFor } = await import("../src/oauth.js");
 const { assertPrivateFile, oauthStatePath } = await import("../src/account.js");
 const { LINEAR_MCP_ORIGIN } = await import("../src/origin.js");
 
-let pass = 0, fail = 0;
-const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
+const { check, finish, passed, failed } = createSuite();
+
+const oauth = await import("../src/oauth.js");
+const contract = await import("../src/contract.js");
+check("OAuth and contract modules retain their consumed functions, not file-local helpers",
+  typeof oauth.credentialFor === "function" && typeof contract.linearCommandDefs === "function"
+    && !("scopeFor" in oauth) && !("resultOrThrow" in contract));
 
 const seen = { redirect: false, refreshes: 0, outstanding: 0, maxOutstanding: 0, streamsOpen: 0, holdInit: false, initAborted: false, initializedAfterClose: false, closedAt: 0, bigEntry: false, deepEntry: false, bigHead: false };
 const server = createServer(async (req, res) => {
@@ -231,5 +237,6 @@ server.closeAllConnections();
 await new Promise((resolve) => server.close(resolve));
 globalThis.fetch = nativeFetch;
 rmSync(home, { recursive: true, force: true });
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\n${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

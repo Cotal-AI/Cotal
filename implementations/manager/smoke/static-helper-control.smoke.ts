@@ -10,10 +10,9 @@ import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal } from
 
 const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}static-helper-`));
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-for (const [key, path] of Object.entries({ HOME: "home", COTAL_HOME: "cotal", XDG_CONFIG_HOME: "config", XDG_RUNTIME_DIR: "run" })) {
-  process.env[key] = join(dir, path);
-  mkdirSync(process.env[key]!, { recursive: true, mode: 0o700 });
-}
+process.env.COTAL_HOME = join(dir, "cotal");
+for (const [key, path] of Object.entries({ HOME: "home", XDG_CONFIG_HOME: "config", XDG_RUNTIME_DIR: "run" })) process.env[key] = join(dir, path);
+for (const key of ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"]) mkdirSync(process.env[key]!, { recursive: true, mode: 0o700 });
 const core = await import("@cotal-ai/core");
 const workspace = await import("@cotal-ai/workspace");
 const { MeshAgent, cotalToolSpecs, parseToolArgs } = await import("@cotal-ai/connector-core");

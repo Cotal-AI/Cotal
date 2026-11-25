@@ -34,7 +34,7 @@ interface Material { accessBearer: string; accessExpiresAt: number; renewalProof
 interface RenewalRecord { v: 1; kind: typeof KIND; witnessDigest: string; activateRequestId: string; renewRequestId: string; material: Material | null }
 
 /** Where one witness's renewal record lives in the caller's store. */
-export function serviceRenewalKey(witness: ServiceRegistrationWitness): string {
+function serviceRenewalKey(witness: ServiceRegistrationWitness): string {
   return `auth/${spaceSegment(witness.space)}/service-renewal/${serviceWitnessDigest(witness).slice("sha256:".length)}.json`;
 }
 

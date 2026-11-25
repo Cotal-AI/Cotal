@@ -1,106 +1,24 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelCatalogOpts } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { discardLaunchArtifacts, loadAgentFile, registry, writeLaunchArtifact, type Connector, type CommandListOpts, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
+import { aclEnv, nameEnv, connectorLaunchOptions, controlEndpoint, eventChannel, firstCommandEnv, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { CLAUDE_READY_TEXTS, CLAUDE_STARTUP_BLOCKERS, CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js";
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
+import { launchFieldArgs } from "./launch-fields.js";
+import { CLAUDE_EFFORT_LEVELS, listClaudeModels } from "./models.js";
+import { imageFolder } from "./turn-images.js";
+import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
+import { claudeNamingLaunchEnv } from "./naming.js";
+import { claudeCommandCatalog } from "./command-catalog.js";
+
+export { CLAUDE_PROVIDER_KEYS };
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
 
-/** Auth and provider-routing env `claude` actually reads for a headless or container seat.
- *  Drawn from Anthropic's authentication precedence
- *  (https://docs.anthropic.com/en/docs/claude-code/iam) and the env-vars page, not from a
- *  prefix guess. `CLAUDE_CODE_OAUTH_TOKEN` is the load-bearing name: `docs/deploy.mdx` and
- *  `deploy/` tell operators a container Claude authenticates with it, and a container has no
- *  Keychain. Host-session markers (`CLAUDE_CODE_CHILD_SESSION`, `CLAUDECODE`,
- *  `CLAUDE_CODE_ENTRYPOINT`) are deliberately absent — those are how a nested `claude` decides
- *  it must not save a transcript. Files under the default `~/.claude` and `~/.aws` locations
- *  remain reachable through HOME. A credential file at a non-default path is reachable only when
- *  its path variable, such as `GOOGLE_APPLICATION_CREDENTIALS`, is forwarded explicitly. */
-export const CLAUDE_PROVIDER_KEYS = [
-  // First-party / subscription (setup-token, Console key, gateway bearer).
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
-  "CLAUDE_CODE_OAUTH_SCOPES",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_BASE_URL",
-  "CLAUDE_CONFIG_DIR",
-  // Cloud provider selection. Without the matching flag, the credential vars below are inert.
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-  "CLAUDE_CODE_USE_MANTLE",
-  "CLAUDE_CODE_SKIP_BEDROCK_AUTH",
-  "CLAUDE_CODE_SKIP_VERTEX_AUTH",
-  "CLAUDE_CODE_SKIP_FOUNDRY_AUTH",
-  "CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH",
-  "CLAUDE_CODE_SKIP_MANTLE_AUTH",
-  "CLAUDE_CODE_SKIP_AWS_CRED_CACHE",
-  "CLAUDE_CODE_AWS_CHAIN_RESOLVE_TIMEOUT_MS",
-  // Amazon Bedrock / Claude Platform on AWS.
-  "ANTHROPIC_AWS_API_KEY",
-  "ANTHROPIC_AWS_BASE_URL",
-  "ANTHROPIC_AWS_WORKSPACE_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_SESSION_TOKEN",
-  "AWS_PROFILE",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  "AWS_SHARED_CREDENTIALS_FILE",
-  "AWS_CONFIG_FILE",
-  "AWS_BEARER_TOKEN_BEDROCK",
-  "ANTHROPIC_BEDROCK_BASE_URL",
-  "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
-  "ANTHROPIC_BEDROCK_REGION_PREFIX",
-  "ANTHROPIC_BEDROCK_SERVICE_TIER",
-  "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-  // Google Cloud's Agent Platform.
-  "ANTHROPIC_VERTEX_BASE_URL",
-  "ANTHROPIC_VERTEX_PROJECT_ID",
-  "GOOGLE_APPLICATION_CREDENTIALS",
-  "CLOUD_ML_REGION",
-  "GCLOUD_PROJECT",
-  "GOOGLE_CLOUD_PROJECT",
-  "VERTEX_REGION_CLAUDE_3_5_HAIKU",
-  "VERTEX_REGION_CLAUDE_3_5_SONNET",
-  "VERTEX_REGION_CLAUDE_3_7_SONNET",
-  "VERTEX_REGION_CLAUDE_4_0_OPUS",
-  "VERTEX_REGION_CLAUDE_4_0_SONNET",
-  "VERTEX_REGION_CLAUDE_4_1_OPUS",
-  "VERTEX_REGION_CLAUDE_4_5_OPUS",
-  "VERTEX_REGION_CLAUDE_4_5_SONNET",
-  "VERTEX_REGION_CLAUDE_4_6_OPUS",
-  "VERTEX_REGION_CLAUDE_4_6_SONNET",
-  "VERTEX_REGION_CLAUDE_4_7_OPUS",
-  "VERTEX_REGION_CLAUDE_4_8_OPUS",
-  "VERTEX_REGION_CLAUDE_5_OPUS",
-  "VERTEX_REGION_CLAUDE_5_SONNET",
-  "VERTEX_REGION_CLAUDE_FABLE_5",
-  "VERTEX_REGION_CLAUDE_FABLE_5_1",
-  "VERTEX_REGION_CLAUDE_HAIKU_4_5",
-  // Microsoft Foundry.
-  "ANTHROPIC_FOUNDRY_API_KEY",
-  "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
-  "ANTHROPIC_FOUNDRY_BASE_URL",
-  "ANTHROPIC_FOUNDRY_RESOURCE",
-  // Workload Identity Federation / named Anthropic profiles.
-  "ANTHROPIC_PROFILE",
-  "ANTHROPIC_FEDERATION_RULE_ID",
-  "ANTHROPIC_ORGANIZATION_ID",
-  "ANTHROPIC_WORKSPACE_ID",
-  "ANTHROPIC_IDENTITY_TOKEN",
-  "ANTHROPIC_IDENTITY_TOKEN_FILE",
-] as const;
 /** Channel ref for `--dangerously-load-development-channels`, which turns on the cotal MCP server's
  *  `claude/channel` capability so an idle session wakes the instant a peer message arrives. The ref
  *  is the server tagged `server:<name>` (the CLI rejects a plugin ref or a bare name here), and
@@ -153,99 +71,6 @@ function assertServableModel(model: string): void {
   );
 }
 
-/** Flags for asking `claude` which models its login can use. With them `claude` reads one `initialize`
- *  control request over stream-json and answers before any user message exists, so asking starts no
- *  turn and spends no tokens. The rest keep the question from starting anything the operator
- *  configured: no MCP server (their own `cotal` server included), no hook and no saved session. */
-const MODELS_ARGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}', "--no-session-persistence"];
-const MODELS_REQUEST_ID = "cotal-models";
-
-interface ControlLine {
-  type?: unknown;
-  response?: {
-    request_id?: unknown;
-    subtype?: unknown;
-    error?: unknown;
-    response?: { models?: unknown; account?: { tokenSource?: unknown; apiKeySource?: unknown } };
-  };
-}
-
-const unavailable = (why: string): ModelCatalog => ({ models: [], unavailable: why });
-
-function isModelRow(row: unknown): row is { value: string; displayName: string } {
-  const { value, displayName } = (row ?? {}) as { value?: unknown; displayName?: unknown };
-  return typeof value === "string" && typeof displayName === "string";
-}
-
-function initializeAnswer(text: string): ModelCatalog | undefined {
-  let line: ControlLine | null;
-  try {
-    line = JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-  const answer = line?.response;
-  if (line?.type !== "control_response" || answer?.request_id !== MODELS_REQUEST_ID) return undefined;
-  if (answer.subtype === "error") return unavailable(`claude refused to list its models: ${String(answer.error)}`);
-  const result = answer.subtype === "success" ? answer.response : undefined;
-  // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
-  if (result?.account?.tokenSource === "none" && !result.account.apiKeySource) return unavailable("claude is not logged in; run claude to log in");
-  const rows = result?.models;
-  if (!Array.isArray(rows) || !rows.every(isModelRow)) return unavailable("claude answered without a model list");
-  // `default` points at claude's own default model, which a launch that names no model gets anyway.
-  return { source: "claude stream-json initialize", models: rows.filter((m) => m.value !== "default").map((m) => ({ id: m.value, name: m.displayName })) };
-}
-
-async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalog> {
-  // claude applies the settings of the project it runs in, so it runs in an empty private directory.
-  const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
-  const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS });
-  let child: ChildProcess | undefined;
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await new Promise<ModelCatalog>((settle) => {
-      const claude = (child = spawn(opts.resolvedBinaries?.claude ?? "claude", MODELS_ARGS, { cwd, env, stdio: ["pipe", "pipe", "ignore"] }));
-      // The bound also cuts short stopClaude's grace, so the whole read ends within 6s.
-      timer = setTimeout(() => {
-        settle(unavailable("claude did not list its models within 6s"));
-        claude.kill("SIGKILL");
-      }, 6_000);
-      claude.on("error", (e) => settle(unavailable(`claude could not start: ${e.message}`)));
-      // `close` follows the last `data` event, so an answer written just before exit is read first.
-      claude.on("close", (code, signal) => settle(unavailable(`claude exited (${code ?? signal}) before it listed its models`)));
-      // Without this listener, writing to a child that already closed its input is an unhandled error that stops the manager.
-      claude.stdin.on("error", (e) => settle(unavailable(`claude stopped reading before it listed its models: ${e.message}`)));
-      let buf = "";
-      claude.stdout.setEncoding("utf8");
-      claude.stdout.on("data", (chunk: string) => {
-        buf += chunk;
-        for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
-          const answer = initializeAnswer(buf.slice(0, nl));
-          buf = buf.slice(nl + 1);
-          if (answer) settle(answer);
-        }
-      });
-      claude.stdin.write(JSON.stringify({ type: "control_request", request_id: MODELS_REQUEST_ID, request: { subtype: "initialize" } }) + "\n");
-    });
-  } finally {
-    if (child) await stopClaude(child);
-    clearTimeout(timer);
-    rmSync(cwd, { recursive: true, force: true });
-  }
-}
-
-/** After it answers, claude still rewrites its config in the user's home, and it removes the session it
- *  registered there only as it exits. A kill skips both. Closing its input makes claude exit on its own,
- *  so it is killed only if it is still running a second later. */
-async function stopClaude(claude: ChildProcess): Promise<void> {
-  if (claude.exitCode !== null || claude.signalCode !== null) return;
-  const exited = new Promise((done) => claude.once("exit", done));
-  claude.stdin!.end();
-  const force = setTimeout(() => claude.kill("SIGKILL"), 1_000);
-  await exited;
-  clearTimeout(force);
-}
-
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -261,14 +86,25 @@ export const claudeConnector: Connector = {
   // here would be a second place the subject is decided, and the two would drift the first time
   // either changed.
   eventChannel,
-  permissionRequests: true,
+  // A launched session serves Claude's tool permissions on the agent endpoint (prompts.ts), except on
+  // Windows, where the hook answers each one itself until serving there is built (hook.ts).
+  // askPermissions launches in the mode that asks, so it is declared only where the prompts are served.
+  ...(process.platform === "win32" ? {} : { prompts: true as const, supportsAskPermissions: true }),
+  supportsReasoningEvents: true, // thinking summaries on, and the mapper's reasoning option
+  // The seat's command mod runs every listed entry as a `command` (commands.ts). Windows seats run
+  // none yet (command-feed.ts).
+  ...(process.platform === "win32" ? {} : {
+    commands: { targets: ["command"] as const, list: (o: CommandListOpts) => claudeCommandCatalog(o, launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, envAllow: o.envAllow })) },
+  }),
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   listModels: listClaudeModels,
+  supportsModelVariant: true, // variant = claude's `--effort` level
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
   resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
+  interruptKey: "\x1b", // Escape ends the live turn ("Interrupted · What should Claude do instead?")
   // A session wakes for a relayed task while idle only with channels on, and Claude reports that only
   // on its startup screen: the development-channels gate, then its registration notice for this
   // server (confirmNotice below). A once seat is served its task only when its startup watch saw
@@ -283,9 +119,11 @@ export const claudeConnector: Connector = {
   // the mesh only after the operator picks one. `--opt resume=<id>` resumes that session directly.
   waitsForOperator: (launchOptions) => (launchOptions?.resume === "" ? "Claude's session picker" : undefined),
 
+  supportsLaunchValidation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
-    if (opts.variant) throw new Error("claude connector: model variants are not supported");
+    if (opts.variant !== undefined && !CLAUDE_EFFORT_LEVELS.includes(opts.variant))
+      throw new Error(`claude connector: effort level ${JSON.stringify(opts.variant)} is not one claude accepts (${CLAUDE_EFFORT_LEVELS.join(", ")})`);
     // Operator MCP servers shared with this agent: the cotal config's list (see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
     const exclusive = opts.mcpServersExclusive === true || opts.carried !== undefined;
@@ -308,16 +146,17 @@ export const claudeConnector: Connector = {
     // MCP server its material through the --mcp-config `env` block and giving the hooks a separate
     // control-only file, which depends on host behaviour that has to be verified against a live
     // `claude` first. Tracked separately rather than guessed at here.
-    const control = controlEndpoint(opts.space, opts.name);
+    // The launch's artifact list (core launch-artifacts): the launcher removes every entry once the
+    // child has exited.
+    const artifacts: string[] = [];
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, mcpKeys: [...mcpServerEnvKeys(shared), ...nativeEnvKeys, ...CLAUDE_MCP_KEYS], envAllow: opts.envAllow }),
       ...aclEnv(opts),
       COTAL_SPACE: opts.space,
-      COTAL_NAME: opts.name,
+      ...nameEnv(opts),
       // Force the connector to emit channel wake-nudges: Claude doesn't advertise the
       // `claude/channel` capability back over MCP, so auto-detection would see it "off".
       COTAL_CHANNEL: "1",
-      COTAL_CONTROL_SOCKET: control.path,
     };
     // The AG-UI event plane. Supporting connectors arm by default; `events: false` is the explicit
     // opt-out. `COTAL_EVENTS` is what makes the matching grant meaningful:
@@ -359,6 +198,11 @@ export const claudeConnector: Connector = {
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    Object.assign(env, claudeNamingLaunchEnv(opts, prompt));
+    // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
+    // option and resumes nothing. A Claude session id never starts with one.
+    if (opts.resume?.startsWith("-"))
+      throw new Error(`claude connector: cannot resume ${JSON.stringify(opts.resume)}: a session id cannot start with '-' (claude reads it as an option)`);
     // A managed seat (the manager marks one with its `cwd`) has nobody at its terminal to notice a
     // channel that did not bind. A carried home declares the server itself (placeCarried); a
     // foreground launch keeps Claude's own notice.
@@ -373,8 +217,13 @@ export const claudeConnector: Connector = {
     // included) for one session; verified live that it fires SessionStart/UserPromptSubmit/
     // Stop/SessionEnd with this exact hooks.json. The plugin's own .mcp.json riding along is
     // deduplicated by Claude against the explicit server with the same command and arguments.
+    // `claude` reads its first operand as a subcommand when the text names one, and any argument that
+    // starts with `-` as an option; `--` does not stop the subcommand match. The prompt therefore
+    // goes out with one leading space: no command name and no option starts with a space, so the
+    // text is always the first turn. Claude submits it as written, space included (measured on
+    // 2.1.327 for prompts equal to a command name, starting with `-`, and a Markdown list).
     const args = prompt
-      ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT]
+      ? [` ${prompt}`, "--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT]
       : ["--dangerously-load-development-channels", CHANNEL_REF, "--plugin-dir", PLUGIN_ROOT];
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)
@@ -396,94 +245,109 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
+    const fieldArgs = launchFieldArgs(opts, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
-    const artifacts: string[] = [];
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
     // shells, builds and third-party CLIs this session runs no longer inherit live authority. Its
-    // directory is the first artifact, so a later writeLaunchArtifact failure removes it too.
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
-    // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
-    // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
-    // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved
-    // value, so nothing secret reaches disk or argv. We prefer the file when sharing because env
-    // expansion is only *documented* for --mcp-config files (inline expansion does work today, but
-    // isn't contracted), and a file keeps a potentially multi-server config off the process argv.
-    // Verified end-to-end on claude 2.1.183: ${VAR} expands in the --mcp-config file and the value
-    // is handed to the shared server. This is host-version behavior — if a future claude stops
-    // expanding here, a shared server would receive a literal `${VAR}`; re-check on host upgrades.
-    let mcpConfig: string;
-    if (Object.keys(shared).length === 0) {
-      mcpConfig = JSON.stringify({ mcpServers });
-    } else {
-      // A private 0700 temp dir (unique per spawn) holds the 0600 config. It must outlive this call
-      // (Claude reads it at startup and on /mcp reconnect), so it is a launch artifact the launcher
-      // removes after the child exits.
-      mcpConfig = writeLaunchArtifact(artifacts, "cotal-mcp-", "mcp.json", JSON.stringify({ mcpServers }, null, 2));
-    }
-    if (exclusive) args.push("--strict-mcp-config");
-    args.push("--mcp-config", mcpConfig);
+    // directory is an artifact, so a later writeLaunchArtifact failure removes it too. The control
+    // endpoint is minted here, after every refusal, because minting makes its socket directory.
+    if (opts.validateOnly) return { command: "", args: [] };
+    const control = controlEndpoint(opts.space, opts.name, artifacts);
+    // Everything after the mint runs under this guard: minting made the control socket's directory,
+    // so a step that throws below (placing a carried transcript, say) removes what the launch has
+    // recorded so far instead of leaving it with no owner.
+    try {
+      env.COTAL_CONTROL_SOCKET = control.path;
+      const images = imageFolder(artifacts);
+      Object.assign(env, images.env);
+      args.push(...images.args);
+      Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, userAuth: opts.userAuth }, artifacts));
+      Object.assign(env, firstCommandEnv(opts.firstCommand, artifacts));
+      // Default (no shared servers): pass the config inline, unchanged. With shared servers, write it
+      // to a file instead and pass the path. Either way the secret stays a `${VAR}` reference (Claude
+      // expands it from the child env at launch — see the mcpKeys forwarding above), never the resolved
+      // value, so nothing secret reaches disk or argv. We prefer the file when sharing because env
+      // expansion is only *documented* for --mcp-config files (inline expansion does work today, but
+      // isn't contracted), and a file keeps a potentially multi-server config off the process argv.
+      // Verified end-to-end on claude 2.1.183: ${VAR} expands in the --mcp-config file and the value
+      // is handed to the shared server. This is host-version behavior — if a future claude stops
+      // expanding here, a shared server would receive a literal `${VAR}`; re-check on host upgrades.
+      let mcpConfig: string;
+      if (Object.keys(shared).length === 0) {
+        mcpConfig = JSON.stringify({ mcpServers });
+      } else {
+        // A private 0700 temp dir (unique per spawn) holds the 0600 config. It must outlive this call
+        // (Claude reads it at startup and on /mcp reconnect), so it is a launch artifact the launcher
+        // removes after the child exits.
+        mcpConfig = writeLaunchArtifact(artifacts, "cotal-mcp-", "mcp.json", JSON.stringify({ mcpServers }, null, 2));
+      }
+      if (exclusive) args.push("--strict-mcp-config");
+      args.push("--mcp-config", mcpConfig);
 
-    if (agentFile) env.COTAL_AGENT_FILE = agentFile;
-    if (def?.persona) {
-      // A persona can carry private project vocabulary or instructions. Passing its body through
-      // `--append-system-prompt` publishes it in the process argv to every same-host observer.
-      // Claude Code has a native file-shaped input, so write the text owner-only and expose only
-      // its path. No text-argv fallback: failing to create a private carrier refuses the launch.
-      // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
-      args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
-    }
-    if (opts.model) {
-      args.push("--model", opts.model);
-      env.COTAL_MODEL = opts.model;
-    }
+      if (agentFile) env.COTAL_AGENT_FILE = agentFile;
+      if (def?.persona) {
+        // A persona can carry private project vocabulary or instructions. Passing its body through
+        // `--append-system-prompt` publishes it in the process argv to every same-host observer.
+        // Claude Code has a native file-shaped input, so write the text owner-only and expose only
+        // its path. No text-argv fallback: failing to create a private carrier refuses the launch.
+        // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
+        args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
+      }
+      if (opts.model) {
+        args.push("--model", opts.model);
+        env.COTAL_MODEL = opts.model;
+      }
+      // An explicit `--opt effort=` wins, as a permission option does, and the seat is then not
+      // labelled with a variant it does not run.
+      if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
+        args.push("--effort", opts.variant);
+        env.COTAL_VARIANT = opts.variant;
+      }
 
-    // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
-    // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
-    // session id from that transcript and leaves the original untouched. The id is a single argv
-    // token (no shell), so a hostile-looking id can't inject. The persona prompt-file flag
-    // above still applies, so the forked context runs under the current mesh persona.
-    if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
-    if (opts.carried) Object.assign(env, placeCarried(opts.carried.home, opts.carried.transcript, opts.resume, opts.carried.cwd, mcpServers[MCP_SERVER_NAME]!));
+      // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
+      // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
+      // session id from that transcript and leaves the original untouched. The id is a single argv
+      // token (no shell), so a hostile-looking id can't inject. The persona prompt-file flag
+      // above still applies, so the forked context runs under the current mesh persona.
+      if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+      if (opts.carried) Object.assign(env, placeCarried(opts.carried.home, opts.carried.transcript, opts.resume, opts.carried.cwd, mcpServers[MCP_SERVER_NAME]!));
 
-    // Opaque connector options → native `claude` flags, RAW passthrough: `key=value` renders
-    // `--key value`, and an empty value (`--opt foo=`) renders a bare boolean `--foo`. No allow-list,
-    // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
-    // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
-    // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
-    // A managed seat has no human at its terminal, so a permission prompt under the default mode
-    // is a prompt nobody answers: the seat's first mesh tool call stalled there and it looked dead
-    // to its peers. Bypass is the default for a managed seat, which the manager marks with `cwd`. A
-    // foreground launch runs in the operator's terminal and keeps Claude's own mode, so the operator
-    // answers its prompts there. An operator who wants another mode passes
-    // `--opt permission-mode=<mode>`, and either permission flag in the passthrough wins.
-    if (opts.cwd && !passthrough.some(([k]) => k === "permission-mode" || k === "dangerously-skip-permissions"))
-      args.push("--permission-mode", "bypassPermissions");
-    for (const [k, val] of passthrough) {
-      if (val === "") args.push(`--${k}`);
-      else args.push(`--${k}`, val);
+      // Opaque connector options → native `claude` flags, RAW passthrough: `key=value` renders
+      // `--key value`, and an empty value (`--opt foo=`) renders a bare boolean `--foo`. No allow-list,
+      // no deny-list — the spawn capability is the trust boundary (see connectorLaunchOptions), not the
+      // flag set. An operator can already run `claude` with any flag directly, and a peer's cotal_spawn
+      // is gated by the spawn capability itself; every `claude` flag is forwarded verbatim.
+      args.push(...fieldArgs);
+      for (const [k, val] of passthrough) {
+        if (val === "") args.push(`--${k}`);
+        else args.push(`--${k}`, val);
+      }
+
+      return {
+        command: binary,
+        args,
+        env,
+        // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic
+        // "Enter to confirm" footer, which the workspace-trust dialog also renders with a different
+        // default action. The runtime presses Enter once when this connector-owned text appears.
+        // Claude skips the gate when channels are off for the session, and opens its input screen.
+        confirm: "WARNING: Loading development channels",
+        // Answering the gate is not registration: Claude then prints this line for an admitted
+        // channel server, and a policy warning in its place for a blocked one. Only a once seat waits
+        // for it, because only a once seat's spawn depends on it; a missed notice stops the seat.
+        ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
+        confirmReady: CLAUDE_READY_TEXTS,
+        confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
+        ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
+        control,
+        ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),
+        ...(artifacts.length > 0 ? { artifacts } : {}),
+      };
+    } catch (e) {
+      discardLaunchArtifacts(artifacts);
+      throw e;
     }
-
-    return {
-      command: binary,
-      args,
-      env,
-      // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic
-      // "Enter to confirm" footer, which the workspace-trust dialog also renders with a different
-      // default action. The runtime presses Enter once when this connector-owned text appears.
-      // Claude skips the gate when channels are off for the session, and opens its input screen.
-      confirm: "WARNING: Loading development channels",
-      // Answering the gate is not registration: Claude then prints this line for an admitted
-      // channel server, and a policy warning in its place for a blocked one. Only a once seat waits
-      // for it, because only a once seat's spawn depends on it; a missed notice stops the seat.
-      ...(opts.once ? { confirmNotice: `messages from ${CHANNEL_REF} inject directly in this session` } : {}),
-      confirmReady: CLAUDE_READY_TEXTS,
-      confirmBlockers: CLAUDE_STARTUP_BLOCKERS,
-      ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
-      control,
-      ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),
-      ...(artifacts.length > 0 ? { artifacts } : {}),
-    };
   },
 };
 

@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {constants, openSync, closeSync, fstatSync, readFileSync} from 'node:fs';
+import {join} from 'node:path';
+const clean = row => row?.exit === 0 && row.signal === null && row.timeout === false;
+const native = row => row && Number.isSafeInteger(row.pid) && row.pid > 0 && typeof row.start === 'string' && row.start.length > 0;
+const time = value => { const result = Date.parse(value); assert(Number.isFinite(result), 'command timestamp missing'); return result; };
+
+/** Reopen the capture and bind public observations to actual harness calls. */
+export function verifyDeadUpdaterEvidence({report, cell, output}) {
+  const e = report.deadUpdater;
+  assert.equal(cell.deadUpdater, true); assert.equal(e?.mode, 'dead-updater');
+  assert(['linux', 'darwin'].includes(cell.platform));
+  assert.match(e.artifact?.name ?? '', /^[A-Za-z0-9_.-]+\.json$/);
+  const fd = openSync(join(output, e.artifact.name), constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    assert(st.isFile() && st.nlink === 1 && st.size === e.artifact.bytes && st.size < 8 * 1024 ** 2);
+    if (process.getuid) assert(st.uid === process.getuid() && (st.mode & 0o022) === 0);
+    const bytes = readFileSync(fd);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), e.artifact.sha256);
+    const {artifact, ...saved} = e;
+    assert.deepEqual(JSON.parse(bytes), JSON.parse(JSON.stringify(saved)));
+  } finally { closeSync(fd); }
+  assert.equal(e.sourceVersion, report.source);
+  assert.match(e.sourceEntrySha256, /^[a-f0-9]{64}$/);
+  assert.equal(e.sourceEntrySha256, report.candidateSourceInvocation?.sha256, 'producer must use hashed installed A');
+  assert.equal(e.sourceEntry, report.candidateSourceInvocation?.path);
+  assert.deepEqual(e.producer.argv, [e.sourceEntry, 'update', '--self']);
+  assert(native(e.producer)); assert.match(e.producer.stdout, /Saving update recovery snapshot/);
+  assert.equal(e.producer.signal, 'SIGKILL'); assert.equal(e.producer.exit, null);
+  assert(Number.isFinite(e.producer.pausedAt) && e.heldObservedAt - e.producer.pausedAt > 2300);
+  assert(e.killRequestedAt >= e.heldObservedAt && e.killedAt >= e.killRequestedAt && e.recoveredAt >= e.killedAt && e.recoveredAt - e.killedAt <= 15000);
+  assert.equal(e.prepared.prepared, true);
+  assert(e.prepared.managers.length > 0 && e.prepared.managers.every(row => row.fenced === true && row.seats === 0));
+  for (const key of ['daemon', 'manager']) assert(native(e.before[key]));
+  assert.equal(typeof e.before.manager.instanceId, 'string'); assert(e.before.manager.instanceId);
+  assert.deepEqual(e.recovered, e.before, 'same daemon and Manager must survive autonomous recovery');
+  const observations = label => { const rows = e.observations.filter(row => row.label === label); assert.equal(rows.length, 1, `missing or duplicate observation ${label}`); return rows[0].value; };
+  const initialDaemon = observations('initial daemon');
+  const recoveredDaemon = observations('autonomous daemon recovery');
+  for (const [capture, identity] of [[initialDaemon, e.before], [recoveredDaemon, e.recovered]]) {
+    assert.equal(capture.pid, identity.daemon.pid);
+    const managers = capture.managers.filter(row => row.space === e.space);
+    assert.equal(managers.length, 1);
+    assert.equal(managers[0].pid, identity.manager.pid);
+    assert.equal(managers[0].instanceId, identity.manager.instanceId);
+  }
+  const preparedDaemon = observations('live owner held daemon');
+  assert.deepEqual(preparedDaemon.update.restartEvidence, e.prepared);
+  const spaces = preparedDaemon.managers.filter(row => row.pid !== undefined).map(row => row.space).sort();
+  assert.deepEqual(e.prepared.managers.map(row => row.space).sort(), spaces);
+  assert.equal(new Set(spaces).size, spaces.length);
+  assert(spaces.includes(e.space));
+  const calls = report.calls;
+  const one = label => { const rows = calls.filter(row => row.label === label); assert.equal(rows.length, 1, `missing or duplicate ${label}`); return rows[0]; };
+  const bind = (call, observed) => { for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(call[key], observed[key], `${call.label} ${key} changed`); assert(time(call.finishedAt) >= time(call.startedAt)); };
+  const ps = (call, observed) => { bind(call, observed); assert.deepEqual(call.argv.slice(-4), ['ps', '--space', e.space, '--json']); };
+  const initial = one('dead updater initial ps'); assert(clean(initial)); assert.deepEqual(initial.argv.slice(-4), ['ps', '--space', e.space, '--json']);
+  const stopped = one('dead updater native stopped state'); bind(stopped, e.stoppedProcess); assert(clean(stopped));
+  assert.deepEqual(stopped.argv, ['-o', 'stat=', '-p', String(e.producer.pid)]); assert.match(stopped.stdout.trim(), /^T/);
+  assert(time(stopped.startedAt) >= e.heldObservedAt && time(stopped.finishedAt) <= e.killedAt);
+  const held = one('dead updater held ps'); ps(held, e.heldPs);
+  assert.equal(held.exit, 2); assert.equal(held.signal, null); assert.equal(held.timeout, false);
+  assert.match(held.stdout + held.stderr, /preserv|fenc|maintenance/i);
+  assert(time(held.startedAt) >= e.heldObservedAt && time(held.finishedAt) <= e.killedAt);
+  const recovered = calls.filter(row => /^dead updater recovery ps [1-9][0-9]*$/.test(row.label));
+  assert(recovered.length > 0); assert(clean(recovered.at(-1))); ps(recovered.at(-1), e.recoveredPs);
+  for (const row of recovered) assert(time(row.startedAt) >= e.killedAt && time(row.finishedAt) <= e.recoveredAt);
+  const statusCall = observed => {
+    assert.deepEqual(observed.argv.slice(0, 2), ['--input-type=module', '-e']);
+    assert.equal(observed.argv.length, 3);
+    assert(observed.argv[2].includes(e.sourceEntry.slice(0, -'/dist/cotal.js'.length)));
+    assert(observed.argv[2].includes('managerStatus'));
+    assert(observed.argv[2].includes(JSON.stringify(e.space)));
+  };
+  const active = one('autonomous Manager active'); assert(clean(active)); statusCall(active);
+  const status = JSON.parse(active.stdout); assert.deepEqual(status, e.recoveredStatus);
+  assert.equal(status.ok, true); assert.equal(status.data.instanceId, e.before.manager.instanceId); assert.equal(status.data.agentCount, 0);
+  assert.equal(status.data.stopImpact.maintenance, 'active'); assert.equal(status.data.stopImpact.resumeRequired, false); assert.equal(status.data.stopImpact.stopping, false);
+  assert(time(active.startedAt) >= e.killedAt && time(active.finishedAt) <= e.recoveredAt);
+  assert.equal(observations('live owner still prepared').update.restartEvidence.prepared, true);
+  assert.equal(observations('autonomous daemon recovery').update.restartEvidence.prepared, false);
+  const update = one('upgrade under test'); bind(update, e.update); assert(clean(update));
+  assert.deepEqual(update.argv.slice(-2), ['update', '--self']);
+  assert(update.argv.includes(e.sourceEntry) || update.file === e.sourceEntry);
+  assert(time(update.startedAt) >= e.recoveredAt, 'normal update must follow autonomous recovery');
+  const between = calls.filter(row => time(row.startedAt) >= e.killedAt && time(row.startedAt) < time(update.startedAt));
+  assert(between.every(row => /^dead updater recovery ps [1-9][0-9]*$/.test(row.label) || row.label === 'autonomous Manager active'), 'unexpected repair command before next update');
+  assert.deepEqual(observations('after default update daemon'), e.after);
+  assert.equal(e.selectedVersion, cell.targetVersion); assert.equal(e.after.version, cell.targetVersion);
+  assert.equal(e.after.update.restartEvidence.prepared, false); assert.equal(e.recovery, null);
+  assert(e.after.managers.some(row => row.space === e.space && row.state === 'answering'));
+  const after = one('dead updater after ps'); assert(clean(after)); assert.deepEqual(after.argv.slice(-4), ['ps', '--space', e.space, '--json']); assert(time(after.startedAt) >= time(update.finishedAt));
+  return {passed: true, assertions: {'dead-updater-release': true, 'live-owner-held': true, 'next-update-alone': true}};
+}

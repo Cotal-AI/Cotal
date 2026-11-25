@@ -432,7 +432,7 @@ const PAUSE_KINDS = new Set(["sleep", "wait", "ask", "checkpoint", "turn", "wait
  * settled after its pending row is not ended again. Only a step that still owns a pause is
  * returned. The commit ends these through the handler before the migration record exists.
  */
-export function orphanedPauses(
+function orphanedPauses(
   entries: readonly JournalEntry[],
   report: { readonly orphans: readonly { readonly step: string; readonly verdict: string }[] },
 ): readonly JournalEntry[] {

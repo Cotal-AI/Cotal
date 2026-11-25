@@ -55,7 +55,7 @@ export function parseServiceCallerPayloadRecord(raw: unknown): ServiceCallerPayl
  *  `max_msg_size` (-1 when unlimited). Undefined means the value could not be read. */
 export interface ServiceCallerPayloadLimits { maxPayload: number | undefined; authMaxMsgSize: number | undefined }
 
-export type ServiceCallerPayloadCheck =
+type ServiceCallerPayloadCheck =
   | { holds: true }
   | { holds: false; why: "unasserted" | "withdrawn" | "server-limit" | "stream-limit" };
 

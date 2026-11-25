@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reapSmokeBrokers } from "../reap-smoke-brokers.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 const fixtureId = randomUUID().replaceAll("-", "");
 const pidFile = join(tmpdir(), `cotal-control-dial-pid-${fixtureId}.txt`);
@@ -25,11 +26,7 @@ const nestedKeys = (value: unknown, keys: string[] = []): string[] => {
   return keys;
 };
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 // The child is the control-dial suite, which authenticates and persists real credential material.
 // Whatever runs this fixture may itself be a managed agent session, so an ambient copy would hand
@@ -130,5 +127,5 @@ try {
   rmSync(pidFile, { force: true });
 }
 
-console.log(`CONTROL CLEANUP PROBE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+console.log(`CONTROL CLEANUP PROBE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

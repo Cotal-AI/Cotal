@@ -94,6 +94,14 @@ export async function readPinnedStaticCredential(target: NativeServiceTarget, in
   catch { throw new CommandFailure("refused", "AUTH_REQUIRED", "the selected file does not bind a matching native user key and current window to this root's pinned static issuer; no credential bytes or alternative identity were used"); }
 }
 
+/** Load only explicitly supplied posting authority, independently of the observer file. */
+export async function readDashboardPostingCredential(target: NativeServiceTarget, input: string, observerPath: string) {
+  const credential = await readPinnedStaticCredential(target, input);
+  const observer = await readPinnedStaticCredential(target, observerPath);
+  if (credential.identity === observer.identity) throw new CommandFailure("refused", "CONFLICT", "dashboard posting requires a separate identity from its observer credential");
+  return { creds: credential.creds, expiresAt: credential.expiresAt === null ? Infinity : credential.expiresAt * 1000 };
+}
+
 function permissionProjection(input: { pub?: unknown; sub?: unknown; resp?: unknown }) {
   const rows = (value: unknown) => {
     const record = value === null || value === undefined ? {} : localRecordObject(value, ["allow", "deny"]);

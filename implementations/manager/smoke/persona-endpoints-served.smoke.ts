@@ -404,14 +404,14 @@ try {
   const toolConfig: AgentConfig = { space, name: "helper_pinned_tools", servers, tls: false, creds: pinnedCreds, kind: "agent", id: pinnedSeat.actor, lifecycleUid: pinnedSeat.uid, subscribe: [], allowSubscribe: [], allowPublish: [] };
   const tools = cotalToolSpecs(toolConfig, "smoke");
   const tool = async (name: "cotal_describe" | "cotal_invoke", args: Record<string, unknown>) => {
-    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp } as unknown as MeshAgent, toolConfig, args);
+    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp, invokeEndpoint: helperEp.invokeService.bind(helperEp) } as unknown as MeshAgent, toolConfig, args);
     return { text: r.text, isError: r.isError === true };
   };
   const helperGot = (instance: string) => received.filter((r) => r.instance === instance && r.actor === pinnedSeat.actor).length;
   const other = classInstance.instanceId;
   // The endpoint's two class caches: the full discovery handle a describe stores, and the
   // command-specific handle an unpinned invoke stores. A pinned call reads and writes neither.
-  const caches = helperEp as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }>; resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string } }>> };
+  const caches = (helperEp as unknown as { controlPlane: { resolvedServices: Map<string, { responder: { instanceId: string } }>; resolvedCommandServices: Map<string, Map<string, { responder: { instanceId: string } }>> } }).controlPlane;
   const cached = () => ({ full: caches.resolvedServices.get(ORDERS)?.responder.instanceId, list: caches.resolvedCommandServices.get(ORDERS)?.get("list")?.responder.instanceId });
   const refusedByBroker = (text: string) => /no caller grant|permission-denied|REFUSED BY THE BROKER/.test(text);
 

@@ -39,7 +39,7 @@ const failed = (reason: FailReason): LoginResult => ({ outcome: "failed", reason
 
 type Establish = typeof establishIdpSession;
 
-export interface LoginStart {
+interface LoginStart {
   readonly idp: string;
   readonly clientId?: string;
   readonly discoveryPins?: { url: string; issuer: string; audience: string };

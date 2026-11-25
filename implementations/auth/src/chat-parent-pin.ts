@@ -37,7 +37,7 @@ const sha256Hex = (s: string): string => createHash("sha256").update(s, "utf8").
 
 /** `rowDigest`: the normative field list and canonicalization. `role` is included only when
  *  present (RFC 8785 cannot carry `undefined`); `label`, `parent` and `grantedAt` are excluded. */
-export function chatParentRowDigest(row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid">): string {
+function chatParentRowDigest(row: Pick<ActorRow, "owner" | "actor" | "scope" | "allowSubscribe" | "allowPublish" | "role" | "lifecycleUid">): string {
   if (typeof row.lifecycleUid !== "string" || row.lifecycleUid === "")
     throw new EpEnvelopeError("permission-denied", `the parent row "${row.owner}.${row.actor}" carries no lifecycleUid; re-grant it before opening a chat session`);
   return sha256Hex(canonicalJson({

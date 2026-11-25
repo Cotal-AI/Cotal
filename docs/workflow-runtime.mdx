@@ -221,14 +221,18 @@ identifiers carry no authority to read, rearm or claim the parent's pauses. New 
 child-derived identifiers. A fork is a new run and takes a new admission under the caller who
 forks it; the parent's ceiling is not inherited.
 
-## Available implementations [#available-implementations]
+## Per-kind effect limits
 
 Library callers can supply `ceilings: { spawn: 6 }` alongside `effectCeiling` when starting a run.
 The run records those per-kind limits as pins and refuses a changed override on resume with L5009.
 The next spawn beyond that limit fails with L4029 before dispatch, while turns can continue.
 Counts include the journalled prefix across restarts. Unlisted kinds keep only the total bound.
-Older records without this field retain their total-only limit. Use a runtime that supports
-per-kind ceilings on every host that may resume such a run.
+Forks inherit these language limits and count the effects in the retained journal prefix.
+Records without this field retain their total-only limit. Before starting a run with per-kind limits,
+upgrade each service that reads its records or may resume it. An older strict reader rejects the
+new field, and an older runtime that reads the record does not enforce its per-kind limits.
+
+## Available implementations [#available-implementations]
 
 The language, its validator, interpreter, simulator and dry run are `@cotal-ai/lang`
 (`packages/lang`), usable in-process with your own effect handler and with no broker: `validate(src)`,

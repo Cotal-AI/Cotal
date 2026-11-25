@@ -7,7 +7,8 @@ import type { Attached } from "./live.js"
 const ESC_HOLD_MS = 300
 
 /** What the session's end reason means to the person watching. The manager ends a session with
- *  `target-despawn` whenever it frees the seat, a stop or the agent's own exit alike. */
+ *  `process-exit` when the agent exits on its own, and with `target-despawn` when it stops, reaps or
+ *  retires the seat. */
 const ENDED: Record<string, string> = {
   "process-exit": "the agent exited",
   "target-despawn": "the agent is gone",

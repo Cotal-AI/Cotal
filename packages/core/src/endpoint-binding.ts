@@ -318,6 +318,7 @@ export function endpointDataStreamConfigs(space: string, opts: EndpointStreamOpt
     retention: RetentionPolicy.Limits,
     storage: StorageType.File,
     allow_msg_schedules: true,
+    allow_rollup_hdrs: true, // Scheduling enables native same-subject replacement; declare its effective setting.
     max_age: nanos(opts.timerMaxAgeMs ?? EP_TIMER_MAX_AGE_MS),
   },
   // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
@@ -781,6 +782,7 @@ export function poolConsumerConfig(
   return family(epwStreamName(space), {
     durable_name: poolDurable(endpoint, pool),
     filter_subject: `${spacePrefix(space)}.epw.${endpointToken(endpoint)}.${assertPoolToken(pool)}.>`,
+    deliver_policy: DeliverPolicy.All,
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     // UNLIMITED delivery, pinned EXPLICITLY (not left to the server default): the §13.6 virtual

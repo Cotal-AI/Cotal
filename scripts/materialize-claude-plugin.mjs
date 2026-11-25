@@ -31,7 +31,7 @@ const legal = [
 // [source, destination inside the plugin directory]
 const plugins = {
   cotal: [
-    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/native-wake.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs"].map((asset) => [join(connector, asset), asset]),
+    ...[".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "hooks/index.js", "hooks/native-wake.js", "hooks/commands.js", "hooks/stream.js", "monitors/monitors.json", "dist/seat.cjs", "dist/mcp.cjs", "dist/docs-bundle.bin", "dist/docs-index.bin", "dist/hook.cjs", "dist/monitor.cjs", "dist/command-reader.cjs"].map((asset) => [join(connector, asset), asset]),
     [join(connector, "PLUGIN.md"), "README.md"],
     ...legal,
   ],
@@ -53,8 +53,24 @@ function referencedPaths(dir) {
   return refs;
 }
 
+// A relative module specifier in an import, a dynamic import or a require.
+const RELATIVE_SPECIFIER = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/g;
+
+/** Every file the hooks modules load by a relative specifier, from the modules hooks.json names. */
+function hookModulePaths(dir) {
+  const config = join(dir, "hooks", "hooks.json");
+  if (!existsSync(config)) return [];
+  const found = new Set((JSON.parse(readFileSync(config, "utf8")).modules ?? []).map((module) => join("hooks", module)));
+  // A Set visits what is added while it is iterated, so this walks the whole import graph.
+  for (const path of found) {
+    if (!existsSync(join(dir, path))) continue;
+    for (const match of readFileSync(join(dir, path), "utf8").matchAll(RELATIVE_SPECIFIER)) found.add(join(dirname(path), match[1]));
+  }
+  return [...found];
+}
+
 function verify(name, dir) {
-  for (const ref of referencedPaths(dir))
+  for (const ref of [...referencedPaths(dir), ...hookModulePaths(dir)])
     if (!existsSync(join(dir, ref))) throw new Error(`materialize-claude-plugin: ${name} references ${ref}, which is not in the plugin directory`);
   if (name === "cotal") {
     // The standalone constant also stamps the MCP server. The payload itself may be compressed.

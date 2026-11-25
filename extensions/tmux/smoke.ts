@@ -10,6 +10,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 
 const SESSION = "cotal-tmux-smoke";
+/** A session only the runtime creates, never `ensureSession` here directly. */
+const FRESH = "cotal-tmux-smoke-fresh";
 let passed = 0;
 let failed = 0;
 
@@ -46,9 +48,21 @@ async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegE
 }
 
 function cleanup() {
+  for (const session of [SESSION, FRESH]) {
+    try {
+      execFileSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
+    } catch { /* already gone */ }
+  }
+}
+
+/** Whether tmux lists a session named exactly `name`. */
+function sessionListed(name: string): boolean {
   try {
-    execFileSync("tmux", ["kill-session", "-t", SESSION], { stdio: "ignore" });
-  } catch { /* already gone */ }
+    execFileSync("tmux", ["has-session", "-t", `=${name}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Needs a real tmux. Skip cleanly where it isn't installed (local `pnpm check` on a tmux-less box);
@@ -200,11 +214,15 @@ if (numericPreexists) {
 console.log("\n── runtime ─────────────────────────────────────");
 
 const runtime = new TmuxRuntime(SESSION);
+const windowsBefore = tmux.listWindows(SESSION);
 const normalExit = runtime.spawn("exit-agent", {
   command: process.execPath,
   args: ["-e", "setTimeout(() => {}, 300)"],
   env: {},
 }, "/tmp");
+const windowsAfter = tmux.listWindows(SESSION);
+ok("a spawn into a session that was already there adds its window and closes none",
+  windowsAfter.length === windowsBefore.length + 1 && windowsBefore.every((w) => windowsAfter.includes(w)));
 const normalExitWindow = tmux.windowRefs(SESSION, "exit-agent")[0]!;
 execFileSync("tmux", ["set-option", "-w", "-t", normalExitWindow, "remain-on-exit", "on"], {
   stdio: "ignore",
@@ -217,7 +235,7 @@ const SECRET_CANARY = "leak-canary-tmux-DO-NOT-LEAK";
 const handle = runtime.spawn("smoke-agent", {
   command: "sleep",
   args: ["30"],
-  env: { TEST_VAR: "hello", COTAL_CONTROL_TOKEN: SECRET_CANARY },
+  env: { TEST_VAR: "hello", COTAL_CONTROL_KEY: SECRET_CANARY },
 }, "/tmp");
 ok(`handle.name = "smoke-agent"`, handle.name === "smoke-agent");
 ok(`handle.kind = "tmux"`, handle.kind === "tmux");
@@ -245,6 +263,15 @@ await handle.waitForExit!();
 ok("window gone after hard stop", !tmux.windowAlive(SESSION, "smoke-agent"));
 ok("stop -> waitForExit proves the pane exited", handle.status() === "exited");
 
+// A session the runtime creates opens with tmux's shell window, which nothing runs in. It stayed after
+// every seat was stopped, and kept the session and tmux's server running (#7116).
+ok("the fresh session is not there before the runtime's spawn", !sessionListed(FRESH));
+const fresh = new TmuxRuntime(FRESH).spawn("fresh-agent", { command: "sleep", args: ["30"], env: {} }, "/tmp");
+ok("a session the runtime created lists only the seat's window", JSON.stringify(tmux.listWindows(FRESH)) === JSON.stringify(["fresh-agent"]));
+fresh.stop({ graceful: false });
+await fresh.waitForExit!();
+ok("that session ends with its last seat", !sessionListed(FRESH));
+
 console.log("\n── registry registration ────────────────────────");
 
 const resolvedRuntime = registry.resolve("runtime", "tmux");
@@ -270,7 +297,7 @@ ok("mergedCommand does NOT contain '-i'", !merged.includes("env -i"));
 
 // privateLaunch keeps secret env VALUES off tmux's command line: the rendered body (with the secret)
 // goes into an owner-only (0o600) launcher script, and tmux only ever sees `bash <path>`.
-const secretBody = tmux.isolatedCommand({ COTAL_CONTROL_TOKEN: "s3cr3t-token" }, "/bin/echo", ["hi"]);
+const secretBody = tmux.isolatedCommand({ COTAL_CONTROL_KEY: "s3cr3t-token" }, "/bin/echo", ["hi"]);
 const launch = tmux.privateLaunch(secretBody).command;
 const launchPath = launch.replace(/^bash\s+'?|'?$/g, ""); // strip `bash '` … `'`
 ok("privateLaunch returns a `bash <path>` invocation", launch.startsWith("bash ") && launchPath.endsWith(".sh"));

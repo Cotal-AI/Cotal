@@ -28,7 +28,7 @@
     },
     {
       "name": "a code outside the catalog is thrown again",
-      "file": "packages/lang/src/perform.ts",
+      "file": "packages/lang/src/perform-dispatch.ts",
       "find": "      throw new InterpreterDefect(`the primitive ${name}`);",
       "replace": "      throw new RuntimeFault(\"L1000\", `${name} is not implemented in this interpreter`);",
       "expectRed": "every code this package THROWS is one the catalog carries",

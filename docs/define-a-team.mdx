@@ -66,7 +66,7 @@ cotal watch --space main
 The check resolves personas and access rules without a broker.
 The boot command starts a fresh stack using the prepared root.
 Inspect `cotal ps` to confirm which requested agents joined; a started manager alone does not prove every agent is ready.
-Native `up -f` returns before those launches settle. If an agent is absent from `ps`, inspect the manager log under `.cotal/` for its launch failure.
+Native `up -f` returns before those launches settle. If an agent is absent from `ps`, run `cotal service logs stack-manager --space <space> --tail 30` for its launch failure. Add `--instance <full-id>` when more than one instance matches; `cotal service --space <space> --json` lists them. Only the retained legacy launcher writes the manager log under the project's `.cotal/`.
 If its output cannot be read, the log names the agent and says `last output unavailable` with the
 reader's reason. This is distinct from a child that printed nothing; the launch still fails and
 cleanup proceeds. The same diagnostic applies to failed supervised recovery.
@@ -108,9 +108,11 @@ Use the command that matches the target's state:
 | Boot a prepared local root | `cotal team boot <file>` |
 | Preview deployment against a running mesh | `cotal team deploy <file> --dry-run` |
 | Add a supported team to that mesh | `cotal team deploy <file>` |
-| Inspect a returned deployment or retained attempt | `cotal team show <id>` |
-| Preview removal of a recorded deployment | `cotal team remove <id> --dry-run` |
-| Confirm a supported removal | `cotal team remove <id> --yes` |
+| Inspect a returned deployment or retained attempt | `cotal team show <id> --space <space>` |
+| Preview removal of a recorded deployment | `cotal team remove <id> --space <space> --dry-run` |
+| Confirm a supported removal | `cotal team remove <id> --space <space> --yes` |
+
+For inspection and removal, use the space from the deployment receipt.
 
 Boot previews show the manager PID record even if the process is dead and make a bounded credential-free broker probe where an address is known.
 Neither result authorizes replacing a manager.
@@ -131,6 +133,7 @@ A launch summary does not authorize stopping resources and does not prove that w
 A live `team deploy` records its own intent and returned native receipts.
 Removal names the full deployment ID, not a manifest file or whichever agent currently has the same name.
 Run it from the root and space that own those records.
+When `team remove` requires confirmation, the suggested preview and apply commands name the resolved space and keep `--json` or `--plain` if requested.
 
 Current removal can retire a returned static-auth agent team, remove unchanged cards from a returned channel-only team, or retire a returned static mixed team before removing its cards.
 Agent retirement checks the original manager, identity, and lifecycle UID and requires native retirement and cleanup evidence.
@@ -155,6 +158,9 @@ A legacy ledger preview supplies no authority for a new `team remove`, and legac
 ## Deploy to a running mesh [#deploying-onto-a-shared-mesh-spawn--f]
 
 Register the mesh locally and run the deployment from the project root that owns that registration.
+If you stopped a local stack, run `cotal up` from its recorded project root before previewing or applying a deployment.
+If the manifest names a single broker URL, its scheme can use either case and its trailing slash is optional.
+The URL must still name the registered broker and transport.
 For an agent or mixed deployment, use a static-auth or open mesh and set `deliveryClass: live` on every declared channel.
 A new deployment accepts one to 100 new agents and at most 100 new live channel cards.
 It refuses user-auth agent apply, default or bind changes, existing-card mutation, and a registered list of brokers.
@@ -164,7 +170,7 @@ The requested runtime must match the selected manager.
 
 Completed effects remain if a later step fails.
 Unknown effects are not replayed, and an unfinished intent is not permission to retry it.
-Inspect the returned deployment ID with `cotal team show <id>`.
+Inspect the deployment before retrying.
 `team remove <id>` removes resources the attempt journal records it created; a failed partial deploy names that command as its next action.
 
 </Callout>
@@ -175,6 +181,14 @@ Preview the manifest, inspect the result, then apply it:
 cotal team deploy cotal.yaml --dry-run
 cotal team deploy cotal.yaml
 ```
+
+Inspect the result using the deployment ID and space from the receipt:
+
+```bash
+cotal team show <id> --space <space>
+```
+
+`team deploy` takes its space from the manifest. Without `--space`, `team show` follows `cotal use` even in the deploying project.
 
 `spawn --file` now means a persona file on the execution host. It does not deploy a Mesh manifest.
 Use `team deploy` for the manifest, including when the selected manager runs on another machine.
@@ -215,7 +229,8 @@ Use a manager roster when you want the same personas started each time that mana
 cotal manager start --roster <file> --foreground
 ```
 
-`--roster` takes an absolute path. The manager retains it for later `manager start` calls.
+`--roster` takes an absolute path. `cotal manager start` checks the roster before saving its path for later starts.
+An invalid roster leaves any saved definition unchanged. A `--dry-run` preview reports the problem without saving or starting anything.
 Changing it while the manager runs refuses until `cotal manager stop`.
 Without `--foreground`, the manager runs in the background.
 The deprecated `cotal supervise --roster <file>` loads the same list.

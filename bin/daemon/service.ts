@@ -169,7 +169,7 @@ function intentSpace(path: string): string | undefined {
 }
 
 /** Whether this daemon already recorded a successful per-space connection. */
-export function hasDaemonConnectIntent(space: string, home: string): boolean {
+function hasDaemonConnectIntent(space: string, home: string): boolean {
   return intentSpace(daemonConnectIntentFile(space, home)) === space;
 }
 

@@ -74,8 +74,8 @@ export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
   try {
     const id = randomUUID().replaceAll("-", "");
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
-    // A start may reconcile connectors for up to 120s, then wait for Manager readiness.
-    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" ? 250_000 : 130_000)) as DaemonResponse;
+    // A start may reconcile connectors for up to ten minutes, then wait for Manager readiness.
+    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" ? 730_000 : 130_000)) as DaemonResponse;
     if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : "inspect the daemon's hosting records and retry the operation") });
     if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
     return reply.result as HostedManager | DaemonStatus;
@@ -161,7 +161,7 @@ export function readLine(sock: Socket, timeoutMs: number): Promise<string> {
 
 /** The only replies `queryDaemon` sees: it sends status (or a raw contract probe), never login-start,
  *  so no sign-in event can arrive on its connection. */
-export type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
+type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
 
 /** Send one request and return the daemon's parsed reply. */
 export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
@@ -203,6 +203,8 @@ export async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" 
     peer = (opts.peerUid ?? defaultPeerUid)(sock);
   } catch (e) {
     sock.destroy();
+    if (process.platform === "darwin" && (e as NodeJS.ErrnoException).code === "ENOTCONN")
+      throw new ClosedPeerRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
     throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
   }
   if (peer !== uid) {
@@ -214,7 +216,14 @@ export async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" 
   // read, never the lock itself, because taking the lock to test it would refuse a legitimate
   // start. The record is written only under the lock and cleared on a clean release.
   let pid: number | undefined;
-  try { pid = (opts.peerPid ?? defaultPeerPid)(sock); } catch { pid = undefined; }
+  try { pid = (opts.peerPid ?? defaultPeerPid)(sock); }
+  catch (e) {
+    if (process.platform === "darwin" && (e as NodeJS.ErrnoException).code === "ENOTCONN") {
+      sock.destroy();
+      throw new ClosedPeerRefusal("PEER_NOT_LOCK_OWNER", `could not read the daemon's peer credentials: ${(e as Error).message}`);
+    }
+    pid = undefined;
+  }
   if (pid === undefined || !isLockOwner(paths.lock, pid, processBirth(pid))) {
     sock.destroy();
     throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
@@ -231,6 +240,11 @@ function isLockOwner(lock: string, pid: number, birth: string | undefined): bool
 /** The pipe-open steps that read the server's identity. A failure in one means that identity could
  *  not be established, so nothing may be sent. */
 const IDENTITY_STEPS = new Set(["GetNamedPipeServerProcessId", "OpenProcess", "GetProcessTimes", "OpenProcessToken", "GetTokenInformation", "ConvertSidToStringSidW"]);
+
+/** A Darwin peer closed before kernel identity could be read. No request was sent and it is not absence. */
+export class ClosedPeerRefusal extends EndpointRefusal {
+  constructor(code: "PEER_UID_MISMATCH" | "PEER_NOT_LOCK_OWNER", message: string) { super(code, message); }
+}
 
 /** A refused Windows pipe whose original lifetime read contained zero bytes. It is never writable. */
 export class EmptyLifetimeRefusal extends EndpointRefusal {

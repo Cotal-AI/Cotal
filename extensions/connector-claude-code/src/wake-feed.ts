@@ -67,7 +67,7 @@ export function nativeSocketPath(feed: string): string {
   return `${feed}.native`;
 }
 
-export interface WakeFeed {
+interface WakeFeed {
   /** Write one bounded preview + `id` to every monitor reading the feed. False when none is. */
   send(id: string, preview: RenderedInboxPreview, session?: string): boolean;
   /** Tell the monitors of one native session what the person decided about its pending request. */

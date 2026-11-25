@@ -47,7 +47,7 @@ export function attachHost(servers: string | undefined): string {
 }
 
 /** One Server-Sent-Events frame: a named event carrying JSON data. */
-export interface FeedEvent {
+interface FeedEvent {
   event: string;
   data: unknown;
 }
@@ -67,7 +67,7 @@ export interface SessionEstablishment {
  *  credential, and return what the browser needs to connect. INJECTED — the face never constructs a
  *  plane; the manager wires the single plane + the cred mint at boot. Absent ⇒ the route 503s
  *  (an open mesh with no console session client). */
-export type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
+type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
 
 /**
  * The manager's local HTTP face. It serves the **console** (a lightweight xterm.js page + its
@@ -228,7 +228,9 @@ export class AttachEndpoint {
       if (PAGE[path]) {
         res.setHeader("cache-control", "no-store");
         res.setHeader("referrer-policy", "no-referrer");
+        res.setHeader("content-security-policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ws: wss:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
       }
+      res.setHeader("x-content-type-options", "nosniff");
       // Every DATA route is credentialed. The roster and the live feed describe real agents, and
       // `POST /session/` MINTS a §13.6 grant plus a per-session caller credential — the most
       // sensitive thing this face does. Loopback alone stopped being the trust boundary once the

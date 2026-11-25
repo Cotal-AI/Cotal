@@ -225,6 +225,7 @@ export class MeshView extends EventEmitter {
   private readonly tapSubject?: string;
   private readonly chatOnly: boolean;
   private timers: ReturnType<typeof setInterval>[] = [];
+  private stopped = false;
 
   private readonly onRoster = (r: Presence[]) => this.setRoster(r);
   private readonly onPresence = (ev: unknown) => this.emit("presence", ev);
@@ -272,6 +273,7 @@ export class MeshView extends EventEmitter {
   }
 
   async start(): Promise<void> {
+    if (this.stopped) return;
     // The error listener MUST be attached before start() — async faults surface as events.
     this.ep.on("error", this.onError);
     this.ep.on("warning", this.onWarning);
@@ -281,6 +283,8 @@ export class MeshView extends EventEmitter {
     this.ep.on("presence", this.onPresence);
     this.ep.on("presence-view", this.onPresenceView);
     await this.ep.start();
+    // A cancelled endpoint start can resolve after stop has cleared the view's timers.
+    if (this.stopped) return;
     this.bound = true;
     this.setRoster(this.ep.getRoster());
     this.ep.tap(
@@ -298,6 +302,7 @@ export class MeshView extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     for (const b of this.pending.values()) clearTimeout(b.timer); // bursts hold live timers
@@ -479,8 +484,8 @@ export class MeshView extends EventEmitter {
 
   /** Append to the feed, dedupe by id, keep it windowed, and notify stream consumers. */
   private push(e: FeedEntry): void {
-    if (this.seen.has(e.id)) return;
-    this.seen.add(e.id);
+    if (e.id && this.seen.has(e.id)) return;
+    if (e.id) this.seen.add(e.id);
     this.feed.push(e);
     this.trim();
     // Surface a brand-new channel as a tab now, not at the next poll. The third filter site, and it
@@ -499,7 +504,9 @@ export class MeshView extends EventEmitter {
 
   private trim(): void {
     if (this.feed.length <= this.window) return;
-    for (const d of this.feed.splice(0, this.feed.length - this.window)) this.seen.delete(d.id);
+    for (const d of this.feed.splice(0, this.feed.length - this.window)) {
+      if (d.id) this.seen.delete(d.id);
+    }
   }
 
   private recordDm(d: RawDm): void {
@@ -533,8 +540,8 @@ export class MeshView extends EventEmitter {
     const history: FeedEntry[] = [];
     for (const msgs of batches)
       for (const msg of msgs) {
-        if (!msg.channel || this.seen.has(msg.id)) continue;
-        this.seen.add(msg.id);
+        if (!msg.channel || (msg.id && this.seen.has(msg.id))) continue;
+        if (msg.id) this.seen.add(msg.id);
         history.push({
           id: msg.id,
           ts: msg.ts,

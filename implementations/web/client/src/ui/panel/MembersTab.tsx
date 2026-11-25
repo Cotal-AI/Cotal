@@ -22,7 +22,7 @@ const NONE: StoredMessage[] = [];
 /** How the channel delivers, as the Delivery row says it: its class, then its replay window
  *  ("durable, replay 24h"). Undefined for a channel whose policy the server has not sent yet (a row
  *  a live message created), rather than a guess. */
-export function deliveryText(info: ChannelRow | undefined): string | undefined {
+function deliveryText(info: ChannelRow | undefined): string | undefined {
   if (info?.deliveryClass === undefined) return undefined;
   const parts: string[] = [info.deliveryClass];
   if (info.replay === true) parts.push(info.replayWindow === undefined ? "replay" : `replay ${info.replayWindow}`);

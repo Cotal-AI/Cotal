@@ -25,9 +25,9 @@
  * PATH. Sandboxes COTAL_HOME/XDG_CONFIG_HOME + a temp root; kills only its own pids.
  * Run: pnpm smoke:dogfood:live
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -56,7 +56,11 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const openerDir = join(sandbox, "openers");
+mkdirSync(openerDir);
+const openedPath = join(sandbox, "opened-url");
+writeFileSync(join(openerDir, "xdg-open"), `#!/bin/sh\nprintf '%s' "$1" > '${openedPath}'\n`, { mode: 0o700 });
+const env = { ...process.env, DISPLAY: ":smoke", WAYLAND_DISPLAY: "", PATH: `${openerDir}:${process.env.PATH}`, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");
@@ -76,7 +80,7 @@ const alive = (pid: number) => {
 };
 const out = (r: ReturnType<typeof cotal>) => r.stdout + r.stderr;
 const pidOf = (r: ReturnType<typeof cotal>) => Number(/^\s*PID:\s+(\d+)\s*$/m.exec(r.stdout)?.[1]);
-const web = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${WEB_PORT}${path}`, { ...init, signal: AbortSignal.timeout(15_000) });
+const web = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${WEB_PORT}${path}`, { ...init, headers: { ...init?.headers, connection: "close" }, signal: AbortSignal.timeout(15_000) });
 
 /** The service's bounded log tail, parsed from its JSON result. */
 const serviceLog = (name: string) => {
@@ -99,6 +103,84 @@ const bootstrapAfter = async (seen: string[]) => {
 };
 
 const ownPids: number[] = [];
+
+async function checkDefaultObserver() {
+  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), "service", "start", "web", "--space", SPACE, "--port", String(WEB_PORT), "--read-only", "--foreground", "--no-open", "--plain"],
+    { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const closed = new Promise((resolve) => foreground.once("close", resolve));
+  let output = "";
+  for (const stream of [foreground.stdout, foreground.stderr]) stream.on("data", (data) => { output += data.toString(); });
+  try {
+    for (let i = 0; i < 300 && foreground.exitCode === null && !output.includes("Owned service process running"); i++) await sleep(100);
+    const path = /^\s*Read-only dashboard\. Private browser bootstrap file: (.+)$/m.exec(output)?.[1];
+    ok("the default observer dashboard starts without endpoint errors", !!path && output.includes("Owned service process running") && !output.includes("endpoint reported an error"), output);
+    const { launchUrl } = JSON.parse(readFileSync(path!, "utf8")) as { launchUrl: string };
+    const exchange = await fetch(launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
+    ok("the observer dashboard exchanges its private browser link", exchange.status === 302 && !!cookie);
+    const feed = await web("/feed", { headers: { cookie: cookie! } });
+    ok("the observer dashboard opens its live feed", feed.status === 200 && feed.body !== null);
+    const reader = feed.body!.getReader(), decoder = new TextDecoder();
+    const live = `${NONCE}-observer-live`;
+    try {
+      const sent = cotal(["send", "-c", "general", live, "--space", SPACE]);
+      ok("the CLI publishes a new live channel message", sent.status === 0, out(sent));
+      let data = "";
+      while (!data.includes(live)) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        data += decoder.decode(chunk.value, { stream: true });
+      }
+      ok("the default observer still receives live channel messages", data.includes(live));
+    } finally { await reader.cancel().catch(() => {}); }
+    const broker = readFileSync(join(root, ".cotal", "nats.log"), "utf8");
+    ok("the observer requests neither unauthorized messaging rail", !output.includes("endpoint reported an error") && !broker.split("\n").some((line) =>
+      line.includes("Subscription Violation") && ["inst", "svc"].some((plane) => line.includes(`Subject "cotal.${SPACE}.${plane}.>"`))));
+  } finally {
+    foreground.kill("SIGTERM");
+    await closed;
+    cotal(["service", "remove", "web", "--space", SPACE, "--yes"]);
+  }
+}
+
+async function checkForegroundRepeat() {
+  const add = cotal(["service", "add", "dash", "--preset", "web", "--space", SPACE, "--port", String(WEB_PORT), "--read-only"]);
+  ok("save the dashboard under a custom name", add.status === 0, out(add));
+  const start = ["service", "start", "dash", "--space", SPACE];
+  const preview = cotal([...start, "--foreground", "--no-open", "--dry-run", "--plain"]);
+  ok("a custom dashboard accepts a manual foreground preview", preview.status === 0 && /Definition:\s+dash/.test(preview.stdout), out(preview));
+  const foreground = spawn(realNode, [join(REPO, "bin", "dist", "cotal.js"), ...start, "--foreground", "--no-open", "--plain"],
+    { env, cwd: root, stdio: ["ignore", "pipe", "pipe"] });
+  const closed = new Promise((resolve) => foreground.once("close", resolve));
+  let output = "";
+  foreground.stdout.on("data", (chunk) => { output += chunk; });
+  foreground.stderr.on("data", (chunk) => { output += chunk; });
+  try {
+    const sessionPath = () => /^\s*Read-only dashboard\. Private browser bootstrap file: (.+)$/m.exec(output)?.[1];
+    for (let i = 0; i < 150 && foreground.exitCode === null && (!sessionPath() || !output.includes("Owned service process running")); i++) await sleep(100);
+    const path = sessionPath();
+    ok("foreground startup names its private bootstrap file", path !== undefined && existsSync(path));
+    const readUrl = () => (JSON.parse(readFileSync(path!, "utf8")) as { launchUrl: string }).launchUrl;
+    const exchange = (url: string) => fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const firstUrl = readUrl();
+    const first = await exchange(firstUrl);
+    const cookie = first.headers.get("set-cookie")?.split(";")[0];
+    ok("the first foreground link exchanges for a session", first.status === 302 && !!cookie);
+    const repeat = cotal([...start, "--no-open", "--plain"]);
+    const freshUrl = readUrl();
+    ok("a repeated foreground dashboard start names the verified file, not the uncaptured log or link",
+      repeat.status === 0 && repeat.stdout.includes("Already running; nothing was started")
+      && repeat.stdout.includes(`Private browser bootstrap file: ${path}`)
+      && !out(repeat).includes("cotal service logs") && !out(repeat).includes(new URL(freshUrl).searchParams.get("k")!));
+    ok("the repeated foreground start refreshes the link", firstUrl !== freshUrl && (await exchange(freshUrl)).status === 302 && (await exchange(firstUrl)).status === 401);
+    ok("the original browser session still works", !!cookie && (await web("/", { headers: { cookie } })).status === 200);
+  } finally {
+    foreground.kill("SIGTERM");
+    await closed;
+    cotal(["service", "remove", "dash", "--space", SPACE, "--yes"]);
+  }
+}
+
 try {
   // -- A: the dashboard is not core ----------------------------------------------------------------
   const creds = join(sandbox, "dashboard.creds");
@@ -128,6 +210,7 @@ try {
     const record = (t: string) => canonicalLocalProcessPath(t, { root, space: SPACE });
     const meshPids = [join(root, ".cotal", "nats.pid"), record(DELIVERY_PIDFILE), record(MANAGER_PIDFILE)].map((f) => Number(readFileSync(f, "utf8").trim()));
     ownPids.push(...meshPids);
+    await checkDefaultObserver();
     const sent = cotal(["send", "-c", "general", NONCE, "--space", SPACE]);
     ok("a message is sent to #general through the CLI", sent.status === 0 && /Message stored/.test(sent.stdout), out(sent).slice(-400));
 
@@ -157,7 +240,7 @@ try {
     squatter.closeAllConnections();
     await new Promise<void>((closed) => squatter.close(() => closed()));
 
-    const start = cotal(["service", "start", "web", "--space", SPACE]);
+    const start = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
     const webPid = pidOf(start);
     if (Number.isFinite(webPid)) ownPids.push(webPid);
     ok("once the port is free the same definition starts", start.status === 0 && /Owned service process running/.test(start.stdout) && alive(webPid), out(start).slice(-600));
@@ -176,10 +259,60 @@ try {
     ok("the dashboard refuses a request with no session", unauthenticated.status === 401, unauthenticated.status);
     // Spend the token ONCE and ride the session it mints. Presenting `?k=` a second time earns
     // `launch-token-already-used`, a different refusal that reads exactly like the first.
-    const exchange = await fetch(launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const exchange = await fetch(launchUrl, { redirect: "manual", headers: { connection: "close" }, signal: AbortSignal.timeout(15_000) });
     const cookie = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange.headers.get("set-cookie") ?? "")?.[1];
     ok("the launch link is accepted once and mints a session", exchange.status === 302 && cookie !== undefined, exchange.status);
     const authed = { cookie: `cotal_web_session=${cookie}` };
+    const absentDir = join(sandbox, "no-opener");
+    mkdirSync(absentDir);
+    const savedPath = env.PATH;
+    env.PATH = absentDir;
+    const absent = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
+    env.PATH = savedPath;
+    const absentResult = JSON.parse(absent.stdout);
+    ok("missing opener leaves a successful running dashboard with a warning", absent.status === 0 && absentResult.outcome === "ok" && absentResult.warnings.some((warning: { message: string }) => /No browser was opened/.test(warning.message)) && alive(webPid), out(absent));
+    let previousUrl = (JSON.parse(readFileSync(sessionPath, "utf8")) as Bootstrap).launchUrl;
+    env.DISPLAY = "";
+    const headless = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
+    env.DISPLAY = ":smoke";
+    const headlessResult = JSON.parse(headless.stdout);
+    ok("no graphical session leaves a successful dashboard with a warning and no opener", headless.status === 0 && headlessResult.outcome === "ok" && headlessResult.warnings.length > 0 && !existsSync(openedPath), out(headless));
+    for (const [mode, start] of [["headless", () => headless], ["--no-open", () => cotal(["service", "start", "web", "--space", SPACE, "--no-open", "--json"])]] as const) {
+      const result = start();
+      const { launchUrl: freshUrl } = JSON.parse(readFileSync(sessionPath, "utf8")) as { launchUrl: string };
+      const fresh = await fetch(freshUrl, { redirect: "manual", headers: { connection: "close" }, signal: AbortSignal.timeout(15_000) });
+      const replay = await fetch(freshUrl, { redirect: "manual", headers: { connection: "close" }, signal: AbortSignal.timeout(15_000) });
+      const freshToken = new URL(freshUrl).searchParams.get("k")!;
+      ok(`${mode} repeat refreshes the single-use link in the same owner-private record without opening a browser`,
+        result.status === 0 && JSON.parse(result.stdout).result.pid === webPid && freshUrl !== previousUrl
+        && fresh.status === 302 && fresh.headers.has("set-cookie") && replay.status === 401
+        && !existsSync(openedPath) && (statSync(sessionPath).mode & 0o077) === 0
+        && !out(result).includes(freshToken) && !serviceLog("web").lines.some((line) => line.includes(freshToken)),
+        { freshStatus: fresh.status, replayStatus: replay.status });
+      previousUrl = freshUrl;
+    }
+    const originalSessionBytes = readFileSync(sessionPath, "utf8");
+    const corruptedSession = JSON.parse(originalSessionBytes);
+    corruptedSession.launchRequestId = "mismatched";
+    writeFileSync(sessionPath, JSON.stringify(corruptedSession));
+    const broken = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
+    writeFileSync(sessionPath, originalSessionBytes);
+    ok("a mismatched session remains partial and leaves the process alive", broken.status !== 0 && JSON.parse(broken.stdout).outcome === "partial" && alive(webPid), out(broken));
+    const reopen = cotal(["service", "start", "web", "--space", SPACE]);
+    ok("a matching running dashboard opens a new browser session without restarting", reopen.status === 0 && pidOf(reopen) === webPid, out(reopen));
+    for (let i = 0; i < 50 && !existsSync(openedPath); i++) await sleep(100);
+    ok("the browser opener receives a private launch URL", existsSync(openedPath));
+    const reopenedUrl = readFileSync(openedPath, "utf8");
+    const reopened = await fetch(reopenedUrl, { redirect: "manual", headers: { connection: "close" } });
+    ok("the reopened link authenticates after the original link was spent", reopened.status === 302 && reopened.headers.has("set-cookie"), reopened.status);
+    ok("the reopened link is single-use", (await fetch(reopenedUrl, { redirect: "manual" })).status === 401);
+    ok("unauthenticated callers cannot mint browser links", (await web("/api/browser-launch", { method: "POST" })).status === 401);
+    ok("readiness authority cannot mint browser links", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-readiness": (session as Bootstrap & { readiness: string }).readiness } })).status === 401);
+    const launchNonce = (JSON.parse(readFileSync(sessionPath, "utf8")) as { launchNonce: string }).launchNonce;
+    ok("cross-origin callers cannot use the private launch capability", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-browser-launch": launchNonce, origin: "https://example.invalid" } })).status === 403);
+    ok("browser cookies alone cannot mint another link", (await web("/api/browser-launch", { method: "POST", headers: authed })).status === 404);
+    ok("a launch request with a body is refused", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-browser-launch": launchNonce }, body: "x" })).status === 401);
+    ok("browser links and private capabilities stay out of output", !out(reopen).includes(launchNonce) && !out(reopen).includes(new URL(reopenedUrl).searchParams.get("k")!) && !serviceLog("web").lines.some((line) => line.includes(reopenedUrl) || line.includes(launchNonce)));
     const page = await web("/", { headers: authed });
     const html = await page.text();
     ok("dashboard page is the real asset (packaged via files:[dist])", page.status === 200 && /<html|<!doctype/i.test(html) && html.length > 200, html.slice(0, 120));
@@ -221,6 +354,7 @@ try {
 
     const again = cotal(["service", "start", "web", "--space", SPACE]);
     ok("a second start is a no-op on the running instance", again.status === 0 && /Already running; nothing was started/.test(again.stdout) && pidOf(again) === webPid, out(again).slice(-500));
+    ok("a repeated background start still points to the startup log", again.stdout.includes(`cotal service logs web --space ${SPACE} --instance ${log.instanceId}`));
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
     ok("ext remove refuses to orphan the running dashboard", removeLive.status === 2 && /LIFECYCLE_BLOCKED/.test(out(removeLive)) && alive(webPid), out(removeLive).slice(-500));
     const stop = cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
@@ -243,6 +377,7 @@ try {
     const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
     ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
+    await checkForegroundRepeat();
     const down = cotal(["down", "--yes"]);
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }

@@ -182,4 +182,6 @@ try {
   else rmSync(dir, { recursive: true, force: true });
 }
 assert.equal(passed, 43, "all family scan cells ran");
-console.log(`ENDPOINT FAMILY SCAN: ${passed} passed`);
+// A tally the shard runner reads, so `smoke:ep-serve-gate`, which runs this after its own tally,
+// does not end on check rows that no tally covers.
+console.log(`ENDPOINT FAMILY SCAN: ${passed} checks passed`);

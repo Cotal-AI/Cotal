@@ -80,15 +80,15 @@ import { serializedFor } from "./serialized.js";
 import { MAX_TOKEN_TTL_SEC, type ValidatedUserToken } from "./token.js";
 
 /** At most this many own candidate reads per sweep pass (D). */
-export const CHAT_SWEEP_READS = 256;
+const CHAT_SWEEP_READS = 256;
 /** At most this many sweep retirements in flight at once (C). */
-export const CHAT_SWEEP_RETIREMENTS = 4;
+const CHAT_SWEEP_RETIREMENTS = 4;
 /** A retired row's body is compacted to its tombstone this long after the session's expiry. */
-export const CHAT_ROW_RETENTION_MS = 24 * 60 * 60 * 1000;
+const CHAT_ROW_RETENTION_MS = 24 * 60 * 60 * 1000;
 /** The minimum quiet period after a reservation before the sweep acts on it. It is
  *  never the evidence: every sweep action is gated on durable state, and a holder whose admission
  *  or retirement is visibly in flight in this process is skipped. */
-export const CHAT_SWEEP_QUIET_MS = 60 * 1000;
+const CHAT_SWEEP_QUIET_MS = 60 * 1000;
 
 /** The retirement barrier's operation for one chat lifecycle. */
 export function chatRetireOpId(lifecycleUid: string): string {
@@ -145,7 +145,7 @@ export interface ChatRetireResult {
   pending?: string;
 }
 
-export interface ChatSessionAuthorityDeps {
+interface ChatSessionAuthorityDeps {
   space: string;
   /** The provider state dir holding the three ledger row spaces. */
   dir: string;
@@ -200,7 +200,7 @@ function holderMatches(holderProof: string, holderHash: string): boolean {
 }
 
 /** What the chat connect checks read: the ledger dir, the auth and records stores, and the clock. */
-export type ChatConnectDeps = Pick<ChatSessionAuthorityDeps, "space" | "dir" | "registry" | "now">;
+type ChatConnectDeps = Pick<ChatSessionAuthorityDeps, "space" | "dir" | "registry" | "now">;
 
 /** The chat checks a connect runs, over reads only, with the helpers the session authority shares. */
 function chatConnectChecks(deps: ChatConnectDeps) {

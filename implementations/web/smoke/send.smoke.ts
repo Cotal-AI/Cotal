@@ -19,7 +19,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { request } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -306,6 +306,45 @@ try {
   ok("3.4 a --creds dashboard refuses a post with 403 and POST_OFF_CREDS",
     credsPost.status === 403 && credsPost.json?.error === POST_OFF_CREDS, { credsPost: credsPost.text, log: credsWeb.log().slice(-300) });
   await stopWeb(credsWeb);
+
+  // The supported native child uses separately pinned posting authority, never the observer.
+  const { readDashboardPostingCredential, serviceStartupPath } = await import("@cotal-ai/workspace");
+  const postingFile = join(base, "posting.creds");
+  writeFileSync(postingFile, await mintCreds(auth, newIdentity(), "agent", { lifecycleUid: mintLifecycleUid(), allowSubscribe: ["review"], allowPublish: ["review"] }), { mode: 0o600 });
+  const posting = await readDashboardPostingCredential({ root, space: SPACE, server: STATIC, mode: "auth", tlsRequired: false }, postingFile, credsFile);
+  ok("3.5 explicit posting file is independently verified", posting.creds.length > 0 && posting.expiresAt > Date.now());
+  let sameIdentityRefused = false;
+  try { await readDashboardPostingCredential({ root, space: SPACE, server: STATIC, mode: "auth", tlsRequired: false }, credsFile, credsFile); } catch { sameIdentityRefused = true; }
+  ok("3.6 observer identity cannot double as posting authority", sameIdentityRefused);
+  const serviceDir = join(base, "service");
+  mkdirSync(serviceDir, { recursive: true });
+  const instanceId = "25292529-2529-4529-8529-252925292529", launchRequestId = "25292529-2529-4529-8529-252925292530";
+  const ready = serviceStartupPath({ space: SPACE, instanceId, launchRequestId, stateDirectory: serviceDir });
+  const nativePort = await freePort();
+  let nativeLog = "";
+  const { execFileSync } = await import("node:child_process");
+  execFileSync(process.execPath, [fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "ext", "add", fileURLToPath(new URL("..", import.meta.url))], { cwd: work, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: "pipe" });
+  const native = spawn(process.execPath, [fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "__service-web", "--root", root, "--space", SPACE, "--server", STATIC, "--creds", credsFile, "--posting-creds", postingFile, "--host", "127.0.0.1", "--port", String(nativePort), "--service-instance", instanceId, "--launch-request", launchRequestId, "--ready-file", ready], { cwd: work, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+  kids.push(native);
+  native.stdout?.on("data", (d) => { nativeLog += d; });
+  native.stderr?.on("data", (d) => { nativeLog += d; });
+  const session = await until(() => {
+    const file = readdirSync(serviceDir).find((name) => name.endsWith(".web-session.json"));
+    return file ? JSON.parse(readFileSync(join(serviceDir, file), "utf8")) as { launchUrl: string } : undefined;
+  }, 200);
+  ok("3.7 native service starts with explicit posting authority", session !== undefined, nativeLog);
+  if (session) {
+    const exchange = await fetch(session.launchUrl, { redirect: "manual" });
+    const w: Web = { child: native, port: nativePort, cookie: exchange.headers.get("set-cookie")!.split(";")[0]!, log: () => nativeLog };
+    const sent = await send(w, { kind: "msg", channel: "review", text: "native service hello" });
+    const got = await until(() => staticGot.find((m) => textOf(m) === "native service hello"));
+    ok("3.8 native service post reaches live subscriber", sent.status === 200 && got?.id === sent.json?.id, sent.text);
+    const blocked = await send(w, { kind: "msg", channel: "other", text: "not authorized" });
+    ok("3.9 posting cannot borrow broader observer grants", blocked.status === 502, blocked.text);
+    const del = await call(w, "POST", "/api/channel/delete", { body: JSON.stringify({ channel: "review" }) });
+    ok("3.10 posting service still refuses deletion", del.status === 403, del.text);
+    await stopWeb(w);
+  }
 
   // ---- 4. the refusals every mesh gives ----------------------------------------------------------
   console.log("4. the refusals every mesh gives");

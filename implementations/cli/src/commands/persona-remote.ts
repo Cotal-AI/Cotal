@@ -13,7 +13,7 @@ import {
   nativeEndpointRefusal,
 } from "@cotal-ai/workspace";
 import { openEndpointConnection } from "../lib/endpoint-client.js";
-import { onInstance } from "../lib/control.js";
+import { onInstance, type ManagerRetry } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { openTransient } from "../lib/transient.js";
 import { PERSONA_LIMIT, reservedPersonaName } from "../lib/persona-files.js";
@@ -21,8 +21,11 @@ import type { PersonaValues } from "./persona.js";
 
 const CONTENT_FLAGS = ["file", "prompt", "from", "role", "model", "subscribe", "harness", "allow-subscribe", "allow-publish", "announce"] as const;
 
-/** The command an `--on` refusal tells the caller to rerun with `--on <instance>` added. */
-function personaVerb(mode: string | undefined, name: string | undefined): string {
+function personaRetry(mode: string | undefined, name: string | undefined, values: PersonaValues): ManagerRetry {
+  if (mode === "create") return {
+    remedy: "run `cotal ps` against the same space, then replace only the --on value in the original command with the full manager instance id" +
+      (values.file === "-" || values.from === "-" ? "; pipe the original input into the command again" : ""),
+  };
   return mode === undefined || mode === "list" || name === undefined ? "cotal persona" : `cotal persona ${mode} ${name}`;
 }
 
@@ -30,7 +33,7 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
   presentationOf(args.values);
   const values = args.values as PersonaValues;
   const [mode, name, ...extra] = args.positionals;
-  onInstance(values.on!, personaVerb(mode, name));
+  onInstance(values.on!, personaRetry(mode, name, values));
   if (mode !== undefined && !["list", "show", "create"].includes(mode)) throw new CommandFailure("refused", "UNSUPPORTED", "remote persona operations support list, show and create only; no local edit or removal was substituted");
   if (extra.length || (mode === undefined || mode === "list" ? name !== undefined : !name)) throw new CommandFailure("refused", "USAGE_INVALID", "use persona --on <full-manager-instance>, persona show <name> --on <id>, or persona create <name> --on <id>");
   if (name !== undefined) {
@@ -57,8 +60,8 @@ export function validateRemotePersonaArguments(args: ParsedArgs): void {
 function definitionInput(values: PersonaValues, name: string): string {
   let bytes: Buffer;
   if (values.prompt !== undefined) bytes = Buffer.from(values.prompt, "utf8");
-  else if (values.from === "-") {
-    if (process.stdin.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", "pipe the explicit --from - input instead of reading an interactive terminal");
+  else if (values.file === "-" || values.from === "-") {
+    if (process.stdin.isTTY) throw new CommandFailure("refused", "USAGE_INVALID", `pipe the explicit --${values.file === "-" ? "file" : "from"} - input instead of reading an interactive terminal`);
     const chunks: Buffer[] = [];
     let total = 0;
     for (;;) {
@@ -101,10 +104,14 @@ function definitionInput(values: PersonaValues, name: string): string {
 
 /** The failure a persona reply carries. `notFoundRemedy` is the refusal's remedy when the manager
  *  answers not-found, as it does for a card this caller may not read. */
-function failedReply(response: EpAttributedReply, target: unknown, mutation: boolean, notFoundRemedy?: string): CommandFailure {
+function failedReply(response: EpAttributedReply, target: unknown, mutation: boolean, notFoundRemedy?: string, editRemedy?: string): CommandFailure {
   const error = response.reply.error;
   const code = nativeEndpointRefusal(error?.code);
   const native = { code: error?.code, outcome: error?.outcome, detail: { requestId: response.reply.id, responder: response.responder } };
+  const ownership = error?.details?.find((detail) => detail.kind === "ai.cotal.persona-ownership-refused");
+  if (mutation && code === "PERMISSION_DENIED" && error?.outcome === "not-executed" && ownership) return new CommandFailure("refused", code,
+    ownership.operatorOwned === true ? "this caller cannot redefine the operator-owned persona; no file was changed" : "this caller does not own the existing persona and cannot redefine it; no file was changed",
+    { target, native, remedy: editRemedy ?? "ask the persona's owner or the operator on the manager's host to edit it" });
   if ((!mutation || error?.outcome === "not-executed") && code) return new CommandFailure("refused", code, "the selected manager refused this persona operation; its message and input contents were not copied", { target, native, ...(code === "TARGET_NOT_FOUND" && notFoundRemedy ? { remedy: notFoundRemedy } : {}) });
   return new CommandFailure(mutation && error?.outcome !== "executed" ? "unknown" : "failed", mutation && error?.outcome !== "executed" ? "OPERATION_UNKNOWN" : "OPERATION_FAILED", "the native persona operation did not return success; it was not retried", { target, native });
 }
@@ -115,7 +122,7 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
   const values = args.values as PersonaValues;
   const [mode = "list", name] = args.positionals;
   const input = mode === "create" ? definitionInput(values, name!) : undefined;
-  const instanceId = (await managerPin(values, personaVerb(mode, name)))!;
+  const instanceId = (await managerPin(values, personaRetry(mode, name, values)))!;
   const requestId = randomUUID();
   let connection: Awaited<ReturnType<typeof openEndpointConnection>> | undefined;
   let sender: Awaited<ReturnType<typeof openTransient>> | undefined;
@@ -144,7 +151,8 @@ export async function remotePersona(args: ParsedArgs): Promise<void> {
     // A manager in this root writes and reads this root's own catalog file.
     const localFile = connection.root === undefined || name === undefined ? undefined : agentFilePath(connection.root, name);
     if (!response.reply.ok) throw failedReply(response, target, mode === "create",
-      mode === "show" && localFile !== undefined && existsSync(localFile) ? `a persona file of that name is in this root's catalog, which the manager does not show this caller: read it here with \`cotal p show ${name}\`` : undefined);
+      mode === "show" && localFile !== undefined && existsSync(localFile) ? `a persona file of that name is in this root's catalog, which the manager does not show this caller: read it here with \`cotal p show ${name}\`` : undefined,
+      mode === "create" && localFile !== undefined && existsSync(localFile) ? `edit it on the manager's host with \`cotal persona edit ${name}\`` : undefined);
     const raw = response.reply.data as Record<string, unknown>;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("persona reply shape");
     if (mode === "create" && (raw.name !== name || typeof raw.path !== "string")) throw new Error("persona write reply identity");

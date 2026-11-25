@@ -1,7 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { win32ProcessBinding, type Win32ProcessBinding, type Win32ProcessPin, type Win32TreePin } from "@cotal-ai/workspace";
 
-export type WindowsProcessStopBinding = Pick<Win32ProcessBinding, "pinProcess" | "processTree">;
+type WindowsProcessStopBinding = Pick<Win32ProcessBinding, "pinProcess" | "processTree">;
 
 /** One stop-time snapshot, not launch-time custody of detached or future work. */
 export class WindowsSeatStop {

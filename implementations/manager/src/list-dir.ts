@@ -1,7 +1,7 @@
 import { opendir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-export interface DirectoryListing {
+interface DirectoryListing {
   path: string;
   parent: string | null;
   directories: { name: string; symlink: boolean }[];

@@ -2,7 +2,7 @@ import { parsePrincipalKey } from "@cotal-ai/core";
 
 /** What the named-target decision needs to know about the managed row — the manager's spawn-time
  *  records only, never payload fields, personas, or presence display data. */
-export interface NamedControlTarget {
+interface NamedControlTarget {
   name: string;
   /** Authenticated principal that requested the spawn (`req.from.id` at spawn time). */
   spawner: string;

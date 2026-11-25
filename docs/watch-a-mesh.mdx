@@ -31,7 +31,8 @@ See [Use the console](console.mdx#terminal-console) for keys, controls, attachme
 
 Start the `@cotal-ai/web` service with `cotal service start web`.
 The dashboard ships with `cotal-ai` and is seeded automatically, but it is separate from stack startup.
-It requires a registered static-auth root and explicit read-only intent, and it reads the `web.creds` that `cotal up` mints for the space unless you pass `--creds`.
+It requires a registered static-auth root and defaults to read-only, using the `web.creds` that `cotal up` mints for the space unless you pass `--creds`.
+[Authorize posting](web-dashboard.mdx#authorize-posting) with a separate protected credential when you need the composer.
 See [Use the web dashboard](web-dashboard.mdx#web-dashboard) for setup and private browser access.
 
 ## Check visibility limits [#what-each-surface-can-see]
@@ -46,6 +47,10 @@ The credential and display determine what you can see:
 
 A chat-only credential hides DM views. A restricted read does not prove that a peer or DM is absent.
 Neither display starts the mesh's dependencies automatically.
+
+`console --creds` and `watch --creds` refuse an agent-profile credential before opening the feed.
+Mint a separate credential with `cotal auth mint <label> --profile observer --out <file>` and pass
+that file with `--creds`. The supplied credential is not replaced with broader local authority.
 
 When an endpoint rebuilds an ordered KV watch, it skips the predecessor's delete request if it
 recorded that watch as its own and the connection's known publish claims exclude the delete.

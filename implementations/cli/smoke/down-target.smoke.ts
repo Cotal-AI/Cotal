@@ -7,7 +7,7 @@
  * Hermetic (no broker): COTAL_HOME and the temp root are sandboxed, meshes are recorded straight
  * into the registry, and the dashboard is a real SIGTERM-able child whose pid sits in the mesh
  * root's web.pid. The same public `down()` surface also proves both no-token manager policy branches
- * and the pinned-mismatch refusal on a bare down of a stack `cotal up` recorded at its root. This
+ * and pinned stale-record cleanup on a bare down of a stack `cotal up` recorded at its root. This
  * existing CI-selected suite remains the integration owner.
  * Run: pnpm smoke:down-target
  */
@@ -311,6 +311,16 @@ try {
 
   process.chdir(neutral);
 
+  const ledgerSelectors: Record<string, string>[] = [{ file: "plan with spaces.yaml" }, { run: "run01" }, { file: "plan with spaces.yaml", run: "run01" }];
+  for (const selectors of ledgerSelectors) for (const format of ["json", "plain"]) {
+    const refusal = await rejection(run([], { ...selectors, "dry-run": true, [format]: true }));
+    check(`a ${format} ledger preview by ${Object.keys(selectors).join(" and ")} keeps the original preview`,
+      refusal?.code === "UNSUPPORTED" && refusal.remedy === `omit --${format} from the original command; keep --dry-run and the same deployment selection`, refusal);
+    const apply = await rejection(run([], { ...selectors, [format]: true }));
+    check(`a ${format} ledger teardown by ${Object.keys(selectors).join(" and ")} keeps the deployment selection`,
+      apply?.code === "UNSUPPORTED" && apply.remedy === `omit --${format} from the original command; keep the same deployment selection`, apply);
+  }
+
   // No meshes recorded anywhere → `down web` has no space to look in. The target resolves before
   // any saved-definition lookup, so it refuses as not found and says how to name a space.
   const noMesh = await rejection(run(["web"]));
@@ -353,6 +363,23 @@ try {
   check("...and its preview refuses the same way, naming the preview to run there",
     previewSpace?.code === "TARGET_NOT_FOUND" && previewSpace.message === bareSpace?.message && (previewSpace.remedy ?? "").includes(`run \`cotal down --dry-run\` in ${meshA.root}`),
     previewSpace && { code: previewSpace.code, message: previewSpace.message, remedy: previewSpace.remedy });
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    chmodSync(meshA.root, 0o000);
+    try {
+      const inaccessible = await rejection(run([], { space: "teamA", yes: true }));
+      check("an inaccessible retained root advises restoring access instead of changing folders",
+        inaccessible?.code === "PERMISSION_DENIED" && inaccessible.message?.includes(`${meshA.root} could not be accessed`) === true &&
+        inaccessible.remedy === "restore access to the original project folder, then try again", inaccessible);
+    } finally { chmodSync(meshA.root, 0o700); }
+  }
+  recordMesh({ ...entry("remote", meshB.root), origin: "manual" });
+  for (const preview of [false, true]) {
+    const remote = await rejection(run([], { space: "remote", ...(preview ? { "dry-run": true } : { yes: true }) }));
+    check(`a connection in another folder does not supply the hosting project for a ${preview ? "preview" : "stop"}`,
+      remote?.code === "TARGET_NOT_FOUND" && remote.message?.includes(`connection to space "remote" is registered at ${meshB.root}`) === true &&
+        ["cotal", "pnpm cotal"].some(cli => remote.remedy === `run \`${cli} down ${preview ? "--dry-run" : "--yes"}\` in the project that started the stack`), remote);
+  }
+  removeMesh("remote");
   const unknown = await rejection(run(["web"], { space: "nosuch" }));
   check("--space with an unknown space refuses TARGET_NOT_FOUND",
     unknown?.code === "TARGET_NOT_FOUND" && /no space named "nosuch" is registered here/.test(unknown.message ?? ""), unknown?.message);
@@ -417,9 +444,9 @@ try {
   );
   const mismatched = await stopPlantedManager(false, "mismatch");
   check(
-    "a pinned manager identity mismatch is refused before SIGTERM and preserves both records",
-    mismatched.managerAlive && mismatched.agentAlive && mismatched.pidfilePreserved && mismatched.pinPreserved === true &&
-      /pid has been reused/.test(mismatched.warning),
+    "a reused manager pid clears both stale records without signalling the unrelated process",
+    mismatched.managerAlive && mismatched.agentAlive && !mismatched.pidfilePreserved && mismatched.pinPreserved === false &&
+      /was reused by another process/.test(mismatched.warning) && !mismatched.warning.includes("\\u000a"),
     mismatched,
   );
   // `down manager` is a named down, so a service stop: the planted manager is not a saved definition,
@@ -467,6 +494,19 @@ try {
   );
   check("a dead pinned manager record bypasses the pre-signal policy hook", !hookCalled);
   check("a dead pinned manager record clears both pid and identity files", !existsSync(deadPidPath) && !existsSync(`${deadPidPath}.identity`));
+  const changed = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  spawnedChildren.push(changed);
+  const changedPid = changed.pid!;
+  writeFileSync(deadPidPath, String(changedPid), { mode: 0o600 });
+  writeIdentityPin(deadPidPath, changedPid);
+  await assert.rejects(stopLocalProcess(
+    { kind: "local-process", name: "fixture", label: "fixture", pidFile: "manager.pid" },
+    { root: deadRoot, space: "main" },
+    { beforeSignal: () => { writeFileSync(`${deadPidPath}.identity`, `${changedPid} replacement-pin`, { mode: 0o600 }); } },
+  ), /changed during shutdown/);
+  check("a change to the pin after stop authorization preserves the record and sends no signal",
+    alive(changedPid) && readFileSync(deadPidPath, "utf8") === String(changedPid) && readFileSync(`${deadPidPath}.identity`, "utf8") === `${changedPid} replacement-pin`);
+  changed.kill("SIGKILL");
   rmSync(deadRoot, { recursive: true, force: true });
 
   // A broker with no nats.pid was not started by this stack. When the folder's registered broker
@@ -629,6 +669,24 @@ try {
     preview.error === undefined && envelope(preview.out)?.outcome === "no-op" && envelope(preview.out)?.result?.kind === "stack-not-running", preview);
   const plain = await bareDownIn(stoppedRoot, { plain: true });
   check("--plain shows the same no-op", plain.error === undefined && plain.exitCode === 0 && /is not running/.test(plain.out), plain);
+  const preparedRoot = mkdtempSync(join(scratch, "prepared-"));
+  mkdirSync(join(preparedRoot, ".cotal"));
+  const { recordPreparedSpace, removePreparedSpace } = await import("@cotal-ai/workspace");
+  recordPreparedSpace({ space: "example", root: preparedRoot, ts: new Date().toISOString() });
+  try {
+    for (const flag of ["dry-run", "yes"]) {
+      const bare = await bareDownIn(preparedRoot, { [flag]: true, json: true });
+      const scoped = await bareDownIn(preparedRoot, { space: "example", [flag]: true, json: true });
+      check(`down --space example --${flag} reports the same JSON no-op as bare down before the first up`,
+        scoped.error === undefined && scoped.exitCode === 0 && envelope(scoped.out)?.outcome === "no-op" &&
+        envelope(scoped.out)?.result?.kind === "stack-not-running" && scoped.out === bare.out, scoped);
+      const wrong = await bareDownIn(preparedRoot, { space: "wrong", [flag]: true, json: true });
+      check(`down --space wrong --${flag} refuses before the first up`,
+        wrong.error?.code === (flag === "dry-run" ? "TARGET_NOT_FOUND" : "UNSUPPORTED"), wrong);
+    }
+  } finally {
+    removePreparedSpace("example");
+  }
   const reap = await bareDownIn(stoppedRoot, { "with-agents": true });
   check("--with-agents on the stopped root refuses LIFECYCLE_BLOCKED, because no manager runs to stop its agents",
     reap.error?.code === "LIFECYCLE_BLOCKED" && /cotal up/.test(reap.error.remedy ?? ""), reap);
@@ -644,7 +702,7 @@ try {
   mkdirSync(join(neverRoot, ".cotal"), { recursive: true });
   const never = await bareDownIn(neverRoot);
   check("a folder that never had a stack refuses TARGET_NOT_FOUND and names where to run down",
-    never.error?.code === "TARGET_NOT_FOUND" && /where `cotal up` started/.test(never.error.remedy ?? ""), never);
+    never.error?.code === "TARGET_NOT_FOUND" && /where `(?:pnpm )?cotal up` started/.test(never.error.remedy ?? ""), never);
   writeFileSync(join(stoppedRoot, ".cotal", "nats.pid"), "not-a-pid\n", { mode: 0o600 });
   const unexplained = await bareDownIn(stoppedRoot);
   check("a process record with no registration refuses CONFLICT, points at cotal status, and keeps the record",
@@ -661,14 +719,18 @@ try {
   // step that takes the other registration off the address and the stop to run after it.
   recordMesh({ ...entry("shared-here", stoppedRoot), origin: "up" });
   recordMesh({ ...entry("shared-there", neverRoot), origin: "up" });
+  recordMesh({ ...entry("-old", neverRoot), origin: "manual" });
   const shared = await bareDownIn(stoppedRoot);
   removeMesh("shared-here");
   removeMesh("shared-there");
+  removeMesh("-old");
   check("a second registration at this stack's exact broker address refuses LIFECYCLE_BLOCKED, names that space, and its next step names space show, space forget and the down to run again",
     shared.error?.code === "LIFECYCLE_BLOCKED" && /shared listener/.test(shared.error.message ?? "") &&
       (shared.error as { target?: { otherSpaces?: string[] } } | undefined)?.target?.otherSpaces?.includes("shared-there") === true &&
       /`cotal space show shared-there`/.test(shared.error.remedy ?? "") && /`cotal space forget shared-there`/.test(shared.error.remedy ?? "") &&
       /then run `cotal down` again/.test(shared.error.remedy ?? ""), shared);
+  check("the legacy shared listener guard prints argument-safe commands for a retained dash-leading name",
+    /`cotal space show -- -old`/.test(shared.error?.remedy ?? "") && /`cotal space forget -- -old`/.test(shared.error?.remedy ?? ""), shared);
   // An installed extension may record its process deeper in `.cotal` or under another suffix. While
   // either still runs, bare down does not call the stack stopped, and it leaves both as they were.
   const priorXdg = process.env.XDG_CONFIG_HOME;
@@ -869,7 +931,7 @@ try {
     for (const [flag, again] of [["yes", "cotal down --yes"], ["dry-run", "cotal down --dry-run"]] as const) {
       const r = await bareDownIn(sa, { space: "sb", [flag]: true });
       check(`down --${flag} --space sb in another stack's folder refuses CONFLICT, naming sb's root, this folder's stack, and \`${again}\` from sb's root`,
-        r.error?.code === "CONFLICT" && Boolean(r.error.message?.includes(elsewhere)) && Boolean(r.error.message?.includes("this folder's stack is sa")) && r.error.remedy === `run \`${again}\` from ${sb}`, r);
+        r.error?.code === "CONFLICT" && Boolean(r.error.message?.includes(elsewhere)) && Boolean(r.error.message?.includes("this folder's stack is sa")) && [again, `pnpm ${again}`].some((command) => r.error?.remedy === `run \`${command}\` from ${sb}`), r);
     }
     const unknown = await bareDownIn(sa, { space: "nosuch", yes: true });
     check("a --space no local stack holds names this folder's stack and the step to stop it",
@@ -887,7 +949,7 @@ try {
     writeFileSync(join(leftover, ".cotal", "server-open.conf"), "# rendered by a start that failed\n", { mode: 0o600 });
     const fromLeftover = await bareDownIn(leftover, { space: "sb", yes: true });
     check("down --yes --space sb in a folder whose .cotal holds no stack refuses TARGET_NOT_FOUND, naming sb's root and the down to run there",
-      fromLeftover.error?.code === "TARGET_NOT_FOUND" && Boolean(fromLeftover.error.message?.includes(elsewhere)) && fromLeftover.error.remedy === `run \`cotal down --yes\` from ${sb}`, fromLeftover);
+      fromLeftover.error?.code === "TARGET_NOT_FOUND" && Boolean(fromLeftover.error.message?.includes(elsewhere)) && ["cotal", "pnpm cotal"].some((prefix) => fromLeftover.error?.remedy === `run \`${prefix} down --yes\` from ${sb}`), fromLeftover);
     const own = await bareDownIn(leftover);
     check("a bare down there still answers for the folder's own root", own.error === undefined && own.exitCode === 0 && /is not running/.test(own.out), own);
     // A stack the legacy launcher started writes no journal, and `cotal down` in its own root stops
@@ -907,7 +969,7 @@ try {
     for (const { label, again, values } of bareCases) {
       const r = await bareDownIn(empty, values);
       check(`${label} in an empty folder names the selected legacy stack's space, its root and \`${again}\` there`,
-        r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && r.error.remedy === `run \`${again}\` from ${lg}`, r);
+        r.error?.code === "TARGET_NOT_FOUND" && Boolean(r.error.message?.includes(`the selected space "lgs" is a stack rooted at ${lg}`)) && [again, `pnpm ${again}`].some((command) => r.error?.remedy === `run \`${command}\` from ${lg}`), r);
     }
     setCurrent("sa");
     removeMesh("lgs");

@@ -72,7 +72,7 @@ export interface OrderNote {
 }
 
 /** A chain's observed state, for a surface that wants to mark it and for the suite. */
-export interface ChainState {
+interface ChainState {
   baseline: number | undefined;
   next: number | undefined;
   prefixIncomplete: boolean;

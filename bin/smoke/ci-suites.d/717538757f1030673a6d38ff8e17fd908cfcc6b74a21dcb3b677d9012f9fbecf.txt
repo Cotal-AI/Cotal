@@ -1,0 +1,2 @@
+# Hosted workflow stop guidance for retained-launcher and controller stacks.
+smoke:workflow-stop:live

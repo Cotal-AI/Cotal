@@ -37,7 +37,8 @@ if (!childMode) {
     XDG_RUNTIME_DIR: join(fixture, "run"), COTAL_HOME: join(home, ".cotal"), CLAUDE_CONFIG_DIR: join(home, ".claude"), TMPDIR: join(fixture, "tmp"),
     PATH: `${dirname(node)}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`, DO_NOT_TRACK: "1", COTAL_NO_UPDATE_CHECK: "1",
   };
-  run("npm", ["install", "--global", "--prefix", join(fixture, "prefix"), `cotal-ai@${originalVersion}`, "--ignore-scripts", "--no-audit", "--no-fund"], "install", env, 180_000);
+  // Keep the unmarked updater fixture on its release-era dependencies. Only the bootstrap is date-bounded.
+  run("npm", ["install", "--global", "--prefix", join(fixture, "prefix"), `cotal-ai@${originalVersion}`, "--before", "2026-11-16T19:38:00.000Z", "--ignore-scripts", "--no-audit", "--no-fund"], "install", env, 180_000);
   const target = JSON.parse(run("npm", ["view", "cotal-ai", "version", "--json"], "registry-target", env)) as unknown;
   assert.ok(typeof target === "string" && /^\d+\.\d+\.\d+$/.test(target) && target !== originalVersion, "native updater needs a following published version");
   writeFileSync(join(fixture, "target.json"), JSON.stringify(target), { mode: 0o600, flag: "wx" });
@@ -79,7 +80,7 @@ if (!childMode) {
     renameSync(reference.node.sourcePath, `${reference.node.sourcePath}.retired`);
     cell("original Node path is unavailable", () => assert.equal(existsSync(reference.node.sourcePath), false));
     cell("verification never resolves the removed original", () => verifyMigrationExecution(lock, installedRoot, reference));
-    const env = { ...process.env, PATH: `${dirname(node)}:${process.env.PATH}`, npm_config_prefix: join(fixture, "prefix") };
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), PATH: `${dirname(node)}:${process.env.PATH}`, npm_config_prefix: join(fixture, "prefix") };
     const version = run(node, [join(reference.generation.root, "dist/cotal.js"), "--version"], "retained-before", env);
     cell("retained package runs on retained Node", () => assert.equal(version.split("\n")[0], `cotal-ai ${originalVersion}`));
     const beforeNode = hash(node), beforeInventory = hash(join(directory, "inventory.json"));

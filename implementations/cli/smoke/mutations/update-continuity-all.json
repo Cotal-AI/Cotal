@@ -33,7 +33,7 @@
     },
     {
       "name": "M3 stop at the first legacy verdict instead of observing every manager",
-      "file": "implementations/cli/src/commands/update.ts",
+      "file": "implementations/cli/src/commands/update-continuity.ts",
       "find": "      if (await readOne({ ...flags, space }) === \"legacy\") verdict = \"legacy\";\n      else console.log(c.dim(\"  manager custody carries this update\"));",
       "replace": "      if (await readOne({ ...flags, space }) === \"legacy\") return \"legacy\";\n      else console.log(c.dim(\"  manager custody carries this update\"));",
       "expectRed": "a legacy verdict does not stop the remaining managers being observed",

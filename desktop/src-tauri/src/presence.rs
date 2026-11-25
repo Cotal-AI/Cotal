@@ -7,10 +7,36 @@ pub const APP_ID: &str = "ai.cotal.desktop";
 #[serde(default, deny_unknown_fields)]
 pub struct Preferences {
     pub login: Option<bool>,
+    pub recovered: bool,
     pub connected: bool,
     pub relocation_declined: bool,
     pub pin_offered: bool,
     pub close_explained: bool,
+}
+
+/// Load startup preferences without discarding an unreadable file.
+pub fn load_preferences(path: &Path) -> Result<(Preferences, Option<String>), String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Preferences::default(), None)),
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Ok(preferences) = serde_json::from_slice(&bytes) { return Ok((preferences, None)); }
+    // Reserve a fresh name so an earlier recovery is never overwritten.
+    for index in 0.. {
+        let backup = path.with_extension(format!("json.invalid.{index}"));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&backup) {
+            Ok(mut file) => {
+                use std::io::Write;
+                file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|error| error.to_string())?;
+                std::fs::remove_file(path).map_err(|error| error.to_string())?;
+                return Ok((Preferences { recovered: true, ..Preferences::default() }, Some(format!("Desktop preferences could not be read. The original file was kept at {}. Cotal is using defaults. No login setting was changed.", backup.display()))));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    unreachable!()
 }
 
 impl Preferences {
@@ -90,9 +116,86 @@ fn connection_tray_status(frame: &serde_json::Value) -> String {
     if result["launchReady"] == true { "Connected".into() } else { "Needs attention".into() }
 }
 
+/// Quote the executable path in a Windows `Run` command.
+#[cfg(any(windows, test))]
+pub fn windows_login_command(executable: &Path) -> String {
+    format!("\"{}\" --background", executable.display())
+}
+
+/// Match both the previous unquoted command and the current quoted command.
+#[cfg(any(windows, test))]
+pub fn windows_run_matches_executable(command: &str, executable: &Path) -> bool {
+    let Some(path) = command.trim().strip_suffix(" --background") else { return false; };
+    let path = path.strip_prefix('"').and_then(|path| path.strip_suffix('"')).unwrap_or(path);
+    let path = Path::new(path);
+    if !path.is_absolute() { return false; }
+    let Ok(recorded) = std::fs::canonicalize(path) else { return false; };
+    let Ok(current) = std::fs::canonicalize(executable) else { return false; };
+    recorded == current
+}
+
+/// The startup approval record ends in eight zero bytes when enabled.
+#[cfg(any(windows, test))]
+pub fn windows_startup_approved_enabled(bytes: &[u8]) -> bool {
+    bytes.len() < 8 || bytes.iter().rev().take(8).all(|&byte| byte == 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_login_scope_matches_only_the_installed_executable() {
+        let dir = std::env::temp_dir().join(format!("cotal login scope {}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("cotal-desktop.exe");
+        let other = dir.join("another-cotal.exe");
+        std::fs::write(&exe, b"exe").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+        let quoted = windows_login_command(&exe);
+        assert_eq!(quoted, format!("\"{}\" --background", exe.display()));
+        assert!(windows_run_matches_executable(&quoted, &exe));
+        assert!(windows_run_matches_executable(&format!("{} --background", exe.display()), &exe));
+        assert!(!windows_run_matches_executable(&windows_login_command(&other), &exe));
+        assert!(!windows_run_matches_executable("cotal-desktop.exe --background", &exe));
+        assert!(!windows_run_matches_executable(&format!("\"{}\" --other", exe.display()), &exe));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(windows_startup_approved_enabled(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!windows_startup_approved_enabled(&[3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]));
+    }
+    #[test]
+    fn startup_recovers_invalid_preferences_without_overwriting_backups() {
+        let directory = std::env::temp_dir().join(format!("cotal-preferences-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("presence.json");
+        let (preferences, notice) = load_preferences(&path).unwrap();
+        assert!(!preferences.recovered && notice.is_none());
+        for (index, bytes) in [
+            br#"{"relocationDeclined":false,"pinOffered":false,"closeExplained":false}"#.as_slice(),
+            b"{broken".as_slice(),
+            br#"{"login":"yes"}"#.as_slice(),
+            &[0xff],
+        ].into_iter().enumerate() {
+            std::fs::write(&path, bytes).unwrap();
+            let (preferences, notice) = load_preferences(&path).unwrap();
+            assert!(preferences.recovered);
+            assert!(!preferences.connected && preferences.login.is_none());
+            assert!(!preferences.login_enabled());
+            assert!(notice.unwrap().contains("No login setting was changed."));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read(path.with_extension(format!("json.invalid.{index}"))).unwrap(), bytes);
+            let serialized = serde_json::to_vec(&preferences).unwrap();
+            assert!(serde_json::from_slice::<Preferences>(&serialized).unwrap().recovered);
+        }
+        std::fs::write(&path, br#"{"login":false,"connected":true}"#).unwrap();
+        let (preferences, notice) = load_preferences(&path).unwrap();
+        assert!(!preferences.recovered && notice.is_none());
+        assert_eq!(preferences.login, Some(false));
+        assert!(path.exists());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(load_preferences(&path).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn tray_counts_only_observed_running_agents() {
         use serde_json::json;

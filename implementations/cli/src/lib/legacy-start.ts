@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_SERVER } from "@cotal-ai/core";
-import { retainedLegacyBroker, rootHoldsAccount, spaceFromKey, spaceKey } from "@cotal-ai/workspace";
+import { authDir, legacyStackElsewhere, meshesForRoot, NATS_PIDFILE, retainedLegacyBroker, rootHoldsAccount, soleSpaceOf, spaceFromKey, spaceKey, verifyIdentityPin } from "@cotal-ai/workspace";
 import { listFreshTeamSummaries } from "./team-fresh.js";
 
 /** The line an open broker configuration names its space on, by its {@link spaceKey}. */
@@ -46,4 +46,20 @@ export function retainedOpenSpace(root: string): string | undefined {
   try { summaries = listFreshTeamSummaries(root).valid; } catch { return undefined; }
   const last = summaries.filter((summary) => summary.authMode === "open").sort((a, b) => a.recordedAt.localeCompare(b.recordedAt)).at(-1);
   return last?.server === retained.server ? last.space : undefined;
+}
+
+/** The broker a legacy start left running when it was interrupted after it published the broker's
+ *  pid and before it registered the space (#7123). No registration names the root, its broker
+ *  configuration names the space and address, and the identity pin of its `nats.pid` matches the
+ *  live process, so a stale or reused pid is never taken for it. Undefined otherwise. */
+export function interruptedStartBroker(root: string): { space: string; server: string; pid: number } | undefined {
+  try {
+    if (meshesForRoot(root).length) return undefined;
+    const retained = retainedLegacyBroker(root);
+    if (!retained) return undefined;
+    const space = retained.open ? retainedOpenSpace(root) : soleSpaceOf(authDir(root));
+    if (space === undefined || legacyStackElsewhere(root, space)) return undefined;
+    const pin = verifyIdentityPin(join(root, ".cotal", NATS_PIDFILE));
+    return pin.kind === "match" ? { space, server: retained.server, pid: pin.record.pid } : undefined;
+  } catch { return undefined; }
 }

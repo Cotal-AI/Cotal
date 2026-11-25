@@ -17,16 +17,17 @@
  */
 import { chmodSync, closeSync, linkSync, unlinkSync, lstatSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { localPeerCredentials, listenPipe, windowsUserSid, type PipeListener, type PipePeer, type PipeRefused } from "@cotal-ai/seat";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSocketPathFits, assertSupportedPlatform, checkDir, checkSocket, defaultPeerUid, ensureDir, ensureStateDir, type DaemonPaths, type PeerUid } from "./endpoint.js";
 import { claimSocketPath, generationOf, holdLifetime, processBirth, type HeldLifetime } from "./lifetime.js";
 import { encode, parseRequest, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type HostedManager, type LogoutChange, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
 import { createLoginCoordinator, type LoginCoordinator } from "./login.js";
 import { connectCheck } from "./connect.js";
 import { createServiceConnections } from "./service.js";
-import { homeCotalDir, isCommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { findMesh, homeCotalDir, isCommandFailure, isMeshRegistryError, meshFile, readMeshRegistry, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
+import { NON_USER_AUTH_MESSAGE, NON_USER_AUTH_REMEDY } from "./guidance.js";
 import { desktopSpaces } from "./desktop-state.js";
 import { idpTimeoutMs, signOutIdpSession, withIdpSessionDir } from "@cotal-ai/auth";
 import { createHostedManagers, HostedManagerRefusal } from "./manager.js";
@@ -34,10 +35,10 @@ import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
-export const MAX_REQUESTS_PER_CONNECTION = 64;
+const MAX_REQUESTS_PER_CONNECTION = 64;
 
 /** Counters a test or `status` can read. Every security decision increments exactly one. */
-export interface ServerCounters {
+interface ServerCounters {
   accepted: number;
   peerRejected: number;
   framesDecoded: number;
@@ -151,10 +152,20 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   const login = opts.login ?? createLoginCoordinator({ sessionDir: machineHome });
   let loginActive = false;
   let logoutActive = false;
+  interface StatusWatcher {
+    id: string;
+    sock: Socket;
+    write: (r: DaemonResponse) => Promise<void>;
+    lastKey: string;
+  }
+  const watchers = new Set<StatusWatcher>();
+  let watchNotifying = false;
+  let watchNotifyQueued = false;
+  let notifyStatusWatchers = (): void => {};
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, () => notifyStatusWatchers());
   const reconciler = createAccountReconciler(machineHome, services, managers);
-  const account = createAccountComputer(machineHome, opts.version, reconciler);
+  const account = createAccountComputer(machineHome, opts.version, reconciler, () => notifyStatusWatchers());
   const startedAt = new Date();
   let generation: DaemonStatus["generation"];
   const status = (): DaemonStatus => ({
@@ -173,6 +184,61 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
     ...(opts.updateStatus ? { update: opts.updateStatus() } : {}),
     ...(generation ? { generation } : {}),
   });
+  const statusWatchKey = (s: DaemonStatus): string => {
+    const normAccount = (a: DaemonStatus["account"]) => a ? {
+      ...a,
+      lastRegistration: Boolean(a.lastRegistration),
+      accounts: a.accounts?.map(item => ({ ...item, lastRegistration: Boolean(item.lastRegistration) })),
+    } : undefined;
+    return JSON.stringify({
+      computer: s.computer,
+      computerNameWarning: s.computerNameWarning,
+      state: s.state,
+      protocol: s.protocol,
+      version: s.version,
+      pid: s.pid,
+      startedAt: s.startedAt,
+      managers: s.managers?.map(({ observedAt: _o, ...m }) => m),
+      account: normAccount(s.account),
+      agents: s.agents?.map(({ observedAt: _o, ...a }) => a),
+      update: s.update,
+      generation: s.generation,
+    });
+  };
+  const snapshotStatus = async (cachedAgents: boolean): Promise<DaemonStatus> => {
+    if (!cachedAgents) await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
+    const result = { ...status(), agents: await managers.agents(cachedAgents) };
+    if (!result.update) return result;
+    // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
+    // answers, and an updater that needs the evidence refuses without it.
+    let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
+    try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
+    return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
+  };
+  notifyStatusWatchers = (): void => {
+    if (watchers.size === 0) return;
+    if (watchNotifying) { watchNotifyQueued = true; return; }
+    watchNotifying = true;
+    void (async () => {
+      try {
+        do {
+          watchNotifyQueued = false;
+          if (watchers.size === 0) break;
+          const snap = await snapshotStatus(true);
+          const key = statusWatchKey(snap);
+          await Promise.all([...watchers].map(async (w) => {
+            if (w.sock.destroyed || !w.sock.writable) { watchers.delete(w); return; }
+            if (w.lastKey === key) return;
+            w.lastKey = key;
+            await w.write({ v: DAEMON_PROTOCOL_VERSION, id: w.id, ok: true, event: "status", result: snap });
+          }));
+        } while (watchNotifyQueued && watchers.size > 0);
+      } catch {
+      } finally {
+        watchNotifying = false;
+      }
+    })();
+  };
 
   const sockets = new Set<Socket>();
   const track = (sock: Socket): void => {
@@ -256,7 +322,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
-        replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
+        replyTask(Promise.resolve().then(run).then((result) => {
+          if (req.op !== "status") notifyStatusWatchers();
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+        }, (error: unknown) => {
           counters.requestsRefused++;
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
@@ -283,16 +352,19 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       if (req.op === "status") {
         counters.statusAnswered++;
-        managerResult(async () => {
-          await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
-          const result = { ...status(), agents: await managers.agents() };
-          if (!result.update) return result;
-          // A hosted Manager that is starting or stopping cannot give restart evidence. Status still
-          // answers, and an updater that needs the evidence refuses without it.
-          let restartEvidence: Awaited<ReturnType<typeof managers.preparedGenerationEvidence>> | undefined;
-          try { restartEvidence = await managers.preparedGenerationEvidence(); } catch { restartEvidence = undefined; }
-          return { ...result, update: { ...result.update, ...(restartEvidence ? { restartEvidence } : {}) } };
-        });
+        managerResult(() => snapshotStatus(false));
+        return;
+      }
+      if (req.op === "status-watch") {
+        counters.statusAnswered++;
+        const watcher: StatusWatcher = { id: req.id, sock, write, lastKey: "" };
+        watchers.add(watcher);
+        sock.once("close", () => watchers.delete(watcher));
+        replyTask(snapshotStatus(true).then((initial) => {
+          if (!watchers.has(watcher)) return;
+          watcher.lastKey = statusWatchKey(initial);
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "status", result: initial });
+        }).catch(() => { watchers.delete(watcher); }));
         return;
       }
       if (req.op === "update-settings" || req.op === "update-check") {
@@ -341,13 +413,25 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         replyTask(withIdpSessionDir(machineHome, () => services.register(req.space)).catch((): RegisterResult => ({ outcome: "refused", space: req.space, message: "the daemon could not complete the registration request; nothing is connected" }))
           .then((result) => {
             counters.registersAnswered++;
+            notifyStatusWatchers();
             return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
           }));
         return;
       }
       if (req.op === "service-connect" || req.op === "service-disconnect" || req.op === "service-status") {
+        const notRegistered = {
+          space: req.space, state: "not-registered" as const, message: `Space ${req.space} is not registered on this machine.`,
+          remedy: "Check the space name or run `cotal space` to list registered spaces.",
+        };
         const run = req.op === "service-status" ? Promise.resolve(services.status(req.space))
           : (async () => {
+            if (req.op === "service-connect") {
+              const entry = findMesh(req.space);
+              if (!entry) return notRegistered;
+              if (entry.mode !== "user") return {
+                space: req.space, state: "unsupported" as const, message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY,
+              };
+            }
             // Disconnect retires local authority even when sign-in or the account host is gone.
             // The local removal revision fences account reconciliation until a fresh enable.
             if (req.op === "service-connect" && await account.intent(req.space, true)) return services.status(req.space);
@@ -368,7 +452,36 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         managerResult(async () => {
           const result = await run;
           counters.serviceAnswered++;
-          return { ...result, manager: req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space) };
+          if (req.op === "service-connect" && result.state === "not-registered") return result;
+          const manager = req.op === "service-status" ? await managers.refresh(req.space) : managers.status(req.space);
+          // Read guidance only for these replies, after disconnect has finished removing records.
+          if (!manager.registrationCleanup && ((req.op === "service-status" && (result.state === "not-requested" || result.state === "unsupported")) ||
+              (req.op === "service-disconnect" && result.state === "disconnected"))) {
+            let damaged = false;
+            try {
+              const { entries, unusable } = readMeshRegistry();
+              // Keep pre-hex registrations visible without mistaking a damaged canonical record for a legacy one.
+              damaged = unusable.some(error => error.file === meshFile(req.space));
+              if (!damaged) {
+                const entry = entries.find(entry => entry.space === req.space);
+                if (req.op === "service-status" && result.state === "not-requested" && !entry) return notRegistered;
+                if (entry && entry.mode !== "user") {
+                  if (req.op === "service-status") return { space: req.space, state: "unsupported", message: NON_USER_AUTH_MESSAGE, remedy: NON_USER_AUTH_REMEDY };
+                  return { ...result, message: result.removedRecords?.length === 0 ? "This space does not use the machine service. There was nothing to disconnect." : result.message,
+                    manager: { ...manager, next: NON_USER_AUTH_REMEDY } };
+                }
+              }
+            } catch (error) {
+              if (!isMeshRegistryError(error)) throw error;
+              damaged = true;
+            }
+            if (damaged) {
+              const remedy = "run `cotal daemon spaces` to identify unreadable records, then restore the mesh registry";
+              if (req.op === "service-status") return { space: req.space, state: "unavailable", message: "the mesh registry could not be read for this space", remedy };
+              return { ...result, manager: { ...manager, next: remedy } };
+            }
+          }
+          return { ...result, manager };
         });
         return;
       }
@@ -555,8 +668,30 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
 
   return { paths, counters, dirOutcome, status, close, stopped,
     generationSeats: () => managers.generationSeats(),
-    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; },
-    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner) };
+    generationPending(installed, waiting = "preparing activation") { generation = installed ? { installed, running: opts.version, waiting } : undefined; notifyStatusWatchers(); },
+    async prepareGenerationRestart() { await resumed; await managers.prepareGenerationRestart(daemonRestartOwner); notifyStatusWatchers(); }, abortGenerationRestart: () => managers.abortGenerationRestart(daemonRestartOwner).finally(() => notifyStatusWatchers()) };
+}
+
+/** Recover a predecessor's socket before a different Linux runtime replaces its record. */
+async function recoverPreviousRuntime(paths: DaemonPaths, uid: number, previous: HeldLifetime["previous"]): Promise<void> {
+  const socket = previous?.socket;
+  if (process.platform !== "linux" || !socket || socket.path === paths.socket || !isAbsolute(socket.path)) return;
+  const dir = dirname(socket.path);
+  const parent = dirname(dir);
+  if (basename(socket.path) !== basename(paths.socket) || basename(dir) !== basename(paths.dir!)
+    || (paths.parent !== undefined && basename(parent) !== basename(paths.parent))) return;
+  try {
+    const runtime = lstatSync(paths.parent === undefined ? parent : dirname(parent));
+    if (!runtime.isDirectory() || runtime.uid !== uid || (runtime.mode & 0o022) !== 0) return;
+    if (paths.parent !== undefined) checkDir(parent, uid);
+    checkDir(dir, uid);
+    checkSocket(socket.path, uid);
+    if (await claimSocketPath(socket.path, socket) !== "recover") return;
+    const current = lstatSync(socket.path);
+    if (current.isSocket() && current.uid === uid && current.dev === socket.dev && current.ino === socket.ino) unlinkSync(socket.path);
+  } catch {
+    // The old runtime may be gone or inaccessible. It cannot block serving in the selected runtime.
+  }
 }
 
 /** Linux and macOS: publish the unix socket, and on close remove it only if it is still ours. */
@@ -572,6 +707,7 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
     throw error;
   }
   if (claim === "recover") unlinkSync(paths.socket);
+  await recoverPreviousRuntime(paths, uid, lock.previous);
   lock.discardPrevious();
   if (claim === "recover") {
     counters.socketsRecovered++;
@@ -583,7 +719,8 @@ async function publishSocket(paths: DaemonPaths, uid: number, lock: HeldLifetime
   // whatever sits at the path it bound (measured on Node 24), so binding the private name means
   // close() can only ever remove that name, never a socket another process later put at the
   // public path. The private name is removed as soon as the link exists.
-  const bindPath = join(paths.dir!, `.bind-${process.pid}-${randomBytes(6).toString("hex")}`);
+  // The temporary basename is 11 ASCII bytes, the same length as daemon.sock.
+  const bindPath = join(paths.dir!, `.${randomBytes(7).toString("base64url")}`);
   assertSocketPathFits(bindPath);
   // umask is process-wide; it is narrowed only around listen() and restored in `finally`. The
   // directory is already verified 0700 and the bound socket is chmod-ed and re-checked below, so

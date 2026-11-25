@@ -38,6 +38,7 @@ const task = action => {
 };
 let state;
 let socket;
+let request;
 let modules;
 let prepared = false;
 let committed = false;
@@ -60,20 +61,77 @@ async function load() {
   const [endpoint, client, lifetime] = await Promise.all(['endpoint', 'client', 'lifetime'].map(get));
   return modules = { endpoint, client, lifetime, paths: endpoint.daemonPaths() };
 }
-async function request(op, commit = false) {
-  lastStep = `request:${op}:${commit}`;
-  const id = randomUUID().replaceAll('-', '');
-  const pending = modules.client.readLine(socket, op === 'daemon-stop' && !commit ? 70_000 : 25_000);
-  socket.write(`${JSON.stringify({ v: 1, id, op, ...(commit ? { commit: true } : {}) })}\n`);
-  const response = JSON.parse(await pending);
-  lastStep = `response:${op}:${commit}`;
-  if (response.v !== 1 || response.id !== id || typeof response.ok !== 'boolean' || response.event) throw new Error('The pinned service returned an invalid reply.');
-  if (!response.ok) {
-    const error = new Error(response.error?.message ?? 'The service refused setup.');
-    error.code = response.error?.code;
-    throw error;
-  }
-  return response.result;
+// This helper talks to the installed runtime, which may predate reply correlation.
+function createServiceRequester(socket) {
+  const expired = new Set();
+  let buffer = '';
+  let pending;
+  let failure;
+  const fail = error => {
+    if (failure) return;
+    failure = error;
+    buffer = '';
+    pending?.finish(error);
+    socket.off('data', onData);
+    socket.off('end', onEnd);
+    socket.off('close', onEnd);
+    socket.destroy();
+  };
+  const onEnd = () => fail(new Error('The pinned service closed the connection without a reply.'));
+  const onData = chunk => {
+    buffer += chunk;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      if (Buffer.byteLength(buffer.slice(0, nl + 1), 'utf8') > 64 * 1024) return fail(new Error('The pinned service reply exceeds the line limit.'));
+      let response;
+      try { response = JSON.parse(buffer.slice(0, nl)); }
+      catch { return fail(new Error('The pinned service returned an invalid reply.')); }
+      buffer = buffer.slice(nl + 1);
+      if (!response || typeof response !== 'object' || Array.isArray(response) || response.v !== 1
+          || typeof response.id !== 'string' || typeof response.ok !== 'boolean' || 'event' in response)
+        return fail(new Error('The pinned service returned an invalid reply.'));
+      if (response.ok
+          ? !response.result || typeof response.result !== 'object' || Array.isArray(response.result)
+          : !response.error || typeof response.error.code !== 'string' || typeof response.error.message !== 'string')
+        return fail(new Error('The pinned service returned an invalid reply.'));
+      // Only a request that actually timed out may leave a reply to discard.
+      if (expired.delete(response.id)) continue;
+      if (!pending || response.id !== pending.id) return fail(new Error('The pinned service returned an unknown reply.'));
+      pending.finish(undefined, response);
+    }
+    if (Buffer.byteLength(buffer, 'utf8') >= 64 * 1024) fail(new Error('The pinned service reply exceeds the line limit.'));
+  };
+  socket.setEncoding('utf8');
+  socket.on('data', onData);
+  socket.on('end', onEnd);
+  socket.on('close', onEnd);
+  socket.on('error', fail);
+  return async (op, commit = false) => {
+    if (failure) throw failure;
+    if (pending) throw new Error('A pinned service request is already pending.');
+    lastStep = `request:${op}:${commit}`;
+    const id = randomUUID().replaceAll('-', '');
+    const response = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        expired.add(id);
+        pending.finish(new Error("timed out waiting for the daemon's reply"));
+      }, op === 'daemon-stop' && !commit ? 70_000 : 25_000);
+      pending = { id, finish: (error, value) => {
+        clearTimeout(timer);
+        pending = undefined;
+        if (error) reject(error); else resolve(value);
+      } };
+      try { socket.write(`${JSON.stringify({ v: 1, id, op, ...(commit ? { commit: true } : {}) })}\n`); }
+      catch (error) { fail(error); }
+    });
+    lastStep = `response:${op}:${commit}`;
+    if (!response.ok) {
+      const error = new Error(response.error.message);
+      error.code = response.error.code;
+      throw error;
+    }
+    return response.result;
+  };
 }
 async function absent() {
   lastStep = 'absent';
@@ -178,6 +236,7 @@ try {
       catch (error) { if (!(error instanceof modules.endpoint.EndpointRefusal && error.code === 'NOT_RUNNING')) throw error; }
       socket?.on('error', () => {});
       if (socket) {
+        request = createServiceRequester(socket);
         const status = await request('status');
         state.oldVersion = status.version;
         state.oldPid = status.pid;

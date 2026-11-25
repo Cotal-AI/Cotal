@@ -42,15 +42,16 @@ import {
   accountDisconnectSubject,
   channelFromChatSubscription,
   principalFromConnz,
+  parseMemberKey,
   isChannelFamily,
   subjectMatches,
 } from "./subjects.js";
-import { openMembersRegistry, listMembers } from "./members.js";
-import { liveKvEntries } from "./kv-scan.js";
+import { openMembersRegistry } from "./members.js";
+import { KvReadView } from "./kv-read-view.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
 import { isStreamNotFound } from "./jetstream-missing.js";
-import type { ChannelMembership } from "./types.js";
+import type { ChannelMembership, MembershipRecord } from "./types.js";
 
 /** Whether a feed record's `durable` list covers `channel`: the channel's own row, or a family row
  *  above it (`team.>`, #5404). A family stores copies only for the durable-class channels under it, so
@@ -315,7 +316,8 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   const kvm = new Kvm(connB);
   let feedKv: KV = await kvm.open(membershipBucket(space));
   await requireFeedStore(feedKv, space); // Bind is lazy; refuse missing storage before arming timers.
-  let membersKv: KV = await openMembersRegistry(connB, space);
+  let membersView = new KvReadView(await openMembersRegistry(connB, space));
+  let feedView = new KvReadView(feedKv);
 
   // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
   // Mirrors the endpoint's delivery.creds renewal (adoptFreshCreds / renewCredsOnTimer / runCredsTxn).
@@ -411,7 +413,8 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       const nextMembers = await openMembersRegistry(next, space);
       connB = next;
       feedKv = nextFeed;
-      membersKv = nextMembers;
+      membersView = new KvReadView(nextMembers);
+      feedView = new KvReadView(nextFeed);
       connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
       connBDown = false;
       watchConnB(connB);
@@ -561,6 +564,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     const serversSeen = new Set<string>(); // distinct responders across the whole sweep
     let gotReply = false, exhausted = false, seenSelf = false;
     const dropsBefore = connBDrops;
+    const downBefore = connBDown;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
@@ -599,7 +603,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
     // A sweep that ran while conn B itself was down (its own reconnect) is still incomplete, but it
     // missed nothing: conn B's return emits a CONNECT event, which polls again.
-    if (gotReply && exhausted && !seenSelf && !connBDown && connBDrops === dropsBefore)
+    if (gotReply && exhausted && !seenSelf && !downBefore && !connBDown && connBDrops === dropsBefore)
       log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until
@@ -611,23 +615,12 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     return { live, complete: gotReply && exhausted && seenSelf };
   }
 
-  /** The durable arm: open, activated (non-tombstoned) members from the privileged registry. Mirrors
-   *  endpoint `channelMembers()` so the daemon's union and the manager surface agree. */
-  async function durableFromMembers(): Promise<Map<string, Set<string>>> {
-    const durable = new Map<string, Set<string>>();
-    for (const r of await listMembers(membersKv)) {
-      if (r.leaveCursor !== undefined || r.activated !== true) continue;
-      (durable.get(r.owner) ?? durable.set(r.owner, new Set()).get(r.owner)!).add(r.channel);
-    }
-    return durable;
-  }
-
   async function reconcile(): Promise<void> {
     const { live, complete } = await liveFromConnz();
     // A partial CONNZ sweep (unreachable / truncated) would prune real members and lie about freshness —
     // keep the last good state untouched and don't stamp the heartbeat. Self-heals on the next full poll.
     if (!complete) return;
-    const durable = await durableFromMembers();
+    const durable = durableFromMembers(await membersView.refresh());
     const observedAt = Date.now();
 
     // Merge per agent: CONNZ live patterns ∪ durable concrete channels. An agent with neither is omitted.
@@ -643,11 +636,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // quiet poll bumps no revision and wakes no watcher. Feed-wide freshness rides the heartbeat key below.
     const existing = new Set<string>();
     const current = new Map<string, ChannelMembership>();
-    const entries = await liveKvEntries(feedKv).catch(error => {
+    const view = await feedView.refresh().catch(error => {
       if (isStreamNotFound(error)) throw missingFeedStore(space, error);
       throw error;
     });
-    for (const e of entries) {
+    for (const e of view.entries()) {
       if (e.key === MEMBERSHIP_FEED_KEY) continue;
       existing.add(e.key);
       try {
@@ -770,6 +763,19 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
 }
 
 // ---- internals ----
+
+/** The durable arm of the feed includes only open, activated memberships. */
+function durableFromMembers(view: KvReadView): Map<string, Set<string>> {
+  const members = new Map<string, Set<string>>();
+  for (const entry of view.entries()) {
+    if (!parseMemberKey(entry.key)) continue;
+    let record: MembershipRecord;
+    try { record = entry.json<MembershipRecord>(); } catch { continue; }
+    if (record.leaveCursor !== undefined || record.activated !== true) continue;
+    (members.get(record.owner) ?? members.set(record.owner, new Set()).get(record.owner)!).add(record.channel);
+  }
+  return members;
+}
 
 /** The parts of an observer cred a renewal must keep: its issuer and its whole permission block
  *  (which names the CONNZ account). Unverified claims; the broker preflight is the acceptance proof. */

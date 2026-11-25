@@ -1,14 +1,20 @@
 import strictAssert from "node:assert/strict";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { claimUpdateClosureAccess, clearUpdateRecovery, readUpdateRecovery, SEEDED_EXTENSIONS, updateClosureOwner, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
-import { EndpointRefusal } from "../daemon/endpoint.js";
+import { managerViaDaemon, queryDaemon } from "../daemon/client.js";
+import { daemonPaths, EndpointRefusal } from "../daemon/endpoint.js";
+import { serveDaemon } from "../daemon/server.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "../daemon/install.js";
-import { executeUpdate, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
+import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, unitReceiptFile } from "../daemon/install.js";
+import { currentParentWaits } from "../daemon/update-entry.js";
+import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -70,6 +76,195 @@ function scripted(steps: (Reply | Error)[]) {
   assert.equal(run.calls(), 0);
 }
 
+if (process.platform === "linux") {
+  const paths = daemonPaths();
+  let stops = 0;
+  const old = await serveDaemon({ paths, version: "1.0.0",
+    updateStatus: () => ({ current: "1.0.0", automatic: false, failures: 0, lastResult: "not checked" }),
+    stopAllowed: async () => { stops++; return true; },
+  });
+  const probe = { installed: () => true, quiet: true, restartPrepared: true };
+  try {
+    old.generationPending("2.0.0", "entry verification did not confirm its version (exit null)");
+    await assert.rejects(waitForInstalledDaemonGeneration("2.0.0", { ...probe, timeoutMs: 800 }), /still runs Cotal 1\.0\.0/);
+    assert.equal(stops, 0, "an unprepared daemon is not asked to stop");
+    await old.prepareGenerationRestart();
+    const waiting = waitForInstalledDaemonGeneration("2.0.0", { ...probe, timeoutMs: 10_000 });
+    void waiting.catch(() => {});
+    // Exercise the stock local stop handshake. The real native supervisor is covered by the packed upgrade.
+    await Promise.race([old.stopped, waiting]);
+    assert.equal(stops, 1, "one authenticated stop releases the prepared old generation");
+    const replacement = await serveDaemon({ paths, version: "2.0.0" });
+    try { await waiting; }
+    finally { await replacement.close(); }
+  } finally { await old.close(); }
+}
+
+if (process.platform === "linux") {
+  const directory = join(root, "hosted"), home = join(directory, "home"), project = join(directory, "project"), native = join(directory, "bin");
+  const cotalHome = join(home, ".cotal");
+  const entry = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+  const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+    HOME: home, COTAL_HOME: cotalHome, XDG_CONFIG_HOME: join(home, ".config"), TMPDIR: directory, CLAUDE_CONFIG_DIR: home,
+    PATH: `${native}:${process.env.PATH}`, DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", COTAL_NO_UPDATE_CHECK: "1",
+    COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1",
+  };
+  const seedDir = join(env.XDG_CONFIG_HOME!, "cotal", "seed");
+  for (const dir of [seedDir, join(project, ".cotal"), cotalHome, native]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const authority = JSON.stringify({ everSeeded: Object.keys(SEEDED_EXTENSIONS).filter(name => name !== "claude") });
+  for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seedDir, file), authority, { mode: 0o600 });
+  writeFileSync(join(native, "claude"), "#!/bin/sh\necho '2.1.330 (Claude Code)'\n", { mode: 0o700 });
+  // An existing user MCP entry lets the real Claude setup provider run without plugin installation or an agent.
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { cotal: { command: "cotal", args: [] } } }), { mode: 0o600 });
+  const seed = spawnSync(process.execPath, [entry, "ext", "seed"], { env, cwd: project, encoding: "utf8", timeout: 180_000 });
+  assert.equal(seed.status, 0, `${seed.error ?? ""}\n${seed.stdout}${seed.stderr}`);
+  const fixture = new URL("../../implementations/auth/smoke/update-participant.fixture.ts", import.meta.url).href;
+  const participant = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", `
+    import { prepareUpdateParticipant } from ${JSON.stringify(fixture)};
+    const report = {};
+    const close = await prepareUpdateParticipant({ env: process.env, project: process.cwd(), cotalHome: process.env.COTAL_HOME, report });
+    process.stdout.write('HOSTED_PARTICIPANT ' + report.participant.space + '\\n');
+    process.stdin.resume();
+    process.stdin.once('end', () => void close().catch(error => { console.error(error); process.exitCode = 1; }));
+  `], { env, cwd: project, stdio: ["pipe", "pipe", "inherit"] });
+  const participantStopped = new Promise<number | null>(resolve => participant.once("close", resolve));
+  participant.stdin!.on("error", () => { /* The exit observation reports a failed fixture. */ });
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = cotalHome;
+  const paths = daemonPaths(env);
+  let daemon: ChildProcess | undefined, release: (() => void) | undefined;
+  let log = "";
+  async function start() {
+    daemon = spawn(process.execPath, [entry, "daemon", "serve"], { env, cwd: project, stdio: ["ignore", "pipe", "pipe"] });
+    daemon.stdout!.on("data", bytes => { log += String(bytes); });
+    daemon.stderr!.on("data", bytes => { log += String(bytes); });
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const status = await queryDaemon({ paths, timeoutMs: 1000 }).catch(() => undefined);
+      if (status?.ok && status.result.pid === daemon.pid) return;
+      if (daemon.exitCode !== null || Date.now() >= deadline) throw new Error(`daemon did not answer: ${log}`);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+  try {
+    let output = "";
+    const space = await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`participant fixture did not start: ${output}`)), 20_000);
+      void participantStopped.then(() => { clearTimeout(timer); reject(new Error(`participant fixture exited: ${output}`)); });
+      participant.stdout!.on("data", bytes => {
+        output += String(bytes);
+        const match = /^HOSTED_PARTICIPANT (\S+)\n/m.exec(output);
+        if (match) { clearTimeout(timer); resolve(match[1]!); }
+      });
+    });
+    await start();
+    const before = await managerViaDaemon({ paths }, { op: "manager-start", space });
+    assert.equal(before.state, "answering", JSON.stringify(before));
+    await killAndAwaitExit(daemon!, "SIGTERM");
+    release = claimUpdateClosureAccess();
+    writeUpdateRecovery({ previous: "0.0.0", target: version, installed: version, phase: "verified-ready", reason: "waiting for hosted readiness", owner: updateClosureOwner() });
+    await start();
+    // This is the same wait the updater runs while it still owns the live closure. The new
+    // daemon has no inherited transaction environment and must resume its recorded Manager.
+    await waitForInstalledDaemonGeneration(version, { installed: () => true, timeoutMs: 20_000 });
+    const after = await queryDaemon({ paths });
+    assert.ok(after.ok);
+    const manager = after.result.managers?.find(row => row.space === space);
+    assert.equal(manager?.state, "answering", JSON.stringify(after.result.managers));
+    assert.notEqual(manager?.pid, before.pid);
+    assert.equal(manager?.connectors?.find(row => row.agent === "claude")?.state, "available", JSON.stringify(manager?.connectors));
+    assert.equal(readUpdateRecovery()?.owner?.pid, process.pid, "the updater still holds its transaction when the Manager answers");
+  } finally {
+    if (release) { clearUpdateRecovery(); release(); }
+    try { if (daemon && daemon.exitCode === null && daemon.signalCode === null) await killAndAwaitExit(daemon, "SIGTERM"); }
+    finally {
+      process.env.COTAL_HOME = priorHome;
+      participant.stdin!.end();
+      const timer = setTimeout(() => void killAndAwaitExit(participant), 10_000);
+      try { assert.equal(await participantStopped, 0, "participant fixture shut down cleanly"); }
+      finally { clearTimeout(timer); }
+    }
+  }
+}
+
+// A version change prints the wait once across the parent and its reconcile child: the child
+// waits without printing, because a current parent prints. A current install has only the tail wait.
+{
+  for (const newer of [true, false]) {
+    const globalPrefix = join(root, `count-${newer}`);
+    const globalModules = join(globalPrefix, "lib", "node_modules");
+    mkdirSync(globalModules, { recursive: true, mode: 0o700 });
+    const lines: string[] = [];
+    const say = (line: string) => { if (line.includes("waiting up to") || line.includes("service is")) lines.push(line); };
+    const child = async (env: NodeJS.ProcessEnv) => {
+      const prior = console.log;
+      console.log = (line?: unknown) => say(String(line));
+      const currentParent = currentParentWaits(env, process.pid, true);
+      try {
+        await waitForInstalledDaemonGeneration("0.13.2", {
+          installed: () => true, timeoutMs: 1_000, quiet: currentParent,
+          query: (async () => status("0.13.2")) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+        });
+      } finally { console.log = prior; }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const rt: UpdateRuntime = {
+      ...updateRuntime, env: {}, pid: process.pid, version: () => "0.13.1", checkout: () => false, installPrefix: () => globalPrefix,
+      reportRunningManager: async () => "none", reconcile: async () => {}, refreshConnectors: async () => {}, refreshClients: async () => [],
+      extensions: () => [], claimUpdatePass: () => () => {}, claimGlobalUpdate: () => () => {},
+      verifyGlobalEntry: (_r, v) => join(globalModules, `cotal-${v}.js`),
+      npm: args => args[0] === "view" ? { status: 0, stdout: newer ? '"0.13.2"' : '"0.13.1"', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${globalModules}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
+      npmAsync: async args => {
+        const spec = args[1]!;
+        const v = spec.slice(spec.lastIndexOf("@") + 1);
+        return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
+      },
+      spawnGlobal: async (_r, op, _f, _a, env) => op === "reconcile" && env.COTAL_UPDATE_PARENT ? child(env) : { status: 0, stdout: "", stderr: "" },
+      waitForInstalledGeneration: async () => { say("machine daemon: waiting up to 120s"); },
+      out: say, err: say,
+    };
+    await update({ values: { self: true }, positionals: [] } as never, rt);
+    if (rt.generationWaited !== true) say("machine daemon: waiting up to 120s");
+    assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1, newer ? "parent and child print the wait once" : "a current install prints the wait once");
+  }
+}
+
+// A parent from before the marker binds its child the same way and never waits after it. Its child
+// keeps the line: the update from 0.164.10 otherwise waits up to 120 s without saying so.
+{
+  const olderParent = { COTAL_UPDATE_PARENT: String(process.pid) };
+  assert.equal(currentParentWaits(olderParent, process.pid, true), false, "a child of an older parent is not quiet");
+  assert.equal(currentParentWaits({ ...olderParent, COTAL_UPDATE_PARENT_WAITS: "1" }, process.pid, true), true, "a child of a waiting parent is quiet");
+  assert.equal(currentParentWaits({ ...olderParent, COTAL_UPDATE_PARENT_WAITS: "1" }, process.pid + 1, true), false, "the marker of another process does not quiet this child");
+  const lines: string[] = [];
+  const prior = console.log;
+  console.log = (line?: unknown) => { lines.push(String(line)); };
+  try {
+    await waitForInstalledDaemonGeneration("0.13.2", {
+      installed: () => true, timeoutMs: 1_000, quiet: currentParentWaits(olderParent, process.pid, true),
+      query: (async () => status("0.13.2")) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+    });
+  } finally { console.log = prior; }
+  assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1, "the child of an older parent prints the wait once");
+}
+
+// A quiet child's refused wait keeps the progress line its parent will never reach.
+for (const ownership of [false, true]) {
+  const lines: string[] = [];
+  const prior = console.log;
+  console.log = (line?: unknown) => { lines.push(String(line)); };
+  const refusal = new EndpointRefusal("PEER_UID_MISMATCH", "another user answers");
+  try {
+    await assert.rejects(waitForInstalledDaemonGeneration("2.0.0", {
+      installed: () => true, quiet: true, timeoutMs: 50,
+      query: scripted([ownership ? refusal : status("1.0.0")]).query,
+    }), ownership ? error => error === refusal : /did not become ready/);
+  } finally { console.log = prior; }
+  assert.deepEqual(lines, ["machine daemon: waiting up to 0s for Cotal 2.0.0 and its hosted Managers before the continuity check"], "a quiet refusal prints exactly the suppressed wait line");
+}
+
 // A stale recorded service is knowable before either replacement or connector writes.
 for (const self of [true, false]) {
   const state = join(root, `stale-${self}`);
@@ -82,7 +277,7 @@ for (const self of [true, false]) {
     ...updateRuntime, ...preflight, env: {}, version: () => "0.13.1",
     reportRunningManager: async () => "none",
     reconcile: async () => { effects.push("reconcile"); },
-    refreshConnectors: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
+    refreshConnectors: async () => {}, refreshClients: async () => [], extensions: () => [], claimUpdatePass: () => () => {},
     npm: args => {
       // Only latest-tag discovery precedes the preflight on the self path.
       if (args[0] === "view" && args[1] === "cotal-ai@latest") return { status: 0, stdout: '"0.13.2"', stderr: "" };
@@ -98,8 +293,8 @@ for (const self of [true, false]) {
 
 // Receipt validation never treats malformed state as absent, and leaves other installs alone.
 {
-  const state = join(root, "receipts");
-  mkdirSync(state, { mode: 0o700 });
+  const state = join(root, "receipts", "daemon");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
   const paths = { state, lock: join(state, "lock"), socket: join(state, "socket") };
   assert.equal(preflightInstalledDaemon({ state }), false);
   writeFileSync(unitReceiptFile(paths), "not json");
@@ -109,18 +304,90 @@ for (const self of [true, false]) {
     mkdirSync(native, { mode: 0o700 });
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif (process.argv.slice(2).join(' ') !== '--user show-environment') process.exit(99);\nconsole.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
-    const priorPath = process.env.PATH, priorEntry = process.argv[1], priorExecArgv = process.execArgv;
+    const priorPath = process.env.PATH, priorEntry = process.argv[1], priorExecArgv = process.execArgv, priorHome = process.env.COTAL_HOME;
     process.execArgv = [];
     process.argv[1] = fileURLToPath(new URL("../cotal.ts", import.meta.url));
     process.env.PATH = `${native}:${priorPath}`;
+    process.env.COTAL_HOME = join(root, "receipts");
     try {
-      const source = 'ExecStart="/other/node" "/other/cotal.js" daemon serve\n';
+      const foreign = join(root, "other");
+      mkdirSync(foreign, { mode: 0o700 });
+      for (const file of ["node", "cotal.js"]) writeFileSync(join(foreign, file), "");
+      const source = `ExecStart="${join(foreign, "node")}" "${join(foreign, "cotal.js")}" daemon serve\n`;
       const unitPath = join(directory, "cotal-daemon.service");
       writeFileSync(unitPath, source, { mode: 0o600 });
       const receipt = { v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(source).digest("hex"), installedAt: "2026-11-12" };
       writeFileSync(unitReceiptFile(paths), JSON.stringify(receipt));
       assert.equal(installedDaemonIdentity(paths).same, false);
       assert.equal(preflightInstalledDaemon({ state }), true);
+      const priorReconcile = process.env.COTAL_INSTALL_RECONCILE;
+      process.env.COTAL_INSTALL_RECONCILE = "1";
+      const priorLauncher = process.env.COTAL_LAUNCHER, priorPrefix = process.env.npm_config_prefix;
+      const shellRoot = join(root, "shell");
+      const shellEntry = join(shellRoot, "lib/node_modules/cotal-ai/dist/cotal.js");
+      mkdirSync(join(shellRoot, "lib/node_modules/cotal-ai/dist"), { recursive: true });
+      writeFileSync(join(shellRoot, "lib/node_modules/cotal-ai/package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
+      writeFileSync(shellEntry, "");
+      const oldEntry = process.argv[1];
+      process.env.COTAL_LAUNCHER = "1";
+      process.env.npm_config_prefix = shellRoot;
+      process.argv[1] = shellEntry;
+      writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nif(process.argv.includes('show-environment')) console.log(${JSON.stringify(`XDG_CONFIG_HOME=${config}`)});\n`, { mode: 0o700 });
+      try {
+        const missing = `Environment=COTAL_DAEMON_NATIVE_SERVICE=1\nExecStart="${shellRoot}/runtime/removed/bin/node" "${shellEntry}" daemon serve\n`;
+        const save = (text: string) => {
+          writeFileSync(unitPath, text);
+          writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitSha256: createHash("sha256").update(text).digest("hex") }));
+        };
+        save(missing);
+        delete process.env.COTAL_INSTALL_RECONCILE;
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), missing, "ordinary update does not rewrite runtime identity");
+        process.env.COTAL_INSTALL_RECONCILE = "1";
+        const unmarked = missing.replace("Environment=COTAL_DAEMON_NATIVE_SERVICE=1\n", "");
+        save(unmarked);
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), unmarked, "unmarked source is not adopted");
+        const oldNode = join(shellRoot, "runtime/removed/bin/node");
+        mkdirSync(join(shellRoot, "runtime/removed/bin"), { recursive: true });
+        writeFileSync(oldNode, "retained runtime");
+        save(missing);
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), missing, "existing runtime is not replaced");
+        rmSync(oldNode);
+        reconcileMissingShellRuntime(paths);
+        assert.equal(installedDaemonIdentity(paths).same, true, "missing same-entry shell runtime is rebound to this Node");
+        assert.ok(!readFileSync(unitPath, "utf8").includes("runtime/removed"));
+        writeFileSync(unitPath, missing);
+        assert.throws(() => reconcileMissingShellRuntime(paths), /not the unit this daemon installed/, "edited native source is never adopted");
+        writeFileSync(unitPath, source);
+        writeFileSync(unitReceiptFile(paths), JSON.stringify(receipt));
+        reconcileMissingShellRuntime(paths);
+        assert.equal(readFileSync(unitPath, "utf8"), source, "foreign entry is untouched");
+      } finally {
+        if (priorReconcile === undefined) delete process.env.COTAL_INSTALL_RECONCILE; else process.env.COTAL_INSTALL_RECONCILE = priorReconcile;
+        process.argv[1] = oldEntry;
+        if (priorLauncher === undefined) delete process.env.COTAL_LAUNCHER; else process.env.COTAL_LAUNCHER = priorLauncher;
+        if (priorPrefix === undefined) delete process.env.npm_config_prefix; else process.env.npm_config_prefix = priorPrefix;
+      }
+      for (const currentParent of [false, true]) {
+        const lines: string[] = [];
+        const priorLog = console.log;
+        console.log = (line?: unknown) => { lines.push(String(line)); };
+        const oldParent = { COTAL_UPDATE_PARENT: String(process.pid) };
+        try {
+          await waitForInstalledDaemonGeneration("0.13.2", {
+            quiet: currentParentWaits({ ...oldParent, ...(currentParent ? { COTAL_UPDATE_PARENT_WAITS: "1" } : {}) }, process.pid, true),
+            query: (async () => { throw new Error("another installation must never be queried"); }) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+          });
+          if (currentParent) await waitForInstalledDaemonGeneration("0.13.2", {
+            query: (async () => { throw new Error("another installation must never be queried"); }) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+          });
+        } finally { console.log = priorLog; }
+        assert.equal(lines.filter(line => line.includes("the background service belongs to another Cotal installation")).length, 1,
+          currentParent ? "the marked child and parent report another installation once" : "the child of an older parent keeps the other installation fact");
+        assert.ok(lines.includes(`machine daemon: the background service belongs to another Cotal installation (${join(foreign, "cotal.js")}). This update did not start or stop it.`));
+      }
       writeFileSync(unitReceiptFile(paths), JSON.stringify({ ...receipt, unitPath: join(state, "outside.service") }));
       writeFileSync(join(state, "outside.service"), source, { mode: 0o600 });
       assert.throws(() => preflightInstalledDaemon(paths), (error: Error & { remedy?: string }) => {
@@ -129,7 +396,7 @@ for (const self of [true, false]) {
         assert.match(error.remedy!, /remove only.*daemon install.*daemon uninstall/);
         return true;
       });
-    } finally { process.env.PATH = priorPath; process.argv[1] = priorEntry!; process.execArgv = priorExecArgv; }
+    } finally { process.env.PATH = priorPath; process.env.COTAL_HOME = priorHome; process.argv[1] = priorEntry!; process.execArgv = priorExecArgv; }
   }
 }
 
@@ -165,9 +432,9 @@ for (const fail of [false, true]) {
   assert.deepEqual(order, ["poll-stop", "close"], "disabled or foreign stopped service returns without querying the daemon socket");
 }
 
-// A reconcile child exiting 0 never satisfies upgradeAndReconcile or repairReplacement unless the daemon answers at the target version.
-for (const firstReconcileFails of [false, true]) {
-  const cellRoot = join(root, `reconcile-ready-${firstReconcileFails}`);
+// Failed readiness rolls the package back. A deliberately deferred native activation keeps the verified software.
+for (const outcome of ["not-ready", "reconcile-failed", "activation-deferred"] as const) {
+  const cellRoot = join(root, outcome);
   const globalPrefix = join(cellRoot, "global");
   const globalModules = join(globalPrefix, "lib", "node_modules");
   mkdirSync(globalModules, { recursive: true, mode: 0o700 });
@@ -180,7 +447,8 @@ for (const firstReconcileFails of [false, true]) {
   for (const dir of [process.env.HOME, process.env.COTAL_HOME, process.env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
     let reconcileCalls = 0;
-    const waits: string[] = [], errors: string[] = [];
+    const waits: string[] = [], errors: string[] = [], output: string[] = [];
+    const partial = "cotal-ai@0.13.2 reconciled, but the machine daemon still runs Cotal 0.13.1";
     const rt: UpdateRuntime = {
       ...updateRuntime,
       env: {},
@@ -189,7 +457,7 @@ for (const firstReconcileFails of [false, true]) {
       installPrefix: () => globalPrefix,
       reportRunningManager: async () => "none",
       reconcile: async () => {},
-      refreshConnectors: async () => [],
+      refreshConnectors: async () => {}, refreshClients: async () => [],
       extensions: () => [],
       claimUpdatePass: () => () => {},
       claimGlobalUpdate: () => () => {},
@@ -201,19 +469,29 @@ for (const firstReconcileFails of [false, true]) {
         return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
       },
       spawnGlobal: async (_r, op) => {
-        if (op === "reconcile" && ++reconcileCalls === 1 && firstReconcileFails) return { status: 1, stdout: "", stderr: "transient reconcile error" };
+        if (op === "reconcile" && ++reconcileCalls === 1 && outcome === "reconcile-failed") return { status: 1, stdout: "", stderr: "transient reconcile error" };
         return { status: 0, stdout: "", stderr: "" };
       },
       waitForInstalledGeneration: async v => {
         waits.push(v);
+        if (outcome === "activation-deferred") return partial;
         if (v === "0.13.2") throw new Error("installed Cotal 0.13.2 did not become ready");
       },
-      out: () => {},
+      out: line => { output.push(line); },
       err: line => { errors.push(line); },
     };
     assert.equal(await executeUpdate(true, rt), 1);
-    assert.deepEqual(waits, ["0.13.2", "0.13.1"], "parent requires daemon readiness at 0.13.2 and verifies restored 0.13.1");
-    assert.ok(errors.some(line => line.includes("cotal-ai@0.13.1 was restored and reconciled")), errors.join("\n"));
+    if (outcome === "activation-deferred") {
+      assert.equal(reconcileCalls, 1, "a partial result does not roll back verified software");
+      assert.deepEqual(waits, ["0.13.2"]);
+      assert.deepEqual(errors, [partial]);
+      assert.ok(!output.some(line => line.includes("installed globally and reconciled")));
+      assert.equal(JSON.parse(readFileSync(join(process.env.COTAL_HOME, "update-attempt.json"), "utf8")).result, partial);
+      assert.equal(JSON.parse(readFileSync(join(process.env.COTAL_HOME, "update-recovery.json"), "utf8")), null);
+    } else {
+      assert.deepEqual(waits, ["0.13.2", "0.13.1"], "parent requires daemon readiness at 0.13.2 and verifies restored 0.13.1");
+      assert.ok(errors.some(line => line.includes("cotal-ai@0.13.1 was restored and reconciled")), errors.join("\n"));
+    }
   } finally {
     if (priorHome === undefined) delete process.env.HOME; else process.env.HOME = priorHome;
     if (priorCotal === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorCotal;

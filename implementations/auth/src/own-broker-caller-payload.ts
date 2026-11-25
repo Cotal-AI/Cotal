@@ -12,7 +12,7 @@ import { isAccountNkey, type SecretStore } from "@cotal-ai/core";
 import { getSpaceAuth, readSystemSigningSeed } from "@cotal-ai/workspace";
 import { mintServiceCallerPayloadObserverCreds, type ServiceCallerPayloadBootstrap } from "./service-caller-payload-bootstrap.js";
 
-export type OwnBrokerCallerPayload =
+type OwnBrokerCallerPayload =
   | { state: "composed"; sysPub: string; callerPayload: ServiceCallerPayloadBootstrap }
   | { state: "absent"; reason: string };
 

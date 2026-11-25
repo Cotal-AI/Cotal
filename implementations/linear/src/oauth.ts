@@ -40,7 +40,7 @@ const LOGIN_TIMEOUT_MS = 5 * 60_000;
 /** Refresh this long before the access token expires. */
 const REFRESH_MARGIN_MS = 60_000;
 
-export function scopeFor(mode: LinearMode): string {
+function scopeFor(mode: LinearMode): string {
   return mode === "readonly" ? "read" : "read write";
 }
 

@@ -51,6 +51,12 @@ const shapes: Array<{ name: string; render: () => string }> = [
   },
 ];
 
+for (const brokerVersion of ["2.12.0", "2.14.0", "2.15.1", "3.0.0"]) {
+  for (const text of [openServerConfig({ brokerVersion, transport: { kind: "plaintext" }, storeDir }), serverConfig(auth, [auth], { brokerVersion, transport: { kind: "plaintext" }, storeDir })]) {
+    assert.equal(text.includes("default_max_consumers: -1"), brokerVersion === "2.15.1" || brokerVersion === "3.0.0");
+  }
+}
+
 for (const s of shapes) {
   const conf = s.render();
   assert.match(conf, /^port: 43\d\d$/m, `shape ${s.name}: no port rendered`);
@@ -113,9 +119,8 @@ for (const [what, tlsConf, plainConf] of [
   }
 }
 
-// The JetStream store cap (`maxFileStore`, #1888). Unset must render the bytes every existing
-// broker config already has, so a mesh that never asks for a cap is not restarted into a different
-// config. Set must render `max_file_store` inside the same block on both renderers. An invalid cap
+// The JetStream store cap (`maxFileStore`, #1888). Omitting brokerVersion retains the legacy
+// configuration shape. Set must render `max_file_store` inside the same block on both renderers. An invalid cap
 // is refused by the renderer rather than clamped or defaulted.
 {
   const bare = `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;
@@ -175,13 +180,22 @@ for (const [what, tlsConf, plainConf] of [
   const set = serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, wsPort: 4332, extraAccounts: extra, maxPayload: SERVICE_CALLER_PAYLOAD_FLOOR });
   assert.ok(set.includes(`\nmax_control_line: 65536\nmax_payload: ${SERVICE_CALLER_PAYLOAD_FLOOR}\n`), "serverConfig: a set maxPayload renders max_payload after the control-line limit");
   assert.equal(set.replace(`max_payload: ${SERVICE_CALLER_PAYLOAD_FLOOR}\n`, ""), unset, "serverConfig: a set maxPayload adds only that line");
+  const openUnset = openServerConfig({ transport: { kind: "plaintext" }, port: 4330, storeDir });
+  assert.equal(openServerConfig({ transport: { kind: "plaintext" }, port: 4330, storeDir, maxPayload: undefined }), openUnset,
+    "openServerConfig: an explicit undefined maxPayload renders byte-identical config");
+  const openSet = openServerConfig({ transport: { kind: "plaintext" }, port: 4330, storeDir, maxPayload: 2097152 });
+  assert.ok(openSet.includes("\nmax_control_line: 65536\nmax_payload: 2097152\n"), "openServerConfig: maxPayload renders after the control-line limit");
+  assert.equal(openSet.replace("max_payload: 2097152\n", ""), openUnset, "openServerConfig: a set maxPayload adds only that line");
   // The floor is one number, in core, that both the renderer's caller and the auth host read.
   assert.equal(SERVICE_CALLER_PAYLOAD_FLOOR, SERVICE_AUTHORITY_MAX_BYTES + SERVICE_CALLER_PAYLOAD_OVERHEAD,
     "the caller payload floor is the authority envelope limit plus the write's header bound");
   assert.equal(SERVICE_CALLER_PAYLOAD_FLOOR, 2098176, "the caller payload floor is the 2098176 bytes every caller-grants surface names");
-  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
     assert.throws(() => serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: 4331, storeDir, maxPayload: bad }),
       /serverConfig: maxPayload must be a positive safe integer of bytes/, `serverConfig: maxPayload ${bad} is refused naming the option`);
+    assert.throws(() => openServerConfig({ transport: { kind: "plaintext" }, port: 4330, storeDir, maxPayload: bad }),
+      /openServerConfig: maxPayload must be a positive safe integer of bytes/, `openServerConfig: maxPayload ${bad} is refused naming the option`);
+  }
 }
 
 console.log(`serverconfig-shapes smoke: OK - all 4 call-site shapes render (incl. the :live-only extraAccounts-from-variable form), tls renders on both renderers, allow_non_tls/handshake_first/verify never emitted, open renderer carries no auth material, maxFileStore unset is byte-identical and set renders max_file_store, invalid caps refused, authTimeout unset is byte-identical and set renders the authorization block, maxPayload unset is byte-identical and set renders max_payload at the caller floor`);

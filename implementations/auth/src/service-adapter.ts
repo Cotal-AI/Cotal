@@ -7,7 +7,8 @@ import {
   validateServiceStartupPath, type LocalProcess, type ServicePreset,
 } from "@cotal-ai/workspace";
 import { authServiceFlags } from "./daemon-flags.js";
-import { authServiceConfiguration, runAuthService } from "./service.js";
+import { authServiceConfiguration } from "./service.js";
+import { runAuthService } from "./service-host.js";
 
 const daemonOptions = authServiceFlags.filter((flag) => flag.name !== "space");
 const portOptions = new Set(["port", "exchange-public-port"]);
@@ -40,13 +41,13 @@ function nativeValues(space: string, server: string, options: Readonly<Record<st
   return values;
 }
 
-export const authServicePreset: ServicePreset = {
+const authServicePreset: ServicePreset = {
   kind: "service-preset", name: "auth-service", adapter: "auth-service", timeoutMs: 60000,
   summary: "sign-in and access checks for a user-auth space",
   defaults: { root: { space: "root" } },
 };
 
-export const authServiceProcess: LocalProcess = {
+const authServiceProcess: LocalProcess = {
   kind: "local-process", name: "auth-service", label: "auth service", order: 30,
   controllerOnly: true, pidFile: AUTH_PIDFILE,
   service: {
@@ -79,7 +80,7 @@ function validateChild(args: ParsedArgs): void {
   serviceOperationId(args.values["service-instance"]); serviceOperationId(args.values["launch-request"]);
 }
 
-export const nativeAuthServiceCommand: Command = {
+const nativeAuthServiceCommand: Command = {
   kind: "command", name: "__service-auth", hidden: true, prepareMeshTarget: false,
   summary: "native auth-service child with exclusive process custody and a private startup receipt",
   flags: [...authServiceFlags,

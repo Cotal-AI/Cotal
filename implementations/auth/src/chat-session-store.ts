@@ -31,17 +31,17 @@ import {
 } from "@cotal-ai/core";
 import { assertChatActor, assertChatList, assertHolderHash, CHAT_SESSION_MAX_TTL_MS } from "./chat-session-row.js";
 
-export const CHAT_HOLDER_PREFIX = "chatholder";
-export const CHAT_OWNER_PREFIX = "chatowner";
-export const CHAT_SWEEP_CURSOR_KEY = "chatsweep.cursor";
+const CHAT_HOLDER_PREFIX = "chatholder";
+const CHAT_OWNER_PREFIX = "chatowner";
+const CHAT_SWEEP_CURSOR_KEY = "chatsweep.cursor";
 
 /** At most 16 non-retired sessions per owner. */
-export const CHAT_LIVE_MAX = 16;
+const CHAT_LIVE_MAX = 16;
 /** At most 10 admissions per fixed 60 s window, never refunded. */
-export const CHAT_WINDOW_MS = 60_000;
-export const CHAT_WINDOW_MAX = 10;
+const CHAT_WINDOW_MS = 60_000;
+const CHAT_WINDOW_MAX = 10;
 /** Bounded reservation attempts, each from a fresh leader read. */
-export const CHAT_QUOTA_ATTEMPTS = 3;
+const CHAT_QUOTA_ATTEMPTS = 3;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const B32 = "abcdefghijklmnopqrstuvwxyz234567";
@@ -52,7 +52,7 @@ const closedKeys = (o: Record<string, unknown>, required: string[], optional: st
   required.every((k) => k in o) && Object.keys(o).every((k) => required.includes(k) || optional.includes(k));
 
 /** Draw a fresh server-side chat actor `chat_<26 base32>` (130 bits). The caller never chooses it. */
-export function drawChatActor(): string {
+function drawChatActor(): string {
   const bytes = randomBytes(17);
   let bits = 0, acc = 0, out = "";
   for (const b of bytes) {
@@ -69,11 +69,11 @@ export function drawChatActor(): string {
 
 // ---- keys ----------------------------------------------------------------------------------
 
-export function chatHolderKey(owner: string, holderHash: string): string {
+function chatHolderKey(owner: string, holderHash: string): string {
   return `${CHAT_HOLDER_PREFIX}.${assertDerivedOwnerToken(owner)}.${assertHolderHash(holderHash)}`;
 }
 
-export function chatOwnerKey(owner: string): string {
+function chatOwnerKey(owner: string): string {
   return `${CHAT_OWNER_PREFIX}.${assertDerivedOwnerToken(owner)}`;
 }
 
@@ -86,12 +86,12 @@ export function chatAuthorityWriteSubjects(space: string): string[] {
 
 // ---- IDX -----------------------------------------------------------------------------------
 
-export type ChatHolderState = "reserved" | "provisioning" | "active" | "retired";
+type ChatHolderState = "reserved" | "provisioning" | "active" | "retired";
 export type ChatRetiredBy = "sweep" | "close" | "rollback";
 const HOLDER_STATES: ReadonlySet<string> = new Set(["reserved", "provisioning", "active", "retired"]);
 const RETIRED_BY: ReadonlySet<string> = new Set(["sweep", "close", "rollback"]);
 
-export interface ChatCeiling {
+interface ChatCeiling {
   read: string[];
   post: string[];
 }
@@ -115,7 +115,7 @@ export interface Versioned<T> {
   revision: number;
 }
 
-export function parseChatHolderIndex(raw: unknown, key: string): ChatHolderIndex {
+function parseChatHolderIndex(raw: unknown, key: string): ChatHolderIndex {
   const bad = (why: string): never => {
     throw new EpEnvelopeError("internal", `the chat holder index ${key} ${why}; garbled trusted-path state never authorizes`);
   };
@@ -174,19 +174,19 @@ function assertHolderTransition(from: ChatHolderIndex, to: ChatHolderIndex, key:
 
 // ---- Q -------------------------------------------------------------------------------------
 
-export interface ChatQuotaEntry {
+interface ChatQuotaEntry {
   holderHash: string;
   actor: string;
   reservedAt: number;
 }
 
-export interface ChatOwnerQuota {
+interface ChatOwnerQuota {
   v: 1;
   live: ChatQuotaEntry[];
   window: { startMs: number; count: number };
 }
 
-export function parseChatOwnerQuota(raw: unknown, key: string): ChatOwnerQuota {
+function parseChatOwnerQuota(raw: unknown, key: string): ChatOwnerQuota {
   const bad = (why: string): never => {
     throw new EpEnvelopeError("internal", `the chat owner quota ${key} ${why}; garbled trusted-path state never authorizes`);
   };
@@ -217,7 +217,7 @@ export interface ChatSweepCursor {
   holderSeq: number;
 }
 
-export function parseChatSweepCursor(raw: unknown): ChatSweepCursor {
+function parseChatSweepCursor(raw: unknown): ChatSweepCursor {
   if (!isRec(raw) || !closedKeys(raw, ["v", "rowName", "holderSeq"]) || raw.v !== 1 || typeof raw.rowName !== "string" || raw.rowName.length > 256 || !uint(raw.holderSeq))
     throw new EpEnvelopeError("internal", `the chat sweep cursor ${CHAT_SWEEP_CURSOR_KEY} is not the closed v1 record`);
   return raw as unknown as ChatSweepCursor;
@@ -243,7 +243,7 @@ function decode<T>(entry: KvEntry | null, key: string, parse: (raw: unknown, key
   return { value: parse(raw, key), revision: entry.revision };
 }
 
-export interface QuotaReservation {
+interface QuotaReservation {
   actor: string;
   reservedAt: number;
   /** True when an existing entry for this holderHash was found and reused. */
@@ -251,7 +251,7 @@ export interface QuotaReservation {
 }
 
 /** One scanned record from a bounded leader-served discovery page. */
-export interface ScannedChatRecord {
+interface ScannedChatRecord {
   key: string;
   seq: number;
 }

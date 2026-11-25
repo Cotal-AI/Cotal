@@ -52,7 +52,7 @@ import type { KV } from "@nats-io/kv";
 
 const enc = new TextEncoder();
 
-export interface StaticLifecycleAuditSpec {
+interface StaticLifecycleAuditSpec {
   v: 1; principal: string; alias: string; lifecycleUid: string;
   managerInstance: string; managerProcessUid: string; retirementOpId: string;
   broker: Pick<EvictionResult, "kicked" | "remaining" | "scanComplete" | "verifiedGone">;

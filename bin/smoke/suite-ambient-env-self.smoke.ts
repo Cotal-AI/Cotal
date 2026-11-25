@@ -219,6 +219,10 @@ const REVIEWED: Record<string, string> = {
   // before Manager construction, including the child's allocated space, name, id, UID and manager.
   "implementations/manager/smoke/multi-tool-seat.mjs":
     "manager-multi-live launches this child through its own multi-tool-seat connector's allowlisted environment and the manager's allocated identity. The suite keeps hostile ambient agent-file, servers, space, name, id, owner and actor values in the launcher and verifies the child resolves its allocated identity and routes all tools to its launching manager. Scrubbing in this child would delete the identity it was launched to consume.",
+  // Measured: static-helper-control passes with a hostile caller agent file, servers, space, name
+  // and id plus a probe variable, and none of the 8 seats it launches carries any of them.
+  "implementations/manager/smoke/static-helper-seat.mjs":
+    "static-helper-control launches this child through its own static-helper-seat connector, and the pty runtime passes only that connector's environment: the Manager's allocated identity plus the private homes the suite set after its module-scope scrub. Scrubbing in this child would delete the identity it was launched to consume.",
 };
 
 let pass = 0;

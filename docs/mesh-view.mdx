@@ -30,7 +30,8 @@ The console narrows its tap to `chatWildcard(space)` whenever it has credentials
 That view exposes multicast traffic and hides DMs and anycast.
 An open-mesh console uses the whole-space tap.
 A space-wide subscription still requires broker permission. Authenticated admin grants cover the
-`chat`, `inst`, and `svc` planes individually, so the web server taps those three subjects separately.
+`chat`, `inst`, and `svc` planes individually. The web server taps each permitted messaging plane
+separately. The default dashboard observer credential permits only the `chat` plane among these three.
 
 On an open mesh, the interactive console starts a second, presence-only endpoint before the operator's first send.
 It shares the observer's card, so peers can address replies to the operator.
@@ -61,6 +62,8 @@ Its resolution does not mean that those reads have completed.
 A 75 ms timer emits `change` when the model is dirty. A one-second heartbeat marks the model dirty to refresh ages and rates.
 Channels refresh every two seconds. Membership watch notifications debounce for 150 ms before a new read.
 `stop()` clears timers, discards pending unicast bursts, stops the membership watch, and stops the endpoint.
+If `stop()` runs while the endpoint is starting, the view does not open its tap or start timers.
+To observe again after stopping, create a new view with a new endpoint.
 
 | Option | Type | Default | Meaning |
 |---|---|---|---|
@@ -177,6 +180,7 @@ A chat-only observer leaves `dms` empty. The console topology also uses endpoint
 `membership.unreadable` records the most recent read or watch failure, while retaining the last snapshot.
 A successful read clears the failure. A watch that closes after startup reports through the same field.
 A missing feed bucket produces an empty snapshot with no `asOf` heartbeat.
+A sweep that overlaps the feed's own data-connection reconnect keeps the previous membership and heartbeat. It does not report that expected gap as a missing-connection warning.
 Membership failures do not set `status.error`.
 
 The console topology checks the following states in order:

@@ -7,6 +7,62 @@ import { fileURLToPath } from 'node:url';
 
 const base = new URL('../src-tauri/installers/', import.meta.url);
 const readText = (path: string) => readFileSync(new URL(path, base), 'utf8').replace(/\r\n/g, '\n');
+test('runtime staging bounds only Windows EBUSY after the Node probe', () => {
+  const source = readText('../../../desktop/scripts/prepare-runtime.mjs');
+  const start = source.indexOf('function renameProbedBinary(');
+  const end = source.indexOf('\nrenameProbedBinary(stagedBinary, binary);', start);
+  assert.ok(start > source.indexOf('const probe = spawnSync(') && end > start);
+  assert.match(source.slice(end), /renameProbedBinary\(stagedBinary, binary\);\nrenameSync\(deploy, output\);/);
+  function exercise(platform: string, code: string, failures: number) {
+    let now = 0, attempts = 0, sleeps = 0;
+    const failure = Object.assign(new Error('rename refused'), { code });
+    const rename = runInNewContext(`${source.slice(start, end)}\nrenameProbedBinary;`, {
+      process: { platform }, performance: { now: () => now },
+      renameSync: (from: string, to: string) => {
+        assert.equal(from, 'stage'); assert.equal(to, 'binary');
+        if (++attempts <= failures) throw failure;
+      },
+      Atomics: { wait: (_array: unknown, _index: number, _value: number, duration: number) => { now += duration; sleeps++; } },
+    }) as (from: string, to: string) => void;
+    let thrown: unknown;
+    try { rename('stage', 'binary'); } catch (error) { thrown = error; }
+    return { attempts, sleeps, now, thrown, failure };
+  }
+  const released = exercise('win32', 'EBUSY', 3);
+  assert.equal(released.attempts, 4);
+  assert.equal(released.sleeps, 3);
+  assert.equal(released.now, 150);
+  assert.equal(released.thrown, undefined);
+  const immediate = exercise('win32', 'EBUSY', 0);
+  assert.equal(immediate.attempts, 1);
+  assert.equal(immediate.sleeps, 0);
+  assert.equal(immediate.thrown, undefined);
+  const exhausted = exercise('win32', 'EBUSY', Infinity);
+  assert.equal(exhausted.attempts, 101);
+  assert.equal(exhausted.sleeps, 100);
+  assert.equal(exhausted.now, 5_000);
+  assert.equal(exhausted.thrown, exhausted.failure);
+  for (const [platform, code] of [['linux', 'EBUSY'], ['darwin', 'EBUSY'], ['win32', 'EACCES'], ['win32', 'ENOENT']]) {
+    const refused = exercise(platform, code, Infinity);
+    assert.equal(refused.attempts, 1);
+    assert.equal(refused.sleeps, 0);
+    assert.equal(refused.thrown, refused.failure);
+  }
+});
+
+test('foreign service bootstraps historical dependencies without shielding the candidate', () => {
+  const workflow = readText('../../../.github/workflows/windows-setup-proof.yml');
+  const start = workflow.indexOf('      - name: Prepare independent published CLI service');
+  const end = workflow.indexOf('      - name: Verify published installers and fixture broker', start);
+  assert.ok(start >= 0 && end > start);
+  const bootstrap = workflow.slice(start, end);
+  assert.match(bootstrap, /if: matrix\.cell == 'foreign'/);
+  assert.match(bootstrap, /npm install --before=2026-11-16T19:38:00\.000Z --prefix "\$env:RUNNER_TEMP\/cli-service" cotal-ai@0\.164\.7/);
+  assert.equal((workflow.match(/--before=/g) ?? []).length, 1);
+  assert.doesNotMatch(workflow, /npm_config_before|NPM_CONFIG_BEFORE/i);
+  assert.doesNotMatch(workflow, /GITHUB_ENV[^\n]*before|before[^\n]*GITHUB_ENV/i);
+});
+
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
   execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
   const source = readText('installer.nsi');

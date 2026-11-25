@@ -8,7 +8,7 @@ export interface InboxSource {
   drainInboxDeliveries(keys: readonly string[]): ExactDrainResult;
 }
 
-export interface CommitResult {
+interface CommitResult {
   drained: number;
   tombstoned: number;
 }

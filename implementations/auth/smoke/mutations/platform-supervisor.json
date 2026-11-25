@@ -61,7 +61,7 @@
     },
     {
       "name": "renewed registration ceiling is no longer confirmed",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "              await session.store.confirm(existing, permissions);",
       "replace": "              // mutation: native ceiling confirmation removed",
       "expectRed": "FAIL: U7-5 signed permissions stay identical on renewal",
@@ -91,7 +91,7 @@
     },
     {
       "name": "credential expiry is not capped at lifecycle",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "            return { ...rest, expiresAt: Math.min(holder.supervisorExpiresAt, expiresAt ?? now + (expiresInSeconds ?? standingTtl)) };",
       "replace": "            return { ...rest, expiresAt: expiresAt ?? now + (expiresInSeconds ?? standingTtl) };",
       "expectRed": "FAIL: U7-7 recorded lifecycle expiry refuses renewal and registration",
@@ -101,7 +101,7 @@
     },
     {
       "name": "ending an assignment no longer retires the manager gate",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "          await authKv.update(key, new TextEncoder().encode(JSON.stringify({ ...rest, state: \"retired\", op: { opId, kind: \"retirement\" } })), entry.revision);\n",
       "replace": "          // mutation: the gate is left open when the assignment ends\n",
       "expectRed": "FAIL: U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
@@ -111,7 +111,7 @@
     },
     {
       "name": "ending an assignment no longer retires its issued generations",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "          if (ref !== undefined) await session.store.retire(ref);\n",
       "replace": "          void ref; // mutation: issued generations stay active when the assignment ends\n",
       "expectRed": "FAIL: U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
@@ -121,7 +121,7 @@
     },
     {
       "name": "plane issuance ignores a retired issued generation",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-manager-issuance.ts",
       "find": "              await session.store.resolve(ref, session.sourceIsLive);\n            } catch (error) {\n              throw platformSupervisorEnded(owner, error instanceof Error ? error.message : String(error));",
       "replace": "              void ref;\n            } catch (error) {\n              throw platformSupervisorEnded(owner, error instanceof Error ? error.message : String(error));",
       "expectRed": "FAIL: U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",

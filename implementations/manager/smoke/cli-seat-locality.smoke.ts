@@ -35,14 +35,14 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { bootDeliveryDaemon } from "./_boot-delivery.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
-const BIN = join(repoRoot, "bin", "cotal.ts");
+const BIN = join(repoRoot, "bin", "dist", "cotal.js");
 const STUB = join(here, "e2e-stub.mjs");
 
 const PORT = await freePort();
@@ -63,6 +63,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const UNJOINED = join(dir, "e2e-unjoined.mjs");
 const home = join(dir, "home");
 mkdirSync(home, { recursive: true });
 process.env.COTAL_HOME = home; // the CLI's mesh registry lives here, never the operator's real one
@@ -76,6 +77,8 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
+registry.register({ kind: "connector", name: "e2e-unjoined", requires: ["node"], readinessTimeoutMs: 500,
+  buildLaunch: (o): LaunchSpec => ({ command: "node", args: [UNJOINED], env: envFor(o) }) } as Connector);
 
 const mkRoot = (tag: string, agentName: string): string => {
   const r = join(dir, tag);
@@ -91,7 +94,7 @@ const releaseBroker = teardownOnSignal(srv, dir);
 type Run = { status: number | null; out: string };
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
   new Promise((res) => {
-    const child = spawn(TSX, [BIN, ...args], {
+    const child = spawn(process.execPath, [BIN, ...args], {
       cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -105,7 +108,7 @@ const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
 
 const interactiveJoin = (cwd: string): Promise<Run> =>
   new Promise((res) => {
-    const child = pty.spawn(TSX, [BIN, "join", "--space", space, "--server", SERVERS], {
+    const child = pty.spawn(process.execPath, [BIN, "join", "--space", space, "--server", SERVERS], {
       cwd,
       env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       cols: 120,
@@ -136,6 +139,7 @@ const interactiveJoin = (cwd: string): Promise<Run> =>
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 
 try {
   let up = false;
@@ -144,6 +148,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   const root1 = mkRoot("ws1", "seatA"), root2 = mkRoot("ws2", "seatB");
+  delivery = await bootDeliveryDaemon({ space, servers: SERVERS, auth, reloadStoreIdentity: workspaceSecretStore(root1).identity! });
   // The registry entry the CLI resolves. Written through the product's own recorder so the shape is
   // whatever `up` would have written, not a hand-built approximation.
   const { recordMesh } = await import("@cotal-ai/workspace");
@@ -194,21 +199,135 @@ try {
   check("ps --on B exits 0 and does NOT show it (a real per-instance view, not the class answer)",
     psB.status === 0 && !psB.out.includes("seatA"), { status: psB.status, out: psB.out.slice(-300) });
 
-  console.log("\n3. NEGATIVE CONTROL: a name that exists nowhere must fail from live presence");
-  const ghost = await cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS], root1);
+  console.log("\n2b. A running process that never joined remains controllable by name");
+  writeFileSync(UNJOINED, 'process.stdout.write("unjoined terminal ready\\n"); process.stdin.on("data", d => process.stdout.write(d)); setInterval(() => {}, 1000);\n');
+  const unjoinedSeats = ["unjoinedBare", "unjoinedForce", "unjoinedPinned"];
+  for (const name of unjoinedSeats) {
+    writeFileSync(join(root1, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
+    await m1.startAgent({ name, agent: "e2e-unjoined", cwd: repoRoot, events: false });
+  }
+  const unjoinedPs = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
+  console.log(`$ cotal ps\n${unjoinedPs.out}`);
+  check("ps lists the running seats with degraded joins", unjoinedPs.status === 0 && unjoinedSeats.every(n => unjoinedPs.out.includes(n)) && unjoinedPs.out.includes("join degraded"), unjoinedPs);
+  for (const pin of [[], ["--on", IID1]]) {
+    const attached = await new Promise<Run>((res) => {
+      const child = pty.spawn(process.execPath, [BIN, "attach", "unjoinedBare", "--no-reconnect", ...pin, "--space", space, "--server", SERVERS], {
+        cwd: root1, env: { ...process.env, COTAL_SERVERS: "", COTAL_CREDS: "", COTAL_SPACE: "", COTAL_SKIP_CONNECTOR_SEED: "1" }, cols: 120, rows: 30,
+      });
+      let out = "", detached = false;
+      child.onData(data => {
+        out += data;
+        if (!detached && out.includes("unjoined terminal ready")) { detached = true; child.write("\x1d"); }
+      });
+      const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+      child.onExit(({ exitCode }) => { clearTimeout(timer); res({ status: exitCode, out }); });
+    });
+    check(`attach ${pin.length ? "with explicit manager" : "without pin"} streams the unjoined terminal and detaches`, attached.status === 0 && attached.out.includes("unjoined terminal ready"), attached);
+  }
+  const input = await cotal(["input", "unjoinedBare", "hello", "--space", space, "--server", SERVERS], root1);
+  check("input reaches the unjoined seat", input.status === 0, input);
+  for (const [i, name] of unjoinedSeats.entries()) {
+    const flags = i === 1 ? ["--force"] : i === 2 ? ["--on", IID1] : [];
+    const route = ["--space", space, "--server", SERVERS];
+    let stopArgs = ["stop", name, ...flags, ...route];
+    if (name === "unjoinedForce") {
+      const refused = await cotal([...stopArgs, "--on", "not-a-pin"], root1);
+      const retry = refused.out.match(/`(cotal stop [^`]+)`/)?.[1];
+      check("a malformed stop pin refuses and the retry keeps the hard stop", refused.status === 1
+        && refused.out.includes("not a valid lifecycle token")
+        && retry === `cotal stop ${name} --force ${route.join(" ")} --on <instance>`, refused);
+      if (!retry) continue;
+      stopArgs = retry.replace("<instance>", IID1).split(" ").slice(1);
+    }
+    const stopped = await cotal(stopArgs, root1);
+    console.log(`$ cotal stop ${name} ${flags.join(" ")}\n${stopped.out}`);
+    check(`stop ${flags.join(" ") || "without pin"} reaches the unjoined seat in the requested mode`,
+      stopped.status === 0 && stopped.out.includes(i === 1 ? "Native mode: hard despawn" : "Native mode: graceful"), stopped);
+  }
+
+  const unjoinedAfter = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
+  check("all unjoined processes are gone after the acknowledged stops", unjoinedAfter.status === 0 && unjoinedSeats.every(n => !unjoinedAfter.out.includes(n)), unjoinedAfter);
+
+  console.log("\n3. NEGATIVE CONTROL: a name that exists nowhere must fail after a complete manager census");
+  const other = join(dir, "other-project");
+  mkdirSync(other);
+  const prepared = await cotal(["space", "create", "otheraudit"], other);
+  const selected = await cotal(["use", "otheraudit"], other);
+  const wrongRoster = await cotal(["ps"], other);
+  check("another prepared space is selected and bare ps cannot list its agents", prepared.status === 0 && selected.status === 0 && wrongRoster.status === 2 && /Mesh: otheraudit/.test(wrongRoster.out), wrongRoster);
+  const route = ["--space", space, "--server", SERVERS];
+  const roster = `cotal ps ${route.join(" ")}`;
+  const emptyPicker = await new Promise<Run>((res) => {
+    const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))) as Record<string, string>;
+    const child = pty.spawn(process.execPath, [BIN, "attach", "--on", IID2, ...route], {
+      cwd: other, env: { ...hostEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      cols: 180, rows: 30,
+    });
+    let out = "";
+    child.onData((data) => { out += data; });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.onExit(({ exitCode }) => { clearTimeout(timer); res({ status: exitCode, out }); });
+  });
+  const emptyRoute = `--on ${IID2} ${route.join(" ")}`;
+  const [emptyRoster, emptySpawn] = [...emptyPicker.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  check("interactive attach with an empty roster keeps the explicit manager, space and broker in both commands",
+    emptyPicker.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(emptyPicker.out)
+    && emptyRoster === `cotal ps ${emptyRoute}` && emptySpawn === `cotal spawn ${emptyRoute}`, emptyPicker);
+  const emptyRosterResult = emptyRoster === `cotal ps ${emptyRoute}` ? await cotal(emptyRoster.split(" ").slice(1), other) : undefined;
+  check("the empty picker's roster command reaches the selected manager",
+    emptyRosterResult?.status === 0 && emptyRosterResult.out.includes(IID2) && !emptyRosterResult.out.includes(IID1), emptyRosterResult ?? emptyPicker);
+  const noName = await cotal(["attach", ...route], other);
+  const [suggestedRoster, suggestedAttach] = [...noName.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  check("noninteractive attach without a name keeps the target in both commands",
+    noName.status === 1 && noName.out.includes("name the agent to attach without an interactive terminal")
+    && suggestedRoster === roster && suggestedAttach === `cotal attach <name> ${route.join(" ")}`, noName);
+  const pinnedNoName = await cotal(["attach", "--on", IID1, ...route, "--no-reconnect"], other);
+  check("noninteractive attach keeps the manager pin in both commands and the session option in the retry",
+    pinnedNoName.status === 1 && pinnedNoName.out.includes(`run \`cotal ps --on ${IID1} ${route.join(" ")}\`, then \`cotal attach <name> --on ${IID1} --no-reconnect ${route.join(" ")}\``), pinnedNoName);
+  const shortPin = await cotal(["attach", "--on", "m4k7asdf1234", ...route, "--no-reconnect"], other);
+  const [discovery, attachRetry] = [...shortPin.out.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  check("noninteractive attach diagnoses the malformed pin and suggests an unpinned roster and corrected attach",
+    shortPin.status === 1 && shortPin.out.includes("not a valid manager instance id") && discovery === roster
+    && attachRetry === `cotal attach <name> --on <instance> --no-reconnect ${route.join(" ")}`, shortPin);
+  const discoveryResult = discovery === roster ? await cotal(discovery.split(" ").slice(1), other) : undefined;
+  check("the malformed-pin discovery command lists both managers on the specified space",
+    discoveryResult?.status === 0 && discoveryResult.out.includes(IID1) && discoveryResult.out.includes(IID2), discoveryResult ?? shortPin);
+  const missingStop = await cotal(["stop", ...route, "--json"], other);
+  const missingStopEnvelope = JSON.parse(missingStop.out);
+  const stopRemedy: string = missingStopEnvelope.error?.remedy ?? "";
+  check("nameless stop refuses before target resolution and keeps the explicit route and JSON in its retry",
+    missingStop.status === 1 && missingStopEnvelope.error?.code === "USAGE_INVALID" && missingStopEnvelope.target === null
+    && stopRemedy === `run \`${roster}\`, then \`cotal stop <name> --json ${route.join(" ")}\``, missingStop);
+  const stopRoster = stopRemedy.split("`")[1];
+  const stopRosterResult = stopRoster === roster ? await cotal(stopRoster.split(" ").slice(1), other) : undefined;
+  check("the nameless stop roster finds the explicit space rather than the selected space",
+    stopRosterResult?.status === 0 && stopRosterResult.out.includes(IID1) && stopRosterResult.out.includes(IID2), stopRosterResult ?? missingStop);
+  const privateServer = await cotal(["attach", "--space", space, "--server", SERVERS.replace("://", "://user:sensitive-value@")], other);
+  check("a broker URL with userinfo is refused without echoing it", privateServer.status === 1
+    && privateServer.out.includes("--server must not embed credentials") && !privateServer.out.includes("sensitive-value"), privateServer);
+  const ghost = await cotal(["stop", "--name", "no-such-seat", ...route], other);
   check("stop on a nonexistent name exits non-zero", ghost.status !== 0, { status: ghost.status, out: ghost.out.slice(-300) });
-  check("...and the error names the live presence lookup, not one manager's view",
-    /no managed agent .* in live presence/.test(ghost.out), ghost.out.slice(-400));
+  check("...and the error names both managers searched",
+    /no managed agent .* on any of the 2 reachable manager/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2), ghost.out.slice(-600));
   // The same miss with `--on` refuses TARGET_NOT_FOUND, exit 2; the unpinned form refuses the same way.
-  check("...as a TARGET_NOT_FOUND refusal, exit 2, with `cotal ps` as the next read",
-    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes("run `cotal ps` to see the agents each manager runs"), ghost.out.slice(-600));
+  check("...as a TARGET_NOT_FOUND refusal, exit 2, with a roster read in the same space and broker",
+    ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes(`run \`${roster}\` to see the agents each manager runs`), ghost.out.slice(-600));
   const misses = await Promise.all([
     cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS, "--json"], root1),
     cotal(["input", "no-such-seat", "hello", "--space", space, "--server", SERVERS, "--json"], root1),
-    cotal(["attach", "no-such-seat", "--space", space, "--server", SERVERS], root1),
+    cotal(["attach", "no-such-seat", ...route], other),
   ]);
   check("stop --json and input --json print the refusal envelope, and attach refuses the same way, each exit 2",
     misses.every((r) => r.status === 2 && /TARGET_NOT_FOUND/.test(r.out)) && misses.slice(0, 2).every((r) => r.out.includes('"outcome":"refused"')), misses.map((r) => ({ status: r.status, out: r.out.slice(-400) })));
+  check("attach names the same roster read as stop", misses[2]!.out.includes(`run \`${roster}\` to see the agents each manager runs`), misses[2]);
+  const follow = suggestedRoster === roster ? await cotal(suggestedRoster.split(" ").slice(1), other) : undefined;
+  check("the suggested roster lists both managers instead of the selected space", follow?.status === 0 && follow.out.includes(IID1) && follow.out.includes(IID2), follow ?? noName);
+  const pinned = await cotal(["attach", "no-such-seat", "--on", IID1, ...route], other);
+  const pinnedRoster = pinned.out.match(/run `([^`]+)` to see the agents the manager runs/)?.[1];
+  // The quoted broker URL is one shell argument. Compare the command before following its argv.
+  check("a pinned attach miss names the same space, broker and manager", pinned.status === 2 && /TARGET_NOT_FOUND/.test(pinned.out) && pinnedRoster === `cotal ps --on ${IID1} --space ${space} --server '${SERVERS}'`, pinned);
+  const pinnedFollow = await cotal(["ps", "--on", IID1, ...route], other);
+  check("the pinned roster lists only the named manager", pinnedFollow.status === 0 && pinnedFollow.out.includes(IID1) && !pinnedFollow.out.includes(IID2), pinnedFollow);
 
   console.log(`\n4. THE CLAIM: bare \`cotal stop --name <seat>\` locates each seat and stops it (x${SEATS.length})`);
   const results: { seat: string; status: number | null; out: string }[] = [];
@@ -236,6 +355,7 @@ try {
 } finally {
   await m1?.stop({ withAgents: true }).catch(() => {});
   await m2?.stop({ withAgents: true }).catch(() => {});
+  await delivery?.stop();
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

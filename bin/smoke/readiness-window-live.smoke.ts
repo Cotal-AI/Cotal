@@ -13,11 +13,13 @@
  * the PIDs it spawns. Needs nats-server on PATH.
  * Run: pnpm smoke:readiness:live   (build first — imports @cotal-ai/* dist)
  */
-import { spawn as spawnProc, type ChildProcess } from "node:child_process";
+import { execFile, spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
+import { nodePty } from "../../implementations/cli/smoke/_console-pty.js";
 
 /** Resolve once the child has actually exited (or immediately if it already has); bounded by ms. */
 const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
@@ -30,12 +32,12 @@ const awaitExit = (p: ChildProcess, ms = 5000): Promise<void> =>
 const home = mkdtempSync(join(tmpdir(), "cotal-readiness-home-"));
 process.env.COTAL_HOME = home;
 
-const { probeConnect, registry, CotalEndpoint, GOAL_ENTITY_RUNNING_DETAIL_KIND } = await import("@cotal-ai/core");
-const { recordMesh } = await import("@cotal-ai/workspace");
+const { probeConnect, registry, CotalEndpoint, EpEnvelopeError, GOAL_ENTITY_RUNNING_DETAIL_KIND } = await import("@cotal-ai/core");
+const { clearCurrent, getCurrent, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { launchAgent, START_TIMEOUT_MS } = await import("@cotal-ai/cli");
-const { MeshAgent, SPAWN_TIMEOUT_MS } = await import("@cotal-ai/connector-core");
+const { MeshAgent, SPAWN_TIMEOUT_MS, cotalToolSpecs } = await import("@cotal-ai/connector-core");
 const { Manager } = await import("@cotal-ai/manager");
-import type { Connector } from "@cotal-ai/core";
+import type { Connector, EpServeContext } from "@cotal-ai/core";
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -68,7 +70,7 @@ const coreDist = join(import.meta.dirname, "..", "..", "packages", "core", "dist
 const CHILD = [
   "const{pathToFileURL}=require('node:url');",
   "setTimeout(()=>{import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
-  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();",
   "setInterval(()=>{},1000);});},Number(process.env.JOIN_DELAY_MS));",
 ].join("");
@@ -128,9 +130,46 @@ const ghostCon: Connector = {
   kind: "connector",
   name: "ghost-e2e",
   requires: ["node"],
-  buildLaunch: () => ({ command: "node", args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }),
+  buildLaunch: () => ({ command: "node", args: ["-e", "console.log('ghost terminal ready'); setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }),
 };
 registry.register(ghostCon);
+
+async function checkStartingAttach(instance: string): Promise<void> {
+  const cli = join(import.meta.dirname, "..", "dist", "cotal.js");
+  const outside = mkdtempSync(join(tmpdir(), "cotal-readiness-outside-"));
+  const otherRoot = join(outside, "other");
+  mkdirSync(otherRoot);
+  const otherSpace = "readiness-alternate";
+  const otherServer = `nats://127.0.0.1:${await freePort()}`;
+  const selected = getCurrent();
+  const name = "pending-attach";
+  const env = { PATH: process.env.PATH ?? "", HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  try {
+    recordMesh({ space: otherSpace, server: otherServer, root: otherRoot, mode: "open", ts: new Date().toISOString() });
+    setCurrent(otherSpace);
+    const { stdout: receipt } = await promisify(execFile)(process.execPath, [cli, "spawn", "ghostspawn", "-d", "--no-events", "--harness", "ghost-e2e",
+      "--name", name, "--space", SPACE, "--server", SERVER, "--plain"], { cwd: outside, env, timeout: 30_000 });
+    ok("detached spawn exits 0 with an Agent starting receipt", receipt.includes("Agent starting"), receipt);
+    const printed = /Attach to it: `((?:pnpm )?cotal attach [^`]+)`/.exec(receipt)?.[1];
+    const args = printed?.replace(/^(?:pnpm )?cotal /, "").split(" ") ?? [];
+    ok("the starting receipt keeps the seat, space, explicit broker and accepting manager",
+      args.join(" ") === `attach ${name} --space ${SPACE} --server ${SERVER} --on ${instance}`, printed);
+    const attached = await new Promise<{ code: number; out: string }>((resolve) => {
+      const child = nodePty([cli, ...args], { cwd: outside, env });
+      let out = "", detached = false;
+      const timer = setTimeout(() => child.kill(), 15_000);
+      child.onData((data) => {
+        out += data;
+        if (!detached && out.includes("ghost terminal ready")) { detached = true; child.write("\x1d"); }
+      });
+      child.onExit(({ exitCode }) => { clearTimeout(timer); resolve({ code: exitCode, out }); });
+    });
+    ok("the copied attach opens the pending seat from another selected space", attached.code === 0 && attached.out.includes(`attached to ${name}`) && attached.out.includes("ghost terminal ready"), attached);
+  } finally {
+    if (selected === undefined) clearCurrent(); else setCurrent(selected);
+    rmSync(outside, { recursive: true, force: true });
+  }
+}
 
 // The OPERATOR connector: the ghost's child, whose launch with `pick: ""` waits for the operator at a
 // screen the connector names, as Claude waits at its session picker for a resume with no id. With
@@ -144,7 +183,22 @@ const operatorCon: Connector = {
 };
 registry.register(operatorCon);
 
+class AuditRefusingManager extends Manager {
+  private refuseAudit = true;
+
+  override managerServiceDefs() {
+    return super.managerServiceDefs().map(def => def.command !== "inspect" ? def : { ...def, handler: (ctx: EpServeContext) => {
+      if (this.refuseAudit && (ctx.request.args as { name?: string } | undefined)?.name === "unaudited") {
+        this.refuseAudit = false;
+        throw new EpEnvelopeError("unavailable", "the model pin read is unavailable");
+      }
+      return def.handler(ctx);
+    } });
+  }
+}
+
 let mgr: InstanceType<typeof Manager> | undefined;
+let otherManager: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
 let ep: InstanceType<typeof CotalEndpoint> | undefined;
 try {
@@ -159,7 +213,7 @@ try {
   }
   recordMesh({ space: SPACE, server: SERVER, root: workspaceRoot, mode: "open", ts: new Date().toISOString() });
 
-  mgr = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
+  mgr = new AuditRefusingManager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
   await mgr.start();
 
   // A — the MCP spawn door: MeshAgent.spawn against the real manager, real slow join.
@@ -177,6 +231,19 @@ try {
     ok("MeshAgent.spawn succeeds on the REAL join outcome", reply.ok === true, reply);
     ok(`...which arrived past the old 5s default (${elapsed}ms, window ${SPAWN_TIMEOUT_MS}ms)`, elapsed > 5_000 && elapsed < SPAWN_TIMEOUT_MS, elapsed);
     ok("...and reports the spawned identity", (reply.data as { name?: string })?.name === "slowpoke", reply.data);
+  }
+
+  {
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "unaudited.md"), "---\nname: unaudited\n---\nA fixture seat.\n");
+    const specs = cotalToolSpecs(driver.config);
+    const tool = specs.find(t => t.name === "cotal_spawn")!;
+    const reply = await tool.run(driver, driver.config, { name: "unaudited", agent: "slow-e2e", model: "gpt-6.2-sol", events: false });
+    ok("a joined spawn whose model audit fails explains the duplicate risk and names the inspect tool",
+      !reply.isError && reply.structured?.status === "partial" && reply.structured.joined === true &&
+      reply.text.endsWith("It is running, so spawning it again would start a second agent. To check which model it runs, inspect it with cotal_invoke on the manager endpoint."), reply);
+    const inspect = specs.find(t => t.name === "cotal_invoke")!;
+    const row = await inspect.run(driver, driver.config, { endpoint: "manager", command: "inspect", args: { name: "unaudited" } });
+    ok("the suggested inspect reads the running seat's recorded model", !row.isError && row.text.includes('"model": "gpt-6.2-sol"'), row);
   }
 
   // B — the manifest launch door: `spawn -f`'s launchAgent against the same manager.
@@ -215,10 +282,10 @@ try {
   // not a constructed Manager result: the generic window is deliberately shorter than Jcode's
   // declared window, then the check observes the action terminal through the normal launch rail.
   {
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
     const GENERIC_WINDOW_MS = 1_000;
     const CLIENT_MS = 12_000;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = GENERIC_WINDOW_MS;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = GENERIC_WINDOW_MS;
     try {
       const jcodeRun = "readiness03";
       writeFileSync(
@@ -244,7 +311,7 @@ try {
         elapsed,
       );
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -264,11 +331,11 @@ try {
   // asserted "a non-ok reply arrives" passes on the broken code, which is precisely why this one
   // asserts the guidance text.
   {
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
     const SHORT_MS = 2_000;      // the window under test, shortened so the suite is not 30s long
     const CLIENT_MS = 12_000;    // the caller's own budget, deliberately well ABOVE the window, so
                                  // "returned near the window" cannot be satisfied by a client timeout
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = SHORT_MS;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = SHORT_MS;
     try {
       const ghostRun = "readiness02";
       writeFileSync(
@@ -296,7 +363,7 @@ try {
       ok("...and the instruction that prevents a duplicate re-issue", msg.includes("Inspect with"), msg);
       ok("...naming the agent it is about", msg.includes("ghost"), msg);
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -318,8 +385,8 @@ try {
   // F. A spawn whose process runs but never joins settles `uncertain` with the entity-running
   // detail, which is what lets a caller say it is still starting.
   {
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
     try {
       const reply = await driver.spawn("ghostspawn", undefined, { agent: "ghost-e2e", events: false });
       ok("a running spawn that never joins settles `uncertain`", reply.ok === false && reply.code === "uncertain", reply);
@@ -333,8 +400,9 @@ try {
       const listed = await ep.invokeService("manager", "ps");
       ok("the ps wire surface carries the same degraded join diagnostic", listed.reply.ok === true &&
         (listed.reply.data as Array<{ name: string; joinHealth?: { state: string } }>).some((r) => r.name === "ghostspawn" && r.joinHealth?.state === "degraded"), listed.reply);
+      await checkStartingAttach((mgr as unknown as { managerInstanceId: string }).managerInstanceId);
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
   }
 
@@ -342,8 +410,8 @@ try {
   // uncertain launch remains alive, and its exact-incarnation late join clears the diagnostic.
   {
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "latepending.md"), "---\nname: latepending\n---\nOwned late join.\n");
-    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
-    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+    const restore = (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
+    (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
     try {
       const spawning = driver.spawn("latepending", undefined, { agent: "slow-e2e", events: false });
       await sleep(700);
@@ -363,13 +431,72 @@ try {
       ok("an exact-incarnation late join clears degraded health without stopping the process",
         late.status === "running" && late.presenceIdentityVerified === true && late.mesh !== "offline" && late.mesh !== "absent" && late.joinHealth === undefined, late);
     } finally {
-      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+      (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = restore;
     }
+  }
+
+  // A two-Manager late join through the shipped agent tool must reuse its accepted goal on retry.
+  {
+    const secondRoot = mkdtempSync(join(tmpdir(), "cotal-readiness-other-"));
+    mkdirSync(join(secondRoot, ".cotal", "agents"), { recursive: true });
+    for (const root of [workspaceRoot, secondRoot])
+      writeFileSync(join(root, ".cotal", "agents", "toolpending.md"), "---\nname: toolpending\n---\nLate tool join.\n");
+    otherManager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: secondRoot });
+    await otherManager.start();
+    const config = { space: SPACE, name: "tool-caller", servers: SERVER, kind: "agent" as const, tls: false, subscribe: [], allowSubscribe: [], allowPublish: [] };
+    const tool = cotalToolSpecs(config).find(t => t.name === "cotal_spawn")!;
+    const caller = new MeshAgent(config);
+    caller.start();
+    try {
+      for (let i = 0; i < 100 && !caller.connected; i++) await sleep(100);
+      ok("two-Manager tool caller connected", caller.connected);
+      // Both placements use real managers and real process joins. The second explicitly serves
+      // on the other Manager, so result identity and retry checks cannot pass on a local default.
+      for (const host of [mgr, otherManager]) {
+        const instance = (host as unknown as { managerInstanceId: string }).managerInstanceId;
+        const original = (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs;
+        (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
+        try {
+          const input = { name: "toolpending", agent: "slow-e2e", instance, events: false };
+          const first = await tool.run(caller, config, input);
+          const retry = await tool.run(caller, config, input);
+          console.log(`tool pending ${instance}: ${JSON.stringify(first)}`);
+          ok("late tool spawn reports accepted goal and unknown readiness without a tool error",
+            !first.isError && first.structured?.status === "starting" && typeof first.structured.goalId === "string" && first.text.includes("accepted") && first.text.includes("not known yet"), first);
+          ok("identical tool retry returns the same accepted goal", retry.structured?.goalId === first.structured?.goalId && !retry.isError, retry);
+          const census = await ep.invokeService("manager", "ps", undefined, { instanceId: instance });
+          const rows = census.reply.data as Array<{ name: string; lifecycleUid: string }>;
+          ok("the selected Manager owns one seat and no numbered duplicate", census.reply.ok && rows.filter(r => r.name.startsWith("toolpending")).length === 1, census.reply);
+          ok("the tool names the Manager that accepted the goal", first.structured?.manager === instance, first);
+        } finally {
+          (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = original;
+        }
+      }
+      for (const host of [mgr, otherManager])
+        (host as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 2_000;
+      const unpinned = { name: "toolpending", agent: "slow-e2e", events: false };
+      let splitObserved = false;
+      for (let attempt = 0; attempt < 8 && !splitObserved; attempt++) {
+        const described = await caller.ep.describeService("manager", { refresh: true });
+        const input = { ...unpinned, name: `classpending${attempt}` };
+        for (const root of [workspaceRoot, secondRoot])
+          writeFileSync(join(root, ".cotal", "agents", `${input.name}.md`), `---\nname: ${input.name}\n---\nClass queue probe.\n`);
+        const anycast = await tool.run(caller, config, input);
+        const anycastRetry = await tool.run(caller, config, input);
+        console.log(`class describe ${described.responder.instanceId}; tool: ${JSON.stringify(anycast)}`);
+        ok("an unpinned tool returns its accepting Manager and reuses its claim on retry",
+          !anycast.isError && typeof anycast.structured?.manager === "string" && anycastRetry.structured?.goalId === anycast.structured?.goalId, { anycast, anycastRetry });
+        splitObserved = anycast.structured?.manager !== described.responder.instanceId;
+      }
+      ok("a different real Manager won a class request than answered describe", splitObserved);
+    } finally { await caller.stop(); }
+    await otherManager.stop();
+    otherManager = undefined;
   }
 
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
-  for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn", "latepending"]) {
+  for (const name of ["slowpoke", "unaudited", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn", "pending-attach", "latepending"]) {
     const info = await ep.invokeService("manager", "inspect", { name });
     ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
     const row = info.reply.data as { id: string; lifecycleUid: string };
@@ -390,6 +517,7 @@ try {
 } finally {
   await ep?.stop().catch(() => {});
   await driver?.stop().catch(() => {});
+  await otherManager?.stop().catch(() => {});
   await mgr?.stop().catch(() => {});
   await Promise.all(kids.map((k) => {
     k.kill("SIGKILL");

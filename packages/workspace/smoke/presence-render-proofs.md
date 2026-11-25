@@ -3,6 +3,13 @@
 `presence-render-sinks.json` classifies the census candidates. Each `honest-text` sink
 needs an output assertion or a checked shared-renderer proof.
 
+Each exclusion resolves to its entry's `rationale`, when present, or the rationale
+for its class in `classRationales`. Entries with the same mechanics may share the
+class reason. An exception needs its own reason identifying the different mechanics.
+The census checks that both forms resolve to a non-empty explanation of at least
+12 characters. It does not cap repeated wording. An explicit blank reason is invalid,
+even when the class has a default.
+
 `presence-render-proofs.ts` records reviewed smoke assertions by source path and sink
 anchor. An assertion must read that sink's output. A check of another output in the
 same module is insufficient. Component proofs must render the component, rather than

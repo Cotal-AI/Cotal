@@ -31,8 +31,8 @@ export interface SessionFrame { id: string; ts: number; events: unknown[]; live:
 
 /** What a call is, from its short name, for its words: `toolKind`. */
 export type ToolKind = "command" | "edit" | "write" | "read" | "send" | "dm" | "inbox" | "other";
-/** One tool call. `failed` is set, true or false, exactly when its `cotal.toolResult` marker arrived;
- *  `end` is that marker's time, when it had one. Neither is ever inferred. */
+/** One tool call. `failed` is set exactly when its `cotal.toolResult` marker arrived: true when the
+ *  marker says the call failed, false otherwise. `end` is that marker's time, when it had one. */
 export interface ToolCall {
   key: string;
   /** Its `toolCallId`, "" when the START carried none. */
@@ -352,7 +352,7 @@ function flatten(frames: readonly SessionFrame[]): { flat: Flat[]; marked: boole
             const latest = calls.get(marker.toolCallId);
             if (latest !== undefined) {
               if (at !== undefined) latest.end = at;
-              latest.failed = marker.isError;
+              latest.failed = marker.isError === true;
               latest.live = latest.live && live;
             }
             break;
@@ -556,7 +556,7 @@ const count = (pattern: { one: string; many: string }, n: number): string => (n 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
 /** The most characters of a tool name any title or description shows. */
-export const TOOL_NAME_CAP = 64;
+const TOOL_NAME_CAP = 64;
 
 /** A tool name as titles and descriptions show it: its first `cap` characters (`TOOL_NAME_CAP` unless
  *  given), and "…" when it is longer. The harness names its tools, so a name can be any length; the

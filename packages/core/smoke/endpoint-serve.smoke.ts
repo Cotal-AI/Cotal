@@ -158,6 +158,9 @@ const DC_INSPECT = register(DOC_INSPECT);
 const DC_REL = register(DOC_REL);
 const DC_JOURNAL = register(DOC_JOURNAL);
 const DC_MIXED = register(DOC_MIXED);
+// A command that declares principal-route authority words (SPEC 13.21): a service route never serves it.
+const DOC_PRIN = { urn: "ai.cotal.prin", revision: 1, attributes: [], events: [], commands: [cmd("status"), cmd("prompts", { authorities: ["owner"] })] };
+const DC_PRIN = register(DOC_PRIN);
 const readClusterArtifact = (d: string) => store.get(d);
 
 const authority: ServiceNameAuthority = {
@@ -464,6 +467,21 @@ try {
   });
   throws("a JOURNAL-class registered command refuses rail-serving at construction (journal rides epj)",
     () => serveEndpoint(null as never, SPACE, grantJournal, [def("submitjob")], { public: true }));
+  // Principal-route cell 24: a registered cluster whose command declares `authorities`
+  // registers and authorizes, carries the words on its verified surface, and refuses to serve.
+  await reg(kv, { spec: { endpoint: "mgrprin", owner: "u_op", clusterDigests: [DC_PRIN], protocol: { v: 1 } }, instanceId: IID_A, registrant: asOp, authority });
+  const grantPrin = await authorizeServeGrant(kv, {
+    space: SPACE, endpoint: "mgrprin", instanceId: IID_A, epoch: 1,
+    holder: asOp, authority, readProcessEpoch: () => 1, readClusterArtifact,
+  });
+  c("the verified surface carries a command's principal-route authority words, and none on a command without them",
+    grantPrin.surface.prompts?.authorities?.join() === "owner" && grantPrin.surface.status?.authorities === undefined);
+  {
+    let refusal = "no throw";
+    try { serveEndpoint(null as never, SPACE, grantPrin, [def("status"), def("prompts")], { public: true }); } catch (e) { refusal = (e as Error).message; }
+    c("cell 24: serveEndpoint refuses a cluster with a command that declares authorities (SPEC 13.21)",
+      refusal.includes(`command "prompts" declares principal-route authorities`), refusal);
+  }
 
   // ---- D14 bind-row inputs on the branded artifact (journalClass = registered truth, pools =
   // provisioning truth) ----

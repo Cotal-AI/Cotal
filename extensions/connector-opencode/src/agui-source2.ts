@@ -16,9 +16,12 @@
  * So a record is one element, keyed by its message id and its position, and the cursor is that pair
  * compared as an order. Message ids sort by creation (measured on every captured session). A message
  * with no element is one record of its own: a user prompt, a turn end, and a step that has not
- * written anything yet, which must hold the read like any unsettled element does.
+ * written anything yet, which must hold the read like any unsettled element does. A tool is two
+ * records at its position: its call, settled once its input is final (`running`), and then its
+ * result, so a call shows while it runs, as OpenCode's own ACP agent shows it. The call's cursor is
+ * the position with `:call` after it.
  */
-import type { DurableSource, SourceRead } from "@cotal-ai/connector-core";
+import type { OrderedSource, SourceRead } from "@cotal-ai/connector-core";
 
 /** The fields of a 2.x message this source and its mapper read. */
 export interface OpenCode2Message {
@@ -58,31 +61,54 @@ export interface OpenCode2MessagePage {
 
 /** Fetches the newest page, or the page after the one whose `cursor.next` is passed. Injected so the
  *  source can be read without a server. */
-export type FetchMessagePage = (next: string | undefined) => Promise<OpenCode2MessagePage>;
+type FetchMessagePage = (next: string | undefined) => Promise<OpenCode2MessagePage>;
 
 /** One element of an assistant message at its position, or a message with no element at `-1`. */
 export interface OpenCode2Record {
   message: OpenCode2Message;
   index: number;
   element?: OpenCode2Element;
+  /** The record of a tool's call, which comes before the tool's own record, its result. */
+  call?: true;
+}
+
+interface Position {
+  messageId: string;
+  index: number;
+  call: boolean;
 }
 
 function cursorOf(record: OpenCode2Record): string {
-  return `${record.message.id}:${record.index}`;
+  return `${record.message.id}:${record.index}${record.call ? ":call" : ""}`;
 }
 
-function parseCursor(cursor: string): { messageId: string; index: number } {
+function parseCursor(cursor: string): Position {
   const i = cursor.indexOf(":");
-  const index = cursor.slice(i + 1);
-  if (i <= 0 || !/^(?:-1|0|[1-9]\d*)$/.test(index)) {
-    throw new Error(`OpenCode2SessionSource: malformed cursor ${JSON.stringify(cursor)} (want <messageId>:<index>)`);
+  const m = /^(-1|0|[1-9]\d*)(:call)?$/.exec(cursor.slice(i + 1));
+  if (i <= 0 || !m || (m[2] !== undefined && m[1] === "-1")) {
+    throw new Error(`OpenCode2SessionSource: malformed cursor ${JSON.stringify(cursor)} (want <messageId>:<index>, or <messageId>:<index>:call)`);
   }
-  return { messageId: cursor.slice(0, i), index: Number(index) };
+  return { messageId: cursor.slice(0, i), index: Number(m[1]), call: m[2] !== undefined };
 }
 
-function isAfter(record: OpenCode2Record, at: { messageId: string; index: number }): boolean {
-  if (record.message.id !== at.messageId) return record.message.id > at.messageId;
-  return record.index > at.index;
+/** Negative when `x` is before `y`, zero at the same position, positive after. A tool's call comes
+ *  before its result. */
+function comparePositions(x: Position, y: Position): number {
+  if (x.messageId !== y.messageId) return x.messageId < y.messageId ? -1 : 1;
+  return x.index - y.index || Number(!x.call) - Number(!y.call);
+}
+
+/** Negative when position `a` is before `b`, zero at the same position, positive after. The empty
+ *  cursor is before every record. */
+export function compareCursors2(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a === "") return -1;
+  if (b === "") return 1;
+  return comparePositions(parseCursor(a), parseCursor(b));
+}
+
+function isAfter(record: OpenCode2Record, at: Position): boolean {
+  return comparePositions({ messageId: record.message.id, index: record.index, call: record.call === true }, at) > 0;
 }
 
 /**
@@ -94,22 +120,24 @@ function isSettled(record: OpenCode2Record, turnEnded: boolean): boolean {
   if (message.type !== "assistant") return true; // written whole
   if (message.time.completed !== undefined || turnEnded) return true;
   if (element === undefined) return false; // a step that has not written anything yet
-  if (element.type === "tool") return element.state.status === "completed" || element.state.status === "error";
+  // A tool's call is final once its input is, and its result once the tool has run.
+  if (element.type === "tool") return record.call ? element.state.status !== "streaming" : element.state.status === "completed" || element.state.status === "error";
   return message.time.streamed !== undefined;
 }
 
-export interface OpenCode2SessionSourceOptions {
+interface OpenCode2SessionSourceOptions {
   page: FetchMessagePage;
   /** Called once per cursor whose record is no longer in the session, which is what a revert does.
    *  The read stays correct without it, because the cursor is compared as an order. */
   onVanished?: (cursor: string) => void;
 }
 
-export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
+export class OpenCode2SessionSource implements OrderedSource<OpenCode2Record> {
   readonly kind = "opencode2-session";
   private readonly page: FetchMessagePage;
   private readonly onVanished?: (cursor: string) => void;
   private reportedVanished?: string;
+  private furthest = "";
 
   constructor(opts: OpenCode2SessionSourceOptions) {
     this.page = opts.page;
@@ -139,9 +167,30 @@ export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
       const turnEnded = lastIdle !== undefined && message.id < lastIdle;
       const content = message.type === "assistant" ? (message.content ?? []) : [];
       if (content.length === 0) ordered.push({ record: { message, index: -1 }, turnEnded });
-      content.forEach((element, index) => ordered.push({ record: { message, index, element }, turnEnded }));
+      content.forEach((element, index) => {
+        if (element.type === "tool") ordered.push({ record: { message, index, element, call: true }, turnEnded });
+        ordered.push({ record: { message, index, element }, turnEnded });
+      });
     }
     return ordered;
+  }
+
+  compare(a: string, b: string): number {
+    return compareCursors2(a, b);
+  }
+
+  /** The furthest position a read has reached: every record up to it was settled when it was read. */
+  get reached(): string {
+    return this.furthest;
+  }
+
+  /** The position of the session's last record before message `messageId`, which a read reaches
+   *  once everything older than the message is settled. */
+  async before(messageId: string): Promise<string> {
+    const newest = (await this.page(undefined)).data.find((m) => m.id < messageId);
+    if (newest === undefined) return "";
+    const count = newest.type === "assistant" ? (newest.content?.length ?? 0) : 0;
+    return `${newest.id}:${count - 1}`;
   }
 
   async end(): Promise<string> {
@@ -157,7 +206,7 @@ export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
     const at = cursor === "" ? undefined : parseCursor(cursor);
     const ordered = await this.ordered(at?.messageId);
     if (at !== undefined && this.onVanished && this.reportedVanished !== cursor
-        && !ordered.some(({ record }) => record.message.id === at.messageId && record.index === at.index)) {
+        && !ordered.some(({ record }) => cursorOf(record) === cursor)) {
       this.reportedVanished = cursor;
       this.onVanished(cursor);
     }
@@ -169,6 +218,8 @@ export class OpenCode2SessionSource implements DurableSource<OpenCode2Record> {
       if (!isSettled(record, turnEnded)) break;
       records.push({ value: record, cursor: cursorOf(record) });
     }
-    return { records, cursor: records.at(-1)?.cursor ?? cursor };
+    const reached = records.at(-1)?.cursor ?? cursor;
+    if (compareCursors2(reached, this.furthest) > 0) this.furthest = reached;
+    return { records, cursor: reached };
   }
 }

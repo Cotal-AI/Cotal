@@ -1,5 +1,189 @@
 # @cotal-ai/lang
 
+## 0.179.0
+
+No changes in this release.
+
+## 0.178.0
+
+No changes in this release.
+
+## 0.177.0
+
+No changes in this release.
+
+## 0.176.6
+
+No changes in this release.
+
+## 0.176.5
+
+No changes in this release.
+
+## 0.176.4
+
+### Patch Changes
+
+- 0758948: Keep workflow journal suggestions on the same target, explain how to correct malformed simulation tables, and apply scripted faults to parallel steps before their branches run.
+
+## 0.176.3
+
+### Patch Changes
+
+- a38ed1d: Apply scripted workflow simulation faults to the named fan-out step before any of its branches run.
+
+## 0.176.2
+
+No changes in this release.
+
+## 0.176.1
+
+No changes in this release.
+
+## 0.176.0
+
+### Patch Changes
+
+- 7266240: Make workflow simulations reject late turn yields and enforce one shared deadline across ask retries.
+- 28b97c7: Show how to look up a missing local workflow ID, label computed calls accurately in plans, and apply scripted race faults before the branches start.
+
+## 0.175.3
+
+No changes in this release.
+
+## 0.175.2
+
+### Patch Changes
+
+- 8cf0871: The interpreter's run state types (environments, branch frames and run options) now live in their own lang module, with no change in behavior.
+
+## 0.175.1
+
+No changes in this release.
+
+## 0.175.0
+
+No changes in this release.
+
+## 0.174.4
+
+No changes in this release.
+
+## 0.174.3
+
+No changes in this release.
+
+## 0.174.2
+
+No changes in this release.
+
+## 0.174.1
+
+No changes in this release.
+
+## 0.174.0
+
+No changes in this release.
+
+## 0.173.0
+
+No changes in this release.
+
+## 0.172.2
+
+No changes in this release.
+
+## 0.172.1
+
+### Patch Changes
+
+- e11a800: A checkpoint scripted as expired in a workflow simulation now expires at its timeout, so a race against it picks the same winner as a live run.
+- 728bde0: Workflow simulations now time out when a scripted event arrives after the wait deadline.
+
+## 0.172.0
+
+No changes in this release.
+
+## 0.171.5
+
+No changes in this release.
+
+## 0.171.4
+
+### Patch Changes
+
+- 82e9e79: Split the validator in `grammar.ts`: the resolution walk (identifier binding and effect call checks) moves to an internal `grammar-resolve.ts`, and the node, scope and pattern helpers both walks use move to an internal `grammar-shared.ts`. The package surface is unchanged.
+- 8a918ce: Move the walker's operator helpers (`applyBinary`, the no-coercion and update-operand refusals, and canonical array indexes) out of `interpret.ts` into an internal `interpret-operators.ts`. The package surface is unchanged.
+- 5cbdcfe: Move per-primitive dispatch (`dispatchPrimitive`, its hashed projections and the `waitUntil` observation loop) out of `perform.ts` into an internal `perform-dispatch.ts`. The package surface is unchanged.
+
+## 0.171.3
+
+No changes in this release.
+
+## 0.171.2
+
+No changes in this release.
+
+## 0.171.1
+
+No changes in this release.
+
+## 0.171.0
+
+No changes in this release.
+
+## 0.170.0
+
+### Patch Changes
+
+- 3e748e8: Workflow syntax errors now report a single position with a one-based line and column.
+
+## 0.169.0
+
+No changes in this release.
+
+## 0.168.0
+
+No changes in this release.
+
+## 0.167.0
+
+No changes in this release.
+
+## 0.166.3
+
+No changes in this release.
+
+## 0.166.2
+
+No changes in this release.
+
+## 0.166.1
+
+### Patch Changes
+
+- eaaafc4: The workflow language's free `map`, `filter`, `find`, `some` and `every` now read the array's length once, before the first callback call, as their method spellings and JavaScript do. Before this, a callback that appended to the array it walked was called for the appended element, so `map(xs, f)` and `xs.map(f)` gave different results, and a callback that appended on every call ran until the run failed on the interpreter's step bound (L4013).
+
+## 0.166.0
+
+No changes in this release.
+
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+### Patch Changes
+
+- 3b68b85: Preserve the tested element in workflow filter, find and findLast results when a predicate replaces or removes it.
+
+## 0.165.2
+
+### Patch Changes
+
+- 54b892f: A workflow can no longer reach host state through a name the method tables inherit. `[].constructor()`, `"a".constructor()` and `(5).constructor()` returned the interpreter's own execution frame, which a program could read and use to rewrite its clock. Both engines now refuse any member outside the array, string and number method tables with L4014, as spec §4.2 says. The simulator also reads only a script's own entries, so a checkpoint named `constructor` with an empty `checkpoints` table is L6001 instead of a resolved answer.
+
 ## 0.165.1
 
 No changes in this release.

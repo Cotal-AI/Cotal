@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -12,14 +12,15 @@ import {
   readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
-  type ProcessRecord, type ProcessRecordState,
-  parsePositiveIntegerFlag, verifyIdentityPin, writePidPair,
+  type ProcessRecord, type ProcessRecordState, type SeatCap,
+  parsePositiveIntegerFlag, seatCapText, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
 import { lastLoggedLine, type LogStart } from "./private-log.js";
+import { withManagerName } from "./up-manager-name.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -151,16 +152,38 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
  *  A supervisor whose environment cannot be read or names no space counts, and a process table that
  *  cannot be listed proves nothing. */
 export function supervisorMayServe(space: string, installedEntry?: string): boolean {
-  const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
-  if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
+  let lines: string[];
+  if (process.platform === "linux") {
+    lines = readdirSync("/proc").filter(name => /^\d+$/.test(name)).flatMap(name => {
+      try {
+        const command = readFileSync(`/proc/${name}/cmdline`, "utf8").replaceAll("\0", " ");
+        if (!commandIsCotalSupervisor(command)) return [];
+        return [`${name} ${supervisorProcessUid(Number(name))} ${command}`];
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ESRCH") return [];
+        throw error;
+      }
+    });
+  } else {
+    const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+    if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
+    lines = ps.stdout.split("\n");
+  }
   const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
-  return ps.stdout.split("\n").some((line) => {
+  return lines.some((line) => {
     const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
     if (!row || !commandIsCotalSupervisor(row[3]!)) return false;
     const pid = Number(row[1]), uid = Number(row[2]), command = row[3]!;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
     if (named !== undefined && named !== space) return false;
-    const scope = supervisorInstallScope(pid, uid, command, entry);
+    let argv: string | string[] = command;
+    if (process.platform === "linux") {
+      // ps flattens argv, so a path containing spaces must come from the kernel's boundaries.
+      try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); }
+      catch { argv = []; }
+    }
+    const scope = supervisorInstallScope(pid, uid, argv, entry);
     if (scope === "foreign") return false;
     const selected = named ?? environmentSpace(pid);
     if (selected !== undefined && selected !== space) return false;
@@ -181,9 +204,9 @@ function thisCliEntry(): string | undefined {
 
 /** Attribute a supervisor using its absolute entry, numeric owner and mount namespace.
  * A different namespace alone cannot exclude a bind-mounted installation. */
-export function supervisorInstallScope(pid: number, uid: number, command: string, entry: string | undefined): "local" | "foreign" | "unknown" {
+export function supervisorInstallScope(pid: number, uid: number, command: string | readonly string[], entry: string | undefined): "local" | "foreign" | "unknown" {
   let other = false;
-  for (const word of command.trim().split(/\s+/)) {
+  for (const word of typeof command === "string" ? command.trim().split(/\s+/) : command) {
     if (!isAbsolute(word)) continue;
     let resolved: string;
     try {
@@ -291,6 +314,8 @@ export type ManagerStartOpts = {
   wsPort?: number;
   /** Live-session ceiling forwarded as `supervise --max-sessions`. */
   maxSessions?: number;
+  managerName?: string;
+  managerSeatCap?: SeatCap;
 };
 
 export function startManagerDetached(
@@ -337,6 +362,7 @@ export function startManagerDetached(
     // P2 item 6: the broker ws listener port (loopback) for the console session client's wsUrl.
     ...(o.wsPort !== undefined ? ["--ws-port", String(o.wsPort)] : []),
     ...(o.maxSessions !== undefined ? ["--max-sessions", String(o.maxSessions)] : []),
+    ...(o.managerSeatCap !== undefined ? ["--seat-cap", seatCapText(o.managerSeatCap)] : []),
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
@@ -449,10 +475,12 @@ export async function ensureManager(
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
-  let logStart: LogStart | undefined;
-  const pid = startManagerDetached(o, (start) => { logStart = start; });
-  await awaitManagerUp(space, identityRecord(pid), logStart);
-  return { running: true, started: true, pid };
+  return withManagerName({ root, space }, o.managerName, async () => {
+    let logStart: LogStart | undefined;
+    const pid = startManagerDetached(o, (start) => { logStart = start; });
+    await awaitManagerUp(space, identityRecord(pid), logStart);
+    return { running: true, started: true, pid };
+  });
 }
 
 /** A signal, injectable for the same reason the probe is: `EPERM` from `kill` is producible only by
@@ -482,7 +510,7 @@ export const MANAGER_PROCESS = {
  *  component stopped, and every other caller through {@link clearManagerArtifacts}. */
 export async function stopManager(
   space: string = folderSpace(),
-  { withAgents = false, pid, root = cotalRoot() }: { withAgents?: boolean; pid?: number; root?: string } = {},
+  { withAgents = false, pid, root = cotalRoot(), onRetired }: { withAgents?: boolean; pid?: number; root?: string; onRetired?: () => void } = {},
 ): Promise<boolean> {
   const context = { root, space };
   let spared: SpareSeatRow[] | undefined;
@@ -511,6 +539,11 @@ export async function stopManager(
     // Disarmed by the attempt that armed it, inside its reservation: a stop refused the reservation
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
+    afterExit: withAgents && onRetired ? () => {
+      // The manager claims the intent to select the policy and drops its pid record only after
+      // shutdown succeeds. The CLI's cleanup of a forced or failed stop is not that evidence.
+      if (readPidfile(PID_PATH(space, root)) === undefined && !existsSync(localProcessPath(MANAGER_SHUTDOWN_INTENT, context))) onRetired();
+    } : undefined,
   });
   if (!found) return false;
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();

@@ -200,7 +200,7 @@ export async function readNativeServiceAccess(reg: LifecycleRegistry, reader: Co
 }
 
 /** The approval content of a first-approval gate CAS. */
-export interface ServiceApprovalArgs {
+interface ServiceApprovalArgs {
   rootCredentialId: string; approvalDigest: string; nameAuthorityRevision: number;
   approvalExpiresAt: number | null; callerCeiling: EpCapability[];
 }

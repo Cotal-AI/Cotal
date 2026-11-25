@@ -50,14 +50,14 @@ export interface LiteralConsumerProbe {
 
 /** One subject's newest delivered row, WITH its KV operation so the caller's parse layer can treat
  *  a DEL/PURGE marker as corruption (a bucket's own `keys()`/`watch()` would filter markers out). */
-export interface DrainedRow {
+interface DrainedRow {
   data: Uint8Array;
   seq: number;
   op: string | undefined;
 }
 
 /** One scan over a literal consumer: what it reads, and the scanner its refusals name. */
-export interface LiteralConsumerScan {
+interface LiteralConsumerScan {
   /** The scanner every refusal names, such as "the records scanner". */
   label: string;
   stream: string;

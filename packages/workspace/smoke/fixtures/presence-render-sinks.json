@@ -1,10 +1,13 @@
 {
   "expected": {
-    "total": 1074,
+    "total": 1146,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 852
+    "non-render/control": 924
+  },
+  "classRationales": {
+    "non-render/control": "This candidate handles presence state without making a human work-progress claim. Status tokens, routing, component inputs and presentation metadata are control data; exceptions that report a different kind of status carry an entry-specific reason."
   },
   "renderers": [
     {
@@ -21,6 +24,13 @@
     }
   ],
   "entries": [
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "refuseInaccessibleDownRoot(at, space)",
+      "class": "non-render/control",
+      "rationale": "The stop checks project directory access for a space, not agent presence or work progress."
+    },
     {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
@@ -60,64 +70,82 @@
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
       "anchor": "`${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n  const pool = live.l",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    const pool = live",
+      "class": "non-render/control"
+    },
+    {
+      "path": "extensions/connector-core/src/agent-name.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control"
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": "ingState =\n  | { phase: \"waiting\" }\n  | { phase: \"naming\"",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": " NamingState = { phase: \"waiting\" };\n  private readonly o",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
+    },
+    {
+      "path": "extensions/connector-core/src/agent-naming.ts",
+      "kind": "status-token",
+      "anchor": "f (this.state.phase !== \"waiting\") return;\n    const ms =",
+      "class": "non-render/control",
+      "rationale": "Naming state machine: \"waiting\" is the phase before an agent's first message names it, not a peer's presence status, and it is never rendered."
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "tatus: PresenceStatus = \"idle\";\n  private _attention: ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "\"idle\"",
+      "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "ry {\n      if (prev !== \"working\" && status === \"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "\"working\" && status === \"working\") await this.ep.setCondi",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
       "anchor": "one.\n      if (prev === \"working\" && status === \"idle\") t",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "status-token",
-      "anchor": "\"working\" && status === \"idle\") this.onTurnBoundary();",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "\"idle\"",
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/orientation.ts",
@@ -145,15 +173,13 @@
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
       "anchor": "shown.join(\", \") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : \"\")",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
       "anchor": "`, +${peers.length - shown.length} more`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/orientation.ts",
@@ -181,22 +207,19 @@
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "string {\n  return s === \"working\" ? \"●\" : s === \"waiting\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "\"working\" ? \"●\" : s === \"waiting\" ? \"◐\" : s === \"idle\" ? ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "progress = p.status === \"working\" ? `working${condition} ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -231,36 +254,31 @@
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
       "anchor": "`\"${e.target}\" is ambiguous — ${e.candidates.length} peers share that name. ` +\n                `Re-send cotal_dm with the exact instance id as \"to\":\\n${who}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
       "anchor": "`Re-send cotal_dm with the exact instance id as \"to\":\\n${who}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "tus: z\n          .enum([\"idle\", \"working\", \"waiting\"])",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "         .enum([\"idle\", \"working\", \"waiting\"])\n          ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "num([\"idle\", \"working\", \"waiting\"])\n          .optional()",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
@@ -277,28 +295,28 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`Couldn't yield: ${reply.error ?? \"manager refused\"}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`Turn yielded (${status}${to ? ` → ${to}` : \"\"}) — the run continues.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`run ${v.runId} on ${v.endpoint}: ${v.status ? `${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}` : \"(no status)\"}`",
       "class": "non-render/control",
       "rationale": "Workflow-run status view: the run record's own state (running, completed, released), holder and epoch, echoed from the run-status reply; not an agent's presence."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "`${v.status.state}, holder ${v.status.holder}, epoch ${v.status.epoch}`",
       "class": "non-render/control",
@@ -309,7 +327,7 @@
       "kind": "derived-output",
       "anchor": "`clean ${target} is refused while the recorded mesh endpoint ${mesh.server} is reachable; stop the broker and verify it is offline first`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/teardown-spare.ts",
@@ -333,53 +351,53 @@
       "rationale": "Passes the manager-reported process state to the same inventory row formatter for an agent left running; the formatter is the classified sink above."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`state for \"${mesh.space}\" is already preserved and offline`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation attempt ${attemptId} lost its manager mid-commit and ${stillLive.length} retained principal(s) are still live (${stillLive.join(\", \")}); the cut intent is PRESERVED for inspection - stop them, then rerun \\`cotal down --preserve-state\\``",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation cut is partial; still running (or liveness unconfirmed): ${stillRunning.map((component) => component.name).join(\", \")}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`✓ preserved state for \"${mesh.space}\"`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`  resume inventory: ${join(root, \".cotal\", \"maintenance\", \"v1\", resume.file)}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
       "anchor": "`npm intermediary terminated by ${closed.signal}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/ext.ts",
       "kind": "derived-output",
       "anchor": "`Windows npm intermediary exited ${closed.status}; descendant completion is unproved`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
@@ -476,22 +494,19 @@
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
       "anchor": "\"idle\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
       "anchor": "        await setStatus(\"working\", line.slice(8).trim() |",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/join.ts",
@@ -505,364 +520,317 @@
       "kind": "derived-output",
       "anchor": "`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/meshes-add.ts",
       "kind": "derived-output",
       "anchor": "`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/personas.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`${operation} child terminated by ${closed.signal}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`Windows npm intermediary exited ${closed.status}; descendant completion is unproved`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "`process exited ${result.status}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "ep={ep} target={detail} feed={mesh.feed} width={size.cols} heigh",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "p} target={detail} feed={mesh.feed} width={size.cols} heigh",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "      <NeedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "eedsYou\n        waiting={mesh.signals.waiting}\n        boxWidth={size.",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "tabs={tabs}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{tabs}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "counts={mesh.signals.counts}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.signals.counts}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "stalestLiveTs={mesh.signals.stalestLiveTs}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.signals.stalestLiveTs}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "dms={mesh.signals.dms}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.signals.dms}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "dmVisible={mesh.status.dmVisible}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.status.dmVisible}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "        <Topo\n          feed={mesh.feed}\n          agents={mesh.",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "   <Topo\n          feed={mesh.feed}\n          agents={mesh.",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "d={mesh.feed}\n          agents={mesh.agents}\n          membership={m",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": ".feed}\n          agents={mesh.agents}\n          membership={m",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "membership={mesh.membership}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.membership}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "channels={mesh.channels}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.channels}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "nameOf={mesh.nameOf}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.nameOf}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "endpoints={mesh.endpoints}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.endpoints}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "harness={harness}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{harness}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "entries={mesh.feed}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "<NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth=",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "u\n              waiting={mesh.signals.waiting}\n              boxWidth=",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "snapshot={mesh}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "onRun={runPaletteLine}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{runPaletteLine}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "status={mesh.status}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.status}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "rates={mesh.rates}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.rates}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "agentCount={mesh.agents.length}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mesh.agents.length}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/commands.ts",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "indexed-map",
       "anchor": "STATUS[status]",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "derived-output",
       "anchor": "color={s.color}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "derived-output",
       "anchor": "{s.color}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Detail.tsx",
@@ -890,8 +858,7 @@
       "path": "implementations/cli/src/console/ui/Detail.tsx",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Dm.tsx",
@@ -939,8 +906,7 @@
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
@@ -957,162 +923,139 @@
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "color={status.connected ? \"green\" : \"red\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "{status.connected ? \"green\" : \"red\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "{status.connected ? \"● \" : \"⨯ \"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "{status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "{status.space + \" · \" + (activeChannel === null ? \"all\" : \"#\" + activeChannel) + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"}",
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
-      "anchor": "status.space + \" · #\" + activeChannel + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "status.space + \" · \" + (activeChannel === null ? \"all\" : \"#\" + activeChannel) + \" · \" + agentCount + \" agents · \" +\n            rates.msgsPerSec.toFixed(1) + \" msg/s \"",
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "{status.dmVisible ? null : <Text color=\"yellow\">{\"  chat-only\"}</Text>}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "{status.error ? (\n          <Text color=\"red\">{\"  ! \" + status.error}</Text>\n        ) : status.warning ? (\n          <Text color=\"yellow\">{\"  ! \" + status.warning}</Text>\n        ) : (\n          <Text dimColor>{\"   \" + keys}</Text>\n        )}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "{\"  ! \" + status.error}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "\"  ! \" + status.error",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "{\"  ! \" + status.warning}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
       "kind": "derived-output",
       "anchor": "\"  ! \" + status.warning",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Tiles.tsx",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Tiles.tsx",
       "kind": "status-token",
       "anchor": "\"waiting\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Tiles.tsx",
       "kind": "status-token",
       "anchor": "\"idle\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Tiles.tsx",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/theme.ts",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/theme.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/theme.ts",
       "kind": "status-token",
       "anchor": "\"idle\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/theme.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
       "kind": "status-token",
       "anchor": "| (agentNode?.status ?? \"offline\") === \"offline\";\n    con",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
       "kind": "status-token",
       "anchor": "tatus ?? \"offline\") === \"offline\";\n    const row = hubRow",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
       "kind": "indexed-map",
       "anchor": "== n.key) {\n      stamp(grid[p.y], x, label, { color: \"cy",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
       "kind": "indexed-map",
       "anchor": "   } else {\n      stamp(grid[p.y], x, label.slice(0, 1), ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
@@ -1139,8 +1082,7 @@
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
       "kind": "derived-output",
       "anchor": "x + 1",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Matrix.tsx",
@@ -1153,8 +1095,7 @@
       "path": "implementations/cli/src/console/ui/topo/Matrix.tsx",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Matrix.tsx",
@@ -1195,71 +1136,63 @@
       "path": "implementations/cli/src/console/ui/topo/Sequence.tsx",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/model.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/model.ts",
       "kind": "derived-output",
       "anchor": "return n;",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/model.ts",
       "kind": "derived-output",
       "anchor": "src.key + \"→\" + dst.key",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/lib/manifest/spawn-plan.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\").map((p) => p.card.name",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/lib/manifest/spawn-plan.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\" && !owned.ids.has(p.car",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/lib/seat-restore.ts",
       "kind": "derived-output",
       "anchor": "`seat ${seat.name}: the restored tree reports a different status than the checkpoint recorded\\n  recorded: ${JSON.stringify(seat.checkpoint.repository.status)}\\n  restored: ${JSON.stringify(status)}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
       "anchor": "`nats-server (pid ${status.pid})`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "status-token",
       "anchor": " \")\n      : ev.type === \"offline\"\n        ? c.dim(\"offlin",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "status-token",
       "anchor": "ffline\"\n        ? c.dim(\"offline\")\n        : c.dim(\"updat",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/ui.ts",
@@ -1309,46 +1242,45 @@
       "path": "implementations/web/src/web.ts",
       "kind": "status-token",
       "anchor": "\"working\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/src/web.ts",
       "kind": "indexed-map",
       "anchor": "c[caller ? \"yellow\" : \"red\"]",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
       "anchor": "`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? \"refused\" : \"failed\"}: ${why}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    try {\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": ";\n    } finally {\n      this._status = status;\n    }\n    });\n  }\n\n  p",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field after publishing; not a rendered textual progress claim. #2065 wrapped the body in inOrder, which added the closing });."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "tion(null);\n      await this.publishStatus(status, activity);\n    } finally {\n      ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: publishes the wire status update; no user-facing surface renders working progress here."
     },
     {
-      "path": "extensions/connector-core/src/tool-specs.ts",
+      "path": "extensions/connector-core/src/tool-specs-manager.ts",
       "kind": "derived-output",
       "anchor": "agent.yieldTurn(status, { to, note, turn })",
       "class": "non-render/control",
@@ -1369,63 +1301,63 @@
       "rationale": "Connector lifecycle: pushes the join acknowledgement status to the endpoint's wire presence; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "captureSeatCheckpoints(root, mesh.space, resume, seatCheckpointDir(root, attemptId), sessionStores)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: snapshots seat state before stopping components; not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(delivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(manager, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "mayBeRunning(retryDelivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "omponent)))\n      await stopLocalProcess(component, context);\n    // Wire-truth quie",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; the status drives sequencing, not rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "processAlive(manager, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: liveness predicate over a component's process state, not a rendered status."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "stopLocalProcess(delivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "stopLocalProcess(retryDelivery, context)",
       "class": "non-render/control",
       "rationale": "Teardown control flow: stops a component's local process; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "uiescence))\n      await stopLocalProcess(component, context);\n    // Fail-closed: a ",
       "class": "non-render/control",
@@ -1439,11 +1371,18 @@
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the teardown output reports process state, not agent presence progress."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-process.ts",
       "kind": "derived-output",
       "anchor": "mutation.complete(\n      closed.status,\n      closed.signal,\n      closed.signal !== null\n        ? `${operation} child terminated by ${closed.signal}`\n        : `Windows npm intermediary exited ${closed.status}; descendant completion is unproved`,\n    )",
       "class": "non-render/control",
       "rationale": "Terminal command plumbing: drives the spinner's closing state; the update output reports process state, not agent presence progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/update-recovery-state.ts",
+      "kind": "derived-output",
+      "anchor": "`reconciliation exited ${child.status ?? child.signal ?? \"without a result\"}`",
+      "class": "non-render/control",
+      "rationale": "The recovery error reports the reconciliation child's exit status or signal, not peer presence."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
@@ -1555,21 +1494,21 @@
       "kind": "derived-output",
       "anchor": "`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : \"\"}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
       "anchor": "`; last probe ${capProbeText(lastProbe)}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
       "anchor": "capProbeText(lastProbe)",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/web/src/web.ts",
@@ -1582,71 +1521,61 @@
       "path": "implementations/web/client/src/lib/dms.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": ";\n\nexport type Status = \"working\" | \"waiting\" | \"idle\" | ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "pe Status = \"working\" | \"waiting\" | \"idle\" | \"offline\";\n\n",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "\"working\" | \"waiting\" | \"idle\" | \"offline\";\n\n/** Waiti",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": " | \"waiting\" | \"idle\" | \"offline\";\n\n/** Waiting first: th",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "ATUS_ORDER: Status[] = [\"waiting\", \"working\", \"idle\", \"of",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": " Status[] = [\"waiting\", \"working\", \"idle\", \"offline\"];\n\ne",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": " [\"waiting\", \"working\", \"idle\", \"offline\"];\n\nexport in",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "ng\", \"working\", \"idle\", \"offline\"];\n\nexport interface Ros",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "Offline || p.status !== \"offline\")\n    .sort((a, b) => ra",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
@@ -1673,22 +1602,20 @@
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "ter((r) => r.status === \"waiting\");\n\n/** Stalest heartbea",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
       "anchor": "ter((r) => r.status !== \"offline\" && typeof r.ts === \"num",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/lib/snapshot.ts",
       "kind": "derived-output",
       "anchor": "`${what} refused with HTTP ${res.status}${detail}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/web/client/src/art/characters.js",
@@ -1708,43 +1635,37 @@
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": " {\n  if (row.status === \"offline\") return `Last heartbeat",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "`;\n  if (row.status === \"waiting\" && grouping === \"status",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "aiting = row.status === \"waiting\" && grouping === \"status",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "className={row.status === \"offline\" ? \"v3-arow v3-arow-off\" : \"v3-arow\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{row.status === \"offline\" ? \"v3-arow v3-arow-off\" : \"v3-arow\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "assName={row.status === \"offline\" ? \"v3-arow v3-arow-off\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -1764,15 +1685,13 @@
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "style={waiting ? { color: \"var(--gold-ink)\" } : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{waiting ? { color: \"var(--gold-ink)\" } : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -1785,22 +1704,19 @@
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -1827,15 +1743,13 @@
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "s.some((s) => s.key === \"waiting\") && grouping === \"statu",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "ter((r) => r.status !== \"offline\").length;\n  const lastSe",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -1876,92 +1790,79 @@
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "Object.hasOwn(STATUS_ICON, status)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "className={known ? `v3-ghead v3-s-${status}` : \"v3-ghead\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{known ? `v3-ghead v3-s-${status}` : \"v3-ghead\"}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "`v3-ghead v3-s-${status}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "ref={status === \"waiting\" ? waitingHead : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{status === \"waiting\" ? waitingHead : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "        ref={status === \"waiting\" ? waitingHead : undefin",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "tabIndex={status === \"waiting\" ? -1 : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{status === \"waiting\" ? -1 : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "   tabIndex={status === \"waiting\" ? -1 : undefined}\n     ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "data-focused={status === \"waiting\" && focusWaiting ? \"true\" : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{status === \"waiting\" && focusWaiting ? \"true\" : undefined}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "ata-focused={status === \"waiting\" && focusWaiting ? \"true",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -1974,22 +1875,19 @@
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "style={{ color: status === \"offline\" ? \"var(--dim)\" : \"var(--ink)\" }}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "derived-output",
       "anchor": "{{ color: status === \"offline\" ? \"var(--dim)\" : \"var(--ink)\" }}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
       "anchor": "le={{ color: status === \"offline\" ? \"var(--dim)\" : \"var(-",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -3643,7 +3541,7 @@
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "yielded: status });\n    return r;\n  }\n\n  /** Drop an acti",
       "class": "non-render/control",
@@ -3653,8 +3551,7 @@
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "status-token",
       "anchor": "\"waiting\" ? \"◐\" : s === \"idle\" ? \"○\" : \"·\";\n}\n\n/** The",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/feedback.ts",
@@ -3706,22 +3603,19 @@
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": " view is stale)\", tone: \"waiting\" };\n  if (r.meshView ===",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": " yet populated)\", tone: \"waiting\" };\n  if (r.joinHealth?.",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": "roster${detail}`, tone: \"waiting\" };\n  if (r.mesh === \"of",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
@@ -3749,8 +3643,7 @@
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": "aiting${detail}`, tone: \"waiting\" };\n  return { text: `${",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
@@ -3768,21 +3661,19 @@
       "kind": "derived-output",
       "anchor": "`${r.status} ${fmtUptime(r.uptimeMs)}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": "me(r.uptimeMs)}`, tone: \"waiting\" };\n}\n\n/** Confirmed fai",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "status-token",
       "anchor": "al-failed\" ? \"failed\" : \"waiting\");\n\n/** Extra operationa",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/clean.ts",
@@ -3792,18 +3683,18 @@
       "rationale": "Clean preview: names a registration the clean removes; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`down --preserve-state requires exactly one recorded mesh for this root; found ${matching.length}, and nothing was stopped`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/feedback.ts",
@@ -3816,29 +3707,25 @@
       "path": "implementations/cli/src/commands/history.ts",
       "kind": "status-token",
       "anchor": "p: ${entry.gap}`, tone: \"waiting\" });\n          } else if",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/history.ts",
       "kind": "status-token",
       "anchor": "xist is unknown\", tone: \"waiting\" });\n  if (r.window.reac",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/history.ts",
       "kind": "status-token",
       "anchor": "m are not shown`, tone: \"waiting\" });\n  if (r.retention) ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/history.ts",
       "kind": "status-token",
       "anchor": "ere may be gone`, tone: \"waiting\" });\n  }\n  if (r.dms) no",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/history.ts",
@@ -3880,15 +3767,14 @@
       "path": "implementations/cli/src/commands/meshes.ts",
       "kind": "status-token",
       "anchor": "offline.has(m.space) ? [\"offline\"] : []),\n    ];\n    cons",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/meshes.ts",
       "kind": "derived-output",
       "anchor": "`${disco} answered ${res.status} - no discovery document there`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/meshes.ts",
@@ -3933,46 +3819,41 @@
       "rationale": "Persona editor failure: the editor process's exit status or interruption in a not-saved message; process state, not agent presence."
     },
     {
-      "path": "implementations/cli/src/commands/up.ts",
+      "path": "implementations/cli/src/commands/up-resume.ts",
       "kind": "derived-output",
       "anchor": "`restore attempt ${attempt} active listener ownership is ${status}; refusing ordinary startup`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              view={rosterView}\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              view={feedView}\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "sterView}\n              agents={mesh.agents}\n              endpoints",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "w}\n              agents={mesh.agents}\n              endpoints",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "}\n              entries={mesh.feed}\n              activeCha",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
       "anchor": "{compose ? (\n        <Prompt\n          label={composeLabel(compose)}\n          value={compose.value}\n          width={size.cols}\n          onChange={(v) => setCompose((c) => (c ? { ...c, value: v } : c))}\n          onSubmit={submitCompose}\n          onCancel={() => setCompose(null)}\n        />\n      ) : searchRow ? (\n        <Search\n          query={search.query}\n          active={search.active}\n          width={size.cols}\n          onChange={(q) => setSearch((s) => ({ ...s, query: q }))}\n          onSubmit={() => setSearch((s) => ({ ...s, active: false }))}\n          onCancel={() => setSearch({ active: false, query: \"\" })}\n        />\n      ) : null}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/commands.ts",
@@ -4000,29 +3881,25 @@
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "indexed-map",
       "anchor": "== \"agent\";\n  const s = STATUS[p.status];\n  const mark = { text:",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
       "anchor": "(isAgent ? s.dot : \"⚙\") + \" \"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
       "anchor": "{head.map((row, r) => line(factRow(row, isAgent ? agentColor(p.card.name) : undefined, selected, r ? undefined : mark), r))}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
       "anchor": "{facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), head.length + r))}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/console/ui/topo/Map.tsx",
@@ -4071,46 +3948,40 @@
       "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[a.status]",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "STATUS_ORDER[b.status]",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "indexed-map",
       "anchor": "counts[p.status as keyof StatusCounts]",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "ter((p) => p.status !== \"offline\");\n    return {\n      co",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/view/mesh-view.ts",
       "kind": "status-token",
       "anchor": "d.id === id)?.status ?? \"offline\";\n    const roleOf = (id",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.ep.setStatus(status, activity)",
       "class": "non-render/control",
@@ -4148,36 +4019,31 @@
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "status-token",
       "anchor": "t waitingFlag = { name: \"waiting\", type: \"boolean\", descr",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "status-token",
       "anchor": "l ? \"all\" : v.waiting ? \"waiting\" : \"agents\";\n  const war",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "status-token",
       "anchor": "waiting || p.status === \"waiting\" || p.condition !== unde",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "status-token",
       "anchor": "working: \"ok\", waiting: \"waiting\", idle: undefined, offli",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/who.ts",
@@ -4219,29 +4085,37 @@
       "path": "implementations/cli/src/commands/who.ts",
       "kind": "status-token",
       "anchor": " text: \"unknown\", tone: \"waiting\" }) : row.managed ? \"yes",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": " string, scope: \"all\" | \"waiting\" | \"agents\", shared: Rea",
+      "class": "non-render/control"
+    },
+    {
+      "path": "implementations/cli/src/commands/who.ts",
+      "kind": "status-token",
+      "anchor": "onst change = scope === \"waiting\" ? \"`--all` instead of `",
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
       "anchor": " text: \"unknown\", tone: \"waiting\" } : g === \"all\" ? \"all\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
       "anchor": " \"not signed in\", tone: \"waiting\" }]);\n    if (id.subject",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
       "anchor": " text: \"unknown\", tone: \"waiting\" } : r.dms ? \"yes\" : \"no",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
@@ -4267,9 +4141,9 @@
     {
       "path": "implementations/cli/src/commands/whoami.ts",
       "kind": "status-token",
-      "anchor": "t: \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
+      "anchor": " : \"not started\", tone: \"waiting\" }],\n    [\"identity\", id",
       "class": "non-render/control",
-      "rationale": "Whoami server field: \"waiting\" is the color tone for a space not started, not any peer's presence."
+      "rationale": "Whoami server field: \"waiting\" is the color tone for a stopped or not-yet-started space, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/whoami.ts",
@@ -4282,8 +4156,7 @@
       "path": "implementations/cli/src/commands/completion.ts",
       "kind": "status-token",
       "anchor": "om this version\", tone: \"waiting\" },\n  missing: { text: \"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/completion.ts",
@@ -4296,67 +4169,60 @@
       "path": "implementations/cli/src/commands/runtimes.ts",
       "kind": "status-token",
       "anchor": "\"waiting\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "of date`} · ${remedy}`, \"waiting\");\n}\n\n/** The nats-serve",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "one = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "na here is launchable\", \"waiting\")]);\n  } else if (f.laun",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "lected.personas.root}`, \"waiting\")]);\n      rows.push([\"→",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "gin --idp ${l.idp}`)}`, \"waiting\")]);\n    if (l?.subject)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "{l.subject} --full`)}`, \"waiting\")]);\n      else if (l.ac",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-turns.ts",
       "kind": "derived-output",
       "anchor": "f\" } });\n    if (!r.ok) return r;\n    this.yieldedSincePu",
       "class": "non-render/control",
       "rationale": "Turn-yield control flow: returns the manager's refusal to the caller early; the status is a request field, not a rendered presence status."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "ransition at all.\n      this._status = status;\n      this.turnStatus ",
       "class": "non-render/control",
       "rationale": "Connector lifecycle: stores the in-memory status field; not a rendered textual progress claim."
     },
     {
-      "path": "extensions/connector-core/src/agent.ts",
+      "path": "extensions/connector-core/src/agent-presence.ts",
       "kind": "derived-output",
       "anchor": "this.turnStatus = status",
       "class": "non-render/control",
@@ -4672,7 +4538,7 @@
     {
       "path": "implementations/cli/src/chat/plain.ts",
       "kind": "status-token",
-      "anchor": "tate = addNotice(state, \"waiting\", `draft is at its ${MAX",
+      "anchor": "tate = addNotice(state, \"waiting\", `line not added: it wo",
       "class": "non-render/control",
       "rationale": "Plain chat draft-limit notice: \"waiting\" is the color tone; the text is about the local draft, not a peer's presence."
     },
@@ -5281,44 +5147,86 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
+      "anchor": "existsSync(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: tests whether the folder a registration records exists; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "canonicalRoot(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: compares the registration's recorded folder with this folder's root; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the connection to space \"${space}\" is registered at ${at}; its registration does not identify the folder that started the stack`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the folder a manual or catalog registration records; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "readStackJournal(at)",
+      "class": "non-render/control",
+      "rationale": "Down refusal control flow: reads the stack journal at the registration's recorded folder to choose the stop command; no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`the stack of space \"${space}\" is recorded at ${at}, not at this folder's root, and \\`cotal down\\` stops only the stack recorded where it runs`",
+      "class": "non-render/control",
+      "rationale": "Down refusal text: names the folder where the space's stack is recorded; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down.ts",
+      "kind": "derived-output",
+      "anchor": "`run \\`${stop}\\` in ${at}; to stop one saved service, run \\`cotal service stop <service-name> --space ${space}\\``",
+      "class": "non-render/control",
+      "rationale": "Down refusal remedy: names the stop command and the folder to run it in; mesh is a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
       "anchor": "`the broker for \"${mesh.space}\" runs on the store ${mesh.storeDir}, not ${resolvePath(storeOverride)}; nothing was stopped`",
       "class": "non-render/control",
       "rationale": "Down refusal text: the registered broker's store differs from --store-dir; mesh is a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
-      "anchor": "`omit --store-dir, or pass --store-dir ${mesh.storeDir}`",
+      "anchor": "`omit --store-dir, or pass --store-dir ${shellWord(mesh.storeDir)}`",
       "class": "non-render/control",
       "rationale": "Down refusal remedy: names the registration's recorded store; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "readStoreIdentity(storeDir)",
       "class": "non-render/control",
       "rationale": "Preserve control flow: reads the store's identity to compare it with the recorded cut; no rendering."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`  source: ${storeDir}`",
       "class": "non-render/control",
       "rationale": "Preserve report line: prints the preserved source store path; a registration record, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`preservation attempt ${attemptId} no longer matches its manager's inventory (${(cause as Error).message}); the stale cut intent was aborted - rerun \\`cotal down --preserve-state\\``",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
-      "path": "implementations/cli/src/commands/down.ts",
+      "path": "implementations/cli/src/commands/down-preserve.ts",
       "kind": "derived-output",
       "anchor": "`${cause instanceof Error ? cause.message : String(cause)}; the delivery daemon stopped for the cut could not be started again (${notRestarted})`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/endpoint-deregister.ts",
@@ -5463,7 +5371,7 @@
     {
       "path": "implementations/cli/src/commands/reset.ts",
       "kind": "derived-output",
-      "anchor": "assertResetEligible(mesh, \"reset store\")",
+      "anchor": "assertResetEligible(mesh, \"reset store\", true)",
       "class": "non-render/control",
       "rationale": "Reset preview control flow: checks the registration record is eligible for a store reset; no presence is rendered."
     },
@@ -5644,6 +5552,13 @@
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
+      "kind": "derived-output",
+      "anchor": "`this folder has ${spaces.length} registered spaces: ${spaces.join(\", \")}`",
+      "class": "non-render/control",
+      "rationale": "Space show reports matching local registry entries, not peer presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
       "anchor": "t: \"unreachable\", tone: \"waiting\", mark: \"●\" };\n  return ",
       "class": "non-render/control",
@@ -5680,9 +5595,16 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": " longer exists)`, tone: \"waiting\" } : { text: p.root, ton",
+      "anchor": "d from ${root})`, tone: \"waiting\" };\n  if (!problem) retu",
       "class": "non-render/control",
-      "rationale": "Space list root cell: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Space list root cell: the color tone describes a moved project, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "ot} (${reason})`, tone: \"waiting\" };\n}\n\nfunction spacesVi",
+      "class": "non-render/control",
+      "rationale": "Space list root cell: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -5694,9 +5616,16 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": "o longer exists`, tone: \"waiting\" }, { text: `forget it w",
+      "anchor": "mText(problem)}`, tone: \"waiting\" },\n      { text: displa",
       "class": "non-render/control",
-      "rationale": "Prepared space view: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Prepared space view: \"waiting\" is the color tone for an unavailable prepared root, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": " from ${p.root}`, tone: \"waiting\" },\n      { text: movedP",
+      "class": "non-render/control",
+      "rationale": "Prepared space view: \"waiting\" is the color tone for a stack journal whose folder was moved, not any peer's presence."
     },
     {
       "path": "implementations/cli/src/commands/space.ts",
@@ -5722,7 +5651,14 @@
     {
       "path": "implementations/cli/src/commands/space.ts",
       "kind": "status-token",
-      "anchor": ".space} --yes\\``, tone: \"waiting\" });\n  if (!s.modeChecke",
+      "anchor": "not-directory\")), tone: \"waiting\" });\n  else if (s.rootGo",
+      "class": "non-render/control",
+      "rationale": "Space detail hint: the color tone describes an obstructed project root, not a peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/space.ts",
+      "kind": "status-token",
+      "anchor": "space} --yes`)}`, tone: \"waiting\" });\n  if (!s.modeChecke",
       "class": "non-render/control",
       "rationale": "Space detail hint: \"waiting\" is the color tone for a stack whose folder was moved or deleted, not any peer's presence."
     },
@@ -5785,14 +5721,21 @@
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`start this stack at another address with \\`cotal up --server ${address.protocol}//${address.hostname}:<port>\\` from ${root}, or ${stopHolder} and run \\`cotal up\\` again`",
+      "anchor": "`another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`",
+      "class": "non-render/control",
+      "rationale": "Stack up refusal text: names the stopped space whose registration reserves the broker address; a registration record, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/stack-up.ts",
+      "kind": "derived-output",
+      "anchor": "`${retry !== undefined ? `${retry}, or ` : \"\"}${stopHolder} and retry this start`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: start at another address or free this one; a registration record, not presence."
     },
     {
       "path": "implementations/cli/src/commands/stack-up.ts",
       "kind": "derived-output",
-      "anchor": "`${stopHolder}, then run bare \\`cotal up\\` from ${root}; this stack keeps its recorded address`",
+      "anchor": "`${stopHolder}, then run bare \\`${displayCmd()} up\\` from ${root}; this stack keeps its recorded address`",
       "class": "non-render/control",
       "rationale": "Stack up refusal remedy: how to free the stack's recorded broker address; a registration record, not presence."
     },
@@ -5804,98 +5747,105 @@
       "rationale": "Stack up report line: \"waiting\" is the color tone for listeners exposed in plaintext, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "nes = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
       "class": "non-render/control",
       "rationale": "Status machine overview: maps integration check states to color tones; \"waiting\" is a tone, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "nector.missing.length ? \"waiting\" : \"ok\")]);\n    }\n  // A",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a connector whose binaries are not on PATH, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": " m.nats === \"missing\" ? \"waiting\" : m.natsProblem ? \"fail",
       "class": "non-render/control",
       "rationale": "Status machine overview: \"waiting\" is the color tone for a missing broker executable, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "de this folder\" : \"\"}`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status brokers section: \"waiting\" is the color tone for an unrecorded selected space, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "teCell(\"not signed in\", \"waiting\")]);\n    else {\n      ro",
       "class": "non-render/control",
       "rationale": "Status selected-space account row: \"waiting\" is the color tone for a signed-out account, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "tor === \"not-granted\" ? \"waiting\" : \"hint\")]);\n    }\n  }\n",
       "class": "non-render/control",
       "rationale": "Status selected-space grant row: \"waiting\" is the color tone for a grant that was not given, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
-      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (r.folder.root",
+      "anchor": " ${s.snapshot.reason}`, \"waiting\")]);\n  if (servedStack(r",
       "class": "non-render/control",
       "rationale": "Status selected-space live details row: \"waiting\" is the color tone for an unavailable snapshot, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "s ${s.personas.root}.`, \"waiting\")] });\n  return { title:",
       "class": "non-render/control",
       "rationale": "Status selected-space note: \"waiting\" is the color tone for the unused-personas warning, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "finitions unavailable\", \"waiting\")] });\n  if (services.in",
       "class": "non-render/control",
       "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service definitions, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "topped state inferred\", \"waiting\")] });\n  if (services.in",
       "class": "non-render/control",
       "rationale": "Status owned-services section: \"waiting\" is the color tone for unreadable service instances, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "ss === \"foreign-host\" ? \"waiting\" : \"hint\"),\n    readines",
       "class": "non-render/control",
       "rationale": "Status owned-services table: \"waiting\" is the color tone for a process observed on a foreign host, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-health.ts",
       "kind": "derived-output",
       "anchor": "`HTTP ${status}`",
       "class": "non-render/control",
       "rationale": "HTTP response plumbing: the dashboard readiness probe's status code in a component fact; no agent presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
+      "kind": "status-token",
+      "anchor": "(\"Startup in progress\", \"waiting\")] }];\n  const blocks: S",
+      "class": "non-render/control",
+      "rationale": "Status folder line: \"waiting\" selects the display tone for a verified controller startup; it is not displayed as a peer presence or work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "er.stackBlock.reason}`, \"waiting\")] });\n  const part = fo",
       "class": "non-render/control",
       "rationale": "Status folder line: \"waiting\" is the color tone for a blocked stack, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "re any member stopped\", \"waiting\")] });\n  return blocks;\n",
       "class": "non-render/control",
@@ -6044,12 +5994,19 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "status-token",
+      "anchor": " text: \"unknown\", tone: \"waiting\" } : available ? { text:",
+      "class": "non-render/control",
+      "rationale": "Self-update version field: \"waiting\" is the color tone for a registry version that could not be read, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "status-token",
       "anchor": "ext: \"available\", tone: \"waiting\" } : \"no newer latest ta",
       "class": "non-render/control",
       "rationale": "Self-update version field: \"waiting\" is the color tone for an available update, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/update.ts",
+      "path": "implementations/cli/src/commands/update-continuity.ts",
       "kind": "derived-output",
       "anchor": "printLegacyReport(report, target.space, undefined, console.log, on, remedy)",
       "class": "non-render/control",
@@ -6184,21 +6141,21 @@
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "tal down\", description: `Stop the stack${where}` });\n  else if (status.m",
+      "anchor": "md} down`, description: `Stop the stack${where}` });\n  else if (status.m",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "ve-state\", description: `Stop the stack${where}` });\n  else items.push({",
+      "anchor": "ve-state`, description: `Stop the stack${where}` });\n  else items.push({",
       "class": "non-render/control",
       "rationale": "Up result next steps: the stop command and root from the local stack record; not agent presence."
     },
     {
       "path": "implementations/cli/src/lib/up-report.ts",
       "kind": "derived-output",
-      "anchor": "`cotal up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
+      "anchor": "`${cmd} up${status.root ? ` --root ${shellWord(status.root)}` : \"\"}`",
       "class": "non-render/control",
       "rationale": "Up result recovery command uses the recorded stack root, not agent presence or work progress."
     },
@@ -6410,64 +6367,175 @@
       "path": "extensions/connector-core/src/gateway.ts",
       "kind": "derived-output",
       "anchor": "JSON.stringify(structuredContent)",
+      "class": "non-render/control"
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "nameTakenRefusal(response.status, response.body, record.requestId)",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "Checks an HTTP name-conflict answer against this creation request before reporting a terminal refusal; the status is not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "legacyNameTakenRefusal(response.status, response.body)",
+      "class": "non-render/control",
+      "rationale": "Builds name-conflict recovery guidance from a legacy HTTP refusal while retaining the saved request; it makes no work-progress claim."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "ord.remote?.material && trust(target) !== record.trust) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Compares the selected registration's trust hash with saved ownership pins to decide whether original-authority discovery is needed; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "discoveryDocumentUrl(address)",
+      "class": "non-render/control",
+      "rationale": "Derives the original registration's discovery URL from the saved exchange URL for a pinned fetch, not display output."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "checkDiscoveryDocument(response)",
+      "class": "non-render/control",
+      "rationale": "Validates an HTTP discovery response before accepting original registration pins; response status is transport evidence, not agent presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "trust(original)",
+      "class": "non-render/control",
+      "rationale": "Hashes the reconstructed original registration and adopts it only when it matches saved trust; this is an authority comparison without rendered text."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "ord.retirementTarget && trust(target) !== record.trust)\n     ",
+      "class": "non-render/control",
+      "rationale": "Guards retirement by comparing explicit retirement pins with the saved trust hash and refuses a mismatch before sending; it does not render presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "was not sent\");\n    if (trust(target) !== record.trust) {\n   ",
+      "class": "non-render/control",
+      "rationale": "Checks whether legacy recovery still has matching registration trust before preserving the record separately; this controls custody, not human progress text."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "try { authority = await discoverConversationAuthority(target); }\n        catch (error",
+      "class": "non-render/control",
+      "rationale": "Discovers the retirement authority and marks it unavailable on failure so credentials stay recoverable; the call renders no peer status."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "creationOutcome(record, authority, replay, \"recovery\")",
+      "class": "non-render/control",
+      "rationale": "Interprets an exact creation replay as refused, pending approval, or issued material before retirement; these are issuance outcomes rather than work progress."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "record.remote.material = material",
+      "class": "non-render/control",
+      "rationale": "Stores recovered issued credentials in the saved identity record before persisting them; this member assignment has no rendering effect."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "checkConversationMaterial(material, authority, record.requestId, record.selection, approvalExpectation(record.remote))",
+      "class": "non-render/control",
+      "rationale": "Revalidates recovered credentials, request binding, selection and approval against the retirement authority; no presence or progress text is produced."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "`${authority.url}/${material.actor}`",
+      "class": "non-render/control",
+      "rationale": "Constructs the expected actor-specific retirement URL for exact lifecycle validation and the DELETE request, not a displayed work-status string."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "trust(current)",
+      "class": "non-render/control",
+      "rationale": "Compares the current registration with saved trust after unavailable retirement to decide whether to retain state separately or rethrow; nothing is rendered."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "    const infra = await getSpaceAuth(store, target.space);\n      if (!infra) thro",
+      "class": "non-render/control",
+      "rationale": "Loads the exact space's local authority for conversation retirement and refuses if it is absent; it reads auth state rather than rendering peer presence."
+    },
+    {
+      "path": "implementations/cli/src/lib/app-user-identity.ts",
+      "kind": "derived-output",
+      "anchor": "mintCreds(infra, newIdentity(), \"deprovisioner\", { deprovisionTarget: {\n        principal: principalKey(local.owner, local.actor).key, lifecycleUid: local.lifecycleUid } })",
+      "class": "non-render/control",
+      "rationale": "Mints narrowly targeted deprovisioner credentials for the saved local principal and lifecycle; credential issuance is control data, not rendered work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "selectionRefusal(response.status, response.body)",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "`${refusal}; no identity was issued`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "conversationApprovalRefusal(response.status, response.body)",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "`conversation identity ${what} answered HTTP ${response.status}; its original request was retained`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "conversationRetirementPhase(response.status, response.body, material)",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "`conversation identity retirement is pending at phase ${JSON.stringify(phase)}; its saved lifecycle was retained for an exact retry`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/app-user-identity.ts",
       "kind": "derived-output",
       "anchor": "JSON.stringify(phase)",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/conversation-identity.ts",
       "kind": "derived-output",
       "anchor": "`conversation identity discovery answered HTTP ${response.status}; no identity was requested`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This HTTP response handling reports request readiness or refusal, not peer work progress."
     },
     {
       "path": "implementations/cli/src/lib/conversation-identity.ts",
@@ -6479,9 +6547,23 @@
     {
       "path": "implementations/cli/src/commands/use.ts",
       "kind": "status-token",
-      "anchor": " ${s.current}\\``, tone: \"waiting\" }\n    : s.preparedState",
+      "anchor": "ent, problem))}`, tone: \"waiting\" }\n    : s.preparedState",
       "class": "non-render/control",
-      "rationale": "Use report line: \"waiting\" is the color tone for a prepared root that no longer exists, not any peer's presence."
+      "rationale": "Use report line: \"waiting\" is the color tone for an unavailable project root, not any peer's presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": ".lastOperation}`, tone: \"waiting\" });\n    lines.push(\n   ",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone describes the last recorded stack operation of a moved folder, not a peer's presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/use.ts",
+      "kind": "status-token",
+      "anchor": "d.recordedRoot}`, tone: \"waiting\" },\n      { text: `  ${d",
+      "class": "non-render/control",
+      "rationale": "Use report line: the color tone marks a stack journal moved from its recorded folder, not a peer's presence or progress."
     },
     {
       "path": "implementations/cli/src/commands/use.ts",
@@ -6537,42 +6619,42 @@
       "kind": "derived-output",
       "anchor": "`not signed in to ${idp}; run \\`${loginRecoveryCommand(idp)}\\``",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
       "anchor": "`run \\`${loginRecoveryCommand(idp)}\\``",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
       "anchor": "`your sign-in at ${idp} has no name on record that an @mention can reach, because it was made by an older cotal or the provider gave none`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
       "anchor": "`your sign-in at ${idp}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
       "anchor": "`sign in again with \\`${loginRecoveryCommand(idp)}\\``",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",
       "anchor": "`${signIn}, ${remedy}, or ${SAVE_NAME}`",
       "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
     },
     {
       "path": "implementations/cli/src/commands/config.ts",
@@ -6680,6 +6762,13 @@
       "rationale": "ps presence fallback: \"waiting\" is the color tone for the no-manager notice, not any peer's presence."
     },
     {
+      "path": "implementations/cli/src/commands/agents.ts",
+      "kind": "derived-output",
+      "anchor": "`${status} ${read(\"cotal endpoint describe manager\")} reads its commands.`",
+      "class": "non-render/control",
+      "rationale": "The status variable holds command guidance for inspecting the manager, not an agent's presence or reported progress."
+    },
+    {
       "path": "implementations/cli/src/commands/service-registry.ts",
       "kind": "status-token",
       "anchor": "w.state === \"stopped\" ? \"waiting\" : \"failed\" }, next: { t",
@@ -6687,7 +6776,7 @@
       "rationale": "Service inventory table: \"waiting\" is the color tone for a service that is not started or stopped, not any peer's presence."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
+      "path": "implementations/cli/src/commands/status-render.ts",
       "kind": "status-token",
       "anchor": "rsion}`).join(\" · \")}`, \"waiting\") : text;\n}\n\n/**\n * What",
       "class": "non-render/control",
@@ -6703,152 +6792,180 @@
     {
       "path": "packages/workspace/src/control/seat.ts",
       "kind": "status-token",
-      "anchor": "\"offline\"",
+      "anchor": "visor}` && p.status !== \"offline\")));\n  return { managers",
       "class": "non-render/control",
       "rationale": "Manager choice: skips an offline supervisor presence when reading a manager's host; the status is a filter predicate, not rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "eer) => peer.status !== \"offline\");\n      const address =",
+      "class": "non-render/control",
+      "rationale": "Seat resolution excludes offline peers from live name lookup before deciding whether to offer a foreground remedy."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "status-token",
+      "anchor": "ome((p) => p.status !== \"offline\" && p.card.kind === \"end",
+      "class": "non-render/control",
+      "rationale": "The seat ownership check uses live manager presence to qualify the census result, without rendering the status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeer(live, address)",
+      "class": "non-render/control",
+      "rationale": "The filtered roster is used to resolve the requested peer, not to render its status."
+    },
+    {
+      "path": "packages/workspace/src/control/seat.ts",
+      "kind": "derived-output",
+      "anchor": "hasNoSeatOwner(census, roster, peer)",
+      "class": "non-render/control",
+      "rationale": "The ownership predicate determines whether foreground recovery advice applies without printing presence status."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "meshRelease(mesh)",
       "class": "non-render/control",
       "rationale": "Spawn held-name release: passes the resolved mesh registry target to the release callback; `mesh` is a target, not presence."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "reportStarting({ name: startedName, managerInstanceId: reply.managerInstanceId, ...(typeof started?.waitingFor === \"string\" ? { waitingFor: started.waitingFor } : {}), ...(expected ? { expected } : {}) }, values, t.space, t.server, target)",
       "class": "non-render/control",
       "rationale": "Spawn start report: the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "indexed-map",
       "anchor": "refusal[reply.code]",
       "class": "non-render/control",
       "rationale": "Spawn refusal mapping: looks up the CLI refusal code for the manager's reply code; not a status map."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "if (on !== undefined && describeUnanswered(reply))\n      throw new Comman",
       "class": "non-render/control",
       "rationale": "Spawn control flow: tests whether a pinned launch drew no answer; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "if (on === undefined && describeUnanswered(reply)) throw unansweredClassL",
       "class": "non-render/control",
       "rationale": "Spawn control flow: tests whether an unpinned launch drew no answer; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "seatCapFrom(reply)",
       "class": "non-render/control",
       "rationale": "Spawn refusal shaping: reads the seat-cap marker from the manager's reply; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`nothing was launched; stop one of this owner's seats with \\`cotal stop --name <name>\\`, or ask the operator who runs that manager to restart it with a higher --seat-cap (it admits ${cap.cap} per owner)`",
       "class": "non-render/control",
       "rationale": "Spawn seat-cap remedy: names the cap the manager admits per owner; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`no connector \"${absent}\" is installed on ${answered ? await managerNamed(seat ? undefined : flags, t, answered) : \"the manager\"}; nothing was launched`",
       "class": "non-render/control",
       "rationale": "Spawn refusal text: names the missing connector and the manager; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "managerNamed(seat ? undefined : flags, t, answered)",
       "class": "non-render/control",
       "rationale": "Spawn refusal shaping: names the manager that answered; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`add it where that manager runs, such as ${extAddFor(absent)}, then restart that manager; it reads its agent applications when it starts`",
       "class": "non-render/control",
       "rationale": "Spawn refusal remedy: how to add the missing connector; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "extAddFor(absent)",
       "class": "non-render/control",
       "rationale": "Spawn refusal remedy: builds the ext add command for the missing connector; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`nothing was launched; ${elsewhere.length === 1 ? \"this manager of yours has\" : \"these managers of yours have\"} ${ref === \"default\" ? \"a default persona\" : `persona \"${ref}\"`}: ${elsewhere.map((selector) => rerunOn(process.argv.slice(2), selector)).join(\" or \")}`",
       "class": "non-render/control",
       "rationale": "Spawn refusal remedy: names the managers that hold the persona; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "observer.ready(result, warnings)",
       "class": "non-render/control",
       "rationale": "Spawn composite readiness: hands the launch result to the observing command; the spawn reply is tainted only through the local `mesh` registry target used to release a held name; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "iginal lifecycle with ${codeSpan(ps)} before another startup",
       "class": "non-render/control",
       "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "readManagedLaunch(reply, { space: t.space, requestedModel: values.model ?? null, detached: values.detach === true }, target)",
       "class": "non-render/control",
       "rationale": "Reads the manager's launch receipt with caller-held mesh coordinates; this call renders no peer presence or work-progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`--space ${shellWord(t.space)} --on ${shellWord(result.managerInstanceId)}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the target flags for the ps command; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`${displayCmd()} ps ${where}`",
       "class": "non-render/control",
       "rationale": "Spawn remedy shaping: builds the ps command for the original lifecycle; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`the ${result.runtime} runtime has no terminal to attach, so none was opened; the agent runs in the manager's ${result.runtime} session`",
       "class": "non-render/control",
       "rationale": "Spawn attach note: says the runtime opens no terminal; it reports the launch's runtime, not the agent's work progress."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`check the original lifecycle with ${codeSpan(ps)} before another startup`",
       "class": "non-render/control",
       "rationale": "Spawn partial remedy: names the ps command for the original lifecycle in a code span; no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "`${result.name} joined, but ${startupNotice}`",
       "class": "non-render/control",
       "rationale": "Spawn startup warning: names the launched seat and the manager's startup notice; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     },
     {
-      "path": "implementations/cli/src/commands/up.ts",
+      "path": "implementations/cli/src/lib/up-broker-address.ts",
       "kind": "derived-output",
       "anchor": "reserved.add(key)",
       "class": "non-render/control",
@@ -7308,65 +7425,56 @@
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "status-token",
-      "anchor": "ilter(p => p.status !== \"offline\"), args!.name as string)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "ilter(p => p.status !== \"offline\" &&\n        (!this.confi",
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "`no agent ${JSON.stringify(args!.name)} is held in live presence`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "`agent ${JSON.stringify(peer.card.name)} reports no holding manager instance`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "assertLifecycleToken(instance, \"holding manager instance\")",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "`agent ${JSON.stringify(peer.card.name)} reports an invalid holding manager instance`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "this.ep.invokeService(endpoint, command, args, opts)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "`${this.ep.principal.owner}.${row.id}`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
       "anchor": "`agent ${JSON.stringify(selected.card.name)} changed lifecycle after owner resolution; no current row was accepted`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "extensions/connector-core/src/agent.ts",
       "kind": "derived-output",
-      "anchor": "ecuted\");\n      }\n      return reply;\n    } catch (error) {\n ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "anchor": "return reply;",
+      "class": "non-render/control"
     },
     {
       "path": "implementations/cli/src/commands/down-live-lease.ts",
@@ -7379,36 +7487,31 @@
       "path": "packages/workspace/src/control/seat-presence.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/control/seat-presence.ts",
       "kind": "derived-output",
       "anchor": "resolvePeer(live, address)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/control/seat-presence.ts",
       "kind": "derived-output",
       "anchor": "`agent \"${peer.card.name}\" reports no holding manager instance or lifecycle`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/control/seat-presence.ts",
       "kind": "derived-output",
       "anchor": "assertLifecycleToken(instance, \"holding manager instance\")",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "packages/workspace/src/control/seat-presence.ts",
       "kind": "derived-output",
       "anchor": "`agent \"${peer.card.name}\" reports an invalid holding manager instance or lifecycle`",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "class": "non-render/control"
     },
     {
       "path": "implementations/tui/src/app.tsx",
@@ -7551,7 +7654,7 @@
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
-      "path": "implementations/cli/src/commands/spawn.ts",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
       "kind": "derived-output",
       "anchor": "joinedAgentRows(result)",
       "class": "non-render/control",
@@ -7574,9 +7677,16 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "  const releaseGlobal = rt.claimGlobalUpdate(root);\n      try {\n        if",
+      "anchor": "rt.claimGlobalUpdate(root)",
       "class": "non-render/control",
       "rationale": "Recovery claims installation mutation custody for a validated npm root, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "process.exitCode = result.status ?? 1",
+      "class": "non-render/control",
+      "rationale": "The resumed update inherits its child process exit status, not an agent presence or activity state."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
@@ -7588,7 +7698,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "version);\n          if (realpathSync(entry) !== realpathSync(entryS",
+      "anchor": "realpathSync(entry)",
       "class": "non-render/control",
       "rationale": "Paused recovery compares canonical executable paths to bind repair authority, not peer presence."
     },
@@ -7609,7 +7719,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "const installed = await rt.spawnGlobal(root, \"install\", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);\n          if (installe",
+      "anchor": "rt.spawnGlobal(root, \"install\", \"npm\", [\"install\", \"-g\", ...(prefix ? [\"--prefix\", prefix] : []), `cotal-ai@${record.previous}`], rt.env, true)",
       "class": "non-render/control",
       "rationale": "Interrupted recovery starts the npm reinstall process for the recorded previous package, not peer presence."
     },
@@ -7686,9 +7796,44 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "y {\n    releaseGlobal = rt.claimGlobalUpdate(root);\n  } catch (e) {\n    rt",
+      "anchor": "rt.claimGlobalUpdate(root, () => rt.out(\"Waiting for another updater to release npm's global root\"))",
       "class": "non-render/control",
       "rationale": "Global installation custody is acquired before a package replacement begins, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.globalVersion?.(root)",
+      "class": "non-render/control",
+      "rationale": "The updater reads the installed package version after acquiring custody, not an agent work state."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "compareSemver(installed, current)",
+      "class": "non-render/control",
+      "rationale": "Release comparison detects another updater's completed replacement, not peer presence or activity."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "compareSemver(installed, targetVersion)",
+      "class": "non-render/control",
+      "rationale": "Release comparison prevents replacing a requested or newer installed package, not a presence claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "(rt.verifyUpdatedEntry ?? rt.verifyGlobalEntry)(root, installed)",
+      "class": "non-render/control",
+      "rationale": "The selected global CLI entry is verified against its package version before dispatch, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`Another update installed cotal-ai@${installed}; rechecking the installed CLI`",
+      "class": "non-render/control",
+      "rationale": "The notice reports a verified installed release and CLI recheck, not an agent's presence or work progress."
     },
     {
       "path": "implementations/cli/src/commands/update.ts",
@@ -7700,7 +7845,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    npmInstall.file,\n    npmInstall.args,\n    rt.env,\n    false,\n    npmInstall.windowsVerbatimArguments,\n  )",
+      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    \"npm\",\n    npmInstall,\n    rt.env,\n    false,\n  )",
       "class": "non-render/control",
       "rationale": "The legacy path starts a guarded npm installation process whose status is an exit code, not peer presence."
     },
@@ -7782,46 +7927,200 @@
       "rationale": "Rollback receives the reconciliation failure reason and child exit code, not peer presence."
     },
     {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "its verdict. */\n  hook: \"waiting\" | \"gone\" | \"answered\";\n",
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "resolvePeerInRoster(live, args!.name as string)",
       "class": "non-render/control",
-      "rationale": "The Held.hook union describes a permission hook awaiting its verdict, not a peer presence state."
+      "rationale": "Names the one live seat a named manager.inspect targets; the roster is a routing input and no peer status is rendered."
     },
     {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "romise.resolve(), hook: \"waiting\", ran: false, tainted: f",
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "invokeUserManager({ ...this.config, managerInstanceId: ownerInstance }, bearer, command, args, invokeOpts)",
       "class": "non-render/control",
-      "rationale": "A newly held permission prompt starts with its hook waiting for a verdict; this initializes internal custody state."
+      "rationale": "Sends the manager command to the manager that holds the seat; the reply is the manager's own answer, not a presence claim."
     },
     {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "\n        if (h.hook === \"waiting\") h.hook = \"gone\";\n     ",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
+      "kind": "derived-output",
+      "anchor": "managers.push(manager)",
       "class": "non-render/control",
-      "rationale": "Hook withdrawal changes an unanswered permission hook to gone; it does not report an agent's presence or progress."
+      "rationale": "Collects the managers that answered status for the detached-launch refusal; a manager's own status reply is not agent presence."
     },
     {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "         if (h.hook === \"waiting\" && !h.ran && h.scope ==",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
+      "kind": "derived-output",
+      "anchor": "`${manager}: ${connector.agent}: ${oneLine(connector.reason ?? \"unavailable at manager startup\")}`",
       "class": "non-render/control",
-      "rationale": "Tool completion matches an unanswered permission hook by scope and tool input before settling that prompt."
+      "rationale": "Reports why an agent application is unavailable on a manager, as that manager recorded it at startup; not peer presence or activity."
     },
     {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "alues()) if (h.hook === \"waiting\" && !h.ran && h.scope ==",
+      "path": "implementations/cli/src/commands/spawn-managed-launch.ts",
+      "kind": "derived-output",
+      "anchor": "empty.push(manager)",
       "class": "non-render/control",
-      "rationale": "Ending a harness scope settles its unanswered permission hooks; the waiting comparison selects internal prompt custody."
+      "rationale": "Collects managers that report no agent application for the detached-launch refusal; not agent presence."
     },
     {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "\n        if (h.hook === \"waiting\" && !h.ran && h.record.s",
+      "path": "implementations/cli/src/lib/nats-bin.ts",
+      "kind": "derived-output",
+      "anchor": "`exit status ${run.status}`",
       "class": "non-render/control",
-      "rationale": "The desk selects the newest pending permission prompt whose hook still awaits an answer; it returns a request ID, not presence text."
+      "rationale": "Names the nats-server version probe's process exit status in a refusal, not agent presence or activity."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.turns.yieldTurn(status, opts)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's yield verdict (done, blocked or handoff) to the turn component; the argument is a turn-control token, not a peer's presence, and nothing is rendered here."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.setStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status to the presence component, which publishes it on the wire; the forwarder renders nothing."
+    },
+    {
+      "path": "extensions/connector-core/src/agent.ts",
+      "kind": "derived-output",
+      "anchor": "this.presence.resetStatus(status, activity)",
+      "class": "non-render/control",
+      "rationale": "Forwards the caller's status reset to the presence component, which publishes it on the wire; the forwarder renders nothing."
+    },
+    {
+      "path": "implementations/cli/src/commands/ext.ts",
+      "kind": "derived-output",
+      "anchor": "`npm terminated by ${closed.signal}`",
+      "class": "non-render/control",
+      "rationale": "This command diagnostic reports operational state and recovery, not peer work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "of wedging.\n            abortMaintenanceCut(lock);\n            clearPrese",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "eCut(lock);\n            clearPreservationPrepareIntent(lock);\n            throw new ",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "}\n          }\n          recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "reserved\" });\n          clearPreservationCommitIntent(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "Intent(lock);\n          clearPreservationPrepareIntent(lock);\n          managerCommi",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n            version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n            inventory: replan.inventory as JsonValue,\n            launch: { attemptId, space: mesh.space, server: mesh.server, storeDir, ...cap, mode: mesh.mode },\n          })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": " manager */ }\n          abortMaintenanceCut(lock);\n          clearPreserv",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: aborts the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "nceCut(lock);\n          clearPreservationPrepareIntent(lock);\n          throw new Er",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationPrepareIntent(lock, {\n          attemptId, space: mesh.space, mode: mesh.mode, server: mesh.server, storeDir,\n        })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the prepare intent through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "he manager */ }\n        clearPreservationPrepareIntent(lock);\n        // The deliver",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writeMaintenanceResumeDocument(lock, {\n        version: MAINTENANCE_RESUME_DOCUMENT_VERSION,\n        inventory: plan.inventory as JsonValue,\n        launch: {\n          attemptId,\n          space: mesh.space,\n          server: mesh.server,\n          storeDir,\n          ...cap,\n          mode: mesh.mode,\n        },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the resume document through the maintenance lock handle; the inventory is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "beginMaintenanceCut(lock, {\n        attemptId,\n        space: mesh.space,\n        mode: mesh.mode,\n        sourcePath: storeDir,\n        resume,\n        launch: { server: mesh.server, storeDir, ...cap },\n      })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: begins the maintenance cut through the maintenance lock handle; a registration record is stored, not rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ".cap },\n      });\n      clearPreservationPrepareIntent(lock);\n    }\n\n    // Stop the",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the prepare intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "writePreservationCommitIntent(lock, { attemptId })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: writes the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "process.exit(92);\n      recordPreservationManagerCommit(lock, { operation: \"commitPreservation\", attemptId, state: \"preserved\" });\n      clearPreservatio",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: records the Manager commit through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": ": \"preserved\" });\n      clearPreservationCommitIntent(lock);\n      if (process.env.",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: clears the commit intent through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "completeMaintenanceCut(lock, {\n      attemptId,\n      observedAt: new Date().toISOString(),\n      managerCommit: { operation: \"commitPreservation\", attemptId, state: \"preserved\" },\n      stopped: { manager: true, broker: true, localProcesses: true },\n      listener: { endpoint: mesh.server, unreachable: true },\n    })",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: completes the maintenance cut through the maintenance lock handle; a local lock, not presence, and no rendering."
+    },
+    {
+      "path": "implementations/cli/src/commands/down-preserve.ts",
+      "kind": "derived-output",
+      "anchor": "releaseMaintenanceLock(lock)",
+      "class": "non-render/control",
+      "rationale": "Preserve control flow: releases the maintenance lock; a local lock, not presence, and no rendering."
     }
   ]
 }

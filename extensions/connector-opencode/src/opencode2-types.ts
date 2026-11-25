@@ -12,17 +12,19 @@
 export interface OpenCode2Event {
   id?: string;
   type: string;
+  /** When the server created the event, in milliseconds since the epoch. */
+  created?: number;
   /** The event's position in its aggregate's durable log, on every durable event (the
    *  `session.execution.*` lifecycle included, keyed by session). */
   durable?: { aggregateID: string; seq: number };
   data?: Record<string, unknown>;
 }
 
-export interface OpenCode2EventSubscribe {
+interface OpenCode2EventSubscribe {
   (opts: { signal: AbortSignal }): AsyncIterable<OpenCode2Event>;
 }
 
-export interface OpenCode2PromptEvent {
+interface OpenCode2PromptEvent {
   sessionID: string;
   messageID: string;
   prompt: { text: string };
@@ -30,13 +32,13 @@ export interface OpenCode2PromptEvent {
   delivery?: unknown;
 }
 
-export interface OpenCode2ModelRequestEvent {
+interface OpenCode2ModelRequestEvent {
   model: { id: string; providerID: string };
   kind: "primary" | "title";
   agent: string;
 }
 
-export interface OpenCode2ToolExecuteBeforeEvent {
+interface OpenCode2ToolExecuteBeforeEvent {
   tool: string;
   sessionID: string;
   agent: string;
@@ -45,7 +47,7 @@ export interface OpenCode2ToolExecuteBeforeEvent {
   input: unknown;
 }
 
-export interface OpenCode2SessionHooks {
+interface OpenCode2SessionHooks {
   hook(name: "prompt", fn: (e: OpenCode2PromptEvent) => void | Promise<void>): Promise<void>;
   hook(name: "model.request", fn: (e: OpenCode2ModelRequestEvent) => void | Promise<void>): Promise<void>;
 }
@@ -55,7 +57,7 @@ export interface OpenCode2ToolEditor {
   list(): Array<{ id: string }>;
 }
 
-export interface OpenCode2ToolHooks {
+interface OpenCode2ToolHooks {
   hook(name: "execute.before", fn: (e: OpenCode2ToolExecuteBeforeEvent) => void | Promise<void>): Promise<void>;
   transform(fn: (ed: OpenCode2ToolEditor) => void | Promise<void>): Promise<void>;
 }

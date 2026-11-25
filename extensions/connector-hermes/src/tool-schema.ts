@@ -14,7 +14,7 @@ import { z } from "zod";
 import { cotalToolSpecs, NO_TOOL_ARGS, type AgentConfig } from "@cotal-ai/connector-core";
 
 /** A Hermes plugin tool: name + description + a JSON-Schema object for its parameters. */
-export interface HermesToolDescriptor {
+interface HermesToolDescriptor {
   name: string;
   description: string;
   parameters: Record<string, unknown>;

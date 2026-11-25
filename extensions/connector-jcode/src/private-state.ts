@@ -491,13 +491,13 @@ function optionalEntries(path: string): Dirent[] {
   }
 }
 
-export interface CredentialSources {
+interface CredentialSources {
   jcodeHome: string;
   appConfigDir: string;
   externalHome: string;
 }
 
-export interface CredentialMirrorEntry {
+interface CredentialMirrorEntry {
   family: "jcode-home" | "app-config" | "external-static" | "cursor-state" | "external-agent";
   source: string;
   destinationRelative: string;

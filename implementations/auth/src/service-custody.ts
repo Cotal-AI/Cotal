@@ -27,13 +27,13 @@ import {
 export { S1_MAX_UNKNOWN_ROUNDS, S1_REQUEST_TIMEOUT_MS, openServiceCustodyHost, type ServiceCustodyHost } from "./service-write.js";
 
 /** Re-reads after a CAS loss before a step holds. */
-export const S1_MAX_CAS_REDECIDE = 4;
+const S1_MAX_CAS_REDECIDE = 4;
 /** Re-pins of a byte-identical open native gate after a sibling's touch. */
-export const S1_MAX_GATE_REPIN = 8;
+const S1_MAX_GATE_REPIN = 8;
 
 export interface ServiceBootstrapIntent { readonly lifecycleUid: string; readonly notAfterMs: number }
 export interface ServiceCancelIntent { readonly lifecycleUid: string; readonly opId: string }
-export type ServiceCustodyHeld = { kind: "held"; reason: string; step: string; detail: string; opId: string };
+type ServiceCustodyHeld = { kind: "held"; reason: string; step: string; detail: string; opId: string };
 export type ServiceBootstrapResult =
   | { kind: "active"; root: { credentialId: string; expMs: number } }
   | { kind: "cancelled"; opId: string }
