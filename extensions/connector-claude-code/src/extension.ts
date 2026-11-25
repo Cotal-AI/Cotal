@@ -10,7 +10,7 @@ import { assertChannelServerDeclared, claudeUserMcpEnvKeys } from "./user-mcp.js
 import { HOST_EXE_ENV, resolveHostExe } from "./once-exit.js";
 import { HOOK_CONTEXT_CHARS } from "./hooks.js";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
-import { CLAUDE_PROMPT_ENV, CLAUDE_RESOLVED_BIN_ENV } from "./naming.js";
+import { claudeNamingLaunchEnv } from "./naming.js";
 import { claudeInitialize } from "./claude-initialize.js";
 import { claudeCommandCatalog } from "./command-catalog.js";
 
@@ -239,8 +239,6 @@ export const claudeConnector: Connector = {
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.backfillFloor !== undefined) env.COTAL_BACKFILL_FLOOR = String(opts.backfillFloor);
     if (opts.acceptedToken) env.COTAL_ACCEPTED_TOKEN = opts.acceptedToken;
-    // A seat that labels itself asks its own `claude` from its MCP server, which sees only this env.
-    if (opts.autoName && opts.resolvedBinaries?.claude) env[CLAUDE_RESOLVED_BIN_ENV] = opts.resolvedBinaries.claude;
 
     // A leading positional is claude's first message, auto-submitted on start —
     // so a driving session can greet the operator the moment it joins.
@@ -249,7 +247,7 @@ export const claudeConnector: Connector = {
     const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
     if (prompt === "")
       throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
-    if (prompt && opts.autoName) env[CLAUDE_PROMPT_ENV] = prompt;
+    Object.assign(env, claudeNamingLaunchEnv(opts, prompt));
     // `--resume` takes an optional value, so `claude` reads an id that starts with `-` as the next
     // option and resumes nothing. A Claude session id never starts with one.
     if (opts.resume?.startsWith("-"))

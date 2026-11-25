@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchEnv, type AgentNaming, type NameFromMessage } from "@cotal-ai/connector-core";
+import type { LaunchOpts } from "@cotal-ai/core";
 import { CLAUDE_PROVIDER_KEYS } from "./provider-keys.js";
 
 const NAME_ARGS = ["-p", "--output-format", "json", "--tools", "", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}', "--no-session-persistence"];
@@ -19,6 +20,15 @@ export const CLAUDE_RESOLVED_BIN_ENV = "COTAL_CLAUDE_RESOLVED_BIN";
 /** A seat's launch prompt, carried for a seat that labels itself: the MCP server is not told the
  *  first turn `claude` was started with. */
 export const CLAUDE_PROMPT_ENV = "COTAL_CLAUDE_PROMPT";
+
+/** What a seat that labels itself carries to its MCP server, which sees only its env: the
+ *  launcher's `claude` and the launch prompt. Empty for a seat that does not label itself. */
+export function claudeNamingLaunchEnv(opts: LaunchOpts, prompt: string | undefined): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (opts.autoName && opts.resolvedBinaries?.claude) env[CLAUDE_RESOLVED_BIN_ENV] = opts.resolvedBinaries.claude;
+  if (prompt && opts.autoName) env[CLAUDE_PROMPT_ENV] = prompt;
+  return env;
+}
 
 /** The naming for a session launched with `env`, on `model` when the launch pinned one. */
 export function claudeNaming(env: NodeJS.ProcessEnv, model: string | undefined): AgentNaming {
