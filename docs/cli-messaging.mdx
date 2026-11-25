@@ -575,11 +575,14 @@ On an open mesh, `channel show` explains that membership is unavailable and stil
 retained history.
 
 Removal keeps retained history unless `--purge` is present. The confirmation names the channel,
-space and history scope. Scripts pass `--yes`. A name with no saved entry and no retained messages
-is refused with `TARGET_NOT_FOUND` before the confirmation, listing the registered channels, or
-naming the registered spelling when only the case differs. In that case the suggested command
-inspects the registered channel without removing it. Otherwise the suggested list command names
-the resolved space and keeps any explicit `--server` and `--creds`. Removing a channel that has retained
+space and history scope. Scripts pass `--yes`. When the command requires `--yes`, the suggested
+retry keeps the target, `--purge` if given and any `--plain` or `--json` flag.
+
+A name with no saved entry and no retained messages is refused with `TARGET_NOT_FOUND` before the
+confirmation, listing the registered channels, or naming the registered spelling when only the case
+differs. In that case the suggested command inspects the registered channel without removing it.
+Otherwise the suggested list command names the resolved space and keeps any explicit `--server`
+and `--creds`. Removing a channel that has retained
 messages but no saved entry is a `no-op`, and its Metadata row says `no saved entry`. A missing
 channel registry bucket is no saved entry, so that remove is the same `no-op`. `--purge`
 still deletes that channel's retained messages. When the chat stream is not on the broker, that
