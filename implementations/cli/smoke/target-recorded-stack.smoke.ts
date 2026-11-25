@@ -559,22 +559,38 @@ for (const command of ["whoami", "ps", "who", "endpoints"]) {
 
   const down = ["down", "--yes", "--space", space];
   const message = (path: string) => `--space ${space} names a stack rooted at ${path}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`;
+  const conflict = (path: string) => `--space ${space} names a stack rooted at ${path}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is la07, so no member was stopped`;
   const retry = `run \`${launcher} down --yes\``;
+  const restore = (retry: string) => `move the obstruction aside and restore the original project folder at its recorded path, then ${retry} there`;
   const before = runDown(down, parent);
   check("down from outside an intact recorded project names the command to run there",
     refusedWith(before, "TARGET_NOT_FOUND", message(project), `${retry} from ${project}`), shown(before));
+  const journalPath = join(root, ".cotal", "stack-controller.json");
+  const journal = readFileSync(journalPath);
+  const controllerBefore = runDown([...down, "--json"], root);
+  check("down from another controller project gives the normal retry at an intact root",
+    refusedWith(controllerBefore, "CONFLICT", conflict(project), `${retry} from ${project}`), shown(controllerBefore));
 
   renameSync(project, saved);
   writeFileSync(project, "replacement file\n", { mode: 0o600 });
   for (const output of [[], ["--json"]]) {
     const blocked = runDown([...down, ...output], parent);
     check(`down ${output[0] ?? "text"} names the obstruction and how to restore the recorded project`,
-      refusedWith(blocked, "TARGET_NOT_FOUND", message(`${project}, which is not a directory`),
-        `move the obstruction aside and restore the original project folder at its recorded path, then ${retry} there`) &&
+      refusedWith(blocked, "TARGET_NOT_FOUND", message(`${project}, which is not a directory`), restore(retry)) &&
       !blocked.stderr.includes(`${retry} from ${project}`), shown(blocked));
   }
-  check("down leaves the obstruction, moved project and registration untouched",
-    readFileSync(project, "utf8") === "replacement file\n" && existsSync(saved) && readFileSync(record, "utf8") === entry);
+  const apply = runDown([...down, "--json"], root);
+  const preview = runDown(["down", "--dry-run", "--space", space], root);
+  const obstructed = conflict(`${project}, which is not a directory`);
+  const target = apply.envelope?.target as { root?: string; space?: string; recordedSpace?: string; stackRoot?: string } | null | undefined;
+  check("down apply from another controller project refuses with the obstruction and exact target",
+    refusedWith(apply, "CONFLICT", obstructed, restore(retry)) && apply.envelope?.outcome === "refused" &&
+      target?.root === root && target.space === space && target.recordedSpace === "la07" && target.stackRoot === project, shown(apply));
+  check("down preview from another controller project keeps --dry-run in the restore-first retry",
+    refusedWith(preview, "CONFLICT", obstructed, restore(`run \`${launcher} down --dry-run\``)), shown(preview));
+  check("down leaves the obstruction, moved project, registration and current controller journal untouched",
+    readFileSync(project, "utf8") === "replacement file\n" && existsSync(saved) &&
+      readFileSync(record, "utf8") === entry && readFileSync(journalPath).equals(journal));
   rmSync(record);
 }
 

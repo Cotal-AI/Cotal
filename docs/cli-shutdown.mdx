@@ -213,16 +213,16 @@ registration back as it was.
 
 A bare `down` stops only the stack of the folder it runs in. In a folder whose root holds no
 stack, when the space named by `--space`, or else the selected space, is a stack this machine
-started in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing. The
-refusal names the recorded root and the `down` command to run there. If a file blocks that root,
-the refusal reports that the path is not a directory. Move the file aside and restore the original
-project folder before retrying there. `--json` and `--plain` carry the refusal as structured output.
+started in another folder, `down` refuses with `TARGET_NOT_FOUND`, exit 2, and stops nothing.
 
 A folder whose own `.cotal` holds no stack, such as one a failed start left, answers for itself
 unless `--space` names another folder's stack. In a folder with its own controller stack, a
 `--space` that names another space refuses with `CONFLICT`, exit 2, and names this folder's stack.
-If the named space has a recorded stack elsewhere, the refusal also names its root and the `down`
-command to run there.
+
+Both refusals name the recorded root and the `down` command to run there when the target has a
+recorded stack elsewhere. If a file blocks that root, the refusal reports that the path is not a
+directory. Move the file aside and restore the original project folder before retrying there.
+`--json` and `--plain` carry the refusal as structured output.
 
 If access to the project folder is denied, `down` leaves the stack and its records unchanged and
 asks you to restore access before retrying.

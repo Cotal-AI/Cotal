@@ -30,8 +30,6 @@ import {
   stackHomeRemedy,
   localMeshesForRoot,
   preparedSpaceAt,
-  projectRootProblem,
-  projectRootProblemText,
   retainedLegacyBroker,
   retainedOpenSpace,
   soleSpaceOf,
@@ -79,7 +77,7 @@ import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { processRecorded, stopInFlight, stopLocalProcess, UnattributableRecord, unattributableRecordSteps } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
 import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
-import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackRootElsewhere, validateStackDownArguments } from "./stack-down.js";
+import { controllerStackRecorded, deliveryLeaseAfterStop, nothingRunning, sameDown, stackDown, stackDownElsewhere, validateStackDownArguments } from "./stack-down.js";
 import { noticeBetweenSteps } from "../lib/interrupt-notice.js";
 import { goneRootDown, goneRootStackDown, refuseInaccessibleDownRoot, validateGoneRootDownArguments } from "./stack-gone.js";
 import { readStackJournal, recordedProcessLine, recordedProcessesUnder } from "../lib/stack-journal.js";
@@ -207,22 +205,19 @@ export function validateDownArguments(args: ParsedArgs): void {
 function refuseStackElsewhere(values: ParsedArgs["values"]): void {
   if (values.file !== undefined || values.run !== undefined) return;
   const here = canonicalRoot(cotalRoot());
-  let space: string | undefined, root: string | undefined;
+  let space: string | undefined;
   try {
     const local = localMeshesForRoot(here);
     if (typeof values.space === "string" ? local.some((mesh) => mesh.space === values.space) : local.length || existsSync(join(here, ".cotal")) && here !== canonicalRoot(homedir())) return;
     space = typeof values.space === "string" ? values.space : getCurrent();
-    root = space === undefined ? undefined : stackRootElsewhere(space, here);
   } catch { return; }
-  if (root === undefined || space === undefined) return;
-  refuseInaccessibleDownRoot(root, space);
-  const problem = projectRootProblem(root);
-  const obstructed = problem === "not-directory";
-  const note = obstructed ? `, which ${projectRootProblemText(problem)}` : "";
-  const retry = `run ${codeSpan(sameDown(values))}`;
-  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${root}${note}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, {
-    target: { root: here, space, stackRoot: root },
-    remedy: obstructed ? `move the obstruction aside and restore the original project folder at its recorded path, then ${retry} there` : `${retry} from ${root}`,
+  if (space === undefined) return;
+  const elsewhere = stackDownElsewhere(space, here, values);
+  if (!elsewhere) return;
+  refuseInaccessibleDownRoot(elsewhere.root, space);
+  throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${values.space === undefined ? `the selected space "${space}" is` : `--space ${space} names`} a stack rooted at ${elsewhere.location}, and \`cotal down\` stops only the stack of the folder it runs in; this folder has none, so nothing was stopped`, {
+    target: { root: here, space, stackRoot: elsewhere.root },
+    remedy: elsewhere.remedy,
   });
 }
 

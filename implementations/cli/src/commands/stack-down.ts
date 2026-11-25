@@ -15,7 +15,7 @@ import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, MANAGER_START_PAY
 import {
   CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, codeSpan, commandFailureReport, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
-  hasUserAuthState, localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, retainedLegacyBroker, stopReservationPath,
+  hasUserAuthState, localProcessPathCandidates, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY, projectRootProblem, projectRootProblemText, retainedLegacyBroker, stopReservationPath,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
 import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
@@ -45,22 +45,24 @@ export function controllerStackRecorded(root: string): boolean {
   return readStackJournal(canonicalRoot(root)) !== undefined;
 }
 
-/** The root of the stack this machine started for `space` in a folder other than `root`, or
- *  undefined. `cotal down` stops only the stack of the folder it runs in, so a refusal names it.
- *  Every stack `cotal up` registered answers here, not only a controller one: a legacy stack is
- *  stopped by the same `cotal down` in its own root, so naming that root is the step either way. */
-export function stackRootElsewhere(space: string, root: string): string | undefined {
-  try {
-    const mesh = findMesh(space);
-    return mesh && mesh.origin === "up" && canonicalRoot(mesh.root) !== canonicalRoot(root) ? mesh.root : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** The same `down`, without `--space`, for a refusal that names the folder to run it from. */
 export const sameDown = (values: ParsedArgs["values"]): string =>
   [`${displayCmd()} down`, ...["dry-run", "with-agents", "preserve-state", "yes"].filter((flag) => values[flag] === true).map((flag) => `--${flag}`)].join(" ");
+
+/** Local registrations, including legacy stacks, supply the recorded root and the retry there. */
+export function stackDownElsewhere(space: string, here: string, values: ParsedArgs["values"]): { root: string; location: string; remedy: string } | undefined {
+  let root: string;
+  try {
+    const mesh = findMesh(space);
+    if (!mesh || mesh.origin !== "up" || canonicalRoot(mesh.root) === canonicalRoot(here)) return undefined;
+    root = mesh.root;
+  } catch { return undefined; }
+  const problem = projectRootProblem(root);
+  const retry = `run ${codeSpan(sameDown(values))}`;
+  return problem === "not-directory"
+    ? { root, location: `${root}, which ${projectRootProblemText(problem)}`, remedy: `move the obstruction aside and restore the original project folder at its recorded path, then ${retry} there` }
+    : { root, location: root, remedy: `${retry} from ${root}` };
+}
 
 /** A stop records each member's stop under the space's service instance records, so a folder there this
  *  account cannot write refuses before the plan, naming it, rather than leaving every member running
@@ -456,12 +458,12 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
   if (!previous) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this root has no controller stack journal", { target: { root } });
   const journal0 = previous.journal;
   if (values.space !== undefined && values.space !== journal0.space) {
-    const space = String(values.space), elsewhere = stackRootElsewhere(space, root);
+    const space = String(values.space), elsewhere = stackDownElsewhere(space, root, values);
     recordOperationSpace(space);
-    if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere, space);
-    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
-      target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere } : {}) },
-      remedy: elsewhere ? `run \`${sameDown(values)}\` from ${elsewhere}` : `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
+    if (elsewhere !== undefined) refuseInaccessibleDownRoot(elsewhere.root, space);
+    throw new CommandFailure("refused", "CONFLICT", `--space ${space} ${elsewhere ? `names a stack rooted at ${elsewhere.location}` : "is not this folder's stack"}, and \`cotal down\` stops only the stack of the folder it runs in; this folder's stack is ${journal0.space}, so no member was stopped`, {
+      target: { root, space, recordedSpace: journal0.space, ...(elsewhere ? { stackRoot: elsewhere.root } : {}) },
+      remedy: elsewhere?.remedy ?? `run \`${sameDown(values)}\` from the folder whose stack is ${space}, or drop --space to stop ${journal0.space} here`,
     });
   }
   recordOperationSpace(journal0.space);
