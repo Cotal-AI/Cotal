@@ -868,6 +868,16 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
   return runOperation(scope, () => dispatchCli(registry, argv, opts, scope));
 }
 
+/** Record roots that belong to spaces registered before command bodies can add new ones. */
+function seedProjectTrustBeforeCommand(name: string, dryRun: boolean): void {
+  if (dryRun || ["version", "docs", "completion", "__complete"].includes(name)) return;
+  try { seedTrustedProjects(); }
+  catch (error) {
+    if (!isCommandFailure(error)) throw error;
+    stderrLine("! ", `the upgrade seed added no project folder: ${error.message}${error.remedy ? `; ${error.remedy}` : ""}`, c.yellow);
+  }
+}
+
 async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptions, scope: OperationScope): Promise<void> {
   const startedAt = Date.now();
   const { leading, original, word, args } = leadingInvocation(argv);
@@ -1113,20 +1123,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
         failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
       }
     }
-    // The one-time upgrade seed of the trusted project folders runs here, before any command body can
-    // register a space, so only spaces registered or prepared before the first command at this version
-    // are seeded. Its record in the Cotal home says whether it ran, and once it completed nothing is
-    // read or written again. When it cannot finish, such as in a config folder another account could
-    // write or with a damaged record, the command still runs: the seed adds no folder, and a folder
-    // already in the trusted projects file stays trusted.
-    if (!["version", "docs", "completion", "__complete"].includes(cmd.name) && parsed.values["dry-run"] !== true) {
-      try {
-        seedTrustedProjects();
-      } catch (e) {
-        if (!isCommandFailure(e)) throw e;
-        stderrLine("! ", `the upgrade seed added no project folder: ${e.message}${e.remedy ? `; ${e.remedy}` : ""}`, c.yellow);
-      }
-    }
+    seedProjectTrustBeforeCommand(cmd.name, parsed.values["dry-run"] === true);
   }
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
