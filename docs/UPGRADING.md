@@ -19,7 +19,7 @@ terminal and for one a manager runs.
   trust every folder a space is registered or prepared at by then.
   If the upgrade cannot read the registry, it warns and trusts no roots from that attempt. Review
   each affected folder and run `cotal trust <path>` explicitly. With `--json`, the warning is in
-  the command's result envelope.
+  the command's result envelope. `cotal update` does not run this migration.
 - `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
   `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
   `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.

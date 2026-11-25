@@ -870,9 +870,8 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
 }
 
 /** Record roots that belong to spaces registered before command bodies can add new ones. */
-function seedProjectTrustBeforeCommand(name: string, parsed: ParsedArgs, json: boolean): void {
-  if (parsed.values["dry-run"] === true || (name === "update" && parsed.values.check === true)
-    || ["version", "docs", "completion", "__complete"].includes(name)) return;
+function seedProjectTrustBeforeCommand(name: string, dryRun: boolean, json: boolean): void {
+  if (dryRun || ["version", "docs", "completion", "__complete", "update"].includes(name)) return;
   try { seedTrustedProjects(); }
   catch (error) {
     const remedy = isCommandFailure(error) || isMeshRegistryError(error) ? error.remedy : undefined;
@@ -1126,7 +1125,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
         failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
       }
     }
-    seedProjectTrustBeforeCommand(cmd.name, parsed, structured(cmd, parsed.positionals[0]) && parsed.values.json === true);
+    seedProjectTrustBeforeCommand(cmd.name, parsed.values["dry-run"] === true, structured(cmd, parsed.positionals[0]) && parsed.values.json === true);
   }
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
