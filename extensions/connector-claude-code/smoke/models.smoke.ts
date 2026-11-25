@@ -209,6 +209,22 @@ console.log("claude connector: the model catalog asks claude, and never hangs or
   check("the lister kills the claude it gave up on", !alive(pid), pid);
 }
 
+{
+  // spawn.env names reach the catalog's claude as they reach a launch, so a provider that only
+  // spawn.env configures lists the models a seat would run. A name nobody declared stays out.
+  Object.assign(process.env, { CATALOG_GATEWAY_URL: "https://gateway.invalid", CATALOG_UNDECLARED: "undeclared" });
+  const { bin, log } = standIn("env-allow", recorded.loggedIn);
+  await claudeConnector.listModels!({ resolvedBinaries: { claude: bin }, envAllow: ["CATALOG_GATEWAY_URL"] });
+  const seen: string[] = logged(log)[0]?.env ?? [];
+  check(
+    "a catalog read gives claude the spawn.env names a launch gets, and no name spawn.env does not declare",
+    seen.includes("CATALOG_GATEWAY_URL") && !seen.includes("CATALOG_UNDECLARED"),
+    seen.filter((name) => name.startsWith("CATALOG_")),
+  );
+  delete process.env.CATALOG_GATEWAY_URL;
+  delete process.env.CATALOG_UNDECLARED;
+}
+
 for (const log of logs) {
   const pid = existsSync(log) ? logged(log)[0]?.pid : undefined;
   if (pid !== undefined && alive(pid)) process.kill(pid, "SIGKILL");

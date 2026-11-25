@@ -48,7 +48,9 @@ export async function listClaudeModels(opts: ModelCatalogOpts = {}): Promise<Mod
   const cwd = mkdtempSync(join(tmpdir(), "cotal-claude-models-"));
   try {
     const bin = opts.resolvedBinaries?.claude ?? "claude";
-    const answer = await claudeInitialize({ bin, cwd, env: launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS }), boundMs: 6_000, what: "its models" });
+    // The spawn.env names a launch gets, so claude lists the models of the provider a seat reaches.
+    const env = launchEnv({ providerKeys: CLAUDE_PROVIDER_KEYS, envAllow: opts.envAllow });
+    const answer = await claudeInitialize({ bin, cwd, env, boundMs: 6_000, what: "its models" });
     if ("failed" in answer) return unavailable(answer.failed);
     const { account, models: rows } = answer.response;
     // Logged out, claude still answers, with its built-in aliases, and no seat of this install can run one.
