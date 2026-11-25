@@ -116,9 +116,11 @@ owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
-header. With no agents it suggests `cotal spawn` for the space just listed, keeping any explicit
-broker address it can safely print. If `status` reports that no agent application is set up here,
-it suggests `cotal setup` instead.
+header. A populated single-manager report suggests `cotal attach <name>` and `cotal stop <name>`
+for the mesh just listed. The hints keep explicit broker addresses that are safe to print and
+include the manager instance when the read was pinned to it. With no agents, `ps` suggests
+`cotal spawn` for the mesh just listed, keeping any explicit broker address it can safely print.
+If `status` reports that no agent application is set up here, it suggests `cotal setup` instead.
 
 When `ps` asks every manager, it then asks each manager that answered for the host name in its own
 status reply. The host shows as `· reports host <host>` after the id, or as a `reported host` row
@@ -491,7 +493,7 @@ cotal input --name <n> --text <text> [--no-enter] [--on <instance>] [--space <s>
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--space <s>` / `--server <url>` | resolved mesh | Which manager to reach |
 | `--name <n>` | | Managed agent to type into (required) |
 | `--text <text>` | | The text to type, taken verbatim (required) |
 | `--no-enter` | off | Type the text and stop there, without pressing Enter |
@@ -524,8 +526,8 @@ cotal input --name reviewer --text=--verbose          # dash-leading text: use -
 
 Enter is pressed by default, since a command typed but never submitted has not been delivered.
 `--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
-send it later. If a manager selection refusal prints a retry command, it keeps `--no-enter` when
-you supplied it.
+send it later. If a manager selection refusal prints a retry command, it keeps `--no-enter` and the
+receipt format you selected with `--json` or `--plain`.
 
 At a Claude selection menu, including `AskUserQuestion`, text input is refused before any bytes
 are written. Pasting a number or an answer there can otherwise confirm the highlighted option

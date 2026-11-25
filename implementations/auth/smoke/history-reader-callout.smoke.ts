@@ -27,6 +27,7 @@ import { SignJWT, generateKeyPair, type CryptoKey } from "jose";
 import {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams,
   seedChannelRegistry, provisionAgent, mintLifecycleUid, chatStream, eventPayloadStream, userInboxConnId, type CotalMessage,
+  chatSubject, mintMembershipObserverCreds, startMembershipFeed,
 } from "@cotal-ai/core";
 import { createCalloutAuth, calloutPermissions, deriveOwnerToken, startAuthCallout, USER_TOKEN_VER } from "../src/index.js";
 import { grantActor, ledgerAclResolver, ledgerAuthorizeConnect } from "../src/ledger.js";
@@ -81,6 +82,7 @@ async function participantBearer(row: typeof participantRows[number]): Promise<s
 
 const endpoints: CotalEndpoint[] = [];
 const raws: NatsConnection[] = [];
+let feed: Awaited<ReturnType<typeof startMembershipFeed>> | undefined;
 try {
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
@@ -204,6 +206,38 @@ try {
   check("user mode: ...under reader names of the new connection, not the old one",
     moved.length > 0 && moved.every((p) => p !== victim.name.slice(0, victim.name.lastIndexOf("_"))), { moved, before: victim.name });
 
+  const chat = chatSubject(space, "*", "*", "general");
+  let observerNc: NatsConnection | undefined;
+  const observer = new CotalEndpoint({
+    space, servers: SERVERS, bearer: await adminBearer("history"), sentinelCreds: callout.sentinelCreds,
+    channels: [], consume: false, watchPresence: false, registerPresence: false, watchChannels: false,
+    omitFromLiveMembership: true, card: { name: "history", kind: "endpoint" },
+    onConnection: (nc) => { observerNc = nc; },
+  });
+  endpoints.push(observer);
+  observer.on("error", () => {});
+  await observer.start();
+  let sawPost = false;
+  observer.tap((_subject, message) => { if (message && textOf(message) === "observer follow probe") sawPost = true; }, { subject: chat });
+  await observerNc!.flush();
+  dash.tap(() => {}, { subject: chat });
+  await dashNc.flush();
+  const observerRead = await observer.channelHistory("general", { limit: 1 });
+  check("user mode: the observer reads history using a bound, marked reply inbox", observerRead.length === 1
+    && seen.some(({ nonce }) => new RegExp(`^${OWNER}-history-_[a-z0-9]{25}$`).test(nonce)));
+  await poster.multicast("observer follow probe", { channel: "general" });
+  for (let i = 0; i < 100 && !sawPost; i++) await wait(20);
+  check("user mode: the bound history observer receives the live post", sawPost);
+
+  feed = await startMembershipFeed({ servers: SERVERS, space, accountId: auth.account.pub,
+    observerCreds: await mintMembershipObserverCreds(auth, newIdentity()),
+    rwCreds: await mintCreds(auth, newIdentity(), "membership-rw") });
+  await feed.poll();
+  const census = await dash.readMembership();
+  check("user mode: a fresh census includes the ordinary subscriber but not the bound observer",
+    census.asOf !== undefined && census.members.some((m) => m.id === `${OWNER}.dashboard` && m.live.includes("general"))
+    && !census.members.some((m) => m.id === `${OWNER}.history` && m.live.includes("general")), census);
+
   const payloadUid = mintLifecycleUid();
   const payloadWriter = new CotalEndpoint({
     space, servers: SERVERS, lifecycleUid: payloadUid,
@@ -251,6 +285,7 @@ try {
 
   console.log(`  counts ${JSON.stringify({ reads: READS, answered, base, afterReads, outcome, survives, again, afterReconnect })}`);
 } finally {
+  await feed?.stop();
   for (const nc of raws) await nc.close().catch(() => {});
   for (const ep of endpoints.reverse()) await ep.stop().catch(() => {});
   srv.kill("SIGKILL");

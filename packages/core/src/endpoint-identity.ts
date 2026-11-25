@@ -3,6 +3,25 @@
 import type { DmOnlyOptions } from "./endpoint-options.js";
 import type { AgentCard } from "./types.js";
 import type { NatsConnection } from "@nats-io/transport-node";
+import { assertInboxConnId, userInboxConnId } from "./subject-grammar.js";
+
+export const OBSERVER_CONN_NAME_PREFIX = "cotal:observer/";
+export const OBSERVER_INBOX_NONCE_PREFIX = "ibx_observer_";
+const BOUND_OBSERVER_MARKER = "_";
+
+/** Mark the nonce, not the principal. The single extra character keeps the stock observer name
+ *  within the legacy 120-character limit for a 64-character actor. */
+export function endpointUserInboxId(owner: string, actor: string, observer: boolean): string {
+  const name = userInboxConnId(owner, actor);
+  if (!observer) return name;
+  const nonceAt = name.lastIndexOf("-") + 1;
+  return assertInboxConnId(`${name.slice(0, nonceAt)}${BOUND_OBSERVER_MARKER}${name.slice(nonceAt)}`);
+}
+
+export function isBoundObserverInbox(name: string | undefined, principal: string): boolean {
+  const prefix = `${principal.replace(".", "-")}-${BOUND_OBSERVER_MARKER}`;
+  return name?.startsWith(prefix) === true && /^[a-z0-9]{25}$/.test(name.slice(prefix.length));
+}
 
 /** Written only by the `CotalEndpoint` constructor; every part takes it as `Readonly`. A part must not
  *  read it in its own constructor, because the endpoint's constructor fills it after the parts are
@@ -36,6 +55,7 @@ export interface EndpointIdentity {
   heartbeatMs: number;
   ttlMs: number;
   doRegister: boolean;
+  omitFromLiveMembership: boolean;
   doWatch: boolean;
   doWatchChannels: boolean;
   readOnce: boolean;

@@ -582,6 +582,9 @@ importers:
       '@agentclientprotocol/sdk':
         specifier: 2.8.0
         version: 2.8.0(@modelcontextprotocol/server@2.4.0)(zod@4.4.3)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
       jsonc-parser:
         specifier: 3.3.1
         version: 3.3.1

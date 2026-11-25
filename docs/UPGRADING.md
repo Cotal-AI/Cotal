@@ -1,5 +1,14 @@
 # Upgrading a running deployment
 
+## Labelling an agent from its thread title
+
+The `agent` cluster advances to revision 7 with `set-label`, which the owner calls to set the label
+an agent shows in place of its name. The auth callout grants it, so update and restart every member
+of the callout queue, then reconnect each person's clients. A connect that an old member answers
+gets no `set-label` permission. An agent whose connector predates `set-label` answers it
+`unimplemented`, and `cotal acp` says so in the thread and titles the thread with the name the agent
+shows.
+
 ## User-auth reply inbox names
 
 Updated clients set their NATS connection name to `<owner>-<actor>-<nonce>` and their inbox prefix to
@@ -14,6 +23,10 @@ If a new replica refuses a mismatched name, the broker returns `Authorization Vi
 client and the callout log gives the correct settings. Set `name` to `<sub>-<act.actor>-<nonce>`,
 using the bearer's `sub` and `act.actor` claims and a fresh nonce of 8 to 128 letters, digits or
 underscores. Set `inboxPrefix` to `_INBOX_` followed by that exact name.
+
+Update the delivery service before using new user-auth history followers. A delivery service that
+recognizes only the legacy `ibx_observer_` marker can list a follower with a principal-bound inbox
+as a live member. The updated delivery service recognizes both forms. History access is unchanged.
 
 ## Switching a running agent's model
 
@@ -38,8 +51,11 @@ The Manager cluster advances to revision 57. A Manager's `status` and its presen
 `machine`, an HMAC of the host's OS machine identity. `cotal acp` decides which manager runs on its
 own machine by this value. The host name cannot decide it, because macOS changes it when the
 network changes. The closed status schema of revision 56 rejects the field, so update Managers and
-their callers together. Until this machine's Manager runs the new version, `cotal acp` does not
-recognise it as running here.
+their callers together. A Manager service that an older release started on this machine keeps
+running after `cotal update --self` and names no machine. `cotal acp` still recognises it as
+running here, by the native instance that `cotal manager status` shows for the space, and starts no
+second Manager. Any other Manager that names no machine counts as another computer's until it runs
+the new version.
 
 ## The agent endpoint on every space
 
