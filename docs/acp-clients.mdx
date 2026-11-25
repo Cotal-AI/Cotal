@@ -131,14 +131,15 @@ On an open mesh nothing checks who calls, so any program that reaches the broker
 - The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
 - A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
 - After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage. The usage arrives before the prompt answers, unless the agent takes more than 3 seconds to report it.
+- Choosing another model or reasoning choice on a running thread switches the agent with its `set-model`, from its next turn. The thread then shows what the agent runs. The model must belong to the agent's application and be one it lists: a model of another application, or the application's default, needs a new agent after `/despawn`. When the agent cannot switch now, such as a Claude Code session with mods off, or refuses the model, the choice fails with the agent's reason and stays. Each connector's reference page says what its switch calls and what it leaves on the launch model.
 
 ## Choose the agent [#options]
 
-A new thread offers these options next to the model list. They apply when the first prompt spawns the agent.
+A new thread offers these options next to the model list. They apply when the first prompt spawns the agent. On a running thread, the model and reasoning choices switch the agent instead, and the others need a new agent after `/despawn`.
 
 | Option | What it sets |
 | --- | --- |
-| Model | The application and model, as `<application>/<model>`. Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice has that model's name and reasoning choices. A model id the list does not show is passed to the manager as given. |
+| Model | The application and model, as `<application>/<model>`. On a running thread, choosing another model of the same application switches the agent ([above](#threads)). Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice is that model: it has that model's name and reasoning choices, and the agent starts on it. A model id the list does not show is passed to the manager as given. |
 | Harness | The application the agent runs, when more than one can. Choosing a model moves it to that model's application, and choosing another harness starts that application on its default model. |
 | Reasoning | The model's variant. Offered while any listed model has variants; for a model without them it holds only the model default. |
 | Persona | A persona from the manager's catalog. A catalog of 64 or more personas offers a short list: the default, the current choice, and up to 16 personas you own. `/persona` picks any other. |
@@ -155,7 +156,7 @@ The session's model list also gives each model its reasoning choices, so a clien
 | Command | What it does |
 | --- | --- |
 | `/name <new name>` | Before the first prompt, sets the name the agent starts with. On a running agent, changes the name it shows on the mesh. Its manager still lists it by the name it started with. |
-| `/open <name>` | In a thread with no agent, drives an agent that is already running, found by its name or the name it shows. The thread shows what the agent's event channel still holds, then follows it live. When you load the thread again, it opens that agent. |
+| `/open <name>` | In a thread with no agent, drives an agent that is already running, found by its name or the name it shows. The thread's options change to show that agent's model, and the thread shows what the agent's event channel still holds, then follows it live. When you load the thread again, it opens that agent. |
 | `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
 | `/channels` | Lists the space's channels. |
@@ -192,6 +193,7 @@ person controls every agent under their own owner (see
 - A manager that does not answer leaves its agents out of the list until it answers again. While it does not answer, loading or deleting any thread the list does not show fails, because its agent may run there. On a space where people do not sign in, a registered manager whose host is gone is not waited for. Where they do, it is waited for like one that does not answer, until you remove it with `cotal endpoint deregister manager <id> --space <space> --yes`, which needs the `supervise` scope. The error names that command when one of your own registrations does not answer a read. The space's own manager is not yours to remove; ask the space's operator. A manager that died less than a minute ago can still look current, and then a new thread fails reading its lists. Try again once its presence lapses, or remove the registration. A sleeping laptop's manager is not gone, so it holds those loads up until the laptop wakes.
 - Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
 - When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
+- Switching a running agent's model needs an application whose connector can switch it. Hermes cannot yet.
 - `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
 - An agent whose credential holds no rows for the `agent` endpoint, such as one an older release started on a static space, answers none of its calls: its questions stay at its terminal, its commands are not listed, and `/name` fails. Despawn it and start it again.

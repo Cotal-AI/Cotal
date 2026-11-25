@@ -169,6 +169,29 @@ An older Pi ignores `expandPromptTemplates`, so before 0.84.2 `commands` answers
 version. The connector reads it from Pi's own module, which Pi resolves to itself unless a copy of
 Pi is installed beside the extension.
 
+### Switching the model
+
+On a per-user mesh the owner switches the agent's model with the `agent` endpoint's `set-model`
+command. The connector calls the extension API's `setModel` and `setThinkingLevel` on the open
+session, the calls behind Pi's own `/model` and thinking selector. A model is named
+`<provider>/<id>`, as `cotal models` lists it. The provider ends at the first `/`, since an id
+such as OpenRouter's can hold one. A variant is a Pi thinking level.
+
+A model Pi's registry does not know is refused as `not-found`. A model Pi holds no credentials for
+is refused as `failed-precondition`, and so are a variant that is not a thinking level, a variant
+alone while Pi has no model selected, and a switch while no session is open. A refusal changes
+nothing. Pi clamps a level the model does not take without failing, so the connector reads the
+level back. When Pi clamped it, the connector puts back the model and level Pi ran before and
+refuses the switch as `failed-precondition`. Without a variant, Pi carries its level over to the
+new model, clamped to what that model takes, and the answer names the level Pi runs. Without a
+model, only the level changes.
+
+A switch does not wait in the command queue. One made while a turn runs applies from Pi's next
+request to its model, so the rest of that turn can already run on it. Before Pi 0.84.3,
+`setModel` and `setThinkingLevel` also saved the model and level as the operator's own Pi
+defaults, so an older Pi does not serve `set-model`. When the Manager starts the seat again, such
+as after a crash, it launches Pi on the switched model and level.
+
 ## Event plane
 
 A managed Pi seat publishes AG-UI runs, assistant text as Pi streams it, and tool start/end

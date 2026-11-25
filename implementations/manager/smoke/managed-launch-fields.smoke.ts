@@ -2,7 +2,9 @@
  *  through a real Manager to the connector, its launch material and the status rows. The seat record
  *  that carries them across a manager restart is proved in supervise-manager-crash.smoke.ts.
  *  A connector that does not declare a field is refused before any provisioning, naming it, and a
- *  launch without the fields carries no trace of them.
+ *  launch without the fields carries no trace of them. A seat whose role `modelPolicy` governs is told
+ *  its role in COTAL_MODEL_POLICY, which its session reads as the policy it launched under, and a
+ *  seat in no governed role is not.
  * Run: pnpm smoke:managed-launch-fields
  * Uses an owned JWT broker and private homes. No native harness.
  */
@@ -29,6 +31,9 @@ const root = mkdtempSync(join(tmpdir(), "managed-launch-fields-"));
 const workspaceRoot = join(root, "workspace");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "probe.md"), "---\nname: probe\n---\nLaunch field seat.\n");
+writeFileSync(join(workspaceRoot, ".cotal", "config.json"), JSON.stringify({ modelPolicy: { reviewer: { models: ["m-allowed"] } } }));
+// Each seat writes the COTAL_MODEL_POLICY it was started with here, under its name.
+const policyDir = mkdtempSync(join(root, "policy-"));
 const space = `fields-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -41,6 +46,7 @@ const child = `import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const { CotalEndpoint } = await import(pathToFileURL(process.env.SMOKE_CORE).href);
 const o = JSON.parse(process.env.SMOKE_LAUNCH);
+(await import('node:fs')).writeFileSync(process.env.SMOKE_POLICY_DIR + '/' + o.name, process.env.COTAL_MODEL_POLICY ?? '-');
 const ep = new CotalEndpoint({space:o.space,servers:o.servers,creds:readFileSync(o.creds,'utf8'),
  lifecycleUid:o.lifecycleUid,acceptedToken:o.acceptedToken,channels:[],consume:false,
  registerPresence:true,watchPresence:false,card:{id:o.id,name:o.name,kind:'agent'}});
@@ -50,7 +56,7 @@ const stub = (name: string, extra: Partial<Connector>): Connector => ({
   kind: "connector", name, requires: ["node"], eventChannel, ...extra,
   buildLaunch: (o: LaunchOpts) => {
     launches.push(o);
-    return { command: process.execPath, args: ["--input-type=module", "-e", child], env: { ...launchEnv(), SMOKE_CORE: corePath, SMOKE_LAUNCH: JSON.stringify(o) } };
+    return { command: process.execPath, args: ["--input-type=module", "-e", child], env: { ...launchEnv(), SMOKE_CORE: corePath, SMOKE_LAUNCH: JSON.stringify(o), SMOKE_POLICY_DIR: policyDir } };
   },
 });
 registry.register(
@@ -134,6 +140,16 @@ try {
     check(`${label} provisions nothing and launches nothing`,
       launches.length === before.launches && JSON.stringify(files(secrets)) === JSON.stringify(before.files), { before, after: files(secrets) });
   }
+  const policyOf = (name: string | undefined) => (name && existsSync(join(policyDir, name)) ? readFileSync(join(policyDir, name), "utf8") : undefined);
+  const governed = await launch({ agent: "launch-fields-plain", role: "reviewer", model: "m-allowed" });
+  const governedLaunch = launches.at(-1);
+  check("a seat whose role modelPolicy governs is started with COTAL_MODEL_POLICY naming the role",
+    governed.ok && policyOf(governedLaunch?.name) === "reviewer", { governed, policy: policyOf(governedLaunch?.name) });
+  if (governedLaunch) {
+    const config = configFromEnv({ ...materialEnv(governedLaunch, []), COTAL_SPACE: space, COTAL_NAME: governedLaunch.name, COTAL_LIFECYCLE_UID: governedLaunch.lifecycleUid, COTAL_MODEL_POLICY: policyOf(governedLaunch.name) });
+    check("...which its session reads as the policy it launched under, so it refuses set-model", config.modelPolicy === "reviewer", config);
+  }
+  check("a seat in no governed role is started without it", policyOf(plainLaunch?.name) === "-", policyOf(plainLaunch?.name));
   const bad = await ask("start", { name: "probe", agent: "launch-fields-probe", askPermissions: "yes" });
   check("a non-boolean askPermissions is refused by the spawn contract", !bad.ok, bad);
 } catch (error) {
@@ -143,5 +159,5 @@ try {
   await delivery?.stop();
   await broker.stop();
 }
-check("every assertion ran", passed() + failed() === 17, { passed: passed(), failed: failed() });
+check("every assertion ran", passed() + failed() === 20, { passed: passed(), failed: failed() });
 finish();

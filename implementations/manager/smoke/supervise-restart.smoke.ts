@@ -5,6 +5,7 @@
  * SIGKILL is the crash. Identity and lifecycle stay. A pending turn is still pullable after the
  * first restart and yieldable from the replacement process. Spending the budget retires the seat
  * (supervise-crash-loop). A relaunch that never joins presence retires (supervise-recovery-failed).
+ * A restart launches on the model the seat runs, which an owner's `set-model` may have switched.
  * A host that cannot honour the policy (user-mode, non-pty) refuses at accept, and so does an
  * in-process start whose budget the spawn schema would refuse.
  *
@@ -47,6 +48,7 @@ type ManagedRow = {
   id: string;
   lifecycleUid: string;
   handle: { pid?: number };
+  launch: { model?: string; variant?: string };
   issued?: { generation: string; acceptedToken: string };
   restart?: { recovering: boolean; armed: boolean; policy?: { restarts: number; windowMs: number } };
 };
@@ -186,6 +188,8 @@ try {
   const pendingOf = (mgr: Manager): { seatDiedAt?: number } | undefined =>
     (mgr as unknown as { turnRelay: { pendingTurns: Map<string, { seatDiedAt?: number }> } }).turnRelay.pendingTurns.get(`${runner.owner}.${runner.actor}.${runner.uid}.${g1}`);
 
+  // What the manager keeps once the seat's own presence marks an owner's `set-model` switch.
+  if (row) Object.assign(row.launch, { model: "switched-model", variant: "high" });
   if (typeof firstPid === "number") {
     try { process.kill(firstPid, "SIGKILL"); } catch (e) { c("SIGKILL the live pid", false, e); }
   }
@@ -198,6 +202,8 @@ try {
   c("a supervised crash keeps the same managed row", recovered && after !== undefined && M.agents.has("seat"));
   c("a supervised crash keeps identity and lifecycle", after?.id === firstId && after?.lifecycleUid === firstUid, { id: after?.id, uid: after?.lifecycleUid, firstId, firstUid });
   c("the replacement process has a different pid", typeof after?.handle.pid === "number" && after.handle.pid !== firstPid, { firstPid, next: after?.handle.pid });
+  c("a restart launches on the model and variant the seat was switched to, not its launch model",
+    spawnedOpts[1]?.model === "switched-model" && spawnedOpts[1]?.variant === "high", { model: spawnedOpts[1]?.model, variant: spawnedOpts[1]?.variant });
   c("a restart never replays fork source or initial prompt",
     spawnedOpts.length >= 2 && spawnedOpts[1]?.resume === undefined && spawnedOpts[1]?.prompt === undefined, spawnedOpts[1]);
   c("a pending turn is not stamped dead across a restart", pendingOf(manager) !== undefined && pendingOf(manager)?.seatDiedAt === undefined, pendingOf(manager));
@@ -336,7 +342,7 @@ try {
   else process.env.COTAL_HOME = prevHome;
 }
 
-const EXPECTED = 31;
+const EXPECTED = 32;
 const ran = ok + fail;
 console.log(`supervise restart smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED) {
