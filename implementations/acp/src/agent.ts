@@ -33,7 +33,7 @@ import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
 import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
-import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, type Offer, type Selection } from "./options.js";
+import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, spawnModel, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
 export const COMMANDS = [
@@ -747,6 +747,7 @@ function openCommand(b: Bridge, offers: Offers) {
     const other = holder(row);
     if (other && other !== session) unbind(other);
     Object.assign(session, opened, { mapper: new FrameMapper(row.agent, row.cwd), open: new Map() });
+    await send(session, { sessionUpdate: "config_option_update", configOptions: configOptions(session.offer, session.selection) });
     const replay = [...(await m.frameHistory(row)).flatMap((frame) => session.mapper.map(frame).updates), ...session.mapper.closeOpen("completed")];
     for (const update of replay) await send(session, update);
     bind(session, row, m);
@@ -820,7 +821,8 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       }
       if (session.offer.seatOnly) throw RequestError.invalidParams(undefined, `${session.id} opened without a grant that may spawn, so this thread cannot start another agent`);
       if (!session.selection.machine) throw new RequestError(-32602, noMachine(m.space));
-      const { agent: harness, model } = parseModel(session.selection.model);
+      const harness = harnessOf(session);
+      const model = spawnModel(session.offer, session.selection.model);
       const why = refusal(session.offer.catalogs, harness);
       const catalog = session.offer.catalogs.find((c) => c.agent === harness);
       if (why) throw RequestError.invalidParams(undefined, why);
