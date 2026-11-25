@@ -278,6 +278,8 @@ try {
   cell("harness-commands: a harness whose seats run no commands answers supported: false with the reason",
     plain.kind === "answered" && JSON.stringify(plain.data) === JSON.stringify({ agent: "launch-plain", cwd, supported: false, reason: "launch-plain seats run no commands or skills" }), plain);
   const projectConfig = join(root, ".cotal", "config.json");
+  const operatorConfig = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = join(fx.dir, "launch-reads-operator-config");
   try {
     writeFileSync(projectConfig, JSON.stringify({ spawn: { env: ["COTAL_LAUNCH_READS_PROBE"] } }));
     const args = { agent: "launch-probe", cwd: root };
@@ -288,7 +290,11 @@ try {
     trustProject(root);
     const accepted = await call(launcher, "harness-commands", args);
     cell("harness-commands: the same admitted caller receives the catalog after project trust", accepted.kind === "answered" && accepted.data.supported, accepted);
-  } finally { rmSync(projectConfig, { force: true }); }
+  } finally {
+    if (operatorConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = operatorConfig;
+    rmSync(projectConfig, { force: true });
+  }
 
   // A spawn's first command is checked against the harness before anything is provisioned.
   const refusedSpawn = async (label: string, args: Record<string, unknown>, reason: RegExp) => {

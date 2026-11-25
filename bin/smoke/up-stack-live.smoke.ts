@@ -647,6 +647,7 @@ process.report.getReport = () => {
     mkdirSync(join(cloned, ".cotal", "agents"), { recursive: true, mode: 0o700 });
     writeFileSync(join(cloned, ".cotal", "config.json"), JSON.stringify({ spawn: { env: ["COTAL_STACK_TRUST_PROBE"] } }));
     const args = ["up", "--detach", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--json"];
+    const managerFile = canonicalLocalProcessPath(MANAGER_PIDFILE, { root: cloned, space: basename(cloned) });
     const clonedUp = cliIn(cloned, ...args);
     const brokerFile = join(cloned, ".cotal", "nats.pid");
     const broker = existsSync(brokerFile) ? Number(readFileSync(brokerFile, "utf8").trim()) : 0;
@@ -654,12 +655,14 @@ process.report.getReport = () => {
     const result = clonedUp.stdout ? JSON.parse(clonedUp.stdout) : undefined;
     ok("up in an untrusted clone keeps the broker, refuses the manager, and gives the trust command as the next step",
       result?.error?.code === "OPERATION_PARTIAL" && result.error.remedy?.includes(`\`cotal trust ${realpathSync(cloned)}\``)
-      && broker > 0 && alive(broker) && !trustedRoots().includes(realpathSync(cloned)) && !existsSync(join(cloned, ".cotal", MANAGER_PIDFILE)),
+      && broker > 0 && alive(broker) && !trustedRoots().includes(realpathSync(cloned)) && !existsSync(managerFile),
       { status: clonedUp.status, out: plain(clonedUp.stdout + clonedUp.stderr).slice(-1000) });
     const trusted = cliIn(cloned, "trust", cloned);
     const retried = cliIn(cloned, ...args);
+    const manager = existsSync(managerFile) ? Number(readFileSync(managerFile, "utf8").trim()) : 0;
+    if (manager) pids.push(manager);
     ok("trusting the clone lets the same up invocation start its manager",
-      trusted.status === 0 && retried.status === 0 && existsSync(join(cloned, ".cotal", MANAGER_PIDFILE)), plain(retried.stdout + retried.stderr).slice(-1000));
+      trusted.status === 0 && retried.status === 0 && manager > 0 && alive(manager), plain(retried.stdout + retried.stderr).slice(-1000));
     cliIn(cloned, "down", "--yes");
   }
 
