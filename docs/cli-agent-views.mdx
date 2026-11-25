@@ -114,7 +114,8 @@ is running on its manager and host and waiting for you at Claude's session picke
 attaches to the agent at once, `-d` included; otherwise it prints the attach command. When the
 readiness window passes and the manager reports the agent's process still running, the CLI says
 the agent has not joined the mesh yet, attaches when the spawn was not detached, and otherwise
-prints the attach command. Both exit 0, and `--json` reports them as `managed-launch-running` with
+prints the attach command. The command names the space and manager and keeps `--server` when you
+pass it to `spawn`. Both exit 0, and `--json` reports them as `managed-launch-running` with
 `waitingFor` naming the screen or null. The outcome stays unknown when the manager cannot say
 whether the process runs.
 
@@ -162,6 +163,7 @@ unregistered `--space` retain the raw open-broker connection, with or without `-
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
 are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
+The named status retry for an invalid manager selector keeps `--json` or `--plain`, if supplied.
 If `cotal ps` refuses an invalid manager ID, its roster lookup keeps the space and broker you supplied.
 On a static or open space, if the manager registry shows that the pin is absent, the refusal
 names the registered managers without waiting for a reply from the missing instance.
@@ -555,8 +557,9 @@ deployment, with `--dry-run` for a read-only preview and `--yes` for scripted ap
 original receipt, root, broker, auth mode and TLS requirement, and refuses changed card revisions,
 conflicting retained ownership or unreadable records. A changed card refuses `CONFLICT` naming
 each changed card. With no registration for the space, as after the stack's `cotal down`, the
-refusal names `cotal up` in the deployment's root, which registers the stack again, and then the
-same `team remove`. The preview discloses delivery and replay
+refusal names `cotal up` in the deployment's root to register the stack again. For a preview,
+the retry command includes the deployment's space, `--dry-run` and the requested output format.
+The preview discloses delivery and replay
 fallback to space defaults and removal of description/instructions. A derived membership feed is
 display-only and never authorizes or blocks this metadata change.
 

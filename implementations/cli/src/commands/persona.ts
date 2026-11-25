@@ -104,7 +104,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
       const word = personaNameWords(name!, target);
       throw new CommandFailure("refused", "CONFLICT", `persona '${name}' already exists`, { remedy: `change it with \`cotal persona edit${word}\`, or remove it with \`cotal persona remove${word}\` first` });
     }
-    const bytes = await createSource(name!, path, values);
+    const bytes = await createSource(name!, path, values, presentation);
     commitPersona(path, expected, bytes, target);
     return receipt(presentation, catalog, name!, path, "created", target);
   }
@@ -158,7 +158,7 @@ async function readInput(path: string, flag: "file" | "from"): Promise<Buffer> {
   }
 }
 
-async function createSource(name: string, path: string, values: Values): Promise<Buffer> {
+async function createSource(name: string, path: string, values: Values, presentation: Presentation): Promise<Buffer> {
   const sources = [values.file, values.prompt, values.from].filter(value => value !== undefined);
   if (sources.length !== 1) throw usage("provide one of --file, --prompt or --from");
   const problem = spawnNameError(name, { userMode: false });
@@ -172,7 +172,8 @@ async function createSource(name: string, path: string, values: Values): Promise
     const def = validatePersona(bytes, source);
     if (def.name !== name) {
       const file = `--file${values.file !== "-" && values.file.startsWith("-") ? "=" : " "}${shellWord(values.file)}`;
-      const retry = `cotal persona create${personaNameWords(def.name, ` ${file}${targetWords(values)}`)}`;
+      const output = presentation === "rich" ? "" : ` --${presentation}`;
+      const retry = `cotal persona create${personaNameWords(def.name, ` ${file}${targetWords(values)}${output}`)}`;
       const rename = `set its name to '${name}'`;
       const invalid = spawnNameError(def.name, { userMode: false }) || reservedPersonaName(def.name);
       // The suggested create names the file's own catalog entry, which may already be taken:

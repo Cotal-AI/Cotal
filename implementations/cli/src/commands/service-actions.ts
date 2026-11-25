@@ -221,16 +221,21 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
   if (mode === "start" || mode === "restart" || mode === "install") assertDefinitionRoot(definition, space, root, mode);
   const rows = serviceInstances(space, name);
   let id = values.instance;
-  if (mode === "restart" && id === undefined && rows.length === 0)
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `cotal service start ${shellWord(name)} --space ${shellWord(space)}`, remedyIsCommand: true });
+  if (mode === "restart" && id === undefined && rows.length === 0) {
+    const cli = presentation === "json" ? "cotal" : displayCmd();
+    const output = presentation === "json" ? " --json" : presentation === "plain" ? " --plain" : "";
+    const preview = values["dry-run"] ? ` --dry-run${output}` : "";
+    throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no instance is recorded for this service definition", { target: { space, name }, remedy: `${cli} service start ${shellWord(name)} --space ${shellWord(space)}${preview}`, remedyIsCommand: true });
+  }
   if (!id && rows.length > 1 && !values["new-instance"] && canPrompt() && presentation !== "json") {
     const selected = await prompts.select({ message: `Choose the full owned instance of ${oneLine(name)}`, options: rows.map((row) => ({ value: row.name, label: row.name, hint: `${row.record.value.host.name} · ${observeServiceProcess(row.record.value)}` })) });
     if (prompts.isCancel(selected)) return cancelled();
     id = selected;
   }
-  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
   // A preset name resolved to another saved name keeps the name the person typed beside it.
-  const target = { space, name, instanceId: selected?.name ?? null, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const scope = { space, name, ...(resolved && resolved.requested !== name ? { requested: resolved.requested } : {}) };
+  const selected = values["new-instance"] ? undefined : selectServiceInstance(rows, scope, id, mode === "start" || mode === "stop" || mode === "install" || mode === "status" || mode === "logs");
+  const target = { ...scope, instanceId: selected?.name ?? null };
   if (["start", "stop", "restart"].includes(mode)) assertNoServiceUnitAttempts(space, name);
   // The owned unit entry runs only a direct process, so an adapter definition's install refuses
   // before anything is allocated.

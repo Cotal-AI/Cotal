@@ -660,10 +660,16 @@ function strandedBroker(space: string): ServiceInstance | undefined {
   return rows.length === 1 && observeServiceProcess(rows[0]!.record.value) === "running" ? rows[0]!.record.value : undefined;
 }
 
+function strandedBrokerRemedy(root: string, noManager: boolean, invokedRoot?: string): string {
+  if (invokedRoot === undefined || invokedRoot === root) return `Run \`cotal down --yes\`, then \`cotal up${noManager ? " --no-manager" : ""}\`.`;
+  const stop = `cd ${shellWord(root)} && ${displayCmd({ fromAnyFolder: true })} down --yes`;
+  return `Stop that broker with ${codeSpan(stop)}, then repeat your original startup command from the folder where you invoked it.`;
+}
+
 /** What a detached up interrupted by a signal left: the members that run, and the command that
  *  finishes the start or stops them. An up given `--no-manager` names `cotal up --no-manager`, since
  *  bare `up` adds the manager. */
-export function stackUpInterrupted(root: string, space: string, noManager = false): CommandFailure {
+export function stackUpInterrupted(root: string, space: string, noManager = false, invokedRoot?: string): CommandFailure {
   const up = `cotal up${noManager ? " --no-manager" : ""}`;
   const stranded = strandedBroker(space);
   const running = runningStackRoles(space);
@@ -673,7 +679,7 @@ export function stackUpInterrupted(root: string, space: string, noManager = fals
       ? `Interrupted while starting the stack in ${root}; ${running.join(", ")} ${running.length === 1 ? "keeps" : "keep"} running.`
       : `Interrupted before any member of the stack in ${root} started.`;
   const remedy = stranded
-    ? `Run \`cotal down --yes\`, then \`${up}\`.`
+    ? strandedBrokerRemedy(root, noManager, invokedRoot)
     : running.length
       ? `Run \`${up}\` to finish the start, or \`cotal down --yes\` to stop ${running.length === 1 ? "it" : "them"}.`
       : `Run \`${up}\` to start it.`;
@@ -918,7 +924,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // prepared again under a running broker. This start refuses before any write and names the stop.
   const stranded = registration ? undefined : strandedBroker(space);
   if (stranded)
-    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the \`cotal up\` that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: "stop that broker with `cotal down --yes`, then run `cotal up` again" });
+    throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the stack's broker runs as pid ${stranded.process?.pid}, but the \`cotal up\` that started it stopped before it registered the space, so this up cannot finish that start; nothing was changed`, { target: { root, space, broker: stranded.instanceId, pid: stranded.process?.pid }, remedy: strandedBrokerRemedy(root, request.noManager, request.invokedRoot) });
   // A broker stopped by a signal accepts connections and never answers, so every step through it would
   // wait out its budget, and its readiness check would record a listener that serves nothing. This
   // start refuses before any write and names the signal that resumes it.
@@ -1050,6 +1056,13 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       });
     }
     if (!brokerRunning) await assertStackBrokerAddress(request, root, space, server, brokerHost, previous !== undefined);
+    if (!brokerRunning && previous === undefined && request.retryAtAnotherAddress) {
+      const holder = loadMeshes().find((mesh) => mesh.space !== space && mesh.server === server);
+      if (holder) throw new CommandFailure("refused", "CONFLICT", `another registration names this exact broker address: space ${holder.space} in ${holder.root} reserves ${server}; no shared broker was launched or stopped`, {
+        remedy: await request.retryAtAnotherAddress(brokerHost ?? brokerListenAddress(server).host)
+          ?? "choose an unreserved broker address and retry with `--server`",
+      });
+    }
     snapshot = writeStackJournal(root, current ?? recorded, journal);
     settle("applying");
     let prepared: Awaited<ReturnType<StackUpNative["prepareBroker"]>> | undefined;

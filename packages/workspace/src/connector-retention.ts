@@ -577,18 +577,29 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, pre
   recoverRetiredCanonical(id.path);
   const selected = currentConfig(id);
   if (selected !== undefined) return selected;
-  const snapshot = updateSnapshot(id);
-  const current = snapshot ?? previousConfig(id) ?? globalConfigDir();
-  let ancestor = current;
-  while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
-  protectedResolvedDirectory(ancestor, "the connector config folder");
+  const global = globalConfigDir();
+  const canonical = join(id.path, "cotal");
+  const sourceConfig = (): string => updateSnapshot(id) ?? previousConfig(id) ?? (
+    // An extension added before the first seed already lives at the advertised retained root.
+    !preserveUnknown && !["extensions", "seed"].some(name => existsSync(join(global, name))) &&
+    lstatSync(join(canonical, "extensions"), { throwIfNoEntry: false })?.isDirectory() &&
+    lstatSync(join(canonical, "extensions", "extensions.json"), { throwIfNoEntry: false })?.isFile()
+      ? selectedRoot(canonical, id.path, selectionDiffers) : global
+  );
   const releaseClosure = claimUpdateClosureAccess();
   let releaseWriter = () => {};
   let releaseSeed = () => {};
   try {
+    const selected = currentConfig(id);
+    if (selected !== undefined) return selected;
+    const snapshot = updateSnapshot(id);
+    const current = sourceConfig();
+    let ancestor = current;
+    while (!lstatSync(ancestor, { throwIfNoEntry: false })) ancestor = dirname(ancestor);
+    protectedResolvedDirectory(ancestor, "the connector config folder");
     const seed = acquireLock(join(current, "seed", "reconcile.lock"), { label: "retained connector reconciliation", waitMs: 0 });
     releaseSeed = () => seed.release();
-    if (current === globalConfigDir()) releaseWriter = claimExtensionMutationLock();
+    if (current === global) releaseWriter = claimExtensionMutationLock();
     else {
       const pass = acquireLock(join(current, ".extensions.lock.update"), { label: "retained connector pass", waitMs: 0 });
       try {
@@ -599,8 +610,8 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, pre
     assertExtensionPrefixIdle(current);
     const published = currentConfig(id);
     if (published !== undefined) return published;
-    if ((updateSnapshot(id) ?? previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
-    if (!snapshot && current !== globalConfigDir()) {
+    if (sourceConfig() !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
+    if (!snapshot && current !== global && current !== canonical) {
       const sourcePath = dirname(current);
       const sourceSelection = join(sourcePath, "selection.json");
       if (!readLocalRecordSource(sourceSelection, 8192, true)) {
@@ -612,12 +623,12 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, pre
     }
     mkdirSync(id.path, { recursive: true, mode: 0o700 });
     ownedAncestors(id.path);
-    let root = join(id.path, "cotal");
+    let root = canonical;
     // Without a snapshot, neither selection names this set. Its unpublished copy
     // can be rebuilt, but any live or unproven seat holder must remain protected.
     if (preserveUnknown && readdirSync(id.path).length) {
       root = join(id.path, `cotal-${randomBytes(8).toString("hex")}`);
-    } else if (!snapshot && readdirSync(id.path).length) {
+    } else if (!snapshot && current !== root && readdirSync(id.path).length) {
       if (setHasHolders(id.path, true)) throw new Error(`unfinished retained connector state has seat holders: ${root}`);
       const stat = lstatSync(root, { throwIfNoEntry: false });
       if (stat) ownedDirectory(root);
@@ -631,7 +642,7 @@ function selectConnectorConfig(id: NonNullable<ReturnType<typeof identity>>, pre
       const source = join(current, name), stat = lstatSync(source, { throwIfNoEntry: false });
       if (stat && !stat.isDirectory()) throw new Error(`cannot retain non-directory connector state: ${source}`);
     }
-    if (!hasRoot || !names.every(name => sameConnectorTree(join(current, name), join(root, name)))) {
+    if (current !== root && (!hasRoot || !names.every(name => sameConnectorTree(join(current, name), join(root, name))))) {
       const staging = mkdtempSync(join(id.path, ".preparing-"));
       try {
         for (const name of names) {
