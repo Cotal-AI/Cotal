@@ -861,6 +861,18 @@ const QUESTION = "Which one?";
   const forgot = run(["space", "forget", "gone"], forgotten);
   check("control: a space prepared in a folder and then forgotten", prepared.status === 0 && forgot.status === 0 && existsSync(join(forgotten, ".cotal")), { prepared: shown(prepared), forgot: shown(forgot) });
   const root = realpathSync(forgotten);
+  const file = join(root, "reference.json");
+  writeFileSync(file, JSON.stringify({ schemaVersion: 1, space: "beta", endpoint: "example.offline" }));
+  const add = ["endpoint", "add", "offline", "--file", file, "--json"];
+  const refused = run(add, root);
+  const error = envelope(refused)?.error;
+  check("an import with no local space explains how to use the reference file's space",
+    refused.status === 2 && error?.code === "TARGET_NOT_FOUND" && error.remedy?.includes("--space <space>") &&
+      error.remedy.includes("cotal space create <space> --root <project-directory>"), shown(refused));
+  const retry = run([...add, "--space", "beta"], root);
+  const saved = run(["endpoint", "show", "offline", "--space", "beta", "--json"], root);
+  check("the scoped retry saves the same reference without changing the selection",
+    retry.status === 0 && envelope(saved)?.result?.reference?.endpoint === "example.offline" && getCurrent() === undefined, shown(retry));
   for (const command of [["whoami"], ["spawn", "--dry-run"]]) {
     const json = run([...command, "--json"], forgotten);
     const body = json.status === 2 ? JSON.parse(json.stdout) as { target?: Record<string, unknown> | null; error?: { code?: string; message?: string } } : undefined;
