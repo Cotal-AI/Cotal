@@ -156,7 +156,8 @@ FunctionEnd
   SetOutPath $INSTDIR
 !macroend
 
-; Tauri's own functions set the bundle AppUserModelID on each shortcut.
+; The desktop shortcut is the template's: silent and passive installs create it, and the finish
+; page's Create desktop shortcut box decides for everyone else.
 !macro NSIS_HOOK_POSTINSTALL
   ${If} $CotalFresh = 1
     CreateDirectory "$LOCALAPPDATA\CotalSetup"
@@ -182,10 +183,6 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
   StrCpy $CotalPrepared 0
-  ${If} $UpdateMode <> 1
-  ${AndIf} $NoShortcutMode <> 1
-    Call CreateOrUpdateDesktopShortcut
-  ${EndIf}
 !macroend
 
 ; Uninstalling removes the background service this installation registered, through the packaged

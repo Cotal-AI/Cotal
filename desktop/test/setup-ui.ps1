@@ -28,6 +28,7 @@ $process=Start-Process -FilePath $Installer -PassThru
 $deadline=[DateTime]::UtcNow.AddSeconds(240)
 $observations=@()
 $occupiedSeen=$false
+$desktopShortcutCleared=$false
 while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
   $windows=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$process.Id))
   foreach($window in $windows) {
@@ -46,6 +47,8 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
     if($buttons.Count -eq 1) {
       if($buttons[0].Current.Name -eq 'Finish') {
         foreach($check in @($elements | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and $_.Current.Name -match 'Run Cotal'})) { $toggle=$check.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern); if($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On){$toggle.Toggle()} }
+        # A person who clears Create desktop shortcut must get none.
+        foreach($check in @($elements | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and $_.Current.Name -match 'desktop shortcut'})) { $toggle=$check.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern); if($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On){$toggle.Toggle()}; $desktopShortcutCleared=$toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off }
       }
       Click-Control $buttons[0] $window (($names -contains 'Choose Start Menu Folder') -or $buttons[0].Current.Name -eq 'Finish')
     }
@@ -56,4 +59,4 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
 $observations | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $Output -Encoding UTF8
 if(!$process.HasExited){throw 'Installer UI did not finish within 240 seconds.'}
 if($Mode -eq 'occupied' -and !$occupiedSeen){throw 'Occupied agent count was never shown.'}
-@{exitCode=$process.ExitCode;occupiedSeen=$occupiedSeen;observations=$observations.Count}|ConvertTo-Json -Compress
+@{exitCode=$process.ExitCode;occupiedSeen=$occupiedSeen;desktopShortcutCleared=$desktopShortcutCleared;observations=$observations.Count}|ConvertTo-Json -Compress
