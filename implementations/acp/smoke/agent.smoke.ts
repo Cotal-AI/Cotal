@@ -32,6 +32,8 @@
  *  - with only another computer's manager live, a new session starts this machine's manager and
  *    defaults to it, and uses the other computer only when Machine names it; a failed start, or one
  *    whose manager is still not listed here, fails the session;
+ *  - `cotal manager status` output names the native instance of this machine's running manager
+ *    service, and names none when it is gone, never started or refused;
  *  - the slash commands answer locally, and `/despawn` stops the seat;
  *  - a persona catalog or channel list longer than a client select offers a short select holding the
  *    caller's own personas, or the described and busiest channels, and `/persona` and `/join` pick
@@ -64,7 +66,7 @@ import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type Prompt
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { MAX_CHOICES } from "../src/options.js";
 import { promptParts } from "../src/turns.js";
-import { startFailure, startLine } from "../src/manager-start.js";
+import { recordedInstance, startFailure, startLine } from "../src/manager-start.js";
 import { AgentCallFailed, LaunchListsRefused, NoLaunchManager, NoManagerRegistered, SignInRequired, type AgentCatalog, type AgentEndpointServes, type AguiEventLike, type ManagerChoice, type Mesh, type PromptCounter, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "../src/mesh.js";
 
 let pass = 0, fail = 0;
@@ -424,6 +426,12 @@ const errorOf = async (p: Promise<unknown>): Promise<{ code?: number; message?: 
   check("a start that printed nothing is named by its exit code", startFailure(null, "", "") === "it exited with code null");
   check("a start that launched the manager says it started it", startLine("x", JSON.stringify({ outcome: "ok" })) === "Started this machine's manager for x. It stops itself after 10 minutes with no agents.");
   check("a start that found it already running, as a second thread's does, says it is running", startLine("x", JSON.stringify({ outcome: "no-op" })) === "This machine's manager for x is running. It stops itself after 10 minutes with no agents.");
+  const status = (result: unknown) => JSON.stringify({ outcome: "ok", result });
+  check("a manager status whose recorded process runs names its native instance", recordedInstance(status({ kind: "service-status", observedProcess: "running", nativeEndpoint: { instanceId: "abc" } })) === "abc");
+  check("one whose process is gone names none", recordedInstance(status({ kind: "service-status", observedProcess: "gone", nativeEndpoint: { instanceId: "abc" } })) === undefined);
+  check("one never started names none", recordedInstance(status({ kind: "service-status", instanceId: null, recordedState: "not started" })) === undefined);
+  check("a refused status names none", recordedInstance(refused) === undefined);
+  check("output that is not a result names none", recordedInstance("") === undefined);
 }
 
 // An application whose models the manager could not read is refused with the read's reason.

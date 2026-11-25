@@ -61,7 +61,9 @@ export interface ManagerChoice {
   readonly instanceId: string;
   /** The host name it reported, shown and never compared. */
   readonly host?: string;
-  /** The manager names this machine's id (`managerMachineId`), so it runs on this process's machine. */
+  /** The manager runs on this process's machine: it names this machine's id (`managerMachineId`),
+   *  or it names none, as one an older release started, and this machine's manager service record
+   *  says it runs here. */
   readonly local: boolean;
   /** The manager's presence is current, or, with no presence row to read, it answered for its host.
    *  A registration whose computer is gone can stay listed. */
