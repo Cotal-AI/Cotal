@@ -45,6 +45,8 @@ export function nativeStub(scenario) {
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
       if (request.op === "install") {
+        for (const detail of state.installProgress ?? []) send({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
+        if (state.installHold) await new Promise(resolve => { window.__releaseInstall = resolve; });
         if (state.installWait) await new Promise(() => {});
         if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
         state.installed = true; state.serviceStopped = false; return ok({ installed: true });
@@ -569,6 +571,21 @@ export const scenarios = [
   { name: "welcome-not-installed-quiet", state: {}, expect: async page => {
     assert.equal(await page.locator("#recovery-panel").isHidden(), true, "before the first sign-in a missing service is not a problem");
     assert.equal(await page.locator("#sign-in-panel").isVisible(), true);
+  } },
+  // Start service shows the service's latest phase while it runs, and leaves no step spinning once it answers.
+  { name: "start-service-progress-clears", state: { serviceStopped: true, installHold: true, installProgress: ["verifying the recorded installation and owned task before startup", "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)"] },
+    act: page => page.click("#recover"),
+    expect: async page => {
+      await page.waitForFunction(() => typeof window.__releaseInstall === "function");
+      assert.equal(await page.locator('[data-testid="progress-0"] .progress-detail').textContent(), "waiting for a fresh daemon to answer (up to 60s) (5s elapsed)", "the step shows the latest phase");
+      await page.evaluate(() => window.__releaseInstall());
+      await page.waitForFunction(() => document.querySelector("#recovery-panel")?.hidden === true);
+      assert.equal(await page.locator("#sign-in-panel").isVisible(), true, "the started service returns to Welcome");
+      assert.equal(await page.locator("#setup-progress").isHidden(), true, "no step keeps spinning after the service started");
+    } },
+  { name: "sign-in-service-progress-clears", state: { waiting: true, installProgress: ["verifying the recorded installation and owned task before startup"] }, act: page => page.click("#login"), expect: async page => {
+    await page.locator("#approval").waitFor();
+    assert.equal(await page.locator("#setup-progress").isHidden(), true, "no service step keeps spinning while sign-in waits");
   } },
   { name: "welcome-service-stopped", state: { serviceStopped: true }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "The background service is not running");

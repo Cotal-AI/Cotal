@@ -419,13 +419,13 @@ function renderProgress(): void {
       const status = document.createElement("span"); status.className = "sr-only";
       li.append(mark, copy, status); list.append(li);
     }
+    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
+    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
     if (li.dataset.state === progress[index]) return;
     li.dataset.state = progress[index];
     const mark = li.querySelector(".progress-mark")!;
     if (progress[index] === "waiting") { mark.removeAttribute("data-icon"); mark.textContent = String(index + 1); }
     else setIcon(mark, progress[index] === "done" ? "check" : progress[index] === "failed" ? "warning" : "spinner");
-    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
-    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
     li.querySelector(".sr-only")!.textContent = progress[index];
     if (progress[index] === "running") announce(progressDetails[index]);
   });
@@ -1034,7 +1034,7 @@ el("login-form").addEventListener("submit", (event) => {
     loginActive = true; editing = true; clearDetails(); notice(""); showStage("sign-in", true);
     try {
       const provider = canonicalProvider(el<HTMLInputElement>("provider").value.trim());
-      if (!ready) { notice("Preparing the background service…"); await request({ op: "install" }); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
+      if (!ready) { await startService(); await refresh(); if (!ready) throw new Error("The background service is not ready."); }
       const result = await request({ op: "login", idp: provider });
       problem = undefined;
       if (result.outcome !== "signed-in") throw new DaemonRefusal(String(result.reason ?? "refused").toUpperCase().replaceAll("-", "_"), String(result.message ?? "Sign-in was not completed."));
@@ -1061,14 +1061,19 @@ el("recover").addEventListener("click", () => {
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
   else if (recovery === "install") void action(async () => {
     clearDetails();
-    notice("Preparing the background service…");
-    await request({ op: "install" });
+    await startService();
     await refresh();
     if (!ready) throw new Error("The background service is not ready.");
     notice("");
   });
   else void action(async () => { if (!keepNotAnswering) clearDetails(); await refresh(); });
 });
+/** The install request's progress lines all say "running"; only its result ends them, so the list resets. */
+async function startService(): Promise<void> {
+  notice("Preparing the background service…");
+  try { await request({ op: "install" }); }
+  finally { progress = progressNames.map(() => "waiting"); renderProgress(); }
+}
 el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
 function beginSignIn(): void {
   if (busy) return;
