@@ -204,7 +204,9 @@ That refusal names the flag and does not print the command help.
 The age difference alone does not require consent if restore verifies that the newer cut held no
 additional backed-up state.
 Both review full paths and default to Cancel. Scripts need `--yes`; `--dry-run` reads the plan
-without taking a maintenance lock or writing. Apply rechecks the reviewed journal revision under
+without taking a maintenance lock or writing. Passing both flags refuses `USAGE_INVALID` (exit 1)
+before looking up the attempt. Use `--dry-run` to review or `--yes` to apply.
+Apply rechecks the reviewed journal revision under
 the native lock, preserves unknown outcomes and never retries a deletion. No live-owner override
 or process kill is supplied.
 A restore's full attempt id has the form `restore-<uuid>`. `backup recover` also takes an
