@@ -68,8 +68,9 @@ is not attached: it returns once the agent joins, with a receipt that names the 
 reaches the agent instead. Attaching needs usable input and output
 terminals and refuses `--json` and `--plain`, before an identity is allocated. A spawn in this
 terminal writes no structured receipt, so `--json` and `--plain` need `-d`, except with
-`--dry-run`. If you passed `--foreground`, replace it with `-d` to get a managed receipt. Omit
-`--json` or `--plain` to keep the launch in this terminal. `--foreground` names the default and is
+`--dry-run`. To get a managed receipt, replace `--foreground` with `-d` if the other options allow it.
+With `--live-only`, `--enrollment-file`, `--expires-in` or `--expires-at`, keep the launch in this
+terminal and omit `--json` or `--plain`. Omit `--runtime` too if you supplied it. `--foreground` names the default and is
 kept for scripts. A spawn in this terminal
 checks its persona and connector before it starts the application: a missing persona is refused
 with `TARGET_NOT_FOUND` and a missing connector with `DEPENDENCY_UNAVAILABLE`, both with exit 2,
