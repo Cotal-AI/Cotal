@@ -527,6 +527,15 @@ try {
   check("a planned server still lists the named prepared project's local catalog",
     offline.status === 0 && plannedServer.status === 0 && /offline-audit .* local persona files/.test(plannedServer.stdout) &&
     /\bdefault\b/.test(plannedServer.stdout), plannedServer.stdout + plannedServer.stderr);
+  const invalidName = agentFilePath(realpathSync(offlineRoot), "name-rule");
+  writeFileSync(invalidName, '---\nname: " leading"\n---\nReview the fixture.\n');
+  const invalidNameList = native(["personas", "list", "--space", "offline-audit"], CWD);
+  unlinkSync(invalidName);
+  check("legacy listing names the selected catalog file and the display-name rule",
+    invalidNameList.status === 4 && /^default\s/m.test(invalidNameList.stdout) &&
+    invalidNameList.stdout.split("\n").some(line => /^name-rule +⨯ unparseable /.test(line) &&
+      line.endsWith(`agent file ${invalidName}: invalid name " leading": must be non-empty with no surrounding whitespace`)),
+    invalidNameList.stdout + invalidNameList.stderr);
   const only = "offline-only";
   writeFileSync(agentFilePath(offlineRoot, only), `---\nname: ${only}\n---\nOnly in the other catalog.\n`);
   const listReceipt = native(args, CWD);
