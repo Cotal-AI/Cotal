@@ -154,12 +154,13 @@ let n = 0;
 const persisted = (home: string): string[] => !existsSync(home) ? [] : (readdirSync(home, { recursive: true }) as string[])
   .map((entry) => entry.split("\\").join("/"))
   .filter((entry) => entry !== "daemon" && entry !== "daemon/computer-name.json");
+// daemonPaths refuses a runtime directory that does not exist, so each cell's is made first.
 const fresh = () => {
   const rt = join(root, `rt${++n}`);
   const home = join(root, `home${n}`);
+  mkdirSync(rt, { mode: 0o700 });
   return { paths: daemonPaths({ XDG_RUNTIME_DIR: rt }, cliHome), rt, home };
 };
-const mkRuntime = async (rt: string) => { const { mkdirSync } = await import("node:fs"); mkdirSync(rt, { mode: 0o700 }); };
 
 // ---------- a REAL Better Auth IdP on loopback ----------
 let handler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
@@ -239,7 +240,7 @@ const failedEnvelope = (out: string): boolean => {
 try {
   // ---- L1: approve against the real IdP ----
   await cell("L1 approve (real Better Auth)", async () => {
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "0.0.0-smoke", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -264,7 +265,7 @@ try {
 
   // ---- L2: deny ----
   await cell("L2 deny (real Better Auth)", async () => {
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -281,7 +282,7 @@ try {
   // ---- L3, L10: concurrency and status during a sign-in ----
   await cell("L3 one sign-in at a time; L10 status during it", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const a = await wire(paths.socket);
@@ -309,7 +310,7 @@ try {
   // ---- L4: cancel during the poll ----
   await cell("L4 login-cancel during the poll", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const a = await wire(paths.socket);
@@ -336,7 +337,7 @@ try {
   // ---- L5: cancel after approval, before persistence ----
   await cell("L5 login-cancel after approval while the JWT proof is in flight", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       let release!: () => void;
@@ -362,7 +363,7 @@ try {
   // ---- L6, L7: cancel after completion, and a stale attempt ----
   await cell("L6 cancel after completion; L7 stale attempt vs successor", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       approved = true;
@@ -399,7 +400,7 @@ try {
   // ---- L8: disconnect before the result ----
   await cell("L8 disconnect before the result aborts the attempt", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const a = await wire(paths.socket);
@@ -423,7 +424,7 @@ try {
   // ---- L9: closed contract for the new ops ----
   await cell("L9 closed contract", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -452,7 +453,7 @@ try {
 
   // ---- L11: per-connection request cap ----
   await cell("L11 per-connection request cap", async () => {
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const w = await wire(paths.socket);
@@ -466,7 +467,7 @@ try {
 
   // ---- L12: the CLI through the composition root ----
   await cell("L12 `cotal daemon login` through the composition root", async () => {
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       const child = spawn(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "bin", "cotal.ts"), "daemon", "login", "--idp", base, "--json"], {
@@ -495,7 +496,7 @@ try {
     for (const format of [[], ["--plain"], ["--json"]]) {
       resetScripted();
       approved = true;
-      const { paths, rt, home } = fresh(); await mkRuntime(rt);
+      const { paths, rt, home } = fresh();
       const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home });
       const label = format[0] ?? "human";
       try {
@@ -557,7 +558,7 @@ try {
   // ---- L14: a failed sign-in relays no provider text, over the wire or to the terminal ----
   await cell("L14 a failed sign-in relays no provider text", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     const needle = SENTINEL.slice(0, 10);
     try {
@@ -588,7 +589,7 @@ try {
   // ---- L15: damaged local state is not a provider failure and cannot save a new session ----
   await cell("L15 a damaged catalog before sign-in", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     mkdirSync(home, { mode: 0o700 });
     writeFileSync(join(home, "space-catalogs.json"), "{not json", { mode: 0o600 });
     approved = true;
@@ -612,7 +613,7 @@ try {
 
   // ---- L17: initial device-authorization refusals cannot have persisted a session ----
   await cell("L17 device-authorization refusal before approval (real Better Auth)", async () => {
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       for (const [name, idp, extra, path, status] of [
@@ -636,7 +637,7 @@ try {
 
   await cell("L18 initial refusal with an optional error body of the wrong shape", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
       for (const body of [null, [], SENTINEL, { error: { toString: null }, error_description: [SENTINEL] }]) {
@@ -659,7 +660,7 @@ try {
   // ---- L16: a sign-in denied at the verification page reaches the terminal as a typed refusal ----
   await cell("L16 a denied sign-in through the CLI", async () => {
     resetScripted();
-    const { paths, rt, home } = fresh(); await mkRuntime(rt);
+    const { paths, rt, home } = fresh();
     tokenOverride = { status: 400, body: JSON.stringify({ error: "access_denied" }) };
     const d = await serveDaemon({ paths, version: "x", peerUid, sessionDir: home } as Parameters<typeof serveDaemon>[0]);
     try {
@@ -685,7 +686,7 @@ try {
     ];
     for (const [name, idp, session] of cases) {
       resetScripted();
-      const { paths, rt, home } = fresh(); await mkRuntime(rt);
+      const { paths, rt, home } = fresh();
       mkdirSync(home, { mode: 0o700 });
       const bytes = JSON.stringify({ ver: 1, sessions: { [idp]: session } });
       const path = join(home, "idp-sessions.json");
