@@ -805,7 +805,7 @@ function unknownInvocationExit(commands: readonly Command[], word: string, args:
   const equals = word.indexOf("=");
   const flag = equals === -1 ? undefined : word.slice(0, equals);
   if (!beforeSeparator || !flag || !GLOBAL_FLAG_WORDS.has(flag)) usageExit(unknownCommandMessage(commands, word));
-  const retry = leadingInvocation(args);
+  const retry = leadingInvocation(args, true);
   const found = findCommand(commands, retry.word);
   const cmd = takesWordsRaw(found) ? undefined : found;
   const words = [...output, ...retry.leading.filter((item) => OUTPUT_FLAG_WORDS.has(item)), ...retry.args];
