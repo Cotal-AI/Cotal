@@ -274,7 +274,9 @@ try {
 
   // A classified failure is a report: its message, a labeled record of outcome and code, and the
   // remedy under `Next`, which wraps at spaces with its continuation under its text.
-  const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
+  const emptyHome = join(home, ".cotal");
+  mkdirSync(emptyHome, { mode: 0o700 });
+  const failPty = cotalPty(["ps"], { cwd: home, env: { ...env, HOME: home, USERPROFILE: home, COTAL_HOME: emptyHome }, cols: 40, rows: 20 });
   ptys.push(failPty);
   const f = session(failPty);
   await until(() => f.exitCode !== undefined);
