@@ -157,8 +157,8 @@ cotal spawn --agent codex --model gpt-5.6-sol --variant high
 ```
 
 The **variant** is Codex's reasoning effort (`minimal` | `low` | `medium` | `high` | `xhigh`).
-Like the `codex` CLI itself, the connector does not validate model ids or efforts locally. An
-unknown value fails at request time, server-side.
+At launch, like the `codex` CLI itself, the connector does not validate model ids or efforts
+locally. An unknown value fails at request time, server-side.
 
 The catalog comes from a short-lived `codex app-server`, the binary a launch runs:
 `COTAL_CODEX_BIN` when you set it, otherwise the absolute path the manager resolved when Codex became available.
@@ -169,7 +169,29 @@ manager keeps serving the other connectors.
 Model and variant are published on presence, which is where the web dashboard's `model · variant`
 badge reads them from. The variant appears only when you asked for one (via
 `--variant` or `variant:` in the agent file): there is no way to read the effort back off a running
-thread, so an unset variant is shown as absent rather than guessed at.
+thread, so an unset variant is shown as absent rather than guessed at. After a switch, presence
+shows the model and effort the switch answered.
+
+### Switching the model
+
+On a per-user mesh the owner switches the agent's model with the `agent` endpoint's `set-model`
+command. Codex accepts a model name it does not know and finds out only when a turn runs, so the
+host first reads `model/list` from the agent's own app-server, hidden models included. A model it
+does not list is refused as `not-found`. A variant the model's reasoning efforts do not list is
+refused as `failed-precondition`. The host then sends `thread/settings/update` with the model and
+the effort. Without a variant it sends the model's default effort from `model/list`, because an
+update with no effort keeps the previous one. Without a model it keeps the model the thread runs
+and changes only the effort. When Codex refuses the update, the switch is refused as
+`failed-precondition` and nothing changes. The answer names the model and effort Codex runs from
+then on.
+
+The switch applies from the next turn, and a turn already running keeps its model. Codex tells
+every client attached to the thread, so turns typed into the attached TUI follow it. After an
+app-server restart the host sends the same update to the new thread before that thread runs a
+turn, and a new thread that refuses it stops the agent. The host does not see a model picked with
+`/model` in the attached TUI, so a `set-model` without a model keeps the model the host launched
+with or last switched to. `thread/settings/update` belongs to Codex's experimental app-server API,
+which the host already turns on.
 
 ## Sandbox options
 

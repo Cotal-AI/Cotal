@@ -7,7 +7,12 @@
 // RACE-END also stays open, and an interrupt finds it already ending: the interrupt is refused, then
 // the turn completes. Every other turn completes at once, after `thread/tokenUsage/updated` reports
 // 1000 + the turn's number as the last call's total tokens, in a 258400-token window.
-import { appendFileSync, readFileSync } from "node:fs";
+// `model/list` answers MODELS over two pages. `thread/settings/update`
+// sets the model and effort later turns run on, answers `{}` and sends `thread/settings/updated`,
+// except for fake-refused, which it refuses as Codex refuses an override it cannot apply. Each
+// journaled `turn/start` carries `runs`, the model and effort that turn runs on. When
+// `<FAKE_CODEX_LOG>.crash` exists, this app-server removes it and exits, as a crash does.
+import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { WebSocketServer } = require("ws");
@@ -46,6 +51,42 @@ const SKILLS = [
 let turnSeq = 0;
 let held;
 let racing;
+const model = (name, efforts, effort) => ({
+  id: name, model: name, displayName: name, description: "", hidden: false, isDefault: name === "fake-model",
+  supportedReasoningEfforts: efforts.map((e) => ({ reasoningEffort: e, description: e })), defaultReasoningEffort: effort,
+});
+const MODELS = [[model("fake-model", ["low", "medium", "high"], "medium")], [model("fake-next", ["low", "high"], "high"), model("fake-refused", ["low"], "low")]];
+const thread = { model: "fake-model", effort: null };
+
+/** What the journal keeps of a request besides its method. */
+function seen(msg) {
+  if (msg.method === "turn/start")
+    return { input: msg.params?.input, model: msg.params?.model, effort: msg.params?.effort, runs: { model: msg.params?.model ?? thread.model, effort: msg.params?.effort ?? thread.effort } };
+  if (msg.method === "thread/settings/update" || msg.method === "model/list") return { params: msg.params };
+  return {};
+}
+
+function listModels(msg) {
+  const page = msg.params?.cursor === "page-2" ? 1 : 0;
+  reply(msg.id, { data: MODELS[page], nextCursor: page === 0 ? "page-2" : null });
+}
+
+function updateSettings(msg) {
+  const { model: name, effort } = msg.params ?? {};
+  if (name === "fake-refused") return void write({ jsonrpc: "2.0", id: msg.id, error: { code: -32600, message: `invalid thread settings override: ${name} is not available here` } });
+  if (name !== undefined) thread.model = name;
+  if (effort !== undefined) thread.effort = effort;
+  reply(msg.id, {});
+  notify("thread/settings/updated", { threadId: THREAD, threadSettings: { ...thread } });
+}
+
+const CRASH = logPath ? `${logPath}.crash` : undefined;
+if (CRASH) setInterval(() => {
+  if (!existsSync(CRASH)) return;
+  rmSync(CRASH, { force: true });
+  journal({ ev: "died" });
+  process.exit(3);
+}, 50).unref();
 
 function endTurn(turnId, status) {
   notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status } });
@@ -57,13 +98,15 @@ function reportUsage(turnId) {
 }
 
 function onMessage(msg) {
-  journal({ ev: "recv", method: msg.method, id: msg.id, ...(msg.method === "turn/start" ? { input: msg.params?.input } : {}) });
+  journal({ ev: "recv", method: msg.method, id: msg.id, ...seen(msg) });
   if (msg.method === "initialize") {
     reply(msg.id, { userAgent: "fake-skills", codexHome: process.env.CODEX_HOME ?? null });
     notify("mcpServer/startupStatus/updated", { name: "cotal", status: "ready" });
   } else if (msg.method === "account/read") reply(msg.id, { account: { type: "fake" }, requiresOpenaiAuth: true });
   else if (msg.method === "thread/start") reply(msg.id, { thread: { id: THREAD }, model: "fake-model" });
   else if (msg.method === "skills/list") reply(msg.id, { data: [{ cwd, skills: SKILLS, errors: [] }] });
+  else if (msg.method === "model/list") listModels(msg);
+  else if (msg.method === "thread/settings/update") updateSettings(msg);
   else if (msg.method === "turn/start") {
     const turnId = `turn_${++turnSeq}`;
     reply(msg.id, { turn: { id: turnId, status: "inProgress" } });
