@@ -825,7 +825,7 @@ export class EndpointDeliveryPlane {
       return { ok: false, error: hasFilter ? "evictSessionConnections: set principal to the session holder's owner.actor" : "evictPrincipal: a principal (owner.actor dot-form) is required" };
     let connections: KickTarget[] | undefined;
     if (hasFilter) {
-      const raw = req.args.connections;
+      const raw = req.args?.connections;
       if (!Array.isArray(raw) || raw.length === 0 || raw.length > 256 || raw.some((t: unknown) => {
         const v = t as Partial<KickTarget> | null;
         return !v || typeof v !== "object" || Object.keys(v).some((k) => k !== "serverId" && k !== "cid") ||

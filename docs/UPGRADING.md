@@ -1,5 +1,24 @@
 # Upgrading a running deployment
 
+## Ended terminal sessions on user-auth spaces
+
+A user-auth terminal connection now closes when the auth service confirms that its session
+ended. A different session or control connection for the same actor stays connected. Open
+a new session with `cotal attach <agent>` instead of reusing an ended session. Connections
+admitted before the upgrade have no receipt and keep their original expiry.
+
+Upgrade the full auth service, every `--callout-only` replica, and delivery together. For a
+local stack, stop it with `cotal down`, run `cotal update`, then run `cotal up` with the same
+space and startup options from the same project. For a hosted space, deploy the updated auth
+and delivery packages together and restart those services. An older delivery service cannot
+confirm targeted eviction, so auth retains the receipt and retries after delivery is upgraded.
+
+If you embed delivery, edit the `startPlane3` eviction hook to take
+`(principal, connections)` as two explicit parameters. When `connections` is present, restrict
+the scan, disconnect, and verification to those broker `{serverId, cid}` pairs for that
+principal, then return the same ordered pairs in the result's `connections` field. A
+principal-only hook still handles ordinary principal eviction.
+
 ## The agent endpoint on every space
 
 Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where

@@ -20,9 +20,6 @@ import {
 import { EndpointPresence, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 export { PresenceWriteStuckError, type CardMetaChanges, type PresenceView } from "./endpoint-presence.js";
 import { idFromCreds } from "./identity.js";
-import {
-  type SecretStoreIdentity,
-} from "./secret-store.js";
 import { BIND_SPLIT_REISSUES, resolveService, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
