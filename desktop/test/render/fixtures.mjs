@@ -50,7 +50,7 @@ export function nativeStub(scenario) {
         state.installed = true; return ok({ installed: true });
       }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
       if (request.op === "status-watch") {

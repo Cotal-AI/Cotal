@@ -339,6 +339,8 @@ let customHost = false;
 let editing = false;
 let completedSetup = false;
 let observedReadySpaces: string[] = [];
+/** Why each space's hosted Manager is not answering, as the daemon reports it. */
+const managerReasons = new Map<string, string>();
 let poll: ReturnType<typeof setTimeout> | undefined;
 let watchReconnect: ReturnType<typeof setTimeout> | undefined;
 let windowHidden = false;
@@ -698,7 +700,7 @@ function renderConnections(): void {
   const list = el("connected-spaces");
   text("spaces-heading", `Spaces using this computer (${connections.size})`);
   list.parentElement!.tabIndex = connections.size >= 4 ? 0 : -1;
-  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), busy, rowOperation]));
+  const signature = JSON.stringify([...connections].map(([space, state]) => [space, state, accountSpaces.get(space), computerRows.get(space), managerReasons.get(space), busy, rowOperation]));
   if (list.dataset.rows === signature) return;
   list.dataset.rows = signature;
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
@@ -709,7 +711,7 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
+    if (accountRow) { const detail = document.createElement("small"); const reason = accountRow.lastRefusal ? managerReasons.get(space) : undefined; detail.textContent = `${computerSpaceState(accountRow, state === "launch-ready")}${reason ? `: ${reason}` : ""}`; copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy || !!rowOperation; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
@@ -854,6 +856,8 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   renderSettings();
   if (typeof status.computer === "string") renderComputerName(status.computer);
   observedReadySpaces = Array.isArray(status.managers) ? status.managers.filter(launchReady).map(item => String(item.space)) : [];
+  managerReasons.clear();
+  if (Array.isArray(status.managers)) for (const item of status.managers) if (item.state !== "answering" && typeof item.reason === "string") managerReasons.set(String(item.space), item.reason);
   const space = selectedSpace();
   computerAccount = activeComputerAccount(status.account as ComputerAccount & { accounts?: ComputerAccount[] } | undefined, signedInProvider ?? providers.get(space));
   if (computerAccount?.hostSupport === "supported") {
