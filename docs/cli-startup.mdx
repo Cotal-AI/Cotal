@@ -259,9 +259,10 @@ On a controller stack, Ctrl-C or `SIGTERM` in that terminal runs the same guarde
 uses the same recorded process checks as `cotal down --space <space> --yes` from another folder.
 A signal while the stack is still starting lets the start settle, then runs that stop. When the
 start fails, the stop still runs before the start failure is printed. A hangup, such as a closed
-terminal, leaves the stack running and exits 129. The printed stop command changes to the stack's project
-folder before running `cotal down`. If the folder was moved or deleted, the notice gives a stop
-command to run from another folder. The command includes the launching `COTAL_HOME` when it differs
+terminal, leaves the stack running and exits 129. The notice gives two commands that change to the
+project folder: `cotal down --dry-run` to inspect the stack and `cotal down --yes` to stop it.
+If the folder was moved or deleted, the notice gives a stop command to run from another folder.
+Each command includes the launching `COTAL_HOME` when it differs
 from the default. Copy the full command. If the launching Cotal, its Node runtime or its loader
 cannot run from another folder, use a Cotal installation outside the project to run the printed
 command there. A hangup while the stack is still

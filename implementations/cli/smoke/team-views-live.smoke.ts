@@ -37,6 +37,7 @@
  *  M. the deploy receipt's space locates its record even with another space selected.
  *     The confirmation commands retain the target and output mode, and replay previews and removes the card.
  *  N. the printed fresh boot summary command works with a different space selected.
+ *  O. an invalid launch name blocks validation and deployment before any channel is created.
  *
  * Channels only, so no agent launches. COTAL_HOME is sandboxed, the child environment carries no
  * `COTAL_` variable of the runner, and each stack stops with `cotal down --yes`.
@@ -140,6 +141,28 @@ function checkForegroundPreview(): void {
   check("the foreground plain preview also finishes", plain.status === 0 && /Lifetime request:\s+terminal-bound/.test(plain.stdout), plain.out);
   const apply = cotal(b, ...args, "--json");
   check("a foreground apply still refuses structured output", apply.status === 1 && envelope(apply.stdout)?.error?.code === "USAGE_INVALID", apply.out);
+}
+
+function checkInvalidLaunchName(): void {
+  const file = "dash.yaml";
+  const fixture = (name: string) => manifest(file, SPACE, {
+    dashch: `    deliveryClass: live\n    subscribe: [${JSON.stringify(name)}]\n`,
+  }, { head: `agent: claude\nagents:\n  ${JSON.stringify(name)}:\n    instructions: Review changes.\n` });
+  fixture("-reviewer");
+  for (const action of ["check", "deploy"]) {
+    const run = cotal(s, "team", action, file, "--json");
+    const error = envelope(run.stdout)?.error;
+    check(`team ${action} refuses the invalid launch name and tells the user what to rename`,
+      run.status === 1 && error?.code === "SCHEMA_INVALID" &&
+      error.message?.includes('invalid agent name "-reviewer"') === true && error.message.includes("update its channel references"), run.out);
+  }
+  const shown = cotal(s, "channel", "show", "dashch", "--json");
+  const registry = envelope(shown.stdout)?.result?.registry as { channels?: Record<string, unknown> } | undefined;
+  check("invalid deployment leaves its declared live channel absent", shown.status === 0 &&
+    registry?.channels !== undefined && !Object.hasOwn(registry.channels, "dashch"), shown.out);
+  fixture("reviewer");
+  const corrected = cotal(s, "team", "check", file, "--json");
+  check("renaming the key and channel references makes the manifest valid", corrected.status === 0, corrected.out);
 }
 
 function checkDeployAuthConflict(): void {
@@ -474,6 +497,8 @@ try {
   const rows = orderShow.stdout.split("\n").filter((line) => /^\s+#order\d+\s/.test(line)).map((line) => line.trim().replace(/\s+/g, " "));
   check("  and its text ends each card on its deletion, not on the submitted step",
     orderShow.status === 0 && rows.at(-1)?.startsWith("#order10 deleted at created revision") === true && rows.indexOf("#order0 delete submitted; outcome not implied none") < rows.findIndex((row) => row.startsWith("#order0 deleted at created revision")), rows);
+
+  checkInvalidLaunchName();
 
   console.log("\nL. live delivery guidance on an open mesh");
   check("space create prepares the open project", cotal(c, "space", "create", OTHER).status === 0);

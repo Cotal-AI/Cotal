@@ -1,5 +1,23 @@
 # Upgrading a running deployment
 
+## Agent names that start with a hyphen
+
+`cotal personas new` refuses new catalog names starting with `-`. In scripts, replace the name with
+one that starts with a letter, digit or `_`, for example `cotal personas new reviewer --prompt "Review changes" --subscribe ""`.
+When editing a persona, change its `name:` to `reviewer` rather than `-reviewer`.
+The same name rule applies when defining a persona through `cotal_persona`.
+
+`cotal team check` and `cotal team deploy` refuse a manifest with an `agents:` key starting with `-`.
+Rename the key from `-reviewer` to `reviewer` and change the corresponding channel `subscribe`,
+`allowSubscribe` and `allowPublish` entries, then run `cotal team check cotal.yaml` before deploying.
+A refused manifest creates no channels or agents.
+
+If you call the tmux, herdr, cmux or Orca runtime directly, pass `reviewer` instead of `-reviewer`
+as the first argument to `spawn`.
+
+Existing cards are still available for inspection and removal. On the CLI, put flags before `--`:
+`cotal persona show -- -reviewer` or `cotal persona remove --yes -- -reviewer`.
+
 ## Messages carrying stored-message headers
 
 Cotal drops channel posts, DMs, role requests, delivery copies, event payloads and legacy control requests
@@ -62,6 +80,42 @@ running after `cotal update --self` and names no machine. `cotal acp` still reco
 running here, by the native instance that `cotal manager status` shows for the space, and starts no
 second Manager. Any other Manager that names no machine counts as another computer's until it runs
 the new version.
+
+## Linear account tool restrictions
+
+An upgraded Linear extension enforces `allowedTools` in `<cotal-home>/linear/<name>.json` for
+both `linear call` and endpoint `call-tool`. An empty list refuses every tool. If a tool should
+be callable, have the account operator add its case-sensitive name to the list, for example
+`"allowedTools": ["list_issues", "get_issue"]`. Restart any running Linear service for that
+account and retry the call. If the account has no `allowedTools` field, upstream permissions still
+decide what it can call. Inventory still lists tools the upstream advertises.
+
+If `linear account add` or `linear account login` refuses an invalid record, repair the named JSON
+file before rerunning the same command. Set `name` to the account name and `mode` to `write` or
+`readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the private token
+file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct nonempty tool
+names without whitespace at either end or terminal controls.
+
+A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
+the authorization URL printed by that login and finish there.
+
+## Personas saved over the wire
+
+`define-persona` refuses channel lists outside the definer's grant before writing, even if a later
+spawner holds those channels. This applies to prompt frontmatter, explicit arguments and lists kept
+on redefine. Replace `subscribe`, `allowSubscribe` and `allowPublish` with channels the definer
+holds. To save without channels, pass `subscribe: []`, `allowSubscribe: []` and `allowPublish: []`.
+For a hosted user-auth manager, also pass `capabilities: []` to save without granting capabilities.
+If saved `quiet` or `muted` entries name a channel you remove, have the operator remove those entries
+with `cotal persona edit <name>` on the manager host.
+
+A wire save drops `launchOptions` from the prompt and from a file it redefines. Pass options with
+`cotal spawn <name> --opt key=value`, or set `launchOptions` with `cotal persona edit <name>` on the
+manager host and edit that file locally to keep the options.
+
+Third-party `AuthProvider` implementations must add `actorGrant({ dir, owner, actor })`. Read the
+current principal row and return `{ scope, allowSubscribe, allowPublish }`, or return `undefined`
+if the principal has no grant. Update the provider together with the manager.
 
 ## The agent endpoint on every space
 

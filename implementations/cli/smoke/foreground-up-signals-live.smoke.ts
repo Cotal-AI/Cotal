@@ -925,9 +925,9 @@ async function controllerSighupCell(): Promise<void> {
     await waitForOwnedChild(() => state.closed, 3_000, `${root}: hangup owner streams drained`);
     assert.equal(state.code, 129, `a hangup exits 129 and leaves the stack: ${err}`); passed++;
     // The command word depends on whether the host has a `cotal` launcher on PATH; the project selection does not.
-    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && `;
-    const stopAt = err.indexOf(stopPrefix);
-    assert.ok(stopAt !== -1 && /^[^`\n]+ down` stops it\./.test(err.slice(stopAt + stopPrefix.length)), `the hangup stop command selects the project from the invoking folder: ${err}`); passed++;
+    const stopPrefix = `\`cd ${shellPath(realpathSync(mesh))} && COTAL_HOME=${shellPath(env.COTAL_HOME)} `;
+    const steps = err.split(stopPrefix);
+    assert.ok(steps.length === 3 && /^[^`\n]+ down --dry-run`; to stop it, run $/.test(steps[1]!) && /^[^`\n]+ down --yes`\./.test(steps[2]!), `both hangup commands select the original project and home: ${err}`); passed++;
     assert.equal(await portOpen(port), true, "the broker keeps running after the hangup"); passed++;
     assert.equal(existsSync(hold), false, "the hangup removes this process's hold record"); passed++;
     const status = await foregroundCliProbe(cliEntry, tsx, mesh, env, ["status", "--space", space, "--server", `nats://127.0.0.1:${port}`]);
