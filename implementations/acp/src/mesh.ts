@@ -210,11 +210,8 @@ export interface Mesh {
   /** Interrupt the seat's live turn through its manager, which writes the connector's interrupt key
    *  into its terminal. Rejects, naming why, when the manager refuses. */
   interrupt(seat: SeatRef): Promise<void>;
-  /** Whether this space's agents serve their `agent` endpoint: only on a space where people sign in
-   *  (SPEC 13.21). */
-  readonly agentEndpoints: boolean;
   /** Call one of the seat's `agent` endpoint commands as its owner and resolve with the reply's
-   *  data. Rejects with {@link AgentCallFailed}, `unavailable` on a space without the endpoint. */
+   *  data. Rejects with {@link AgentCallFailed}, `unavailable` when the seat does not serve it. */
   agentCall(seat: SeatRef, command: string, args: Record<string, unknown>): Promise<unknown>;
   /** The seat's prompt counter from its presence, or undefined when it serves no `agent` endpoint. */
   promptCounter(seat: SeatRef): PromptCounter | undefined;

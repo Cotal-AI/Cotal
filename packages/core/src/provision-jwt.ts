@@ -109,6 +109,7 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "control-caller-privileged": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "ps/start control call" },
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
+  "agent-caller": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "the minting command", note: "the person's caller of their agents' `agent` endpoints on a static space (SPEC 13.21); the command that holds it, such as `cotal acp`, keeps it in memory and re-mints it for the SAME nkey through the endpoint's creds source" },
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
   "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action; the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential" },
   "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred: rails-only for ONE §13.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
@@ -589,6 +590,11 @@ export interface MintOpts {
    *  interrupts its owner's agents. It never comes from a scope token, which a parent could hand to
    *  the agents it spawns. A static mint refuses it. */
   ledgerKind?: "interactive" | "managed-agent";
+  /** Static `agent` mints only: whether the credential serves its own `agent` endpoint on the
+   *  principal route (SPEC 13.21). Absent means it does. A renewal passes `false` when the issuance it
+   *  renews was made without the rows, because its ceiling must stay byte-identical (SPEC 13.15). A
+   *  callout mint and every other profile refuse it. */
+  principalServe?: boolean;
   /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
    *  the credential is built first, then its evidence is staged create-only, the existing
    *  finalizer runs, and the attempt activates by CAS at the revision the stage observed; only

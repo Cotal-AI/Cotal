@@ -833,6 +833,7 @@
     "smoke:status-connector-event-plane": "tsx implementations/manager/smoke/status-connector-event-plane.smoke.ts",
     "smoke:status-connector-prompts": "tsx implementations/manager/smoke/status-connector-prompts.smoke.ts",
     "smoke:managed-launch-fields": "tsx implementations/manager/smoke/managed-launch-fields.smoke.ts",
+    "smoke:first-command-static": "tsx implementations/manager/smoke/first-command-static.smoke.ts",
     "smoke:status-connector-launch-fields": "tsx implementations/manager/smoke/status-connector-launch-fields.smoke.ts",
     "smoke:manager-service-ops": "tsx implementations/manager/smoke/manager-service-ops.smoke.ts",
     "smoke:manager-persona-show-auth": "tsx implementations/manager/smoke/persona-show-auth.smoke.ts",

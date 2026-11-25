@@ -34,7 +34,7 @@ import {
 import { connectTargetOrThrow, isConnectRefusal, ownManagerInstances, resolveControlTarget, resolvePreference, resolveTargetOrThrow, SignInChangedError, signInChange, userSignInAuth, type MeshTarget } from "@cotal-ai/workspace";
 import { askManager, controlPs, liveManagerIds, managerCandidate, managerRailGone, reportedManagerHost, startStackManagerRemedy, START_TIMEOUT_MS, type ControlClient, type ControlCtx, type ManagerReply } from "@cotal-ai/workspace/control";
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch";
-import { openObserver } from "@cotal-ai/workspace/view";
+import { openAgentCaller, openObserver } from "@cotal-ai/workspace/view";
 import { AgentCallFailed, deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type AgentCatalog, type AguiEventLike, type ChannelRow, type ManagerChoice, type Mesh, type PersonaRow, type RosterEntry, type SeatFrame, type SeatRef, type SeatRow, type SpawnRequest } from "./mesh.js";
 
 const OBSERVER_NAME = "acp";
@@ -195,11 +195,15 @@ function plain(e: unknown): Error {
   return e.code === "AUTH_REQUIRED" || noSpace ? new SignInRequired(message) : new Error(message);
 }
 
-/** The space connection: its target, the observer that reads it and, on a user-auth space, the
- *  person's sign-in. */
+/** The space connection: its target, the observer that reads it, the connection that calls the agents'
+ *  `agent` endpoints and, on a user-auth space, the person's sign-in. */
 interface Connected {
   readonly target: MeshTarget;
   readonly observer: CotalEndpoint;
+  /** Calls the agents' `agent` endpoints as their owner: the observer on a user-auth space, where it
+   *  connects on the person's sign-in, and on an open mesh; on a static space, an `agent-caller`
+   *  connection, since the observer's read-only credential holds no caller row (SPEC 13.21). */
+  readonly caller: CotalEndpoint;
   readonly events: string;
   readonly payloads: string;
   readonly started: { owner: string; actor: string; lifecycleUid: string } | undefined;
@@ -210,6 +214,7 @@ interface Connected {
 async function connect(options: LiveMeshOptions): Promise<Connected> {
   let target: MeshTarget;
   let observer: CotalEndpoint;
+  let caller: CotalEndpoint;
   /** The event channels the observer follows, as a subject: every agent's on a static or open
    *  space, and the agents under the person's own owner on a user-auth space. */
   let events: string;
@@ -268,10 +273,12 @@ async function connect(options: LiveMeshOptions): Promise<Connected> {
       if (user) void checkSignIn(user.source);
     });
     await observer.start();
+    caller = target.mode === "auth" && target.auth ? openAgentCaller({ space: conn.space, server: conn.server, auth: target.auth, name: OBSERVER_NAME }) : observer;
+    if (caller !== observer) await caller.start();
   } catch (e) {
     throw plain(e);
   }
-  return { target, observer, events, payloads, started, signInNow, ownManagers };
+  return { target, observer, caller, events, payloads, started, signInNow, ownManagers };
 }
 
 /** The manager control calls, made as the person's sign-in when there is one. */
@@ -422,27 +429,24 @@ function launchCalls(c: Connected, p: Controls, defaultPersona: string | null | 
   };
 }
 
-/** The seat's `agent` endpoint (SPEC 13.22), called as its owner. An agent serves it only under a
- *  user-auth credential (SPEC 13.21), so a space where people do not sign in has none. */
-function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "promptCounter" | "served"> {
-  const { started, observer } = c;
+/** The seat's `agent` endpoint (SPEC 13.22), called as its owner. Agents serve it on every space
+ *  (SPEC 13.21). */
+function agentCalls(c: Connected): Pick<Mesh, "agentCall" | "promptCounter" | "served"> {
+  const { observer, caller } = c;
   /** The seat's current presence row, when it is live and is the incarnation the bridge holds. */
   const row = (seat: SeatRef) => {
     const id = principalKey(seat.owner, seat.actor).key;
     return observer.getRoster().find((s) => s.card.id === id && s.lifecycleUid === seat.lifecycleUid && s.status !== "offline");
   };
   return {
-    agentEndpoints: started !== undefined,
-
     async agentCall(seat, command, args) {
-      if (!started) throw new AgentCallFailed(`${seat.name} serves no agent endpoint: agents serve it only on a space where people sign in`, "unavailable");
       const runtime = row(seat)?.runtime?.id;
       if (!runtime) throw new AgentCallFailed(`${seat.name} is not on the roster with its runtime`, "unavailable");
       const contract = AGENT_CONTRACTS[command];
       if (!contract) throw new AgentCallFailed(`the agent endpoint has no command ${command}`, "unimplemented");
       let reply;
       try {
-        reply = await observer.callPrincipal({
+        reply = await caller.callPrincipal({
           endpoint: AGENT_ENDPOINT,
           principal: { owner: seat.owner, actor: seat.actor, uid: seat.lifecycleUid, runtimeId: runtime },
           command,
@@ -465,7 +469,7 @@ function agentCalls(c: Connected): Pick<Mesh, "agentEndpoints" | "agentCall" | "
     },
 
     served(seat) {
-      return started ? row(seat)?.agentEndpoint : undefined;
+      return row(seat)?.agentEndpoint;
     },
   };
 }
@@ -545,7 +549,6 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
     },
 
     async rename(seat: SeatRef, name: string) {
-      if (!started) throw new Error("renaming a running agent needs a space where people sign in, where the agent serves `set-name`");
       return ((await agent.agentCall(seat, AGENT_CMD_SET_NAME, { name })) as SetNameIO).name;
     },
 
@@ -557,7 +560,7 @@ function seatCalls(options: LiveMeshOptions, c: Connected, p: Controls, agent: R
 
 /** What the observer reads: the agents' frames and presence, the roster and the channels. */
 function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | "presence" | "roster" | "channels" | "close"> {
-  const { observer, events, payloads, started } = c;
+  const { observer, caller, events, payloads, started } = c;
   return {
     followFrames(onFrame) {
       let live = true;
@@ -614,6 +617,7 @@ function spaceReads(c: Connected): Pick<Mesh, "followFrames" | "frameHistory" | 
 
     async close() {
       await observer.stop();
+      if (caller !== observer) await caller.stop();
     },
   };
 }
