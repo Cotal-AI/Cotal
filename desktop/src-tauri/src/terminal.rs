@@ -96,14 +96,24 @@ pub(crate) fn launch(argv: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn terminal_command_requires_absolute_paths_and_a_seat_name() {
+        let root = std::env::temp_dir();
+        let mut argv = ["", "", "attach", "writer", "--on", "manager", "--space", "team"].map(str::to_owned);
+        argv[0] = root.join("Cotal's Node").to_string_lossy().into_owned();
+        argv[1] = root.join("Cotal App").join("cotal.js").to_string_lossy().into_owned();
+        assert!(validate(&argv));
+        let mut relative = argv.clone();
+        relative[0] = "node".into();
+        assert!(!validate(&relative));
+        argv[3] = "--creds".into();
+        assert!(!validate(&argv));
+    }
+
+    #[test]
     fn native_launch_keeps_cli_arguments_separate() {
         let argv = ["/opt/Cotal's Node", "/opt/Cotal App/cotal.js", "attach", "writer", "--on", "manager", "--space", "team"].map(str::to_owned);
-        assert!(validate(&argv));
         assert_eq!(linux_args(&argv), ["--", "/opt/Cotal's Node", "/opt/Cotal App/cotal.js", "attach", "writer", "--on", "manager", "--space", "team"]);
         assert_eq!(mac_args(Path::new("/tmp/a b/Attach.command")), [std::ffi::OsStr::new("/tmp/a b/Attach.command")]);
         assert!(mac_script(&argv).ends_with("exec '/opt/Cotal'\\''s Node' '/opt/Cotal App/cotal.js' 'attach' 'writer' '--on' 'manager' '--space' 'team'\n"));
-        let mut invalid = argv;
-        invalid[3] = "--creds".into();
-        assert!(!validate(&invalid));
     }
 }
