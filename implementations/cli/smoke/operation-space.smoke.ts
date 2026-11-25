@@ -99,6 +99,19 @@ for (const args of [["reviewer", "Audit text"], ["--name", "reviewer", "--text=-
     missing.envelope.error?.code === "TARGET_NOT_FOUND" && missing.envelope.error.message?.includes('"fifth_missing"') === true, shown(missing));
 }
 
+const emptyInputPin = cotal("input", "--name", "reviewer", "--text", "/compact", "--no-enter", "--on", "", "--space", "fifth_missing", "-j");
+const inputRetry = /`((?:pnpm )?cotal input [^`]+)`/.exec(emptyInputPin.envelope?.error?.message ?? "")?.[1];
+const inputInstance = "a".repeat(26);
+const inputWords = inputRetry ? execWords(inputRetry.replace("<instance>", inputInstance)) : [];
+const inputArgs = inputWords.slice(inputWords.indexOf("input"));
+check("an empty input pin keeps the text, --no-enter, target and JSON format in its retry",
+  emptyInputPin.status === 1 && emptyInputPin.stderr === "" && emptyInputPin.envelope?.error?.code === "USAGE_INVALID" &&
+  same(inputArgs, ["input", "reviewer", "/compact", "--no-enter", "--json", "--space", "fifth_missing", "--on", inputInstance]), shown(emptyInputPin));
+const retriedInput = inputArgs[0] === "input" ? cotal(...inputArgs) : undefined;
+check("replacing only the manager instance placeholder keeps the retry refusal on JSON stdout",
+  retriedInput?.status === 2 && retriedInput.stderr === "" && retriedInput.envelope?.outcome === "refused" &&
+  retriedInput.envelope.error?.code === "TARGET_NOT_FOUND", retriedInput && shown(retriedInput));
+
 const prepared = cotal("space", "create", "opsp", "--root", ".");
 check("fixture: the space is prepared and not started", prepared.status === 0, shown(prepared));
 
@@ -214,8 +227,8 @@ for (const [argv, rerun] of [
   // #7322: a verb that targets an agent keeps the agent, its other positionals and the space it named.
   [["stop", "default_agent", "--on", "bad"], "cotal stop default_agent --json --on <instance>"],
   // #7644: input gives its text again, quoted for a shell, rather than a `<text>` a shell reads as a redirection.
-  [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --on <instance>"],
-  [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --on <instance>"],
+  [["input", "default_agent", "hello world", "--on", "bad"], "cotal input default_agent 'hello world' --json --on <instance>"],
+  [["input", "default_agent", "hello world", "--no-enter", "--on", "bad"], "cotal input default_agent 'hello world' --no-enter --json --on <instance>"],
   [["status", "default_agent", "--on", "bad"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--force", "--space", "elsewhere", "--on", "bad"], "cotal stop default_agent --force --json --space elsewhere --on <instance>"],
   // #7644: ps and models keep the --space and filter they were given.
@@ -256,8 +269,8 @@ for (const [argv, rerun] of [
   [["stop", "default_agent", "--space", "elsewhere", "--on", "local.U123"], "cotal stop default_agent --json --space elsewhere --on <instance>"],
   [["status", "default_agent", "--on", "local.U123"], "cotal status default_agent --json --on <instance>"],
   [["stop", "default_agent", "--on", ""], "cotal stop default_agent --json --on <instance>"],
-  [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit"], "cotal input reviewer 'Review this' --no-enter --space audit --on <instance>"],
-  [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --on <instance>"],
+  [["input", "reviewer", "Review this", "--no-enter", "--on", "", "--space", "audit", "--server", "nats://127.0.0.1:39200"], "cotal input reviewer 'Review this' --no-enter --json --space audit --server nats://127.0.0.1:39200 --on <instance>"],
+  [["input", "reviewer", "--text=--verbose now", "--no-enter", "--on", "local.U123"], "cotal input reviewer '--text=--verbose now' --no-enter --json --on <instance>"],
   [["endpoint", "describe", "ai.cotal.manager", "--space", "elsewhere", "--on", "bad"], "cotal endpoint describe ai.cotal.manager --space elsewhere --on <instance> --json"],
   [["endpoint", "invoke", "ai.cotal.manager", "ps", "--on", "bad"], "cotal endpoint invoke ai.cotal.manager ps --on <instance> --json"],
   [["spawn", "--no-input", "-d", "--on=", "--name", "explicit", "--", "-persona"], "cotal spawn --no-input -d --name explicit --json --on <instance> -- -persona"],
@@ -290,6 +303,9 @@ check("endpoint discovery keeps an explicit caller without printing its file", p
 const plainStatusPin = cotal("status", "default_agent", "--plain", "--on", "bad");
 check("a malformed named status pin keeps plain output on the retry",
   plainStatusPin.status === 1 && /`(?:pnpm )?cotal status default_agent --plain --on <instance>`/.test(plainStatusPin.stderr), shown(plainStatusPin));
+const plainInputPin = cotal("input", "reviewer", "/compact", "--plain", "--on", "");
+check("an empty input pin keeps plain output on the retry",
+  plainInputPin.status === 1 && /`(?:pnpm )?cotal input reviewer \/compact --plain --on <instance>`/.test(plainInputPin.stderr), shown(plainInputPin));
 const attachPrincipal = cotal("attach", "default_agent", "--on", "local.U123");
 check("attach default_agent --on local.U123 names cotal attach default_agent --on <instance> (#7644)",
   attachPrincipal.status === 1 && attachPrincipal.stderr.includes("`cotal attach default_agent --on <instance>`"), shown(attachPrincipal));
