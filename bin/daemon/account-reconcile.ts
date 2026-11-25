@@ -4,6 +4,7 @@ import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount } from
 import { importAccountComputerSpace, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import type { ServiceConnections } from "./service.js";
 import type { HostedManager } from "./protocol.js";
+import type { AccountComputerStatus } from "./account-state.js";
 import { findMesh, readMeshRegistry } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
 import { knownMachineAccounts } from "@cotal-ai/auth";
@@ -18,20 +19,27 @@ interface Managers {
   disconnect(space: string, options?: { account?: boolean }): Promise<unknown>;
 }
 
+function readSaved(file: string): Saved {
+  if (!existsSync(file)) return { v: 1, spaces: {} };
+  const raw = JSON.parse(readFileSync(file, "utf8")) as Saved;
+  if (raw.v !== 1 || !raw.spaces || typeof raw.spaces !== "object" || Array.isArray(raw.spaces)
+    || Object.values(raw.spaces).some(row => !row || typeof row.owner !== "string" || typeof row.id !== "string" || !Number.isSafeInteger(row.revision) || row.revision < 0 || (row.removedAt !== undefined && (!Number.isSafeInteger(row.removedAt) || row.removedAt < 0))))
+    throw new Error("invalid account space state");
+  return raw;
+}
+
 /** Reconcile through the same checked service and Manager operations as local setup. */
 export function createAccountReconciler(home: string, services: ServiceConnections, managers: Managers) {
   const file = join(home, "daemon", "account-spaces.json");
-  let saved: Saved = { v: 1, spaces: {} };
-  if (existsSync(file)) {
-    const raw = JSON.parse(readFileSync(file, "utf8")) as Saved;
-    if (raw.v !== 1 || !raw.spaces || typeof raw.spaces !== "object" || Array.isArray(raw.spaces)
-      || Object.values(raw.spaces).some(row => !row || typeof row.owner !== "string" || typeof row.id !== "string" || !Number.isSafeInteger(row.revision) || row.revision < 0 || (row.removedAt !== undefined && (!Number.isSafeInteger(row.removedAt) || row.removedAt < 0))))
-      throw new Error("invalid account space state");
-    saved = raw;
-  }
+  const saved = readSaved(file);
   const persist = () => { mkSecretDir(join(file, "..")); writeSecretFileAtomic(file, JSON.stringify(saved)); };
-  const refusals = new Map<string, string>();
+  const managerRefusal = Symbol();
+  const refusals = new Map<string, string | typeof managerRefusal>();
   const retryAt = new Map<string, number>();
+  const deferRefusal = (space: string, refusal: string | typeof managerRefusal) => {
+    refusals.set(space, refusal);
+    retryAt.set(space, Date.now() + 30_000);
+  };
   const managerOnly = new Set<string>();
   const connectedHere = (space: string) => services.status(space).state === "connected" || managers.status(space).state === "answering";
   const disconnect = async (space: string) => {
@@ -39,13 +47,11 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     try { await managers.disconnect(space, { account: true }); }
     finally { if (services.status(space).state !== "not-requested") await services.disconnect(space); }
   };
-  const observedState = (space: string) => {
+  const observedState = (space: string, manager: HostedManager["state"]) => {
     if (saved.spaces[space]?.removedAt !== undefined) return "removed on this computer";
-    const service = services.status(space).state;
-    const manager = managers.status(space).state;
     // An answering Manager is what lets the account launch here. The machine service is separate.
     if (manager === "answering") return "connected";
-    return managerOnly.has(space) ? manager : service;
+    return managerOnly.has(space) ? manager : services.status(space).state;
   };
   const machineService = (space: string) => {
     const service = services.status(space).state;
@@ -78,7 +84,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       try {
         await disconnect(space);
         delete saved.spaces[space]; persist(); refusals.delete(space);
-      } catch { refusals.set(space, "disconnect refused; inspect daemon status before retrying"); retryAt.set(space, Date.now() + 30_000); }
+      } catch { deferRefusal(space, "disconnect refused; inspect daemon status before retrying"); }
     }
     for (const row of snapshot.spaces) {
       signal?.throwIfAborted();
@@ -106,7 +112,10 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         const check = await connectCheck(row.slug, home);
         if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new Error(check.outcome);
         const manager = await ensureHostedManager(row.slug, managers);
-        if (manager.state !== "answering") throw new Error("Manager is not answering");
+        if (manager.state !== "answering") {
+          deferRefusal(row.slug, managerRefusal);
+          continue;
+        }
         if (!manager.connectors?.some(connector => connector.state === "available")) throw new Error("no available application");
         if (check.outcome === "unsupported-by-space") {
           managerOnly.add(row.slug);
@@ -131,7 +140,7 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         refusals.delete(row.slug); retryAt.delete(row.slug);
       } catch (error) {
         const safe = error instanceof Error && /^[a-z -]{1,100}$/i.test(error.message) ? error.message : "space connection refused; inspect daemon status";
-        refusals.set(row.slug, safe); retryAt.set(row.slug, Date.now() + 30_000);
+        deferRefusal(row.slug, safe);
       }
     }
   });
@@ -144,7 +153,25 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       }).sort((a, b) => a.spaceId.localeCompare(b.spaceId));
     },
     retainAccounts(owners: string[]) { for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
-    view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(machineService(space) ? { machineService: machineService(space)! } : {}), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
+    view(): AccountComputerStatus["spaces"] {
+      const desired = desiredAll();
+      const spaces = new Set([...desired, ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)]);
+      return [...spaces].map(space => {
+        const manager = managers.status(space);
+        const observed = observedState(space, manager.state);
+        const service = machineService(space);
+        const row: AccountComputerStatus["spaces"][number] = { space, desired: desired.has(space), observed };
+        if (service) row.machineService = service;
+        const refusal = refusals.get(space);
+        if (typeof refusal === "string") row.lastRefusal = refusal;
+        else if (refusal === managerRefusal && manager.state !== "answering" && observed !== "removed on this computer") {
+          // Read the current diagnostic so a later observation can supersede the failed attempt.
+          if (manager.reason) row.lastRefusal = manager.reason;
+          if (manager.next) row.next = manager.next;
+        }
+        return row;
+      });
+    },
     settled: () => queue,
   };
 }

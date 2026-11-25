@@ -709,8 +709,16 @@ function renderConnections(): void {
     const kind = document.createElement("small"); kind.className = "application-chip"; kind.textContent = shownSpaceKind(accountSpaces.get(space)?.kind);
     copy.append(name, kind);
     const accountRow = computerRows.get(space);
-    if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
-    else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
+    if (accountRow) {
+      const detail = document.createElement("small");
+      if (accountRow.lastRefusal) detail.className = "space-diagnostic";
+      detail.textContent = computerSpaceState(accountRow, state === "launch-ready");
+      copy.append(detail);
+      if (accountRow.next) {
+        const next = document.createElement("small"); next.className = "space-diagnostic"; next.textContent = `Next: ${accountRow.next}`;
+        copy.append(next);
+      }
+    } else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy || !!rowOperation; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
     remove.addEventListener("click", () => void rowAction(space, restore));

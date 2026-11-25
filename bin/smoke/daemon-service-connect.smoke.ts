@@ -2701,6 +2701,28 @@ process.stdin.once('data', () => {
             for (let i = 0; i < 120; i++) { value = await observed(); if (predicate(value)) break; await sleep(500); }
             check(label, predicate(value), value); return value;
           };
+          if (process.argv.includes("--account-manager-refusal")) {
+            grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: [], allowSubscribe: [], allowPublish: [] });
+            assert.equal((await cli("spaces", "--refresh")).code, 0);
+            assert.equal((await cli("connect-check", "--space", ON)).doc.result?.outcome, "ready-to-register");
+            const enabled = await ask(paths.socket, { op: "space-intent", space: ON, enabled: true }, 100_000);
+            assert.equal(enabled.ok, true);
+            const { code, doc } = await cli("status");
+            assert.equal(code, 0);
+            const manager = doc.result?.managers.find((row: any) => row.space === ON);
+            const row = doc.result?.account.spaces.find((row: any) => row.space === ON);
+            assert.equal(manager.state, "refused");
+            assert.match(manager.reason, /needs scope "supervise"/);
+            assert.match(manager.next, /grant your cli actor the supervise scope/);
+            assert.equal(row.lastRefusal, manager.reason);
+            assert.equal(row.next, manager.next);
+            grantActor(ctx[0]!.stateDir, { owner: fixture.owner, actor: "cli", lifecycleUid: cliLifecycle, scope: ["supervise", "spawn", "run", "role:default"], allowSubscribe: [">"], allowPublish: [">"] });
+            const started = await ask(paths.socket, { op: "manager-start", space: ON }, 100_000);
+            assert.equal(resultOf(started).state, "answering");
+            const recovered = (await observed()).account.spaces.find((row: any) => row.space === ON);
+            check("A0 recovered Manager clears the account row diagnostic", recovered.observed === "connected" && recovered.lastRefusal === undefined && recovered.next === undefined, recovered);
+            return;
+          }
           const hostedShape = process.argv.includes("--account-hosted");
           const stopStatusPoll = retiredAppRuntime ? pollStartupStatus(paths.socket) : undefined;
           try {

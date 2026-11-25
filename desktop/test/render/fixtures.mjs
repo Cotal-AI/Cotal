@@ -498,6 +498,31 @@ export const scenarios = [
     await page.evaluate(() => { window.__renderState.account.spaces.pop(); window.__pushStatus(); });
     await page.locator('[data-space="research"]').waitFor({ state: "detached", timeout: 6000 });
   } },
+  { name: "account-manager-refusal", state: { installed: true, signedIn: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [
+    { space: "acme-team", desired: true, observed: "not-requested", lastRefusal: 'Manager authority needs scope "supervise".', next: "Ask the space owner to grant supervise, then run `cotal daemon setup --space acme-team`." },
+    { space: "research", desired: true, observed: "starting" },
+  ] } }, expect: async page => {
+    const row = page.locator('[data-space="acme-team"]');
+    const reason = row.getByText('Manager authority needs scope "supervise".', { exact: true });
+    const next = row.getByText(/^Next: Ask the space owner/);
+    assert.ok(await reason.isVisible());
+    assert.ok(await next.isVisible(), "the next action is visible in the affected row");
+    assert.ok(await row.getByRole("button", { name: "Remove Acme team" }).isEnabled());
+    assert.equal(await page.locator('[data-space="research"]').getByText(/^Next:/).count(), 0);
+    await page.evaluate(() => {
+      window.__renderState.account.spaces[0].next = "Run setup again after the grant arrives.";
+      window.__pushStatus();
+    });
+    await row.getByText("Next: Run setup again after the grant arrives.").waitFor();
+    await page.evaluate(() => {
+      window.__renderState.account.spaces[0] = { space: "acme-team", desired: true, observed: "connected" };
+      window.__renderState.connected = true;
+      window.__pushStatus();
+    });
+    await row.getByText("Connected", { exact: true }).waitFor();
+    assert.equal(await reason.count(), 0);
+    assert.equal(await row.getByText(/^Next:/).count(), 0);
+  } },
   { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
     assert.equal(await page.locator("#tray-label").textContent(), "Ready");
