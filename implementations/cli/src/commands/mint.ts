@@ -7,7 +7,7 @@ import {
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
 } from "@cotal-ai/core";
 import {
-  parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, authDir, credentialMintFlags,
+  parseCommaList, CommandFailure, assertExternalCredentialExport, agentCredsKey, agentSecretFilePaths, authDir, codeSpan, credentialMintFlags,
   isCommandFailure, preflightTarget, presentationOf,
   protectedCredentialReference, protectedLocalDirectory, readLocalRecordSource,
   validateCredentialMintArguments, workspaceErrorParts,
@@ -106,9 +106,10 @@ function outFolderRefusal(target: object, out: string, error: unknown): CommandF
     if (found.isSymbolicLink()) {
       let real: string | undefined;
       try { real = realpathSync(dir); } catch { /* a link that names no folder */ }
+      const suggested = real === undefined ? undefined : codeSpan(shellWord(join(real, relative(dir, out))));
       return new CommandFailure("refused", "PERMISSION_DENIED", `the --out path goes through ${dir}, a symbolic link to ${readlinkSync(dir)}, and a private credential is never written through a link; no credential was written`, {
         target: { ...target, folder: dir },
-        remedy: `name the --out file by a path with no symbolic link in it${real === undefined ? "" : `, such as ${join(real, relative(dir, out))} if that folder is yours`}`,
+        remedy: `name the --out file by a path with no symbolic link in it${suggested === undefined ? "" : `, such as ${suggested} if that folder is yours`}`,
       });
     }
     if (!found.isDirectory())
