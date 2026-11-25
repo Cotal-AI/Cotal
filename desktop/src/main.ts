@@ -1,6 +1,6 @@
 import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
-import { agentInventory, renderAgents } from "./agents";
+import { agentInventory, renderAgents, shownAgentName } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
@@ -846,13 +846,15 @@ async function applyStatus(status: Record<string, unknown>, current: () => boole
   await showStatus(status, current);
   if (current()) updateService();
 }
-/** Agents running on this computer, or undefined when the service does not report them. */
-function runningAgents(): number | undefined {
+/** Agents running on this computer, named as the agent list names them, or undefined when the
+ *  service does not report them. */
+function runningAgentNames(): string[] | undefined {
   try {
     const inventory = agentInventory(serviceStatus ?? {});
-    return inventory.available && !inventory.unreadable.length ? inventory.agents.filter(agent => agent.state === "running").length : undefined;
+    return inventory.available && !inventory.unreadable.length ? inventory.agents.filter(agent => agent.state === "running").map(agent => `${shownAgentName(agent.name)} (${agent.application})`) : undefined;
   } catch { return undefined; }
 }
+function runningAgents(): number | undefined { return runningAgentNames()?.length; }
 /** An updated app restarts the older background service into its own version, the daemon's idle
  *  restart, only while no agent runs on this computer. While agents run it waits and says so. */
 function updateService(): void {
@@ -861,13 +863,15 @@ function updateService(): void {
     if (serviceUpdateWaiting) { serviceUpdateWaiting = false; notice(""); }
     return;
   }
-  if (running > 0) { waitForAgents(running); return; }
+  if (running > 0) { waitForAgents(runningAgentNames()!); return; }
   if (busy || setupActive || loginActive || Date.now() < nextServiceUpdate) return;
   serviceUpdateWaiting = false; notice("");
   el<HTMLButtonElement>("connect").click();
 }
-function waitForAgents(count: number): void {
-  const message = `An update for the background service is waiting for ${count === 1 ? "1 agent" : `${count} agents`} on this computer to finish. It installs by itself when ${count === 1 ? "it ends" : "they end"}.`;
+function waitForAgents(names: readonly string[], count = names.length): void {
+  const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} more`] : names;
+  const list = shown.length ? `: ${new Intl.ListFormat("en", { type: "conjunction" }).format(shown)}` : "";
+  const message = `An update for the background service is waiting for ${count === 1 ? "1 agent" : `${count} agents`} on this computer to finish${list}. It installs by itself when ${count === 1 ? "it ends" : "they end"}.`;
   // Announce a change, not every status check.
   if (!serviceUpdateWaiting || el("notice").textContent !== message || el("notice").hidden) notice(message);
   serviceUpdateWaiting = true;
@@ -1140,7 +1144,7 @@ el("connect").addEventListener("click", () => void action(async () => {
       nextServiceUpdate = Date.now() + 600_000;
       progress = progressNames.map(() => "waiting"); renderProgress();
       setupActive = false; state("launch-ready", space); showStage("finished");
-      waitForAgents(Math.max(1, Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? runningAgents() ?? 1)));
+      waitForAgents(runningAgentNames() ?? [], Math.max(1, Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? runningAgents() ?? 1)));
       return;
     }
     if (error instanceof DaemonRefusal && error.native === "NO_AVAILABLE_CONNECTOR") { applicationRefusals.add(space); state("no-application", space); }

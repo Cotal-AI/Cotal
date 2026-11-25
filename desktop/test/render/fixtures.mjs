@@ -571,7 +571,7 @@ export const scenarios = [
   // The app was updated and the background service still runs the previous version while agents work.
   { name: "update-waits-for-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, version: "0.155.0", serviceBehind: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: [{ space: "acme-team", state: "read", agents: [{ name: "acp_mx2ngejyr3", application: "claude-code", cwd: "/projects/cotal", startedAt: new Date(Date.now() - 600_000).toISOString(), state: "running" }, { name: "acp_uoeconhmic", application: "codex", cwd: "/projects/site", startedAt: new Date(Date.now() - 120_000).toISOString(), state: "running" }] }] }, expect: async page => {
     await page.locator("#notice:not([hidden])").waitFor();
-    assert.equal(await page.locator("#notice").textContent(), "An update for the background service is waiting for 2 agents on this computer to finish. It installs by itself when they end.");
+    assert.equal(await page.locator("#notice").textContent(), "An update for the background service is waiting for 2 agents on this computer to finish: acp_mx2ngejyr3 (Claude Code) and acp_uoeconhmic (Codex). It installs by itself when they end.");
     assert.notEqual(await page.locator("#connection-title").textContent(), "Your connection needs an update");
     assert.equal(await page.locator("#recovery-panel").isHidden(), true, "the window stays usable");
     assert.equal(await page.locator("#agent-list .agent-row").count(), 2, "the waiting agents are listed");
