@@ -1,10 +1,12 @@
 /**
- * LIVE: a Claude Code seat runs at the effort level its launch names, and the catalog offers it.
+ * LIVE: a Claude Code seat runs at the effort level and with the modes its launch names, and the
+ * catalog offers them.
  *
  * Against the real `claude` on PATH and a local Manager, through the built binary:
  *
- *   1. The shipped catalog asks this machine's `claude` for its models. Every model is named, an
- *      alias names the model it resolves to, and each variant is a level `claude --effort` takes.
+ *   1. The shipped catalog asks this machine's `claude` for its models, within 12 s. Every model is
+ *      named, an alias names the model it resolves to, each variant is a level `claude --effort`
+ *      takes, one model is the default, and opus offers ultracode where claude-opus-4-6 does not.
  *   2. `cotal up --detach`, then two `cotal spawn --detach` of one persona on haiku, at
  *      `--variant low` and at `--variant high`, each with a prompt. Claude records the effort of
  *      each turn as `perTurnEffort` on the assistant line of its own transcript, and each seat's
@@ -12,10 +14,14 @@
  *      `cotal ps --json` reports each seat's variant.
  *   3. A level the catalog does not list for the model is refused by the Manager, naming the
  *      levels it lists, before anything is provisioned.
- *   4. `cotal down --yes` stops the sandbox stack, seats included.
+ *   4. An opus seat spawned with `--mode ultracode=true` and a prompt: Claude records ultracode on
+ *      for its turn as an `ultra_effort_enter` attachment in its transcript, and the haiku seats
+ *      record none. Ultracode on claude-opus-4-6 is refused before launch. `--variant high` with
+ *      no `--model` is checked against the catalog's default model and starts a seat.
+ *   5. `cotal down --yes` stops the sandbox stack, seats included.
  *
  * The Manager reads claude's catalog to check each variant, so the stack runs with this machine's
- * Claude login, and each seat's one short turn on haiku spends a few tokens. The space is prepared
+ * Claude login, and three seats' one short turn each spends a few tokens. The space is prepared
  * with `space create`, which leaves the operator's Claude configuration alone, and the persona asks
  * for the default permission mode, because Cotal never accepts Bypass Permissions for the operator.
  * COTAL_HOME and the XDG dirs are scratch, the operator's own COTAL_*, CLAUDE_* and ANTHROPIC_*
@@ -29,6 +35,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { readModelCatalog } from "@cotal-ai/core";
 import { claudeConnector } from "../../extensions/connector-claude-code/src/extension.js";
 
 const WT = resolve(import.meta.dirname, "..", "..");
@@ -44,9 +51,18 @@ const { check, finish } = createSuite();
 
 console.log("the catalog, from this machine's claude:");
 {
+  const asked = Date.now();
   const catalog = await claudeConnector.listModels!({});
-  check("claude lists its models", catalog.unavailable === undefined && catalog.models.length > 0, catalog);
-  for (const m of catalog.models) console.log(`  ${m.id}: ${m.name} [${m.variants?.map((v) => v.name).join(", ") ?? "no effort levels"}]`);
+  const waited = Date.now() - asked;
+  check("claude lists its models within 12 s", catalog.unavailable === undefined && catalog.models.length > 0 && waited < 12_000, { waited, unavailable: catalog.unavailable });
+  for (const m of catalog.models)
+    console.log(`  ${m.id}${m.isDefault ? " (default)" : ""}: ${m.name} [${m.variants?.map((v) => v.name + (v.name === m.defaultVariant ? "*" : "")).join(", ") ?? "no effort levels"}] modes: ${m.modes?.map((x) => x.id).join(", ") || "none"}`);
+  console.log(`  read in ${waited} ms; fast offered on ${catalog.models.filter((m) => m.modes?.some((x) => x.id === "fast")).length} models`);
+  check("one model is the default", catalog.models.filter((m) => m.isDefault).length === 1, catalog.models.map((m) => [m.id, m.isDefault]));
+  const read = await readModelCatalog({ name: "claude", listModels: () => catalog }, {}).then(() => "read", (e: Error) => e.message);
+  check("core reads the catalog as consistent, every default among its model's values", read === "read", read);
+  const ultracode = (id: string) => catalog.models.find((m) => m.id === id)?.modes?.some((x) => x.id === "ultracode");
+  check("opus offers ultracode and claude-opus-4-6 does not, as the seats below need", ultracode("opus") === true && ultracode("claude-opus-4-6") !== true, catalog.models);
   check("every model has a name", catalog.models.every((m) => !!m.name), catalog.models);
   const aliases = catalog.models.filter((m) => !m.id.startsWith("claude-"));
   check("every alias names the claude- model it resolves to", aliases.length > 0 && aliases.every((m) => /\(claude-[^()]+\)$/.test(m.name ?? "")), aliases);
@@ -82,25 +98,31 @@ const cotal = (anchor: SmokeSandboxAnchor | undefined, ...args: string[]) => {
   return { status: result.status, stdout: result.stdout, out: result.stdout + result.stderr };
 };
 
-/** The `perTurnEffort` Claude recorded on each assistant line of the session whose prompt names `word`. */
-function recordedEfforts(word: string): unknown[] | undefined {
+type TranscriptLine = { type?: string; perTurnEffort?: unknown; message?: { content?: unknown }; attachment?: { type?: unknown } };
+
+/** The transcript of the session whose prompt names `word`, once Claude has answered it. */
+function answeredSession(word: string): TranscriptLine[] | undefined {
   if (!existsSync(transcripts)) return undefined;
   for (const file of readdirSync(transcripts, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".jsonl"))) {
-    const lines = readFileSync(join(transcripts, file), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { type?: string; perTurnEffort?: unknown; message?: { content?: unknown } });
+    const lines = readFileSync(join(transcripts, file), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as TranscriptLine);
     if (!lines.some((l) => l.type === "user" && JSON.stringify(l.message?.content ?? "").includes(word))) continue;
-    const replies = lines.filter((l) => l.type === "assistant");
-    if (replies.length > 0) return replies.map((l) => l.perTurnEffort);
+    if (lines.some((l) => l.type === "assistant")) return lines;
   }
   return undefined;
 }
 
-async function waitForEfforts(word: string): Promise<unknown[] | undefined> {
+async function waitForSession(word: string): Promise<TranscriptLine[] | undefined> {
   for (const end = Date.now() + 120_000; Date.now() < end; await new Promise((r) => setTimeout(r, 1_000))) {
-    const efforts = recordedEfforts(word);
-    if (efforts) return efforts;
+    const lines = answeredSession(word);
+    if (lines) return lines;
   }
   return undefined;
 }
+
+/** The `perTurnEffort` Claude recorded on each assistant line. */
+const efforts = (lines: TranscriptLine[] | undefined) => lines?.filter((l) => l.type === "assistant").map((l) => l.perTurnEffort);
+/** Whether Claude recorded ultracode on for the session's turn. */
+const ultracodeOn = (lines: TranscriptLine[] | undefined) => lines?.some((l) => l.type === "attachment" && l.attachment?.type === "ultra_effort_enter");
 
 const anchor = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: xdg });
 let up = false;
@@ -122,10 +144,23 @@ try {
     const spawned = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--model", "haiku", "--variant", level, "--name", name, "--prompt", `Reply with the single word ${word}.`);
     check(`spawn --variant ${level} starts a seat`, spawned.status === 0, spawned.out);
   }
+  const sessions = new Map<string, TranscriptLine[] | undefined>();
   for (const { level, word } of seats) {
-    const efforts = await waitForEfforts(word);
-    check(`the --variant ${level} seat's own transcript records effort ${level} for its turn`, !!efforts?.length && efforts.every((e) => e === level), efforts);
+    sessions.set(level, await waitForSession(word));
+    const recorded = efforts(sessions.get(level));
+    check(`the --variant ${level} seat's own transcript records effort ${level} for its turn`, !!recorded?.length && recorded.every((e) => e === level), recorded);
   }
+  const on = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--model", "opus", "--mode", "ultracode=true", "--name", "ultracode_on", "--prompt", "Reply with the single word ultracodeprobe.");
+  check("spawn --mode ultracode=true on opus starts a seat", on.status === 0, on.out);
+  const onSession = await waitForSession("ultracodeprobe");
+  check("the ultracode seat's own transcript records ultracode on for its turn", ultracodeOn(onSession) === true, onSession?.map((l) => l.attachment?.type ?? l.type));
+  check("the haiku seats launched without ultracode record none", seats.every(({ level }) => sessions.get(level) !== undefined && ultracodeOn(sessions.get(level)) === false));
+  const unlisted = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--model", "claude-opus-4-6", "--mode", "ultracode=true", "--name", "ultracode_bad");
+  check("ultracode on claude-opus-4-6 is refused before launch, naming what the model offers",
+    unlisted.status !== 0 && /claude lists (no modes|modes [^\n]*) for model "claude-opus-4-6", not "ultracode" \(modes\)/.test(unlisted.out), unlisted.out);
+  const byDefault = cotal(anchor, "spawn", "--detach", "probe", "--agent", "claude", "--variant", "high", "--name", "default_high");
+  check("spawn --variant high with no --model is checked against the default model and starts a seat", byDefault.status === 0, byDefault.out);
+
   const ps = cotal(anchor, "ps", "--json");
   const line = ps.stdout.split("\n").find((l) => l.startsWith("{\"schemaVersion\""));
   const rows = line ? ((JSON.parse(line) as { result?: { items?: Array<{ name: string; variant?: string }> } }).result?.items ?? []) : [];
