@@ -182,7 +182,15 @@ export function seedTrustedProjects(): void {
   let record = readSeedRecord();
   if (record?.completedAt !== undefined) return;
   if (record === undefined) {
-    record = { schemaVersion: SCHEMA_VERSION, attemptedAt: new Date().toISOString(), roots: [...new Set(knownSpaceRoots().map(canonicalRoot))].sort() };
+    const attempt: SeedRecord = { schemaVersion: SCHEMA_VERSION, attemptedAt: new Date().toISOString(), roots: [] };
+    // An unreadable registry cannot distinguish old roots from new ones on a later run.
+    // Record an empty attempt before letting commands continue, rather than trust later additions.
+    try { attempt.roots = [...new Set(knownSpaceRoots().map(canonicalRoot))].sort(); }
+    catch (error) {
+      writeSeedRecord(attempt);
+      throw error;
+    }
+    record = attempt;
     writeSeedRecord(record);
   }
   const roots = record.roots;

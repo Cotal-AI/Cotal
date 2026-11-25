@@ -1485,6 +1485,13 @@ let openInventory: ManagerResumeAgent;
     const rows = (first as unknown as { list: () => { name: string; model?: string; variant?: string }[] }).list();
     const row = rows.find((r) => r.name === "worker");
     check("ps reports the model and variant it was switched to", row?.model === "big-model" && row.variant === "high", JSON.stringify(row ?? rows));
+    const config = join(root, ".cotal", "config.json");
+    try {
+      writeFileSync(config, JSON.stringify({ spawn: { env: ["COTAL_PRESERVE_MODEL_PROBE"] } }));
+      marks({ model: "not-kept" });
+      check("a trust refusal during the presence watch keeps the last model and does not throw",
+        seat.launch.model === "big-model" && seat.launch.variant === "high", seat.launch);
+    } finally { rmSync(config, { force: true }); }
     marks({ model: "has space" });
     marks("big-model");
     marks({ model: "x", provider: "y" });

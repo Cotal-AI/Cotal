@@ -147,7 +147,7 @@ const declares = (marker: string) => ({
  *  to stop the command, and the dispatcher's own report of that throw is not the command's. `out` is
  *  stdout and stderr together, as written through the stream objects; a classified refusal report is
  *  written to the descriptor directly, so a cell reads such a refusal by its exit code. */
-async function cli(cwd: string, argv: string[]): Promise<{ exited?: number; out: string; stdout: string }> {
+async function cli(cwd: string, argv: string[]): Promise<{ exited?: number; out: string; stdout: string; stderr: string }> {
   const realExit = process.exit, realErr = process.stderr.write.bind(process.stderr), realOut = process.stdout.write.bind(process.stdout), realLog = console.error;
   const before = process.cwd();
   let stderr = "", stdout = "", exited: number | undefined;
@@ -166,7 +166,7 @@ async function cli(cwd: string, argv: string[]): Promise<{ exited?: number; out:
   }
   if (exited === undefined && typeof process.exitCode === "number" && process.exitCode !== 0) exited = process.exitCode;
   process.exitCode = undefined;
-  return { exited, out: stdout + stderr, stdout };
+  return { exited, out: stdout + stderr, stdout, stderr };
 }
 
 const spawnIn = (p: { root: string; space: string }) =>
@@ -230,7 +230,8 @@ try {
     mkdirSync(process.env.XDG_CONFIG_HOME, { mode: 0o777 });
     chmodSync(process.env.XDG_CONFIG_HOME, 0o777);
     const failed = await cli(box, ["meshes", "--json"]);
-    check("a seed that cannot write the trust file says it added no folder", !existsSync(trustedProjectsPath()) && failed.out.includes("the upgrade seed added no project folder"), failed.out.slice(-300));
+    check("a seed that cannot write the trust file warns only in the JSON envelope", !existsSync(trustedProjectsPath()) && failed.stderr === ""
+      && JSON.parse(failed.stdout).warnings.some((w: { code: string }) => w.code === "PROJECT_TRUST_SEED_FAILED"), failed.out.slice(-300));
     const between = mkdtempSync(join(box, "retry-between-"));
     recordMesh({ space: "retrybetween", server, root: between, mode: "open", origin: "manual", ts: new Date().toISOString() } as never);
     chmodSync(process.env.XDG_CONFIG_HOME, 0o700);
@@ -239,6 +240,23 @@ try {
     check("and not a space registered after that attempt", !trustedRoots().includes(between), trustedRoots());
     process.env.COTAL_HOME = realHome;
     process.env.XDG_CONFIG_HOME = realXdg;
+  }
+
+  {
+    const home = mkdtempSync(join(box, "home-prepared-fault-"));
+    const cwd = mkdtempSync(join(box, "status-prepared-fault-"));
+    const prepared = join(home, "prepared");
+    writeFileSync(prepared, "not a directory");
+    const status = spawnSync(process.execPath, [cliEntry, "status", "--json"], {
+      cwd, encoding: "utf8", timeout: 30_000,
+      env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "config"), COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1" },
+    });
+    const output = status.stdout ? JSON.parse(status.stdout) : undefined;
+    check("an unexpected trust seed error leaves status free to report the partial registry in JSON",
+      output?.command === "status" && output.result !== null && output.completeness === "partial" && status.stderr === ""
+      && output.warnings.some((w: { code: string; message: string }) => w.code === "PROJECT_TRUST_SEED_FAILED" && w.message.includes(prepared))
+      && JSON.parse(readFileSync(join(home, "trusted-projects-seed.json"), "utf8")).roots.length === 0,
+      { status: status.status, stdout: status.stdout?.slice(0, 500), stderr: status.stderr?.slice(0, 500) });
   }
 
   // A damaged seed record warns and blocks nothing: `cotal trust` still records a folder, a folder
@@ -255,7 +273,7 @@ try {
     const r = await spawnIn(p);
     writeFileSync(seed, kept);
     check("a damaged seed record does not block cotal trust or a trusted folder",
-      t.exited === undefined && trustedRoots().includes(other) && t.out.includes("the upgrade seed added no project folder") && t.out.includes(`remove ${seed}`)
+      t.exited === undefined && trustedRoots().includes(other) && t.out.includes("the project trust upgrade seed did not complete") && t.out.includes(`remove ${seed}`)
         && r.exited === undefined && reportText().includes(`RAN ${p.marker}`), { trust: t.out.slice(-400), spawn: r.out.slice(-200) });
     // A seed record other accounts may write is never repaired in place: its roots may be theirs, so
     // the remedy is to remove it, and nothing it lists is added.

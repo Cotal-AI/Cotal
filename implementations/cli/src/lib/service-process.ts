@@ -288,7 +288,7 @@ function spawnEnvironment(root: string): NodeJS.ProcessEnv {
   let names: readonly string[];
   try { names = spawnEnvAllow(loadCotalConfig(root, isTrustedProject)) ?? []; }
   catch (error) {
-    if (error instanceof ProjectConfigTrustError) throw new CommandFailure("refused", "PERMISSION_DENIED", error.message, { target: { root } });
+    if (error instanceof ProjectConfigTrustError) throw new CommandFailure("refused", "PERMISSION_DENIED", error.message, { target: { root }, remedy: error.remedy });
     throw new CommandFailure("refused", "SCHEMA_INVALID", `${(error as Error).message}; the manager reads spawn.env from it, so no process was launched`, { remedy: "fix the config file, then run the command again" });
   }
   return Object.fromEntries(names.filter((name) => Object.hasOwn(process.env, name)).map((name) => [name, process.env[name]]));

@@ -2,7 +2,7 @@ import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
+import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, rejectionText, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
 import {
   CommandFailure,
   commandFailureReport,
@@ -227,7 +227,8 @@ function failureExit(cmd: Command, failure: CommandFailure, json: boolean, plain
   // Rendered in the run's scope, so the `Mesh:` heading keeps the note on how the run chose its space.
   const report = () => {
     const message = displayProjectTrustFailure(failure.message);
-    const shown = message === failure.message ? failure : new CommandFailure(failure.outcome, failure.code, message, failure);
+    const remedy = failure.remedy === undefined ? undefined : displayProjectTrustFailure(failure.remedy);
+    const shown = message === failure.message && remedy === failure.remedy ? failure : new CommandFailure(failure.outcome, failure.code, message, { ...failure, remedy });
     return renderReport(commandFailureReport(shown), plain ? "plain" : "rich", process.stderr);
   };
   const writeReport = () => writeSync(2, `${scope ? runOperation(scope, report) : report()}
@@ -869,12 +870,13 @@ export function runCli(registry: Registry, argv: string[], opts: RunCliOptions =
 }
 
 /** Record roots that belong to spaces registered before command bodies can add new ones. */
-function seedProjectTrustBeforeCommand(name: string, dryRun: boolean): void {
+function seedProjectTrustBeforeCommand(name: string, dryRun: boolean, json: boolean): void {
   if (dryRun || ["version", "docs", "completion", "__complete"].includes(name)) return;
   try { seedTrustedProjects(); }
   catch (error) {
-    if (!isCommandFailure(error)) throw error;
-    stderrLine("! ", `the upgrade seed added no project folder: ${error.message}${error.remedy ? `; ${error.remedy}` : ""}`, c.yellow);
+    const remedy = isCommandFailure(error) || isMeshRegistryError(error) ? error.remedy : undefined;
+    const details = `${rejectionText(error)}${remedy ? `; ${remedy}` : ""}`;
+    recordOperationWarning({ code: "PROJECT_TRUST_SEED_FAILED", target: null, message: `the project trust upgrade seed did not complete: ${oneLine(details)}` }, { echo: !json });
   }
 }
 
@@ -1123,7 +1125,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
         failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true, parsed.values.plain === true, undefined, rest, parsed);
       }
     }
-    seedProjectTrustBeforeCommand(cmd.name, parsed.values["dry-run"] === true);
+    seedProjectTrustBeforeCommand(cmd.name, parsed.values["dry-run"] === true, structured(cmd, parsed.positionals[0]) && parsed.values.json === true);
   }
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;

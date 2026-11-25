@@ -4,7 +4,7 @@
  * source, as it is for the name `set-name` changed: the agent's connector writes the
  * `ai.cotal.model-set` mark only once its harness took a switch.
  */
-import { AGENT_CONTRACTS, AGENT_MODEL_SET_META_KEY, loadCotalConfig, modelPolicyEnv, type Presence, type SetModelOutput } from "@cotal-ai/core";
+import { AGENT_CONTRACTS, AGENT_MODEL_SET_META_KEY, loadCotalConfig, modelPolicyEnv, rejectionText, type Presence, type SetModelOutput } from "@cotal-ai/core";
 import { isTrustedProject } from "@cotal-ai/workspace";
 import type { ManagedAgent } from "./seat-types.js";
 
@@ -34,7 +34,7 @@ export function noteModelSet(a: ManagedAgent, seen: Presence, o: { workspaceRoot
   try {
     why = markRefusal(a, mark, o.workspaceRoot);
   } catch (e) {
-    why = `the cotal config did not read: ${(e as Error).message}`;
+    why = `the cotal config did not read: ${rejectionText(e)}`;
   }
   if (why !== undefined) {
     const key = JSON.stringify(mark);

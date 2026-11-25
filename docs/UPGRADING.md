@@ -17,21 +17,32 @@ terminal and for one a manager runs.
   `trusted-projects.json` leaves no folder trusted until you run `cotal trust <path>` again.
   Removing the record, `trusted-projects-seed.json` in the Cotal home, makes the next command
   trust every folder a space is registered or prepared at by then.
+  If the upgrade cannot read the registry, it warns and trusts no roots from that attempt. Review
+  each affected folder and run `cotal trust <path>` explicitly. With `--json`, the warning is in
+  the command's result envelope.
 - `cotal setup`, `cotal space create` and `cotal up` trust a folder only when they made its
   `.cotal` in that run. A folder that already had one, such as a cloned repository, needs
   `cotal trust <path>` once if it declares servers, `spawn.env` or persona launch options.
-- A folder you use with no space registered before the upgrade, such as one you spawn in with
-  `--cwd` only, needs `cotal trust <path>` once for the same reason. A persona file a manifest
-  names (`cotal up -f`, `cotal team deploy`) follows the same rule for its `launchOptions`. The
-  manifest's own `launchOptions` on an agent are not checked: a manifest you run is trusted as you
-  run it. Its launch options are refused when the path you give, any symbolic link or folder on the
-  way, or the file reached lies under the `.cotal/agents` of a folder that is not trusted.
+- A project with no space registered or prepared before the upgrade needs `cotal trust <path>`
+  if it uses these settings. A persona file a manifest names (`cotal up -f`, `cotal team deploy`)
+  follows the same rule for its `launchOptions`. The manifest's own `launchOptions` on an agent
+  are not checked: a manifest you run is trusted as you run it. The persona's launch options are
+  refused when the path you give, any symbolic link or folder on the way, or the file reached lies
+  under the `.cotal/agents` of a folder that is not trusted.
 - A project config is refused if its file or `.cotal` belongs to another account. Copy the settings
   into a project folder and config file your account owns, then review the folder and run
   `cotal trust <path>` if the settings require trust.
 - Restart a running manager at this version so its spawns apply the rule. Run the printed trust
   command on the execution host, as the account that runs the manager. A manager service also
   checks project trust before it starts with project-supplied environment names.
+- `cotal up` can leave a partially started stack if the manager refuses project settings. It keeps
+  the components that started, names the trust command as the next step, and starts the missing
+  manager when you trust the project and retry.
+- A foreground `cotal spawn --dry-run` reads the same project config as the launch, even for a
+  connector without launch validation. It can refuse an untrusted, foreign-owned or invalid config
+  that an older preview did not read. The Manager's model catalog and harness-command listing also
+  read this config, including when requested by a remote client. Review the project and record
+  trust on the Manager's host before retrying those reads with project settings that require trust.
 
 If you call `loadCotalConfig` from `@cotal-ai/core`, pass a trust check as its second argument,
 for example `loadCotalConfig(root, isTrustedProject)` with `isTrustedProject` from `@cotal-ai/workspace`.
