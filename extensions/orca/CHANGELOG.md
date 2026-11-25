@@ -1,5 +1,9 @@
 # @cotal-ai/orca
 
+## 0.179.0
+
+No changes in this release.
+
 ## 0.178.0
 
 No changes in this release.
