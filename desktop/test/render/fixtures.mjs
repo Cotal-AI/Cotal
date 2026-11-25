@@ -235,6 +235,24 @@ export const scenarios = [
   { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
   } },
+  { name: "account-manager-refusal", state: { installed: true, signedIn: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [
+    { space: "acme-team", desired: true, observed: "starting" },
+    { space: "research", desired: true, observed: "not-requested", lastRefusal: 'The Manager needs scope "supervise".', next: "Ask the <space owner>, then retry." },
+  ] } }, expect: async page => {
+    const row = page.locator('[data-space="research"]');
+    await row.getByText('The Manager needs scope "supervise".', { exact: true }).waitFor();
+    assert.equal(await row.getByText("Next: Ask the <space owner>, then retry.", { exact: true }).isVisible(), true);
+    assert.equal(await page.locator('[data-space="acme-team"]').getByText("Next:").count(), 0);
+    await page.click("#connection-status");
+    assert.equal(await row.evaluate(element => element === document.activeElement), true);
+    await page.evaluate(() => {
+      window.__renderState.readyAccountSpaces = true;
+      window.__renderState.account.spaces[1] = { space: "research", desired: true, observed: "connected" };
+      window.__pushStatus();
+    });
+    await row.getByText("Connected", { exact: true }).waitFor();
+    assert.equal(await row.getByText(/supervise|Next:/).count(), 0);
+  } },
 
   ...["edit", "invalid", "current"].map(mode => ({
     name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },

@@ -52,7 +52,7 @@ The cotal.ai site design system is the visual source: cream paper, navy ink, har
 
 ## Settings
 
-Click the header status pill to return to the connection problem. A refusal opens its exact Details, and an account-space problem focuses the row that names its reason.
+Click the header status pill to return to the connection problem. A refusal opens its exact Details. An account-space problem focuses the row, where a hosted Manager failure shows its reason and any next step.
 
 In Settings, open **Background service log** to read recent local `daemon.log` output without a terminal. The view shows at most the most recent 8 KB, marks truncated output, and offers **Refresh log**. A missing log says none has been recorded. Read failures remain explicit. Close the disclosure to return to the other Settings sections. The fixed local read accepts no path from the window and redacts JWT-shaped strings. Review log text before sharing it.
 

@@ -23,7 +23,7 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
   return url.href;
 }
 
-export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
+export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string; next?: string }
 /** States a space passes through without anyone acting. A space that was just turned on reports `not-requested` while its Manager boots. */
 const PASSING_SPACE_STATE: Record<string, string> = {
   "not-requested": "Starting",

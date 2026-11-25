@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount } from "@cotal-ai/core";
 import { importAccountComputerSpace, type SpaceCatalogSnapshot } from "@cotal-ai/cli";
 import type { ServiceConnections } from "./service.js";
-import type { HostedManager } from "./protocol.js";
+import type { HostedManager, ServiceConnectionState } from "./protocol.js";
 import { findMesh, readMeshRegistry } from "@cotal-ai/workspace";
 import { connectCheck } from "./connect.js";
 import { knownMachineAccounts } from "@cotal-ai/auth";
 import { ensureHostedManager, hostingPrerequisite } from "./hosting.js";
+import type { AccountComputerStatus } from "./account-state.js";
 
 interface ManagedSpace { owner: string; id: string; revision: number; removedAt?: number }
 interface Saved { v: 1; spaces: Record<string, ManagedSpace> }
@@ -16,6 +17,26 @@ interface Managers {
   refresh(space: string): Promise<HostedManager>;
   start(space: string): Promise<HostedManager>;
   disconnect(space: string, options?: { account?: boolean }): Promise<unknown>;
+}
+
+function spaceView(manager: HostedManager, service: ServiceConnectionState, desired: boolean, managerOnly: boolean, flags: {
+  removed: boolean; owned: boolean; refusal?: string;
+}): AccountComputerStatus["spaces"][number] {
+  const { removed, owned, refusal } = flags;
+  // An answering Manager is what lets the account launch here. The machine service is separate.
+  let observed: string = managerOnly ? manager.state : service;
+  if (removed) observed = "removed on this computer";
+  else if (manager.state === "answering") observed = "connected";
+  const row: AccountComputerStatus["spaces"][number] = { space: manager.space, desired, observed };
+  if (!managerOnly && service !== "connected" && service !== "not-requested") row.machineService = service;
+  if (refusal !== undefined) row.lastRefusal = refusal;
+  // Use current Manager status so recovery clears the diagnosis without waiting for an account poll.
+  else if (desired && owned && !removed && manager.reason
+      && (manager.state === "refused" || manager.state === "restarting" || (manager.state === "starting" && manager.next))) {
+    row.lastRefusal = manager.reason;
+    if (manager.next) row.next = manager.next;
+  }
+  return row;
 }
 
 /** Reconcile through the same checked service and Manager operations as local setup. */
@@ -38,18 +59,6 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
     await managers.refresh(space);
     try { await managers.disconnect(space, { account: true }); }
     finally { if (services.status(space).state !== "not-requested") await services.disconnect(space); }
-  };
-  const observedState = (space: string) => {
-    if (saved.spaces[space]?.removedAt !== undefined) return "removed on this computer";
-    const service = services.status(space).state;
-    const manager = managers.status(space).state;
-    // An answering Manager is what lets the account launch here. The machine service is separate.
-    if (manager === "answering") return "connected";
-    return managerOnly.has(space) ? manager : service;
-  };
-  const machineService = (space: string) => {
-    const service = services.status(space).state;
-    return managerOnly.has(space) || service === "connected" || service === "not-requested" ? undefined : service;
   };
   let queue = Promise.resolve();
   const serial = <T>(run: () => Promise<T>): Promise<T> => {
@@ -106,7 +115,11 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
         const check = await connectCheck(row.slug, home);
         if (!hostingPrerequisite(check.outcome) || check.outcome === "account-mismatch") throw new Error(check.outcome);
         const manager = await ensureHostedManager(row.slug, managers);
-        if (manager.state !== "answering") throw new Error("Manager is not answering");
+        if (manager.state !== "answering") {
+          refusals.delete(row.slug);
+          retryAt.set(row.slug, Date.now() + 30_000);
+          continue;
+        }
         if (!manager.connectors?.some(connector => connector.state === "available")) throw new Error("no available application");
         if (check.outcome === "unsupported-by-space") {
           managerOnly.add(row.slug);
@@ -144,7 +157,19 @@ export function createAccountReconciler(home: string, services: ServiceConnectio
       }).sort((a, b) => a.spaceId.localeCompare(b.spaceId));
     },
     retainAccounts(owners: string[]) { for (const key of desiredByOwner.keys()) if (!owners.includes(key)) desiredByOwner.delete(key); },
-    view: () => [...new Set([...desiredAll(), ...Object.keys(saved.spaces), ...readMeshRegistry().entries.filter(entry => connectedHere(entry.space)).map(entry => entry.space)])].map(space => ({ space, desired: desiredAll().has(space), observed: observedState(space), ...(machineService(space) ? { machineService: machineService(space)! } : {}), ...(refusals.has(space) ? { lastRefusal: refusals.get(space)! } : {}) })),
+    view(owner?: string) {
+      const desired = desiredAll();
+      const connected = readMeshRegistry().entries.filter(entry => connectedHere(entry.space));
+      const spaces = new Set([...desired, ...Object.keys(saved.spaces), ...connected.map(entry => entry.space)]);
+      return [...spaces].map(space => {
+        const managed = saved.spaces[space];
+        return spaceView(managers.status(space), services.status(space).state, desired.has(space), managerOnly.has(space), {
+          removed: managed?.removedAt !== undefined,
+          owned: managed !== undefined && (owner === undefined || managed.owner === owner),
+          refusal: refusals.get(space),
+        });
+      });
+    },
     settled: () => queue,
   };
 }
