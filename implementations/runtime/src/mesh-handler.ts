@@ -19,6 +19,7 @@
 import { realpathSync } from "node:fs";
 import {
   readCheckpointAnswer,
+  hasStoredOrigin,
   chatStream,
   waitConsumerName,
   waitConsumerConfig,
@@ -857,11 +858,12 @@ export class MeshHandler {
         }
         const batch = this.services
           ? (await this.services.waits.fetch(ctx.requestId)).map((message) => ({
-              seq: message.sequence, subject: message.subject, data: message.data,
+              seq: message.sequence, subject: message.subject, data: message.data, headers: undefined,
               ack: () => this.services!.waits.ack(ctx.requestId, message.receipt),
             }))
           : await consumer!.fetch({ max_messages: 16, expires: WAIT_POLL_MS });
         for await (const m of batch) {
+          if (hasStoredOrigin(m.headers)) { await m.ack(); continue; }
           const msg = decodeMessage(m.data);
           if (idleFor !== undefined) {
             // ANY traffic resets an idle window, matched or not: "idle" is a fact about the

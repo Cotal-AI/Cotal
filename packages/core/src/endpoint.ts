@@ -1000,8 +1000,8 @@ export class CotalEndpoint extends EventEmitter {
    *  is (SPEC §5): one whose payload sender is not the subject's sender is dropped, and one that
    *  passes carries the channel, recipient or role its subject names, not the payload's (#3741).
    *  A `chat`, `inst` or `svc` message whose parts cannot be read is dropped, as history drops it.
-   *  Any other frame reaches the handler as decoded. An exception from the handler is emitted as
-   *  `error`, and the feed keeps reading (#7060). */
+   *  Frames carrying stored-message headers are dropped on any subject. Handler exceptions emit
+   *  `error`, and the feed keeps reading. Other frames reach the handler as decoded. */
   tap(
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },

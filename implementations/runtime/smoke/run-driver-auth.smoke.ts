@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { connect, headers, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -211,12 +211,13 @@ const lease = (takeoverId: string, fencingToken: number) => ({ holder: "manager"
 // An agent on the channel the program waits on, minted as `cotal spawn` would mint it.
 const ann = newIdentity();
 const annNc = await open(await mintCreds(auth, ann, "agent", { allowPublish: [CHANNEL], allowSubscribe: [CHANNEL], lifecycleUid: mintLifecycleUid() }));
-const say = async (text: string) => {
+const say = async (text: string, messageHeaders?: MsgHdrs) => {
   const msg: CotalMessage = {
     id: `m-${Date.now()}`, ts: Date.now(), space: S,
     from: { id: `${DEV_OWNER}.${ann.id}`, name: "ann" }, channel: CHANNEL, parts: [{ kind: "text", text }],
   };
-  await jetstream(annNc).publish(chatSubject(S, DEV_OWNER, ann.id, CHANNEL), new TextEncoder().encode(JSON.stringify(msg)));
+  return await jetstream(annNc).publish(chatSubject(S, DEV_OWNER, ann.id, CHANNEL), new TextEncoder().encode(JSON.stringify(msg)),
+    messageHeaders === undefined ? undefined : { headers: messageHeaders });
 };
 
 const PROGRAM = `
@@ -350,12 +351,21 @@ const A = await driver(RUN_A, TK_A);
       await refused(() => host.open("foreign-request", CHANNEL)));
     c("the host refuses a channel different from the recorded wait channel",
       await refused(() => host.open(ctx.requestId, "private")));
+    const marked = headers();
+    marked.set("Nats-Time-Stamp", new Date().toISOString());
+    const prior = await say("marked wait fixture", marked);
     await say("mediated answer");
     const messages = await host.fetch(ctx.requestId);
     c("the host fetch returns a real message and an opaque receipt", messages.length === 1, messages.length);
     const message = messages[0]!;
+    c("the mediated wait exposes only the fresh post", message.sequence !== prior.seq
+      && new TextDecoder().decode(message.data).includes("mediated answer"));
     c("the host refuses a sequence before the wait has bound its match",
       await refused(() => host.messageAt(ctx.requestId, message.sequence)));
+    await ctx.bind({ waitChannel: CHANNEL, chatSeq: prior.seq });
+    const stale = await host.messageAt(ctx.requestId, prior.seq).then(() => "allowed", (error: Error) => error.message);
+    c("the host refuses a previously recorded marked match and explains how to restart",
+      stale.includes("Start a new run and have the sender post a fresh message."), stale);
     await ctx.bind({ waitChannel: CHANNEL, chatSeq: message.sequence });
     const saved = await host.messageAt(ctx.requestId, message.sequence);
     c("the host rereads the bound message without exposing a stream reader",

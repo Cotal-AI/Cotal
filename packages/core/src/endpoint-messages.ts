@@ -33,9 +33,8 @@ export function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"]
 
 /** SPEC §5 on receive: a delivery comes from the principal its subject names. The payload is an
  *  object whose `from.id` is the subject's sender, and the subject's owner is a real principal, not
- *  an old-shape alias. Every receive path asks this one predicate. What a path does with a refusal
- *  (drop, skip, ack, term or reject) and its own extra checks (a usable id, its own echo) stay with
- *  the path. */
+ *  an old-shape alias. Check stored-message headers separately before trusting the sender. Refusals
+ *  and additional checks, such as a usable ID or echo suppression, belong to the caller. */
 export function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
   return isRecord(msg) && isRecord(msg.from) && msg.from.id === parsed.sender && isPrincipalOwnerToken(parsed.owner);
 }

@@ -60,8 +60,10 @@ A carried Claude seat uses its own Claude home, so another seat's ordinary Claud
 The reference client drops deliveries and legacy control requests that carry `Nats-Stream`,
 `Nats-Subject`, `Nats-Sequence`, or `Nats-Time-Stamp`, even when the claimed sender matches the
 subject. This covers live subscriptions, delivery readers and writers, history, recall, join
-backfill, and the operator tap. Header matching ignores case and includes empty values. A storage
-read the client initiates, such as a roster lookup, can legitimately return these headers.
+backfill, Lang waits, and the operator tap. Header matching ignores case and includes empty values.
+A storage read the client initiates, such as a roster lookup, can legitimately return these headers.
+This check complements broker publish permissions. On an open broker it does not authenticate
+an unmarked publication.
 
 ## Endpoint request origin [#endpoint-request-origin]
 
