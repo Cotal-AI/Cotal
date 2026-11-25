@@ -6,13 +6,27 @@ import {
   assertRecordIdentity, brokerAddressKey, commandIsCotalSupervisor, identityRecord,
   MANAGER_PIDFILE, readMeshRegistry, readProcessCommand, recordedLocalProcessPaths,
   probeLiveness, readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
-  localProcessPathCandidates, verifyIdentityPin, homeCotalDir,
+  localProcessPathCandidates, verifyIdentityPin, homeCotalDir, loadMeshes, stackJournalPath,
 } from "@cotal-ai/workspace";
-import { goneStackRoot } from "./stack-journal.js";
+import { STACK_ADAPTER, STACK_DEFINITION } from "./stack-journal.js";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
 import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
+
+/** Read-only update admission: skip roots that do not stat, or saved broker definitions
+ * whose journal and config both do not stat. This does not authorize shutdown or record removal. */
+export function skipUpdateStack(root: string, space: string): boolean {
+  if (!existsSync(root)) return true;
+  try {
+    const native = loadMeshes().find(entry => entry.space === space && entry.origin === "up");
+    if (native && !existsSync(native.root)) return true;
+    const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
+    return launch?.type === "adapter" && launch.adapter === STACK_ADAPTER.broker &&
+      typeof launch.options.root === "string" && typeof launch.options.config === "string" &&
+      !existsSync(stackJournalPath(launch.options.root)) && !existsSync(launch.options.config);
+  } catch { return false; }
+}
 
 export interface OwnUpdateManager {
   readonly ownership?: "own";
@@ -126,7 +140,7 @@ export function recordedUpdateManagers(
     result.set(key, { pid: process.pid, root, space, server, instanceId, process });
   };
   for (const entry of registry.entries) {
-    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+    if (skipUpdateStack(entry.root, entry.space)) {
       console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
       continue;
     }
@@ -176,7 +190,7 @@ export function localUpdateManagers(
     (typeof flags.server !== "string" || brokerAddressKey(flags.server) === brokerAddressKey(server));
   const known = new Map<number, { root: string; space: string; server: string }>();
   for (const entry of entries) {
-    if (!existsSync(entry.root) || goneStackRoot(entry.space) !== undefined) {
+    if (skipUpdateStack(entry.root, entry.space)) {
       console.log(`  ${entry.space}: folder is gone; leaving its processes untouched, continuity not checked`);
       continue;
     }
@@ -322,7 +336,7 @@ export function localUpdateManagers(
       result.set(JSON.stringify([pid, pin.token]), { ownership: "foreign", pid, root: canonicalRoot, space, process: pin });
       continue;
     }
-    if (!existsSync(root) || goneStackRoot(space) !== undefined) continue;
+    if (skipUpdateStack(root, space)) continue;
     const entry = entries.find(value => value.space === space);
     const server = option(argv, "server") ?? env.COTAL_SERVER ?? recorded?.server ?? entry?.server;
     if (!server) blocked(`Manager pid ${pid}, root ${root}, space ${space} has no broker address`);

@@ -416,6 +416,7 @@ export async function stackDown(rootInput: string, values: ParsedArgs["values"],
 export async function stopForegroundStack(root: string, signal: "SIGINT" | "SIGTERM", duringStartup = false, space?: string): Promise<void> {
   const gone = space !== undefined && stackRootGone(space, root);
   try {
+    if (space !== undefined) refuseInaccessibleDownRoot(root, space);
     if (gone) await goneRootStackDown(space, root, { yes: true });
     else await stackDown(root, { yes: true }, duringStartup);
   } catch (error) {

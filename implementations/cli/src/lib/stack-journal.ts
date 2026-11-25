@@ -4,7 +4,7 @@
  *  and it grants no PID-only stop authority: recovery requires the launching home, host and exact
  *  process creation pins; ordinary stops still recheck the instance records. */
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmdirSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { acquireLock, writeSecretFileAtomic } from "@cotal-ai/core";
 import { CommandFailure, MANAGER_PIDFILE, NATS_PIDFILE, acquireMaintenanceLock, codeSpan, admittedControllerRestore, canonicalRoot, commandIsCotalSupervisor, decodeLocalJson, hasNonNatsExecutable, isCommandFailure, isMaintenanceError, loadMeshes, localProcessPath, localProcessPathCandidates, localRecordObject, localStackRoot, maintenancePaths, parsePid, probeLiveness, readContainedRecord, readLocalRecordSource, readMaintenanceJournal, readPidfile, readProcessCommand, readProcessRecord, recordedLocalProcessPaths, releaseMaintenanceLock, removePidPair, serviceOperationId, shellPath, stackJournalPath, maintenanceLockHolder, cotalDirLink, preparedSpaceAt, recordsMovedTo, stackAdoptionBlock, stackElsewhereRemedy, verifyIdentityPin, type ControllerStackView, type MaintenanceLock, type OutputWarning, type ProcessRecord, type ServiceAdapterStopAbandonment } from "@cotal-ai/workspace";
@@ -850,17 +850,42 @@ export function stackDefinitionsAt(space: string, root: string): ServiceDefiniti
   });
 }
 
-/** The folder `space`'s saved stack broker starts in, when that folder is gone: it holds neither its
- *  stack journal nor the broker configuration the definition names, whatever a still-running broker
- *  wrote back into it. Undefined otherwise, or when the definition cannot be read. */
-export function goneStackRoot(space: string): string | undefined {
+/** A failed lookup proves absence only when the path or one of its components is missing. */
+export function stackPathState(path: string): "present" | "absent" | "inaccessible" {
+  try { statSync(path); return "present"; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : "inaccessible";
+  }
+}
+
+type StackRootRecovery = { root: string; state: "gone" | "inaccessible" };
+
+/** A recorded root that cannot be accessed or lacks both controller records. A running broker
+ *  can recreate its project directory without restoring either record. */
+export function stackRootRecovery(space: string): StackRootRecovery | undefined {
   try {
     const native = loadMeshes().find((entry) => entry.space === space && entry.origin === "up");
-    if (native && !existsSync(native.root)) return native.root;
+    if (native) {
+      const state = stackPathState(native.root);
+      if (state === "absent") return { root: native.root, state: "gone" };
+      if (state === "inaccessible" || projectRootProblem(native.root) === "inaccessible" || projectRootProblem(join(native.root, ".cotal")) === "inaccessible")
+        return { root: native.root, state: "inaccessible" };
+    }
     const launch = serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch;
     if (launch?.type !== "adapter" || launch.adapter !== STACK_ADAPTER.broker || typeof launch.options.root !== "string" || typeof launch.options.config !== "string") return undefined;
-    return existsSync(stackJournalPath(launch.options.root)) || existsSync(launch.options.config) ? undefined : launch.options.root;
+    const root = launch.options.root;
+    if (projectRootProblem(root) === "inaccessible") return { root, state: "inaccessible" };
+    const paths = [stackPathState(stackJournalPath(root)), stackPathState(launch.options.config)];
+    if (paths.includes("inaccessible")) return { root, state: "inaccessible" };
+    if (paths.every((state) => state === "absent")) return { root, state: "gone" };
   } catch { return undefined; }
+}
+
+/** The recorded root only when its stack records are confirmed absent. */
+export function goneStackRoot(space: string): string | undefined {
+  const recovery = stackRootRecovery(space);
+  return recovery?.state === "gone" ? recovery.root : undefined;
 }
 
 /** Whether `root` is the gone folder of the stack this machine still records for `space`. */
