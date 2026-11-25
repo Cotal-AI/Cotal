@@ -94,6 +94,23 @@ function modesFlag(modes: LaunchModes | undefined, passthrough: readonly (readon
   return ["--settings", JSON.stringify(settings)];
 }
 
+/** The `--model`, `--effort` and mode flags of the launch, and the env that labels the seat with its
+ *  model and variant. An explicit `--opt effort=` wins, as a permission option does, and the seat is
+ *  then not labelled with a variant it does not run. */
+function modelFlags(opts: LaunchOpts, passthrough: readonly (readonly [string, string])[]): { args: string[]; env: Record<string, string> } {
+  const args: string[] = [];
+  const env: Record<string, string> = {};
+  if (opts.model) {
+    args.push("--model", opts.model);
+    env.COTAL_MODEL = opts.model;
+  }
+  if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
+    args.push("--effort", opts.variant);
+    env.COTAL_VARIANT = opts.variant;
+  }
+  return { args: [...args, ...modesFlag(opts.modes, passthrough)], env };
+}
+
 /**
  * The Claude Code connector: launches the real `claude` with the Cotal identity in
  * the environment and the mesh channel enabled, so the session joins the mesh and
@@ -267,7 +284,7 @@ export const claudeConnector: Connector = {
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
     const passthrough = connectorLaunchOptions("claude", opts.launchOptions).map(([k, v]) => [k, String(v)] as const);
-    const modes = modesFlag(opts.modes, passthrough);
+    const chosen = modelFlags(opts, passthrough);
     // The private files this launch writes. The launcher that spawns the spec removes them once the
     // child has exited (core launch-artifacts).
     // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
@@ -313,17 +330,8 @@ export const claudeConnector: Connector = {
         // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
         args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
       }
-      if (opts.model) {
-        args.push("--model", opts.model);
-        env.COTAL_MODEL = opts.model;
-      }
-      // An explicit `--opt effort=` wins, as a permission option does, and the seat is then not
-      // labelled with a variant it does not run.
-      if (opts.variant !== undefined && !passthrough.some(([k]) => k === "effort")) {
-        args.push("--effort", opts.variant);
-        env.COTAL_VARIANT = opts.variant;
-      }
-      args.push(...modes);
+      args.push(...chosen.args);
+      Object.assign(env, chosen.env);
 
       // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
       // is pushed in the SAME branch — resume here is fork-only, never a hijack: claude mints a NEW
