@@ -544,7 +544,7 @@ async function answer(values: RunValues, reader: Planes, runId: string | undefin
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so a pause it does not find is refused as the hosted answer refuses it.
-    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? `list the recorded runs with \`cotal run --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` : `read the run's open requests with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
+    if (e instanceof CheckpointNotOpen) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? localRunInventory({ ...values, space: reader.space }) : `read the run's open requests with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   // Resume is holder-bound (SPEC 13.10) and the CLI is not the driver: the resolver presents as
@@ -587,7 +587,7 @@ async function amend(values: RunValues, reader: Planes, runId: string | undefine
     { runId, stepKey, takeoverId },
   ).catch((e: unknown) => {
     // Locating writes nothing, so an answer it does not find is refused as the hosted amend refuses it.
-    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? `list the recorded runs with \`cotal run --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` : `read the run's answers with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
+    if (e instanceof CheckpointNotAmendable) throw new CommandFailure("refused", "TARGET_NOT_FOUND", e.message, { target: { space: reader.space, endpoint, run: runId }, remedy: e.why === "no-run" ? localRunInventory({ ...values, space: reader.space }) : `read the run's answers with \`cotal run show ${runId} --local --space ${reader.space}${values.endpoint ? ` --endpoint ${endpoint}` : ""}\`` });
     throw e;
   });
   const writer = await openPlanes(values, "run-operator", { runOperator: { endpoint, takeoverId: newTakeoverId(), answers: { token: accepted.token } } });
@@ -1178,10 +1178,11 @@ function journalIdRemedy(verb: string, values: RunValues): string {
 }
 
 function localRunInventory(values: RunValues): string {
+  const output = values.json ? " --json" : values.plain ? " --plain" : "";
   if (values.server !== undefined && brokerAddressForDisplay(values.server) !== values.server)
-    return "run `cotal run list --local` with the original target options";
+    return `run ${codeSpan(`cotal run list --local${output}`)} with the original target options`;
   const target = (["space", "server", "creds", "endpoint"] as const).map((flag) => retryFlag(flag, values[flag])).join("");
-  return `list the recorded runs with ${codeSpan(`cotal run list --local${target}`)}`;
+  return `list the recorded runs with ${codeSpan(`cotal run list --local${target}${output}`)}`;
 }
 
 /** Public workflow grammar, before catalog preparation or native requests. */

@@ -1001,6 +1001,26 @@ const takeoverRun = startedId()!;
         && listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(rid)) === "completed", { refusal, remedy, out: captured() });
   }
 
+  const mesh = { space: SPACE, server: servers, root, mode: "auth", ts: new Date().toISOString() } as const;
+  recordMesh({ ...mesh, server: `nats://127.0.0.1:${await pickFreePort()}` });
+  try {
+    for (const verb of ["answer", "amend"]) {
+      const refusal = await wf([verb, "run-missing", "/checkpoint:approve#0"], { endpoint, by: "operator", value: "true", json: true })
+        .then(() => undefined, (e: Error) => e);
+      const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
+      const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
+      const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand} --json`)
+        ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
+      reset();
+      const listed = run && listArgs.length > 0 ? await readEnvelope(() => runWorkflow(parseCommandArgs(run, listArgs))) : undefined;
+      const result = listed?.result as { kind?: string; items?: RunRowJson[] } | undefined;
+      c(`a missing local ${verb} run keeps the broker override, endpoint, and JSON output in its remedy`,
+        isCommandFailure(refusal) && refusal.code === "TARGET_NOT_FOUND" && exitCode(refusal.outcome, refusal.code) === 2
+          && refusal.message.endsWith("no run is recorded under that id") && (process.exitCode ?? 0) === 0
+          && result?.kind === "runs" && result.items?.length === 1 && result.items[0]?.runId === rid, { refusal, remedy, listed });
+    }
+  } finally { recordMesh(mesh); }
+
   const origin = join(home, "origin");
   mkdirSync(origin);
   recordPreparedSpace({ space: "origin", root: origin, ts: new Date().toISOString() });
@@ -1165,7 +1185,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 141;
+const DECLARED = 143;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
