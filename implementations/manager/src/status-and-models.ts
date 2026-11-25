@@ -211,7 +211,7 @@ export class StatusAndModels {
       terminalSessions: this.config.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.config.startedAtMs,
-      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses, this.userMode),
+      connectors: servedConnectorStatuses(this.parts.connectorInventory.connectorStatuses),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {

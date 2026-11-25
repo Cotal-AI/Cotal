@@ -379,7 +379,9 @@ async function runTurn(text) {
     rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
   if (text.includes("APPROVAL")) {
-    await serverRequest("item/commandExecution/requestApproval", { threadId: THREAD, turnId, itemId: `cmd_${turnSeq}` });
+    // The legacy approval, which the prompt desk does not take: the host declines it in the same
+    // call whether or not the seat serves its desk.
+    await serverRequest("execCommandApproval", { conversationId: THREAD, callId: `cmd_${turnSeq}` });
   }
   if (text.includes("PERMREQ")) {
     // The request codex 0.162 sends when the model calls its `request_permissions` tool.

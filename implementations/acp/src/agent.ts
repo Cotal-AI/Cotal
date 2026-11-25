@@ -16,9 +16,8 @@
  * Every update of a turn is sent before the prompt answers. A client may drop updates that arrive
  * after a prompt settled, so nothing is left to send afterwards.
  *
- * Where agents serve their `agent` endpoint (a space where people sign in), the questions a seat
- * stops to ask during a turn are asked in the thread, and the seat's own commands and skills are
- * offered beside the session's commands.
+ * The questions a seat stops to ask during a turn are asked in the thread, and the seat's own
+ * commands and skills are offered beside the session's commands.
  *
  * A thread that spawns a seat, or opens one with `/open`, stores a link from its id to the seat's
  * run. The list names a linked seat by its thread, and a load resolves a thread through its link
@@ -33,7 +32,7 @@ import { TERMINAL_AUTH } from "./auth-method.js";
 import { FrameMapper, type RunSignal } from "./frames.js";
 import { answer, permissionRequest, plainOptions, PromptFollower } from "./prompts.js";
 import { deregisterRemedy, LaunchListsRefused, NoLaunchManager, SignInRequired, type ManagerChoice, type Mesh, type SeatFrame, type SeatList, type SeatRef, type SeatRow } from "./mesh.js";
-import { awaitTaken, promptParts, spaceImageRefusal, takeTurn, usageUpdate } from "./turns.js";
+import { awaitTaken, promptParts, takeTurn, usageUpdate } from "./turns.js";
 import { applyOption, configOptions, cutShort, modelState, DEFAULT_PERSONA, DEFAULT_VARIANT, defaultManager, initialSelection, launchModel, NO_CHANNEL, noMachine, parseModel, reconcile, refusal, seatRefusal, seatSelection, type Offer, type Selection } from "./options.js";
 
 /** The slash commands every session offers. */
@@ -303,10 +302,8 @@ function bridge(options: CotalAgentOptions): Bridge {
   const bind = (session: Session, seat: SeatRef, m: Mesh): void => {
     session.seat = seat;
     session.prompts?.stop();
-    if (m.agentEndpoints) {
-      const ask = (p: AgentPrompt) => askPrompt({ options, send, client }, session, m, p);
-      session.prompts = new PromptFollower(m, seat, ask, (line) => options.log(`session ${session.id}: ${line}`), () => session.turn !== undefined, WATCH_MS);
-    }
+    const ask = (p: AgentPrompt) => askPrompt({ options, send, client }, session, m, p);
+    session.prompts = new PromptFollower(m, seat, ask, (line) => options.log(`session ${session.id}: ${line}`), () => session.turn !== undefined, WATCH_MS);
     const key = principal(seat);
     byPrincipal.set(key, session);
     const held = unclaimed.get(key);
@@ -344,7 +341,7 @@ function bridge(options: CotalAgentOptions): Bridge {
     const seat = session.seat;
     const m = seat ? await opened?.catch(() => undefined) : undefined;
     session.agentCommands = undefined;
-    if (seat && m?.agentEndpoints) {
+    if (seat && m) {
       try {
         const out = (await m.agentCall(seat, AGENT_CMD_COMMANDS, {})) as CommandsOutput;
         if (out.supported) session.agentCommands = out.commands.filter((c) => !COMMANDS.some((own) => own.name === c.name));
@@ -625,7 +622,7 @@ function slashCommands(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tur
   const slash = async (session: Session, m: Mesh, text: string): Promise<StopReason | undefined> => {
     const say = (line: string) => send(session, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: line } });
     // A seat that has not listed its commands yet, such as one that just started, is asked first.
-    if (session.seat && m.agentEndpoints && session.agentCommands === undefined && /^[/$]\S/.test(text)) await b.announce(session);
+    if (session.seat && session.agentCommands === undefined && /^[/$]\S/.test(text)) await b.announce(session);
     const theirs = session.seat ? seatCommand(session.agentCommands, text) : undefined;
     if (theirs && session.seat) {
       const seat = session.seat;
@@ -825,7 +822,7 @@ function threadHandlers(b: Bridge, offers: Offers, runTurn: ReturnType<typeof tu
       if (!session.selection.machine) throw new RequestError(-32602, noMachine(m.space));
       const harness = parseModel(session.selection.model).agent;
       const model = launchModel(session.offer, session.selection);
-      const why = refusal(session.offer.catalogs, harness) ?? (images.length ? spaceImageRefusal(m, harness) : undefined);
+      const why = refusal(session.offer.catalogs, harness);
       const catalog = session.offer.catalogs.find((c) => c.agent === harness);
       if (why) throw RequestError.invalidParams(undefined, why);
       session.mapper = new FrameMapper(harness, session.cwd);

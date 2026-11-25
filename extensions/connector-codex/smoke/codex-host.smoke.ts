@@ -501,19 +501,19 @@ try {
   check("MCP endpoint refuses a call with no bearer token", noAuth.httpStatus === 401, noAuth);
 
   await dm("APPROVAL probe");
-  await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "item/commandExecution/requestApproval"));
+  await waitFor("approval request", () => logEntries().find((e) => e.ev === "serverRequest" && e.method === "execCommandApproval"));
   const approvalCondition = await waitFor("approval presence condition", () =>
     // Same race as the failed-turn condition above: the approval `waiting` condition and a
     // later turn's `working` (which clears it) can both land before anything polls the live
     // roster. Read the recorded push log instead of `operator.getRoster()`.
-    presenceLog.find((e) => e.condition?.source === "item/commandExecution/requestApproval")?.condition,
+    presenceLog.find((e) => e.condition?.source === "execCommandApproval")?.condition,
   );
   check("Codex approval requests relay the approval condition", approvalCondition.code === "approval", approvalCondition);
   // #3840: the request is declined in the same call that announces it, so the wait is over at
   // once. The seat must go back to `working` (clearing the condition) before the turn ends, or
   // the turn ends waiting→idle and the working→idle boundary never fires.
   const afterWait = await waitFor("presence after the approval wait", () => {
-    const i = presenceLog.findIndex((e) => e.condition?.source === "item/commandExecution/requestApproval");
+    const i = presenceLog.findIndex((e) => e.condition?.source === "execCommandApproval");
     return i < 0 ? undefined : presenceLog.slice(i + 1).find((e) => e.status !== "waiting");
   });
   check("an auto-declined request returns the seat to working before the turn ends", afterWait.status === "working", afterWait);
