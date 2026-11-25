@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { resolveOnPath } from "@cotal-ai/workspace";
 
 type Launch = { program: string; args: readonly string[]; cwd: string };
@@ -12,14 +12,17 @@ type Launch = { program: string; args: readonly string[]; cwd: string };
  *  With --scope, systemd-run execs the command once the scope holds it, so the process keeps its
  *  PID, start time, stdio and environment; systemd only adds INVOCATION_ID. If the scope cannot
  *  be made, systemd-run exits with its error and the launch fails; it is not retried unscoped.
+ *  No stop removes the scope: a seat a stopped manager released for adoption keeps running in it,
+ *  and systemd collects it once its last process exits.
  *
  *  Off Linux, or with no XDG_RUNTIME_DIR, no systemd-run or no user bus, there is no user manager,
  *  and so no scope of the caller to leave: `launch` is returned as it is. */
 export function inOwnScope(launch: Launch, env: NodeJS.ProcessEnv, unit: { space: string; instanceId: string; launchRequestId: string }): Launch {
   const runner = userScopeRunner(env);
   if (!runner) return launch;
-  // One unit per launch, so a relaunch never meets an earlier launch's scope that a descendant still holds.
-  const name = `cotal-${createHash("sha256").update(unit.space).digest("hex").slice(0, 12)}-${unit.instanceId}-${unit.launchRequestId}.scope`;
+  // A retry can carry the journaled instance and launch IDs of an attempt whose descendant still holds
+  // that attempt's scope, so each launch adds a nonce of its own and no two launches share a unit.
+  const name = `cotal-${createHash("sha256").update(unit.space).digest("hex").slice(0, 12)}-${unit.instanceId}-${unit.launchRequestId}-${randomBytes(4).toString("hex")}.scope`;
   return { ...launch, program: runner, args: ["--user", "--scope", "--quiet", "--collect", `--unit=${name}`, "--", launch.program, ...launch.args] };
 }
 

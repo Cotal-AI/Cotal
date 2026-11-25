@@ -338,10 +338,14 @@ separately without a shell. No broker, manager or other dependency is started im
 A background service outlives the terminal or app that started it. On Linux and macOS its process
 leads a session and process group of its own, so a signal to the starting command's group does not
 reach it. On Linux, when the systemd user manager answers, `start` also runs it in a user scope of its own,
-`cotal-<space hash>-<instance>-<launch>.scope`, through `systemd-run --user --scope`. An app that
+`cotal-<space hash>-<instance>-<launch>-<nonce>.scope`, through `systemd-run --user --scope`. Each
+launch draws its own nonce, so a retry under the same instance and launch IDs never meets an
+earlier attempt's scope that a process it left behind still holds. An app that
 runs each agent in a scope and stops that scope when the agent's session ends, as T3 Code does,
 then leaves a service the agent started running. The process keeps its PID, output and
-environment, and systemd adds `INVOCATION_ID`. If the scope cannot be made, the start fails with
+environment, and systemd adds `INVOCATION_ID`. No stop removes the scope: a seat that a stopped
+manager released for the next manager to adopt keeps running in it, and systemd removes the scope
+once its last process exits. If the scope cannot be made, the start fails with
 systemd-run's error as the last line logged, and the service is not launched without a scope. With
 no user manager, as with no `XDG_RUNTIME_DIR`, no `systemd-run` or no user bus, nothing scopes the
 starting command either, and the service starts without a scope.
