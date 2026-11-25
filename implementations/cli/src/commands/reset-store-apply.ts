@@ -175,7 +175,7 @@ export function resetStorePath(root: string, storeDir: string | undefined, where
       }
     } catch { linked = undefined; }
     if (linked !== undefined)
-      throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is a link to ${linked}, and a reset removes only a real directory; nothing was removed`, { target: { ...where, storeDir: path, linkTarget: linked }, remedy: `replace the link with the directory it points to, then run \`${review}\` again` });
+      throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is a link to ${linked}, and a reset removes only a real directory; nothing was removed`, { target: { ...where, storeDir: path, linkTarget: linked }, remedy: `move the link aside and restore this space's original store directory at the recorded path, then run \`${review}\` again` });
     throw new CommandFailure("refused", "CONFLICT", `the recorded store path ${path} is not one real directory the reset may remove (${(error as Error).message}); nothing was removed`, { target: { ...where, storeDir: path } });
   }
 }

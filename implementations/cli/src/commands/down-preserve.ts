@@ -51,7 +51,6 @@ import {
   seatCheckpointDir,
   type SeatCheckpoint,
   type JsonValue,
-  restoreLeftOut,
   resolveControlTarget,
   parsePid,
   probeLiveness,
@@ -199,7 +198,7 @@ export async function preserveStateDown(storeOverride?: string, sessionStores: r
     const existing = readMaintenanceJournal(root);
     // A completed restore keeps its journal, and a new cut begins only after that journal is retired.
     if (existing && "restore" in existing && existing.state === "active")
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, restoreLeftOut(existing)) });
+      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a completed restore still holds this root's maintenance journal; a new preserve begins only after it is retired, so nothing was stopped", { target: { root, space: mesh.space, attemptId: existing.restore.attemptId }, remedy: restoreNextStep(existing.state, existing.restore.attemptId, existing) });
     if (existing && existing.state !== "cut-intent" && existing.state !== "cut-committed" && existing.state !== "ready")
       throw new Error(`cannot preserve while maintenance state is ${existing.state}`);
     if (existing && (existing.space !== mesh.space || existing.mode !== mesh.mode ||

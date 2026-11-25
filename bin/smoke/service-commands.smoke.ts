@@ -242,7 +242,7 @@ try {
         && !out(installHelp).includes("start it at login"), out(installHelp));
   }
 
-  for (const verb of ["status", "stop"]) {
+  for (const verb of ["status", "stop", "restart"]) {
     const absent = cotal(["manager", verb, "--space", SPACE, "--json"]);
     const error = JSON.parse(absent.stdout).error;
     check(`cotal manager ${verb} with no manager started names a start in the same space`,
@@ -273,6 +273,24 @@ try {
   const PREPARED = "servicecommandsprep";
   const created = cotal(["space", "create", PREPARED, "--root", prepared]);
   check("space create prepares a second space, with no registered broker", created.status === 0, out(created));
+  const restartPreview = cotal(["manager", "restart", "--space", PREPARED, "--dry-run", "--json"]);
+  const { error: restartError, target: restartTarget } = JSON.parse(restartPreview.stdout);
+  const firstStart = `manager start --space ${PREPARED} --dry-run`;
+  const suggestedPreview = /^preview the first start with `cotal ([^`]+)`$/.exec(restartError?.remedy)?.[1];
+  check("a Manager restart preview with no saved definition refuses and suggests a first-start preview in the same space",
+    restartPreview.status === 2 && restartError?.code === "TARGET_NOT_FOUND" && restartTarget?.space === PREPARED
+      && suggestedPreview === `${firstStart} --json`, out(restartPreview));
+  const firstStartPreview = suggestedPreview === `${firstStart} --json` ? cotal(suggestedPreview.split(" ")) : undefined;
+  const { result: firstStartResult } = firstStartPreview ? JSON.parse(firstStartPreview.stdout) : {};
+  check("the suggested preview loads no provider code and saves or allocates nothing",
+    firstStartPreview?.status === 0 && firstStartResult?.dryRun === true && firstStartResult.saved === false
+      && firstStartResult.allocated === false && firstStartResult.providerCodeLoaded === false, firstStartPreview && out(firstStartPreview));
+  for (const format of [[], ["--plain"]]) {
+    const text = cotal(["manager", "restart", "--space", PREPARED, "--dry-run", ...format]);
+    check(`a Manager restart preview preserves ${format.length ? "plain" : "default"} output in the suggested command`,
+      text.status === 2 && ["cotal", "pnpm cotal"].some((launcher) =>
+        out(text).includes(`preview the first start with \`${launcher} ${[firstStart, ...format].join(" ")}\``)), out(text));
+  }
   const config = join(prepared, ".cotal", "nats.conf"), binary = join(home, "nats-server");
   writeFileSync(config, "port: 4222\n", { mode: 0o600 });
   writeFileSync(binary, "#!/bin/sh\n", { mode: 0o700 });

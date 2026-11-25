@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---(?:\n([\s\S]*?))?\n---[ \t]*(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -176,7 +176,7 @@ export function parseAgentFileSource(src: string, path: string, options?: { defe
   const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   const m = AGENT_FILE_FENCE.exec(normalized);
   if (!m) throw new Error(`agent file ${path}: ${normalized.startsWith("---\n") ? 'missing closing "---" frontmatter fence on its own line' : 'missing "---" frontmatter block'}`);
-  const fm = parseFrontmatter(m[1], path);
+  const fm = parseFrontmatter(m[1] ?? "", path);
   const persona = m[2].trim();
 
   const yamlType = (v: unknown): string => v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "mapping" : typeof v;

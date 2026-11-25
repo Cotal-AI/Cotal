@@ -40,7 +40,7 @@ import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 import { serviceInstances } from "../lib/service-instances.js";
-import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, unusableStackJournal } from "../lib/stack-journal.js";
+import { legacyBrokerPidfileBlock, readStackJournal, stackRootGone, stackUpInProgress, unusableStackJournal } from "../lib/stack-journal.js";
 import { linkedCotalRemedy, preparedRootWriteProblem } from "../lib/paths.js";
 import { channelSeedRestartBlock } from "../lib/channel-seed.js";
 import { rootStoreProblem } from "../lib/store-dir.js";
@@ -208,7 +208,20 @@ function unusableServiceInstances(space: string): CommandFailure | undefined {
   catch (error) { return isCommandFailure(error) && error.code === "SCHEMA_INVALID" ? error : undefined; }
 }
 
-export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, stackStarting: boolean): Promise<SelectedResult> {
+/** A prepared selection can have a live startup writer at a different project root. */
+export function selectedStackStarting(selected: Selected, folder: StatusResult["folder"], stackStarting: boolean): boolean {
+  if (selected.ok || !isWorkspaceTargetError(selected.error) || selected.error.code !== "not-started") return false;
+  const { root, space, rootMissing, unsettled } = selected.error.details;
+  if (root === undefined || space === undefined || rootMissing || cotalDirLink(root) !== undefined) return false;
+  if (root === folder.root) return stackStarting && Boolean(servedStack(folder, { root, space }));
+  if (unsettled !== "up") return false;
+  try {
+    const journal = readStackJournal(root)?.journal;
+    return journal?.space === space && stackUpInProgress(journal);
+  } catch { return false; } // The selection report names an unusable journal.
+}
+
+export async function readSelected(selected: Selected, responder: { state: DeliveryResponderState; leased: boolean }, folder: StatusResult["folder"], gaps: Gaps, hints: string[], preflight: SelectedPreflight, all: boolean, selectedStarting: boolean): Promise<SelectedResult> {
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
@@ -255,7 +268,7 @@ export async function readSelected(selected: Selected, responder: { state: Deliv
       ...(e.code === "not-started" && d.space !== undefined && d.root !== undefined && !d.rootMissing ? { space: d.space, root: d.root } : {}),
       ...(elsewhere !== undefined ? { space: targetErrorSpace(d)!, recordedRoot: d.recordedRoot! } : {}),
     };
-    if (stackStarting && servedStack(folder, result)) {
+    if (selectedStarting) {
       result.message = `"${result.space}" is prepared and its stack is starting`;
       return result;
     }

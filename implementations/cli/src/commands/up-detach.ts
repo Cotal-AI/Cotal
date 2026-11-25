@@ -2,7 +2,7 @@ import { noManagerCredentialWarning } from "../lib/daemon-credential-warning.js"
 import { type ChildProcess } from "node:child_process";
 import { openBrokerLog } from "../lib/broker-log.js";
 import { spawnBroker } from "../lib/broker-spawn.js";
-import { mkdirSync, readFileSync, existsSync, statSync, closeSync, realpathSync, type Stats } from "node:fs";
+import { mkdirSync, readFileSync, statSync, closeSync, realpathSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isReachable,
@@ -30,7 +30,10 @@ import {
   findPreparedSpace,
   homeCotalDir,
   getCurrent,
+  preparedRootRemedy,
   preparedSpaceAt,
+  projectRootProblem,
+  projectRootProblemText,
   removePreparedSpace,
   localMeshesForRoot,
   recordMesh,
@@ -672,10 +675,12 @@ export function ensureRootForSpace(space: string, separateRootNeedsPreparation =
   // below, so a refused start leaves nothing behind.
   const prepared = findPreparedSpace(space);
   if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root)) {
-    const gone = !existsSync(prepared.root);
-    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${gone ? ", which no longer exists" : ""}`, {
+    const problem = projectRootProblem(prepared.root);
+    throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `space "${space}" is prepared in ${prepared.root}${problem ? `, which ${projectRootProblemText(problem)}` : ""}`, {
       target: { space, root: prepared.root },
-      remedy: gone ? `forget it with \`cotal space forget ${space}\`, then start it here` : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
+      remedy: problem === "missing" ? `forget it with \`cotal space forget ${space}\`, then start it here`
+        : problem ? preparedRootRemedy(space, problem)
+        : `start it in its folder with \`cotal up --root ${shellWord(prepared.root)} --space ${space}\`, or \`cotal space forget ${space}\` to start it here`,
     });
   }
   // Auth material, a locally started registration, or a preparation names what this root hosts.
