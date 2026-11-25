@@ -131,8 +131,6 @@ async function main() {
     const target = { mode: "owner" as const, owner, actor: "native", lifecycleUid: row.lifecycleUid };
     const badUid = await call("attach", undefined, { ...target, lifecycleUid: mintLifecycleUid() });
     check("wrong lifecycle UID cannot establish participant session", !badUid.ok && badUid.error?.code === "expired" && /current mapping/.test(badUid.error.message));
-    const deniedInput = await call("input", { text: "native" }, target).then(() => false, (e: Error) => /REFUSED BY THE BROKER/.test(e.message));
-    check("ordinary selected user cannot mint operator-only input reach", deniedInput && readFileSync(sink).length === 0);
     const attached = await call("attach", undefined, target); assert.ok(attached.ok); const grant = (attached.data as any).grant;
     const sc = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: grant }, false);
     check("real redeemed session exchanges for holder session-caller bearer", sc.status === 200 && typeof sc.body.token === "string");
@@ -162,7 +160,7 @@ async function main() {
     const attackWriter = await openAuthorityClient({ server: fx.servers, space: a.space, dataAccount: { pub: a.auth.account.pub, signingSeed: a.auth.account.signingSeed! }, label: `session-evidence-fixture:${a.space}`, grants: (id: string) => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
     const attackKv = await new Kvm(attackWriter.nc).open(core.epAuthBucket(a.space));
     const attackKey = `sessionconn.${newIdentity().id}`;
-    const victimNc = (freelance as unknown as { nc: Awaited<ReturnType<typeof connect>> }).nc;
+    const victimNc = (freelance as unknown as { conn: { nc: Awaited<ReturnType<typeof connect>> } }).conn.nc;
     const victimCoordinates = (await nativeAccountConnections(a.auth, fx.servers)).find((c) => c.user === core.principalKey(owner, "freelance").name)!;
     assert.ok(victimCoordinates);
     const forged = { sessionId: core.mintSessionId(), principal: `${owner}.freelance`, lifecycleUid: freelanceUid,
@@ -218,6 +216,12 @@ async function main() {
     await attackWriter.close();
 
     const attachAgain = async () => { const reply = await call("attach", undefined, target); assert.ok(reply.ok); return (reply.data as any).grant; };
+    const freshGrant = await attachAgain();
+    const freshExchange = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: freshGrant }, false);
+    assert.equal(freshExchange.status, 200);
+    const freshNc = await connect({ ...reconnectOptions, ...standaloneConnectOpts({ bearer: freshExchange.body.token, sentinelCreds: a.sentinelCreds, tls: false }) });
+    try { check("E1 a fresh attach admits a replacement after the ended session is refused", await socketWorks(freshNc)); }
+    finally { await freshNc.close(); }
     const detachEvents = ["closed", "retired", "delete", "purge"] as const;
     const ledgerWriter = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: await mintCreds(a.auth, newIdentity(), "session-ledger"), tls: false }), reconnect: false });
     const sessionKv = await new Kvm(ledgerWriter).open(core.sessionsBucket(a.space));

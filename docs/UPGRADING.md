@@ -1,6 +1,6 @@
 # Upgrading a running deployment
 
-## Ended terminal sessions on user-auth spaces
+## Ended terminal sessions on user-auth spaces in 0.180.0
 
 A user-auth terminal connection now closes when the auth service confirms that its session
 ended. A different session or control connection for the same actor stays connected. Open
