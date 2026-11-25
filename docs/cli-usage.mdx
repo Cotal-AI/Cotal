@@ -203,7 +203,9 @@ another option, a group of short options, or `--` is refused with the option and
 Put the value before `--` and leave the operands after it. Before another option or `--`, a missing
 value on an option that cannot be repeated can also report the duplicate and ask you to use the option once.
 A short option takes its value after a space, so `-c=general` is refused rather than read as the
-value `=general`. An option such as `--help` or `-h` typed with a typographic dash is refused
+value `=general`. On Windows, the correction uses double quotes for values such as a filename with
+spaces or an apostrophe, so it can be pasted into PowerShell or Command Prompt. When shared quoting
+cannot preserve the value, the correction names PowerShell. An option such as `--help` or `-h` typed with a typographic dash is refused
 rather than read as a positional. Use `--` before the word to pass it as text. The correction keeps
 any attached value the option accepts, as in `--limit=10`. Before the command word the same holds
 for the leading flags, so `cotal ––json status` names `--json`.

@@ -192,6 +192,20 @@ try {
     const pipe = (tag: string) => `\\\\.\\pipe\\cotal-daemon-smoke-${tag}-${randomBytes(4).toString("hex")}`;
     const pipePaths = (tag: string): DaemonPaths => { const state = privateDir(`${tag}-s`); return { socket: pipe(tag), state, lock: join(state, "daemon.lock") }; };
 
+    {
+      const home = privateDir("daemon state");
+      const bin = join(import.meta.dirname, "..", "dist", "cotal.js");
+      const status = spawnSync(process.execPath, [bin, "daemon", "status", "--daemon-home", home, "--plain"], { encoding: "utf8", timeout: 60_000 });
+      const next = /`(cotal daemon start [^`]+)`/.exec(status.stderr ?? "")?.[1];
+      check("stopped Windows daemon names a copyable command for its private home", status.status === 2
+        && status.stderr.includes("NOT_RUNNING") && next === `cotal daemon start --daemon-home "${home}"`, status.stderr);
+      if (next) {
+        const pasted = spawnSync(`"${process.execPath}" "${bin}" ${next.slice(6)}`, { shell: true, encoding: "utf8", timeout: 60_000 });
+        check("the Windows recovery command reaches the recorded-task check in cmd.exe", pasted.status === 2
+          && pasted.stderr.includes("TARGET_NOT_FOUND"), pasted.stderr);
+      }
+    }
+
     // ---- W1, W2 ----
     {
       const p = pipePaths("w1");
