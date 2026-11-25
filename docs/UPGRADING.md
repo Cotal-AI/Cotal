@@ -56,6 +56,24 @@ names without whitespace at either end or terminal controls.
 A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
 the authorization URL printed by that login and finish there.
 
+## Personas saved over the wire
+
+`define-persona` refuses channel lists outside the definer's grant before writing, even if a later
+spawner holds those channels. This applies to prompt frontmatter, explicit arguments and lists kept
+on redefine. Replace `subscribe`, `allowSubscribe` and `allowPublish` with channels the definer
+holds. To save without channels, pass `subscribe: []`, `allowSubscribe: []` and `allowPublish: []`.
+For a hosted user-auth manager, also pass `capabilities: []` to save without granting capabilities.
+If saved `quiet` or `muted` entries name a channel you remove, have the operator remove those entries
+with `cotal persona edit <name>` on the manager host.
+
+A wire save drops `launchOptions` from the prompt and from a file it redefines. Pass options with
+`cotal spawn <name> --opt key=value`, or set `launchOptions` with `cotal persona edit <name>` on the
+manager host and edit that file locally to keep the options.
+
+Third-party `AuthProvider` implementations must add `actorGrant({ dir, owner, actor })`. Read the
+current principal row and return `{ scope, allowSubscribe, allowPublish }`, or return `undefined`
+if the principal has no grant. Update the provider together with the manager.
+
 ## The agent endpoint on every space
 
 Agents now serve their `agent` endpoint on a static space and on an open mesh, as they do where
