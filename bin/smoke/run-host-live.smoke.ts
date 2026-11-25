@@ -1184,12 +1184,13 @@ try {
   const brokerOnlyStart = await runCli("start", "./cp.cotal.js", "--json").catch((error: { code?: number; stdout?: string }) => error);
   const plainStart = await runCli("start", "./cp.cotal.js", "--plain").catch((error: { code?: number; stderr?: string }) => error);
   const refusal = JSON.parse(brokerOnlyStart.stdout || "{}");
-  c("B0a. Hosted start on a broker-only open mesh refuses with offline and static-auth guidance",
+  const openStartRemedy = "test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run";
+  c("B0a. Hosted start on a broker-only open mesh gives the same simulation and static-auth guidance in JSON and plain output",
     "code" in brokerOnlyStart && brokerOnlyStart.code === 2 && refusal.outcome === "refused" && refusal.target?.space === spaceB
-      && refusal.error?.code === "UNSUPPORTED" && refusal.error?.message.includes("An open mesh cannot host workflow runs")
-      && refusal.error?.remedy === "Test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run."
-      && "code" in plainStart && plainStart.code === 2 && ["cotal", "pnpm cotal"].some((cli) =>
-        plainStart.stderr?.includes(`Test the program offline with \`${cli} r simulate <file>\`, or use a static-auth mesh to host the run.`)), { refusal, plainStart });
+      && refusal.error?.code === "UNSUPPORTED" && refusal.error?.message === "an open mesh cannot host workflow runs because it does not issue caller authority or record run admission"
+      && refusal.error?.remedy === openStartRemedy
+      && "code" in plainStart && plainStart.code === 2
+      && plainStart.stderr?.split("\n").some((line) => line.trim() === openStartRemedy) === true, { refusal, plainStart });
   mgr = new Manager({ space: spaceB, servers: server, runtime: "pty", workspaceRoot: wsB });
   await mgr.start();
 
@@ -1234,7 +1235,7 @@ try {
     process.exit = realExit;
     process.exitCode = undefined;
   }
-  c("B1. `cotal run start` on an open mesh with a manager is still refused as UNSUPPORTED", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("An open mesh cannot host workflow runs"), hostedOut);
+  c("B1. `cotal run start` on an open mesh with a manager is still refused as UNSUPPORTED", hostedRefusal?.outcome === "refused" && hostedRefusal.code === "UNSUPPORTED" && hostedOut.includes("an open mesh cannot host workflow runs"), hostedOut);
   c("B2. `cotal run start --local` on an open mesh is refused before any drive: no admission store stands there", localOut.includes("threw: exit 1") && localOut.includes("an open mesh keeps no admission store"), localOut);
   const listed = (() => { try { return JSON.parse(ps) as { command?: unknown; outcome?: unknown; target?: { space?: unknown }; result?: { kind?: unknown; items?: unknown } }; } catch { return undefined; } })();
   c("B3. `cotal run ps` still reads there, and lists nothing", listed?.command === "run" && listed.outcome === "ok" && listed.target?.space === spaceB

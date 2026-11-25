@@ -67,7 +67,7 @@ wait until one has activated and run it again. Any other refusal of `start`, `re
 `amend` may follow a recorded change, so it is unknown, exit 3, and is not retried.
 
 Hosted `start` on a known open mesh refuses `UNSUPPORTED` (exit 2) before looking for a manager.
-Test the program offline with `cotal r simulate <file>`, or use a static-auth mesh to host the run.
+Use `cotal r simulate <file>` to test the program offline. Use a static-auth mesh to host the run.
 
 Otherwise, an unpinned hosted verb run by the operator reads the space's service registry first. When it
 lists no live manager, as after `cotal down stack-manager`, the verb refuses `TARGET_UNAVAILABLE`
