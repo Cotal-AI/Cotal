@@ -55,6 +55,10 @@ invalid record is refused with the file, reason and a remedy to repair it while 
 intended policy. Login checks before token exchange or token persistence. To remove a restriction,
 remove the field from the record. Restart a running Linear service after editing it.
 
+OAuth authorization keeps its pending state in memory. If the account record becomes invalid
+before the matching callback arrives, repair the file named by the login command and start login
+again. The refused callback does not exchange the code or replace saved OAuth state.
+
 This policy applies to both direct `linear call` and endpoint `call-tool` requests. An unlisted
 tool is refused before credential access or upstream dispatch, with reason `tool-not-allowed`,
 CLI code `PERMISSION_DENIED` (exit 2), endpoint code `permission-denied` and native outcome

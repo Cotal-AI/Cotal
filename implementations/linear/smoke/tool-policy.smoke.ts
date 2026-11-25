@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig, setupSpaceStreams } from "@cotal-ai/core";
@@ -257,6 +257,20 @@ try {
     repairAccount(name);
     await linear({ raw: [], positionals: ["account", "add", name], values: { mode: "write", "token-file": tokenFile, plain: true } });
     check("repairing the named record allows account add with the intended list", loadAccount(name).auth === "token" && loadAccount(name).allowedTools?.[0] === "read_issue");
+  }
+  if (process.platform !== "win32") {
+    const name = "dangling-record";
+    const path = join(linearDir(), `${name}.json`);
+    const target = join(home, "missing-account.json");
+    symlinkSync(target, path);
+    const add = () => linear({ raw: [], positionals: ["account", "add", name], values: { mode: "write", "token-file": tokenFile, plain: true } });
+    const error = await add().then(() => undefined, (error: unknown) => error);
+    const preserved = lstatSync(path).isSymbolicLink() && !existsSync(target);
+    console.log(`  OBSERVED re-add ${name}: error=${(error as { code?: string } | undefined)?.code ?? "none"}, preserves record=${preserved}`);
+    check("a dangling account record refuses replacement and names the repair", repairNamed(error, path) && preserved);
+    writeFileSync(target, JSON.stringify({ name, mode: "write", auth: "oauth", allowedTools: ["read_issue"] }), { mode: 0o600 });
+    await add();
+    check("restoring the linked account record allows replacement with its policy", loadAccount(name).auth === "token" && loadAccount(name).allowedTools?.[0] === "read_issue");
   }
   writeFileSync(join(linearDir(), "invalid-login.json"), JSON.stringify({ name: "invalid-login", mode: "write", auth: "oauth", allowedTools: [42] }));
   await login("invalid-login", false, "before");
