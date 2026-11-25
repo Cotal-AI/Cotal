@@ -473,6 +473,8 @@ It does not reload launch-time persona files, so a missing persona does not prev
 root records a stack without an additive ledger, file-form apply refuses `UNSUPPORTED` and
 names bare `cotal down` from that root. It does not require a run ID or stop the stack implicitly.
 
+The recorded-stack preview reads the manifest and its referenced personas. A missing manifest or a non-directory parent gives `TARGET_NOT_FOUND`. If the account cannot read the manifest, the preview reports `PERMISSION_DENIED`. If the path names a directory, select the manifest file inside it. A missing referenced persona is a manifest validation error.
+
 If teardown of an additive ledger is incomplete, the retry command is `cotal down --run=<id>`.
 Run it from the checkout that holds the ledger. It does not need the manifest file.
 

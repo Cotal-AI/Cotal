@@ -5,6 +5,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { CommandFailure } from "@cotal-ai/workspace";
 import { personaReferences, resolveManifest } from "./resolve.js";
 import { missingPersona, preparePersonas, type PreparedManifest } from "./preflight.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -28,6 +29,19 @@ export function readManifestSource(abs: string): string {
       throw new UnusableFile(`the manifest file ${JSON.stringify(abs)} is a directory; a manifest is one file`, { file: abs }, "name the manifest file in it, such as its cotal.yaml");
     throw e;
   }
+}
+
+/** Classify an OS error on the manifest itself, without mistaking a referenced file for it. */
+export function manifestPathFailure(error: unknown, target: { path: string } | { file: string }): CommandFailure | undefined {
+  if (error instanceof UnusableFile) return error;
+  const path = resolve("file" in target ? target.file : target.path);
+  const { code, path: failedPath } = error as NodeJS.ErrnoException;
+  if (failedPath !== path) return;
+  if (code === "ENOENT" || code === "ENOTDIR") {
+    const reason = code === "ENOTDIR" ? "has a parent that is not a directory" : "was not found";
+    return new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} ${reason}; no broker was contacted`, { target, remedy: "check the file path and run the command again" });
+  }
+  if (code === "EACCES" || code === "EPERM") return new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot read the team manifest ${path}; no broker was contacted`, { target, remedy: "check that this account can read the file and enter its parent folders, then retry" });
 }
 
 /** Read + fully resolve a manifest file (absolute path recommended). Throws {@link ManifestError}

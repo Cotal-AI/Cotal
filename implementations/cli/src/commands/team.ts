@@ -3,8 +3,7 @@ import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMa
 import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, codeSpan, connectOrThrow, findCotalRoot, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { personaCatalog, type PersonaCatalog } from "../lib/persona-files.js";
-import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
-import { UnusableFile } from "../lib/unusable-file.js";
+import { formatIssue, loadManifest, manifestPathFailure, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, retainedAdditiveTeamAttempts, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
@@ -545,17 +544,7 @@ function readTeamFile(file: string, space?: string): { path: string; prepared: P
   try { prepared = loadManifest(path); }
   catch (e) {
     if (e instanceof ManifestError) throw manifestRefusal(e, path);
-    // A folder given as the manifest gets the refusal `up -f` and `topology view` give, naming it.
-    if (e instanceof UnusableFile) throw e;
-    const { code, path: failedPath } = e as NodeJS.ErrnoException;
-    if (failedPath === path) {
-      if (code === "ENOENT" || code === "ENOTDIR") {
-        const reason = code === "ENOTDIR" ? "has a parent that is not a directory" : "was not found";
-        throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the team manifest ${path} ${reason}; no broker was contacted`, { target: { path }, remedy: "check the file path and run the command again" });
-      }
-      if (code === "EACCES" || code === "EPERM") throw new CommandFailure("refused", "PERMISSION_DENIED", `this account cannot read the team manifest ${path}; no broker was contacted`, { target: { path }, remedy: "check that this account can read the file and enter its parent folders, then retry" });
-    }
-    throw new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
+    throw manifestPathFailure(e, { path }) ?? new CommandFailure("refused", "SCHEMA_INVALID", "the team manifest or referenced persona could not be read and resolved; no broker was contacted", { target: { path }, remedy: "check the manifest schema, persona paths and permission declarations" });
   }
   if (space !== undefined && space !== prepared.manifest.space) throw new CommandFailure("refused", "CONFLICT", "--space must agree with the manifest's recorded target; the file was not rebound");
   return { path, prepared };
