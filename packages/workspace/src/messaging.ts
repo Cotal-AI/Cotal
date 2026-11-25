@@ -23,6 +23,12 @@ export function concreteChannelProblem(channel: string): string | undefined {
   return undefined;
 }
 
+/** The NATS client refuses a frame over the broker's `max_payload` before writing any of it. */
+export function payloadRefused(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) if (e.name === "InvalidArgumentError" && e.message.includes("max_payload")) return true;
+  return false;
+}
+
 /** An offline presence card proves neither a surviving inbox nor a reconnectable lifecycle.
  *  The storage receipt cannot promise delivery after retirement (SPEC §8). A blank name is not
  *  used: the warning names no participant and does not break onto another line. */

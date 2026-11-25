@@ -133,16 +133,16 @@ try {
   // connection. This reaches CotalEndpoint.superviseConnection through nc.closed(), not through a
   // constructed fake, and observes the MeshAgent diagnostic the user-facing status surface reads.
   const ep = agent.ep as unknown as {
-    nc?: {
+    conn: { nc?: {
       setServers(servers: string[]): void;
       reconnect(): Promise<void>;
-    };
+    } };
     reestablishLoop(): Promise<void>;
   };
   ep.reestablishLoop = async () => {};
   const unreachablePort = await pickFreePort();
-  ep.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
-  await ep.nc!.reconnect();
+  ep.conn.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
+  await ep.conn.nc!.reconnect();
   check(
     "a REAL terminal close marks readiness false before exposing its user-visible reason",
     // The transport clause is not decoration. cotal_connection_status renders
@@ -185,7 +185,7 @@ try {
   // the release would wait on the gate this cell holds. Release once the endpoint itself has begun
   // stopping, which keeps the order the cell is about: the stop lands first, the bind ends after it.
   const raceStopping = raceAgent.stop();
-  const raceEndpointStopping = await until(() => (raceAgent.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
+  const raceEndpointStopping = await until(() => (raceAgent.ep as unknown as { lifecycle: { stopped?: boolean } }).lifecycle.stopped === true, 30_000);
   releaseBind();
   await raceStopping;
   await raceStart;
@@ -272,11 +272,11 @@ try {
   // As in the initial-bind cell: stop() waits for the held bind, so release it once the endpoint has
   // begun stopping rather than after stop() returns.
   const rebuildStopping = rebuildAgent.stop();
-  const rebuildEndpointStopping = await until(() => (rebuildAgent!.ep as unknown as { stopped?: boolean }).stopped === true, 30_000);
+  const rebuildEndpointStopping = await until(() => (rebuildAgent!.ep as unknown as { lifecycle: { stopped?: boolean } }).lifecycle.stopped === true, 30_000);
   releaseRebuildBind();
   await rebuildStopping;
   await rebuildWork;
-  const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { nc?: unknown }).nc;
+  const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { conn: { nc?: unknown } }).conn.nc;
   check(
     "stop during a REAL rebuild bind never announces the connection it then tears down",
     reachedRebuildFinalStep
@@ -306,16 +306,16 @@ try {
   await staleAgent.start(100);
   await until(() => staleAgent!.connected, 30_000);
   const staleEp = staleAgent.ep as unknown as {
-    kv?: unknown;
-    servers: string;
+    conn: { kv?: unknown };
+    identity: { servers: string };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
   };
-  const liveKv = staleEp.kv;
+  const liveKv = staleEp.conn.kv;
   // Drive the REAL publishPresence catch: only the put is replaced, so the recording, the clearing and
   // the guard under test all run as shipped.
-  staleEp.kv = { put: () => Promise.reject(new Error("timeout")) };
+  staleEp.conn.kv = { put: () => Promise.reject(new Error("timeout")) };
   await staleEp.publishPresence().catch(() => {});
   check(
     "a refused presence write IS recorded while the transport is genuinely up (the fix must not delete the diagnosis)",
@@ -326,8 +326,8 @@ try {
   // The reviewer's reproduction: force a bind FAILURE while the record is set. `servers` is readonly
   // to the compiler only; overriding it here is the same door the reviewer used, and it reaches
   // closeFailedBind, which tears the connection down WITHOUT emitting a transport:false edge.
-  staleEp.kv = liveKv;
-  staleEp.servers = "nats://127.0.0.1:1";
+  staleEp.conn.kv = liveKv;
+  staleEp.identity.servers = "nats://127.0.0.1:1";
   await staleEp.reconnect().catch(() => {});
   check(
     "a FAILED bind clears the presence-refusal record rather than carrying it onto the next connection",
@@ -401,21 +401,21 @@ try {
   await inflightAgent.start(100);
   await until(() => inflightAgent!.connected, 30_000);
   const inflightEp = inflightAgent.ep as unknown as {
-    kv?: unknown;
+    conn: { kv?: unknown };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
   };
 
   let settleAfterStop: ((e: Error) => void) | undefined;
-  const liveInflightKv = inflightEp.kv;
-  inflightEp.kv = { put: () => new Promise<void>((_resolve, reject) => (settleAfterStop = reject)) };
+  const liveInflightKv = inflightEp.conn.kv;
+  inflightEp.conn.kv = { put: () => new Promise<void>((_resolve, reject) => (settleAfterStop = reject)) };
   const heldAcrossStop = inflightEp.publishPresence().catch(() => {});
   await until(() => settleAfterStop !== undefined, 10_000);
   // Restore the real kv BEFORE tearing down. stop() makes a best-effort offline publishPresence of its
   // own, and leaving the never-settling stub in place deadlocks the teardown this cell is measuring
   // rather than exercising it. The held put above is already captured and settles independently.
-  inflightEp.kv = liveInflightKv;
+  inflightEp.conn.kv = liveInflightKv;
   await inflightAgent.stop();
   settleAfterStop?.(new Error("timeout"));
   await heldAcrossStop;
@@ -433,17 +433,17 @@ try {
   await inflightAgent.start(100);
   await until(() => inflightAgent!.connected, 30_000);
   const rebindEp = inflightAgent.ep as unknown as {
-    kv?: unknown;
+    conn: { kv?: unknown };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
   };
   let settleAfterRebuild: ((e: Error) => void) | undefined;
-  const liveRebindKv = rebindEp.kv;
-  rebindEp.kv = { put: () => new Promise<void>((_resolve, reject) => (settleAfterRebuild = reject)) };
+  const liveRebindKv = rebindEp.conn.kv;
+  rebindEp.conn.kv = { put: () => new Promise<void>((_resolve, reject) => (settleAfterRebuild = reject)) };
   const heldAcrossRebuild = rebindEp.publishPresence().catch(() => {});
   await until(() => settleAfterRebuild !== undefined, 10_000);
-  rebindEp.kv = liveRebindKv;
+  rebindEp.conn.kv = liveRebindKv;
   await rebindEp.reconnect();
   const boundAfterRebuild = inflightAgent.connected;
   settleAfterRebuild?.(new Error("timeout"));
@@ -470,19 +470,19 @@ try {
   await overlapAgent.start(100);
   await until(() => overlapAgent!.connected, 30_000);
   const overlapEp = overlapAgent.ep as unknown as {
-    kv?: unknown;
+    conn: { kv?: unknown };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { since?: number; error?: string } | undefined;
   };
   const heldSameEpoch: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveOverlapKv = overlapEp.kv;
+  const liveOverlapKv = overlapEp.conn.kv;
   // Every put the stub sees lands in heldSameEpoch, the cell's own calls and the heartbeat's
   // alike, so nothing is ever silently swallowed. That makes raw indices unusable — a heartbeat
   // tick can land a put between any two awaits — so the cell takes puts from the FRONT of the
   // queue one at a time and settles each before starting the next leg, and a heartbeat put simply
   // plays the role the leg was about to cast anyway: any extra put settled with the same script
   // leaves every assertion below on the same observations.
-  overlapEp.kv = { put: () => new Promise<void>((resolve, reject) => heldSameEpoch.push({ resolve, reject })) };
+  overlapEp.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldSameEpoch.push({ resolve, reject })) };
   const takePut = async (): Promise<{ resolve: () => void; reject: (e: Error) => void }> => {
     await until(() => heldSameEpoch.length > 0, 10_000);
     return heldSameEpoch.shift()!;
@@ -523,7 +523,7 @@ try {
   // restore the real kv BEFORE teardown: stop() makes a best-effort offline publishPresence of its
   // own, and leaving the never-settling stub in place deadlocks it.
   for (const held of heldSameEpoch.splice(0)) held.resolve();
-  overlapEp.kv = liveOverlapKv;
+  overlapEp.conn.kv = liveOverlapKv;
 
   // #1461 PANEL ROUND 1, Blocker 1 (catch arm): put A starts first, put B starts, put A — the OLDER
   // put — rejects. A put that is merely in flight is not evidence yet, so a settle is superseded
@@ -535,13 +535,13 @@ try {
   await blockerAgent.start(100);
   await until(() => blockerAgent!.connected, 30_000);
   const b1Ep = blockerAgent.ep as unknown as {
-    kv?: unknown;
+    conn: { kv?: unknown };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { error?: string } | undefined;
   };
   const heldB1: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveB1Kv = b1Ep.kv;
-  b1Ep.kv = { put: () => new Promise<void>((resolve, reject) => heldB1.push({ resolve, reject })) };
+  const liveB1Kv = b1Ep.conn.kv;
+  b1Ep.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldB1.push({ resolve, reject })) };
   const takeB1 = async () => { await until(() => heldB1.length > 0, 10_000); return heldB1.shift()!; };
   const b1A = b1Ep.publishPresence().catch(() => {});
   const b1PutA = await takeB1();
@@ -556,7 +556,7 @@ try {
     { b1AfterOlderRejection },
   );
   for (const held of heldB1.splice(0)) held.resolve();
-  b1Ep.kv = liveB1Kv;
+  b1Ep.conn.kv = liveB1Kv;
 
   // #1461 PANEL ROUND 1, Blocker 2 (success arm): a refusal is recorded, put A starts after it,
   // put B starts, put A — the OLDER put — succeeds. B has not settled, so A's success is the latest
@@ -567,13 +567,13 @@ try {
   await blocker2Agent.start(100);
   await until(() => blocker2Agent!.connected, 30_000);
   const b2Ep = blocker2Agent.ep as unknown as {
-    kv?: unknown;
+    conn: { kv?: unknown };
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { error?: string } | undefined;
   };
   const heldB2: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveB2Kv = b2Ep.kv;
-  b2Ep.kv = { put: () => new Promise<void>((resolve, reject) => heldB2.push({ resolve, reject })) };
+  const liveB2Kv = b2Ep.conn.kv;
+  b2Ep.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldB2.push({ resolve, reject })) };
   const takeB2 = async () => { await until(() => heldB2.length > 0, 10_000); return heldB2.shift()!; };
   const b2Seed = b2Ep.publishPresence().catch(() => {});
   const b2SeedPut = await takeB2();
@@ -588,7 +588,7 @@ try {
   await b2A;
   const b2AfterOlderSuccess = b2Ep.presenceWriteFailure();
   for (const held of heldB2.splice(0)) held.resolve();
-  b2Ep.kv = liveB2Kv;
+  b2Ep.conn.kv = liveB2Kv;
   check(
     "an OLDER put succeeding while a NEWER put is merely in flight still clears the refusal",
     b2Refusal !== undefined && b2Refusal.error === "bucket refuses writes" && b2AfterOlderSuccess === undefined,
@@ -611,10 +611,10 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const orderingEp = orderingAgent.ep as unknown as { kv?: unknown; presence: { status?: string } };
+  const orderingEp = orderingAgent.ep as unknown as { conn: { kv?: unknown }; presence: { status?: string } };
   const heldOrdering: Array<{ resolve: () => void; reject: (e: Error) => void; record: string }> = [];
-  const liveOrderingKv = orderingEp.kv;
-  orderingEp.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
+  const liveOrderingKv = orderingEp.conn.kv;
+  orderingEp.conn.kv = { put: (_key: string, record: string) => new Promise<void>((resolve, reject) => heldOrdering.push({ resolve, reject, record })) };
   const takeOrdering = async () => { await until(() => heldOrdering.length > 0, 10_000); return heldOrdering.shift()!; };
   // Settle every put that arrives until none has arrived for 300ms, polling the array directly.
   // A racing takeOrdering() call left running past its own 300ms loss would keep polling in the
@@ -698,7 +698,7 @@ try {
     !offlineStartedWhileHeld && orderingEp.presence.status === "offline",
     { offlineStartedWhileHeld, epStatus: orderingEp.presence.status },
   );
-  orderingEp.kv = liveOrderingKv;
+  orderingEp.conn.kv = liveOrderingKv;
 
   // Cell (c): a rejected presence write must not stall the next one. The first call's put
   // rejects; the chain swallows the rejection at its tail only, so the second call's put still
@@ -706,10 +706,10 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering2-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const rejectEp = orderingAgent.ep as unknown as { kv?: unknown; presence: { status?: string } };
+  const rejectEp = orderingAgent.ep as unknown as { conn: { kv?: unknown }; presence: { status?: string } };
   const heldReject: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveRejectKv = rejectEp.kv;
-  rejectEp.kv = { put: () => new Promise<void>((resolve, reject) => heldReject.push({ resolve, reject })) };
+  const liveRejectKv = rejectEp.conn.kv;
+  rejectEp.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldReject.push({ resolve, reject })) };
   const takeReject = async () => { await until(() => heldReject.length > 0, 10_000); return heldReject.shift()!; };
   const rejA = orderingAgent!.setStatus("waiting").catch(() => {});
   const rejAPut = await takeReject();
@@ -721,7 +721,7 @@ try {
   rejBPut?.resolve();
   await rejB.catch(() => {});
   for (const held of heldReject.splice(0)) held.resolve();
-  rejectEp.kv = liveRejectKv;
+  rejectEp.conn.kv = liveRejectKv;
   check(
     "a rejected presence write does not stall the next one",
     secondPutArrived && rejectEp.presence.status === "idle",
@@ -742,10 +742,10 @@ try {
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-straggler-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
-  const stragglerEp = orderingAgent.ep as unknown as { kv?: unknown; status?: string };
+  const stragglerEp = orderingAgent.ep as unknown as { conn: { kv?: unknown }; status?: string };
   const heldStraggler: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
-  const liveStragglerKv = stragglerEp.kv;
-  stragglerEp.kv = { put: () => new Promise<void>((resolve, reject) => heldStraggler.push({ resolve, reject })) };
+  const liveStragglerKv = stragglerEp.conn.kv;
+  stragglerEp.conn.kv = { put: () => new Promise<void>((resolve, reject) => heldStraggler.push({ resolve, reject })) };
   const takeStraggler = async () => { await until(() => heldStraggler.length > 0, 10_000); return heldStraggler.shift()!; };
   // The same quiet the ordering cells use: settle everything (the heartbeat's puts) until none
   // has arrived for 300ms, polling the array directly so no orphaned poller can steal a put.
@@ -782,7 +782,7 @@ try {
   // held puts are drained and the live kv restored BEFORE anything open-ended is awaited: the
   // suite must terminate and red cell (d) by name rather than hang the proof (see #636 lane).
   for (const held of heldStraggler.splice(0)) held.resolve();
-  stragglerEp.kv = liveStragglerKv;
+  stragglerEp.conn.kv = liveStragglerKv;
   await Promise.race([stragglerStop, sleep(5_000)]);
   await Promise.race([stragglerWrite, sleep(5_000)]); // settles (refused, or rejected in-chain on an unfenced tree) with no put
   await sleep(300); // nothing may land after offline: the straggler was refused, the heartbeat is stopped
@@ -1122,24 +1122,24 @@ try {
   backoffAgent = new MeshAgent(boCfg);
   await backoffAgent.start(100);
   const boEp = backoffAgent.ep as unknown as {
-    nc?: { close(): Promise<void>; isClosed(): boolean };
-    retryAttempt: number; reestablishing: boolean; rebuildPromise?: Promise<void>;
+    conn: { nc?: { close(): Promise<void>; isClosed(): boolean } };
+    reconnection: { retryAttempt: number }; lifecycle: { reestablishing: boolean; rebuildPromise?: Promise<void> };
   };
   boBroker.kill("SIGKILL");
   await awaitExit(boBroker);
-  const reconnectingNc = boEp.nc;
+  const reconnectingNc = boEp.conn.nc;
   await until(() => !backoffAgent!.transportConnected);
   backoffAgent.ep.retryNow();
   check(
     "retryNow leaves a link nats.js is still reconnecting alone",
-    reconnectingNc !== undefined && boEp.nc === reconnectingNc && !reconnectingNc.isClosed() && !boEp.reestablishing,
-    { same: boEp.nc === reconnectingNc, reestablishing: boEp.reestablishing },
+    reconnectingNc !== undefined && boEp.conn.nc === reconnectingNc && !reconnectingNc.isClosed() && !boEp.lifecycle.reestablishing,
+    { same: boEp.conn.nc === reconnectingNc, reestablishing: boEp.lifecycle.reestablishing },
   );
   // nats.js would retry for about 20 s before giving up. Closing the real connection is the same
   // terminal close, so the endpoint's own rebuild loop starts now.
   await reconnectingNc!.close();
   // After four failed rebuilds the loop sleeps 12 to 24 s, longer than the send's 10 s wait.
-  const backedOff = await until(() => boEp.retryAttempt >= 4 && boEp.reestablishing && !boEp.rebuildPromise, 40_000);
+  const backedOff = await until(() => boEp.reconnection.retryAttempt >= 4 && boEp.lifecycle.reestablishing && !boEp.lifecycle.rebuildPromise, 40_000);
   boBroker = startBroker(boConfig);
   releases.push(teardownOnSignal(boBroker, dir));
   for (let i = 0; i < 80; i++) { if (await isReachable(boServers)) break; await sleep(50); }
@@ -1149,7 +1149,7 @@ try {
   check(
     "a send made while the endpoint sleeps out a long rebuild backoff reconnects and goes out at once",
     backedOff && sent === "sent" && took < 5_000,
-    { backedOff, sent, took, retryAttempt: boEp.retryAttempt },
+    { backedOff, sent, took, retryAttempt: boEp.reconnection.retryAttempt },
   );
 } finally {
   await jsClient?.close().catch(() => {});

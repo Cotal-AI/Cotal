@@ -28,13 +28,13 @@ jobs:
       mode: ${{ steps.select.outputs.mode }}
       staged: ${{ steps.release-mode.outputs.staged }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
@@ -43,7 +43,7 @@ jobs:
         env:
           STAGED_RELEASE: ${{ vars.COTAL_STAGED_RELEASE == 'true' }}
         run: printf 'staged=%s\n' "$STAGED_RELEASE" >> "$GITHUB_OUTPUT"
-      - uses: changesets/action/select-mode@v2.1.2
+      - uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         id: select
       - name: Require versioned packages before publication
         if: github.event_name == 'workflow_dispatch' && steps.select.outputs.mode == 'version'
@@ -68,18 +68,18 @@ jobs:
       native-run: ${{ steps.native.outputs.run }}
       native-source: ${{ steps.native.outputs.source }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - uses: changesets/action/version@v2.1.2
+      - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           github-token: ${{ secrets.GH_PAT }}
           script: pnpm ci:version
@@ -114,18 +114,18 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm --filter @cotal-ai/seat build:native
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: seat-native-${{ matrix.arch }}
           path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
@@ -147,28 +147,28 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.version-pr.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Require the version PR head made from this commit
         run: test "$(git rev-parse HEAD^)" = "$GITHUB_SHA"
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - uses: changesets/action/select-mode@v2.1.2
+      - uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         id: plan
       - name: Require a complete publish plan
         if: steps.plan.outputs.mode != 'publish'
         run: exit 1
       # Direct publication is the default. Enable only after the publisher owner confirms
       # independent dist-tag authority. v2.1.2 carries staging tags in its versioned plan schema.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.select.outputs.staged == 'true'
         with:
           artifact-ids: ${{ steps.plan.outputs.publish-plan-artifact-id }}
@@ -177,7 +177,7 @@ jobs:
       - name: Stage the complete publish plan
         if: needs.select.outputs.staged == 'true'
         run: node scripts/stage-release-plan.mjs stage "$RUNNER_TEMP/selected-plan/publish-plan.json" "$RUNNER_TEMP/publish-plan.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: staged-plan
         if: needs.select.outputs.staged == 'true'
         with:
@@ -189,7 +189,7 @@ jobs:
           NATIVE_SOURCE: ${{ needs.version-pr.outputs.native-source }}
         run: node scripts/native-artifact-source.mjs verify "$NATIVE_SOURCE" HEAD
       - run: pnpm --filter '!./examples/**' -r build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           github-token: ${{ github.token }}
           run-id: ${{ needs.version-pr.outputs.native-run || github.run_id }}
@@ -211,7 +211,7 @@ jobs:
           WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native/workspace-native-arm64
           WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/workspace-native-darwin-x64
           WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/workspace-native-darwin-arm64
-      - uses: changesets/action/pack@v2.1.2
+      - uses: changesets/action/pack@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         id: pack
         with:
           publish-plan-artifact-id: ${{ steps.staged-plan.outputs.artifact-id || steps.plan.outputs.publish-plan-artifact-id }}
@@ -223,7 +223,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/candidate"
           printf '{"tree":"%s","pack":"%s","staged":"%s"}\n' "$(git rev-parse 'HEAD^{tree}')" "$PACK" "$STAGED" > "$RUNNER_TEMP/candidate/candidate.json"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-candidate
           path: ${{ runner.temp }}/candidate/candidate.json
@@ -290,17 +290,17 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         with:
           cache: true
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: pnpm --filter cotal-monorepo install --frozen-lockfile --ignore-scripts
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.release.outputs.pack }}
           run-id: ${{ needs.release.outputs.run }}
@@ -308,7 +308,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/packed
       # The publish action reads its pack from this run.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: packed
         with:
           name: changeset-pack
@@ -340,7 +340,7 @@ jobs:
         run: node scripts/stage-release-plan.mjs check "$RUNNER_TEMP/packed/publish-plan.json" > "$RUNNER_TEMP/promote-specs.txt"
       # One GitHub Release per version, not one per package: the fixed group publishes every package
       # at the same version, so per-package releases are the same change listed many times over.
-      - uses: changesets/action/publish@v2.1.2
+      - uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         id: publish
         with:
           pack-dir-artifact-id: ${{ steps.packed.outputs.artifact-id }}
@@ -367,11 +367,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - name: Record the published upgrade target
@@ -387,7 +387,7 @@ jobs:
             repository: process.env.GITHUB_REPOSITORY, published: true, promoted: true,
           }) + '\n');
           NODE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: upgrade-publication
           path: ${{ runner.temp }}/upgrade-publication
@@ -398,10 +398,10 @@ jobs:
     if: needs.publish.outputs.published == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       # The census waits as long as the install check after it. npm has taken over twenty minutes
@@ -414,7 +414,7 @@ jobs:
           node scripts/verify-publish-closure.mjs "$version" --deadline-ms=1500000
           node scripts/verify-release-installable.mjs "$version" --closure --deadline-ms=1500000 --poll-interval-ms=5000
       # Notes use the workspace's Markdown parser. Installation failure must not block publication.
-      - uses: pnpm/action-setup@v6.0.8
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
         continue-on-error: true
         with:
           cache: true

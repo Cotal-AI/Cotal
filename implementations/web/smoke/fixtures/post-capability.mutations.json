@@ -23,7 +23,7 @@
     },
     {
       "name": "P3 a --creds dashboard is offered posting it cannot do: it holds one read credential and no seed to mint an operator from",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "  if (creds !== undefined) return { mode: \"off\", reason: POST_OFF_CREDS };\n",
       "replace": "",
       "expectRed": "4.1 --creds reports off with POST_OFF_CREDS, and no operatorId",
@@ -31,7 +31,7 @@
     },
     {
       "name": "P4 a per-user sign-in mesh is offered posting, which has no operator credential behind it",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "  if (userMode) return { mode: \"off\", reason: POST_OFF_USER };\n",
       "replace": "",
       "expectRed": "1.3 a per-user sign-in mesh turns posting off, with the reason it gives",
@@ -39,7 +39,7 @@
     },
     {
       "name": "P5 the open mesh reports its operatorId before the operator has joined, so the client would name a roster member that is not there",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    operatorId: () => (operator || live ? endpoint.card.id : undefined),\n",
       "replace": "    operatorId: () => endpoint.card.id,\n",
       "expectRed": "2.1 an open mesh reports participant, with no operatorId before a post",
@@ -55,7 +55,7 @@
     },
     {
       "name": "P7 a poster on a minted credential starts as soon as it is built, on the reading that a static operator is already known and so may as well be present, which puts it on the roster before it has said anything",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "  let endpoint = build();\n",
       "replace": "  let endpoint = build();\n  if (operator) void endpoint.start().catch(() => undefined);\n",
       "expectRed": "3.3 on a static mesh the operator is not on the roster before a post, on a roster that shows a peer that joined after it",
@@ -63,7 +63,7 @@
     },
     {
       "name": "P8 concurrent first posts each start the endpoint, because the start is no longer shared",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      starting ??= start();\n",
       "replace": "      starting = start();\n",
       "expectRed": "5.2 two concurrent first posts start one endpoint",
@@ -71,7 +71,7 @@
     },
     {
       "name": "P9 the poster loses its role, so the roster cannot tell the operator from any endpoint named operator",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "name: \"operator\", role: \"operator\", kind: \"endpoint\" as const };\n",
       "replace": "name: \"operator\", kind: \"endpoint\" as const };\n",
       "expectRed": "5.3 after its first post the open operator is on the roster as operator, under the id it reports",
@@ -79,7 +79,7 @@
     },
     {
       "name": "P10 the poster stops registering presence, so a post goes out from an operator the roster never shows",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      registerPresence: true,\n",
       "replace": "      registerPresence: false,\n",
       "expectRed": "5.3 after its first post the open operator is on the roster as operator, under the id it reports",
@@ -87,7 +87,7 @@
     },
     {
       "name": "P11 stopping the poster does nothing, so the operator's presence key outlives the dashboard instead of going offline",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      await live?.stop();\n",
       "replace": "",
       "expectRed": "5.5 stopping the poster leaves an offline record",
@@ -95,7 +95,7 @@
     },
     {
       "name": "P12 the static poster drops its lifecycle uid, and core refuses an authed presence-registering endpoint without one, so the first post fails",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      ...(operator ? { creds: operator.creds, lifecycleUid: operator.lifecycleUid } : {}),\n",
       "replace": "      ...(operator ? { creds: operator.creds } : {}),\n",
       "expectRed": "5.7 the static operator joins the roster on its first post, under the id it reported before",
@@ -103,7 +103,7 @@
     },
     {
       "name": "P13 the expiry check is inverted, so a live credential reads as expired and every post would be refused with the restart line",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    expired: () => operator !== undefined && Date.now() >= operator.expiresAt,\n",
       "replace": "    expired: () => operator !== undefined && Date.now() < operator.expiresAt,\n",
       "expectRed": "5.8 the poster reports an expired credential only once it has expired",
@@ -111,7 +111,7 @@
     },
     {
       "name": "P14 the operator credential lives 30 days, past the 2^31-1 ms timer core arms at its expiry, which turns library reconnect off 1 ms after every connect",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "export const OPERATOR_TTL_SECONDS = 24 * 24 * 3600;\n",
       "replace": "export const OPERATOR_TTL_SECONDS = 30 * 24 * 3600;\n",
       "expectRed": "6.1 the operator credential lives 24 days, under the 2^31-1 ms a timer in core can hold",
@@ -119,7 +119,7 @@
     },
     {
       "name": "P15 the expiry is kept in seconds where the poster compares milliseconds, so a 24-day credential reads as expired since 1970",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "  return { creds, lifecycleUid: mintLifecycleUid(), expiresAt: exp * 1000 };\n",
       "replace": "  return { creds, lifecycleUid: mintLifecycleUid(), expiresAt: exp };\n",
       "expectRed": "6.2 the poster keeps the expiry the credential carries",
@@ -127,7 +127,7 @@
     },
     {
       "name": "P16 a failed start is never cleared, so every later post shares the first failure and the dashboard cannot post again until it restarts",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      starting = undefined;\n",
       "replace": "",
       "expectRed": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
@@ -135,7 +135,7 @@
     },
     {
       "name": "P17 a failed start is not replaced, so the retry starts the endpoint that was already stopped and the operator never joins",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      endpoint = build();\n",
       "replace": "",
       "expectRed": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
@@ -143,7 +143,7 @@
     },
     {
       "name": "P18 the open-mesh id is drawn per build, so a start retried after a failure posts under a new id and splits the operator's DM threads",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "  const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, \"\") }), name: \"operator\", role: \"operator\", kind: \"endpoint\" as const };\n  const build = (): CotalEndpoint => {\n",
       "replace": "  const build = (): CotalEndpoint => {\n    const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, \"\") }), name: \"operator\", role: \"operator\", kind: \"endpoint\" as const };\n",
       "expectRed": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
@@ -151,7 +151,7 @@
     },
     {
       "name": "P19 a stopped poster still answers a post with the endpoint it stopped, so a send during shutdown goes out from an operator that has already left",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      if (closed) return Promise.reject(new Error(POSTER_STOPPED));\n",
       "replace": "",
       "expectRed": "5.10 after the poster stops, a post is refused",
@@ -159,7 +159,7 @@
     },
     {
       "name": "P20 a start still in flight when the poster stops hands back its endpoint as if the post could go out, though shutdown has already begun",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    if (closed) {\n      await e.stop();\n      throw new Error(POSTER_STOPPED);\n    }\n",
       "replace": "",
       "expectRed": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
@@ -167,7 +167,7 @@
     },
     {
       "name": "P21 a start still in flight when the poster stops is refused but never stopped, so the endpoint it started stays online after the dashboard has gone",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "    if (closed) {\n      await e.stop();\n",
       "replace": "    if (closed) {\n",
       "expectRed": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
@@ -175,7 +175,7 @@
     },
     {
       "name": "P22 a failed start is stopped without waiting, so the retry starts its successor first and the failed one's offline record lands over the successor's online one under the same id",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-post.ts",
       "find": "      await e.stop().catch(() => undefined);\n",
       "replace": "      void e.stop().catch(() => undefined);\n",
       "expectRed": "5.13 a start that fails after connecting is stopped before the retry starts, so its offline record cannot land over the retried operator's online one",

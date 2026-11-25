@@ -12,6 +12,8 @@
 export interface OpenCode2Event {
   id?: string;
   type: string;
+  /** When the server created the event, in milliseconds since the epoch. */
+  created?: number;
   /** The event's position in its aggregate's durable log, on every durable event (the
    *  `session.execution.*` lifecycle included, keyed by session). */
   durable?: { aggregateID: string; seq: number };

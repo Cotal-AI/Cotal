@@ -1,7 +1,10 @@
 """Persistent client to the Cotal sidecar's bridge socket.
 
 The sidecar (``src/sidecar.ts``) owns the mesh endpoint and exposes a unix-socket bridge; this is
-the in-gateway half. One background thread owns a blocking ``AF_UNIX`` connection and dispatches
+the in-gateway half. Every (re)connect opens with a ``subscribe`` carrying the bridge token, which
+``control_exchange.bridge_token`` derives from the launch's control key, so the key itself never
+crosses this socket. The socket sits beside the control socket, in a directory only this user can
+enter, and every dial checks that directory first. One background thread owns a blocking ``AF_UNIX`` connection and dispatches
 frames — inbound mesh messages go to the adapter's callback, tool results resolve pending calls.
 Writes are newline-delimited JSON under a lock; it reconnects with backoff so a sidecar restart
 self-heals (re-subscribing on every (re)connect). Wire format mirrors ``src/bridge.ts``.
@@ -17,7 +20,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from .hooks import _material_token
+from .control_exchange import bridge_token, control_key, socket_dir_problem
 
 _BACKOFF_S = 2.0
 
@@ -30,18 +33,30 @@ _REOPEN_JOIN_SECONDS = 2.0
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._path = socket_path
-        # Resolved once, the same pair `hooks.relay` reads: standalone mode exports
-        # COTAL_CONTROL_TOKEN directly; a managed launch carries it in the launch material only.
-        self._token = os.environ.get("COTAL_CONTROL_TOKEN") or _material_token()
-        if not self._token:
+        # Resolved once, the same key `hooks.relay` reads: standalone mode exports COTAL_CONTROL_KEY
+        # and COTAL_CONTROL_VERSION directly; a managed launch carries both in the launch material only.
+        key = control_key()
+        if not key:
             raise RuntimeError(
-                "no control token could be resolved (neither COTAL_CONTROL_TOKEN nor a readable "
-                "COTAL_LAUNCH_MATERIAL with one) — the bridge socket cannot be authenticated"
+                "no control key could be resolved (neither COTAL_CONTROL_KEY nor COTAL_LAUNCH_MATERIAL "
+                "carries one) — the bridge socket cannot be authenticated"
             )
+        self._token = bridge_token(key)
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
         self._on_incoming: Optional[Callable[[dict], None]] = None
+        self._on_turn: Optional[Callable[[dict], None]] = None
+        self._on_request: Optional[Callable[[dict], None]] = None
+        self._on_approval: Optional[Callable[[dict], None]] = None
+        self._on_clarify: Optional[Callable[[dict], None]] = None
+        # How many Cotal messages and turns the gateway has in progress, as last reported, and
+        # reported again on every (re)subscribe.
+        self._busy = 0
+        self._on_refused: Optional[Callable[[str], None]] = None
+        # Why this bridge refuses to dial, once its socket's directory has been found present and not
+        # private to this user. That is a configuration fault no retry repairs, so it is permanent.
+        self._refused: Optional[str] = None
         self._stop = threading.Event()
         self._reader: Optional[threading.Thread] = None
         # Generation of the CURRENT reader. Bumped by close() and reopen(); each reader captures
@@ -49,14 +64,33 @@ class BridgeClient:
         # correctness never depends on guessing whether a dying thread has finished dying.
         self._gen = 0
 
-    def start(self, on_incoming: Callable[[dict], None]) -> None:
-        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message.
+    def start(
+        self,
+        on_incoming: Callable[[dict], None],
+        on_refused: Optional[Callable[[str], None]] = None,
+        on_turn: Optional[Callable[[dict], None]] = None,
+        on_request: Optional[Callable[[dict], None]] = None,
+        on_approval: Optional[Callable[[dict], None]] = None,
+        on_clarify: Optional[Callable[[dict], None]] = None,
+    ) -> None:
+        """Begin the reader thread. ``on_incoming`` is called (off-loop) for each mesh message,
+        ``on_turn`` for each turn in the user's own words (``{t:"turn", id, text, images?}``),
+        ``on_request`` for each ``interrupt``, ``usage`` or ``commands`` request (answered with
+        ``answer``), ``on_approval`` for each owner's answer to an approval (``approval_answer``),
+        ``on_clarify`` for each owner's answer to a clarify question (``clarify_answer``), and
+        ``on_refused`` (off-loop, once) if the reader stops because the socket's directory is not
+        private to this user.
 
         A reader is started only when none is installed for the CURRENT generation. Holding the
         lock across the check and the install closes the window where two concurrent starts could
         each see None and put two readers on one socket.
         """
         self._on_incoming = on_incoming
+        self._on_turn = on_turn
+        self._on_request = on_request
+        self._on_approval = on_approval
+        self._on_clarify = on_clarify
+        self._on_refused = on_refused
         with self._lock:
             if self._reader is not None:
                 return
@@ -87,9 +121,12 @@ class BridgeClient:
                 # before this re-check: RETIRED_READER_READ_FOREIGN_SOCKET True.
                 if self._stop.is_set() or gen != self._gen:
                     return
+                if self._refused:
+                    return  # the socket's directory is not private: refusal() has reported it
                 if self._sock is None:
                     continue
                 self._send({"t": "subscribe", "token": self._token})  # (re)subscribe after every (re)connect
+                self._send({"t": "busy", "count": self._busy})
             # Read through a local handle. Re-reading `self._sock` here would race a concurrent
             # reassignment between the guard above and the recv below.
             sock = self._sock
@@ -142,6 +179,11 @@ class BridgeClient:
         while not self._stop.is_set():
             if gen is not None and gen != self._gen:
                 return  # retired while dialing: this socket is not wanted
+            if self.refusal():
+                return  # permanent: the reader stops and the adapter reports it
+            if socket_dir_problem(self._path):
+                time.sleep(_BACKOFF_S)  # the directory is not there yet: the sidecar is not up
+                continue
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.connect(self._path)
@@ -159,6 +201,22 @@ class BridgeClient:
             except OSError:
                 time.sleep(_BACKOFF_S)
 
+    def refusal(self) -> Optional[str]:
+        """Why this bridge will not dial, or ``None``. Checks the socket's directory now: a directory
+        that is absent reads as a sidecar not up yet and is retried, but one that exists and is not
+        private to this user is a permanent refusal, reported once on stderr and to ``on_refused``."""
+        if self._refused:
+            return self._refused
+        problem = socket_dir_problem(self._path)
+        if not problem or problem[0]:
+            return None
+        self._refused = f"{problem[1]}, so the bridge socket {self._path} is not dialed"
+        print(f"[cotal-hermes] {self._refused}", file=sys.stderr, flush=True)
+        cb = self._on_refused
+        if cb:
+            cb(self._refused)
+        return self._refused
+
     def _dispatch(self, line: bytes) -> None:
         try:
             frame = json.loads(line)
@@ -169,6 +227,20 @@ class BridgeClient:
             cb = self._on_incoming
             if cb:
                 cb(frame.get("msg") or {})
+        elif t == "turn":
+            cb = self._on_turn
+            if cb:
+                cb(frame)
+        elif t in ("interrupt", "usage", "commands"):
+            cb = self._on_request
+            if cb:
+                cb(frame)
+            else:
+                self.answer(str(frame.get("id") or ""), error="the cotal adapter is not started")
+        elif t in ("approval_answer", "clarify_answer"):
+            cb = self._on_approval if t == "approval_answer" else self._on_clarify
+            if cb:
+                cb(frame)
         elif t == "tool_result":
             entry = self._pending.get(frame.get("id"))
             if entry:
@@ -177,15 +249,17 @@ class BridgeClient:
 
     # ---- writes --------------------------------------------------------------
 
-    def _send(self, frame: dict) -> None:
+    def _send(self, frame: dict) -> bool:
         data = (json.dumps(frame) + "\n").encode()
         with self._lock:
             if self._sock is None:
-                return
+                return False
             try:
                 self._sock.sendall(data)
             except OSError:
                 self._sock = None
+                return False
+        return True
 
     def delivered(self, recv_key: str) -> None:
         """Ack a message on the stream — call only once it has been surfaced into a turn.
@@ -200,6 +274,46 @@ class BridgeClient:
         """Tell the sidecar delivery ``recv_key`` was not taken into a turn: it stays unacked, and
         the sidecar offers it again later while the messages behind it keep flowing."""
         self._send({"t": "deferred", "recvKey": recv_key})
+
+    def turn_taken(self, turn_id: str, error: Optional[str] = None) -> None:
+        """Tell the sidecar whether the gateway took turn ``turn_id``."""
+        self._send({"t": "turn_taken", "id": turn_id} if error is None else {"t": "turn_refused", "id": turn_id, "error": error})
+
+    def busy(self, count: int) -> None:
+        """Report how many Cotal messages and turns the gateway has in progress."""
+        self._busy = count
+        self._send({"t": "busy", "count": count})
+
+    def answer(self, request_id: str, data: Optional[dict] = None, error: Optional[str] = None) -> None:
+        """Answer the sidecar's request ``request_id`` with its data, or why it failed."""
+        self._send({"t": "answer", "id": request_id, "ok": True, "data": data or {}} if error is None else {"t": "answer", "id": request_id, "ok": False, "error": error})
+
+    def approval(self, frame: dict) -> bool:
+        """Ask the sidecar to put one of Hermes's approvals behind the prompt desk (approvals.py).
+        False when no connection took the frame."""
+        return self._send(frame)
+
+    def approval_end(self, session_key: str, outcome: str) -> None:
+        """Report that the oldest approval waiting in ``session_key`` stopped waiting."""
+        self._send({"t": "approval_end", "session": session_key, "outcome": outcome})
+
+    def clarify(self, frame: dict) -> bool:
+        """Ask the sidecar to put one of Hermes's clarify questions on the prompt desk (clarify.py).
+        False when no connection took the frame."""
+        return self._send(frame)
+
+    def clarify_end(self, clarify_id: str, resolved: bool) -> None:
+        """Report that Hermes stopped waiting on question ``clarify_id``, with the owner's answer
+        (``resolved``) or without it."""
+        self._send({"t": "clarify_end", "id": clarify_id, "resolved": resolved})
+
+    def delta(self, key: str, text: str) -> None:
+        """Text a reply added while the model wrote it, for the event plane's stream ``key``."""
+        self._send({"t": "delta", "key": key, "text": text})
+
+    def delta_end(self, key: str) -> None:
+        """End stream ``key``, which no saved response will close."""
+        self._send({"t": "delta_end", "key": key})
 
     def reply(
         self, target: dict, text: str, reply_to: Optional[str] = None, context_id: Optional[str] = None

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { countedAssert, skipSuite } from "@cotal-ai/smoke-kit";
+import { claimGlobalNpmUpdateLock } from "@cotal-ai/workspace";
 
 if (process.platform !== "linux" && process.platform !== "darwin") skipSuite("staged npm execution update requires POSIX");
 if (process.getuid?.() === 0) skipSuite("unwritable install requires an unprivileged account");
@@ -19,27 +21,123 @@ mkdirSync(installed, { recursive: true });
 cpSync(join(repo, "bin/dist"), join(installed, "dist"), { recursive: true });
 cpSync(join(repo, "bin/package.json"), join(installed, "package.json"));
 symlinkSync(join(repo, "bin/node_modules"), join(installed, "node_modules"));
+mkdirSync(join(prefix, "bin"));
+symlinkSync("../lib/node_modules/cotal-ai/dist/cotal.js", join(prefix, "bin/cotal"));
 const home = join(root, "home"), config = join(root, "config"), cotal = join(root, "cotal"), runtime = join(root, "runtime");
 for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700 });
 const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
-const env = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
-const run = () => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+const env: NodeJS.ProcessEnv = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", npm_config_prefix: prefix };
+const run = (overrides: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 30_000 });
+const offlineRegistry = { npm_config_registry: "http://127.0.0.1:1", npm_config_fetch_retries: "0", npm_config_fetch_timeout: "1000" };
+const packagesKept = "The registry cannot be reached; no installed packages were replaced.";
+const noChange = "The registry cannot be reached; nothing was changed.";
 const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
-chmodSync(installed, 0o555); chmodSync(join(installed, "dist"), 0o555); chmodSync(join(prefix, "lib"), 0o555);
+const connectorRoot = join(config, "cotal"), extensions = join(connectorRoot, "extensions"), seed = join(connectorRoot, "seed");
+mkdirSync(extensions, { recursive: true, mode: 0o700 });
 try {
+  const directories = [installed, join(installed, "dist"), join(prefix, "lib/node_modules"), join(prefix, "lib")];
+  for (const paths of [directories, [join(prefix, "lib/node_modules")], [extensions], []]) {
+    for (const path of paths) chmodSync(path, 0o500);
+    // Registry unavailability returns success after permission preflight without replacing packages.
+    const repaired = run(offlineRegistry);
+    check.equal(repaired.status, 0, repaired.stderr);
+    check.equal(repaired.stdout.trim(), paths.length ? packagesKept : noChange);
+    check.equal(existsSync(join(cotal, "update-recovery.json")), false, "offline update leaves an absent recovery file absent");
+    check.doesNotMatch(repaired.stderr, /sudo npm|EACCES|Request refused/);
+    for (const path of paths) check.equal(lstatSync(path).mode & 0o777, 0o700, "only owner write is restored");
+    const release = claimGlobalNpmUpdateLock(join(prefix, "lib/node_modules"));
+    release();
+    check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  }
+  // The verified prefix is already live. Only a directory in the old rollback tree needs repair.
+  const journal = join(connectorRoot, ".extensions-promotion.json");
+  const old = join(connectorRoot, ".extensions.rollback-fixture"), oldChild = join(old, "child");
+  mkdirSync(oldChild, { recursive: true, mode: 0o700 });
+  writeFileSync(join(oldChild, "state"), "old");
+  chmodSync(oldChild, 0o500);
+  const liveState = join(extensions, "state");
+  writeFileSync(liveState, "live");
+  const identity = (path: string) => {
+    const { dev, ino, birthtimeMs } = lstatSync(path);
+    return { dev: String(dev), ino: String(ino), birth: birthtimeMs };
+  };
+  const liveIdentity = identity(extensions);
+  writeFileSync(journal, JSON.stringify({ v: 1, root: extensions, stage: join(connectorRoot, ".extensions.stage-fixture"), old, stageIdentity: liveIdentity, oldIdentity: identity(old) }));
+  const recovered = run(offlineRegistry);
+  check.equal(recovered.status, 0, recovered.stderr);
+  check.equal(recovered.stderr, "");
+  check.equal(recovered.stdout.trim(), packagesKept);
+  check.equal(existsSync(old), false);
+  check.equal(existsSync(journal), false);
+  check.deepEqual(identity(extensions), liveIdentity);
+  check.equal(readFileSync(liveState, "utf8"), "live");
+  check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  check.equal(existsSync(join(cotal, "update-recovery.json")), false);
+  check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  const unchanged = run(offlineRegistry);
+  check.equal(unchanged.status, 0, unchanged.stderr);
+  check.equal(unchanged.stdout.trim(), noChange);
+  console.log("Offline self-update reports completed extension promotion recovery and an unchanged retry.");
+  // A read-only filesystem still refuses. Inject only chmod's EROFS, keeping the real access check.
+  const readOnly = join(root, "read-only.mjs");
+  writeFileSync(readOnly, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const chmod = fs.chmodSync;
+fs.chmodSync = (path, mode) => { if (path === ${JSON.stringify(installed)}) throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' }); return chmod(path, mode); };
+syncBuiltinESMExports();\n`);
+  const nodeOptions = env.NODE_OPTIONS;
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  chmodSync(seed, 0o500);
+  chmodSync(connectorRoot, 0o500);
+  const repairedConfig = run(offlineRegistry);
+  check.equal(repairedConfig.status, 0, repairedConfig.stderr);
+  check.equal(lstatSync(seed).mode & 0o777, 0o700);
+  check.equal(lstatSync(connectorRoot).mode & 0o777, 0o700);
+  const readOnlyConnector = join(root, "read-only-connector.mjs");
+  writeFileSync(readOnlyConnector, readFileSync(readOnly, "utf8").replace(JSON.stringify(installed), JSON.stringify(seed)));
+  chmodSync(seed, 0o500);
+  try {
+    const denied = run({ NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(readOnlyConnector).href}` });
+    check.equal(denied.status, 2, denied.stderr);
+    check.ok(denied.stderr.includes(seed), denied.stderr);
+    check.match(denied.stderr, /No CLI update was staged/);
+    check.match(denied.stderr, /run `cotal update --self` again/);
+    check.doesNotMatch(denied.stdout, /Checking .*release archives/);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  } finally { chmodSync(seed, 0o700); }
+  // Represent root ownership on runners that cannot chown to root. Keep the real write-access check.
+  const rootOwned = join(root, "root-owned.mjs");
+  writeFileSync(rootOwned, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const lstat = fs.lstatSync;
+fs.lstatSync = (path, ...args) => { const stat = lstat(path, ...args); if (path === ${JSON.stringify(installed)}) stat.uid = 0; return stat; };
+syncBuiltinESMExports();\n`);
+  const tools = join(root, "tools"), invoked = join(root, "privilege-tool-invoked");
+  mkdirSync(tools);
+  const installCommand = `npm install -g --prefix '${prefix.replace(/'/g, "'\\''")}' cotal-ai@latest`;
+  chmodSync(installed, 0o500);
+  for (const tool of [undefined, "doas", "sudo"] as const) {
+    if (tool) writeFileSync(join(tools, tool), '#!/bin/sh\nprintf invoked > privilege-tool-invoked\nexit 1\n', { mode: 0o700 });
+    const result = run({ PATH: tools, NODE_OPTIONS: `${nodeOptions ?? ""} --import=${pathToFileURL(rootOwned).href}` });
+    const administrator = tool ? `run: ${tool} ${installCommand}` : `run as root: ${installCommand}`;
+    const followup = tool ? `, without ${tool}` : "";
+    check.equal(result.status, 2, result.stderr);
+    check.ok(result.stderr.includes(`installation is not writable; have an administrator ${administrator}; then run \`cotal update\` as your normal account${followup}; no changes were made`), result.stderr);
+    check.match(result.stderr, /DEPENDENCY_UNAVAILABLE/);
+    check.match(result.stderr, /Native outcome:\s+not-executed/);
+    check.equal(existsSync(invoked), false);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+    check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  }
+  env.NODE_OPTIONS = `${nodeOptions ?? ""} --import=${pathToFileURL(readOnly).href}`;
   const refused = run();
   writeFileSync(join(root, "unwritable.stderr.log"), refused.stderr ?? "");
   check.equal(refused.status, 2, refused.stderr);
   check.match(refused.stderr, /Request refused/);
-  check.match(refused.stderr, /installation is not writable/);
+  check.match(refused.stderr, /installation directory is not writable/);
   check.match(refused.stderr, /no changes were made/);
-  check.match(refused.stderr, /have an administrator run: sudo npm install -g --prefix .*cotal-ai@latest/);
-  check.match(refused.stderr, /then run `cotal update` as your normal account, without sudo/);
-  const command = refused.stderr.match(/have an administrator run: (.*?); then run `cotal update`/)?.[1];
-  check.ok(command, refused.stderr);
-  const argumentsOnly = spawnSync("sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { env, encoding: "utf8", timeout: 10_000 });
-  check.equal(argumentsOnly.status, 0, argumentsOnly.stderr);
-  check.deepEqual(argumentsOnly.stdout.trimEnd().split("\n"), ["sudo", "npm", "install", "-g", "--prefix", prefix, "cotal-ai@latest"]);
+  check.match(refused.stderr, /restore write access to this user-owned directory/);
+  check.match(refused.stderr, /then run `cotal update --self` again without sudo/);
+  check.doesNotMatch(refused.stderr, /sudo npm/);
   check.doesNotMatch(refused.stderr, /Outcome unconfirmed|OPERATION_UNKNOWN/);
   check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
   check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
@@ -52,7 +150,7 @@ try {
     writeFileSync(attemptPath, JSON.stringify({ version: "99.0.0", failures: 1, result: "due", next: 0 }));
     writeFileSync(join(cotal, "update-check.json"), JSON.stringify({ v: 1, latest: "99.0.0", attemptedAt: Date.now(), checkedAt: Date.now(), firstSeenAt: Date.now() - 3_601_000 }));
     for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
-    Object.assign(process.env, { HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, DO_NOT_TRACK: "1", NO_COLOR: "1" });
+    Object.assign(process.env, { HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, DO_NOT_TRACK: "1", NO_COLOR: "1", NODE_OPTIONS: env.NODE_OPTIONS });
     const { automaticUpdates } = await import(pathToFileURL(join(installed, "dist/daemon/auto-update.js")).href) as typeof import("../daemon/auto-update.js");
     const reports: string[] = [];
     const daemon = automaticUpdates({ version: "0.0.1", eligible: () => true, prepare: async () => {}, abort: async () => {}, report: line => reports.push(line) });
@@ -72,6 +170,10 @@ try {
     } finally { await daemon.close(); }
   }
   check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  if (nodeOptions === undefined) delete env.NODE_OPTIONS;
+  else env.NODE_OPTIONS = nodeOptions;
+  chmodSync(installed, 0o700);
+  checkRetiredConnectorRecovery();
   chmodSync(installed, 0o755);
   writeFileSync(join(installed, "desktop-runtime.json"), "{}");
   const desktop = run();
@@ -84,4 +186,43 @@ try {
   console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
 } finally {
   chmodSync(installed, 0o755); chmodSync(join(installed, "dist"), 0o755); chmodSync(join(prefix, "lib"), 0o755);
+}
+
+function checkRetiredConnectorRecovery(): void {
+  const entry = realpathSync(join(installed, "dist/cotal.js"));
+  const { version } = JSON.parse(packageBefore) as { version: string };
+  const sets = join(connectorRoot, "installs", createHash("sha256").update(entry).digest("hex"), "sets");
+  const set = join(sets, version), active = join(set, "cotal"), retired = join(set, ".retired-cotal");
+  const selected = join(set, "selection.json"), current = join(sets, "current.json");
+  const selection = JSON.stringify({ v: 1, entry, version, root: active });
+  mkdirSync(join(retired, "extensions/child"), { recursive: true });
+  writeFileSync(join(retired, "extensions/child/state"), "restored");
+  writeFileSync(selected, selection);
+  writeFileSync(current, selection);
+
+  for (const phase of ["restore", "cleanup"]) {
+    if (phase === "cleanup") {
+      renameSync(active, retired);
+      chmodSync(join(retired, "extensions/child"), 0o500);
+      mkdirSync(join(active, "extensions"), { recursive: true });
+      writeFileSync(join(active, "extensions/state"), "retained");
+    }
+    const restore = phase === "restore";
+    const inode = lstatSync(restore ? retired : active).ino;
+    const result = run(offlineRegistry);
+    check.equal(result.status, 0, result.stderr);
+    check.equal(result.stderr, "");
+    check.equal(result.stdout.trim(), packagesKept, phase);
+    check.equal(existsSync(retired), false);
+    check.equal(lstatSync(active).ino, inode);
+    check.equal(readFileSync(join(active, restore ? "extensions/child/state" : "extensions/state"), "utf8"), restore ? "restored" : "retained");
+    for (const record of [selected, current]) check.equal(readFileSync(record, "utf8"), selection);
+    check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+    check.equal(existsSync(join(cotal, "update-recovery.json")), false);
+    check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  }
+  const retry = run(offlineRegistry);
+  check.equal(retry.status, 0, retry.stderr);
+  check.equal(retry.stdout.trim(), noChange);
+  console.log("Offline self-update reports retained connector restoration and cleanup, and an unchanged retry.");
 }

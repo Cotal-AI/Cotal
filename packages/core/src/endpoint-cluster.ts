@@ -22,7 +22,7 @@
 import { contractDigest, isContractDigest } from "./canonical.js";
 import { parseClosureManifest, type ContractClosureManifest } from "./contract-manifest.js";
 import { ContractInvalidError, singleDocumentClosure } from "./schema-profile.js";
-import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, type EpAuthzMode } from "./endpoint-subjects.js";
+import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, isPrincipalAuthority, type EpAuthzMode, type PrincipalAuthority } from "./endpoint-subjects.js";
 import type { EpClass } from "./endpoint-envelope.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -72,6 +72,10 @@ export interface ClusterCommand {
   class: EpClass;
   targeted: boolean;
   modes?: EpAuthzMode[];
+  /** Present exactly when the command is served on the principal route: the authority words it
+   *  admits there (SPEC 13.21). A command with this field is never served on a service route, and
+   *  a command without it is never served on the principal route. */
+  authorities?: PrincipalAuthority[];
   capability: string;
   /** CLOSURE digests of the input/output schema bundles (§13.7: what `op` pins). */
   inputDigest: string;
@@ -110,6 +114,7 @@ export function buildClusterDocument(
     name: string;
     targeted: boolean;
     modes?: ReadonlyArray<EpAuthzMode>;
+    authorities?: ReadonlyArray<PrincipalAuthority>;
     capability: string;
     input: unknown;
     output: unknown;
@@ -125,6 +130,7 @@ export function buildClusterDocument(
       class: "ephemeral" as const,
       targeted: r.targeted,
       ...(r.modes ? { modes: [...r.modes] } : {}),
+      ...(r.authorities ? { authorities: [...r.authorities] } : {}),
       capability: r.capability,
       inputDigest: singleDocumentClosure(r.input).closureDigest,
       outputDigest: singleDocumentClosure(r.output).closureDigest,
@@ -168,6 +174,26 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
     seen.add(name);
     if (cmd.class !== "ephemeral" && cmd.class !== "journal") invalid(`command "${name}" class ${JSON.stringify(cmd.class)} is not "ephemeral" | "journal"`);
     if (typeof cmd.targeted !== "boolean") invalid(`command "${name}" must declare targeted as a boolean (SPEC 13.7)`);
+    // THE PRINCIPAL ROUTE'S AUTHORITY WORDS (SPEC 13.21). The head of a principal-route subject is
+    // the target, so the command is untargeted and declares no §13.2 mode: the words are this
+    // route's own closed set. Declared per command so a word added to the set later admits nothing
+    // a revision-1 declaration did not list.
+    let authorities: PrincipalAuthority[] | undefined;
+    if (cmd.authorities !== undefined) {
+      if (cmd.targeted !== false)
+        invalid(`command "${name}" declares authorities and targeted: true; a principal-route command is untargeted, its subject head is the target (SPEC 13.21)`);
+      if (cmd.modes !== undefined)
+        invalid(`command "${name}" declares authorities beside authorization modes; the two belong to different routes (SPEC 13.21)`);
+      if (!Array.isArray(cmd.authorities) || cmd.authorities.length === 0)
+        invalid(`command "${name}" authorities must be a non-empty array of authority words (SPEC 13.21)`);
+      const uniq = new Set<string>();
+      for (const w of cmd.authorities) {
+        if (typeof w !== "string" || !isPrincipalAuthority(w)) invalid(`command "${name}" admits unknown authority ${JSON.stringify(w)}`);
+        if (uniq.has(w)) invalid(`command "${name}" admits authority "${w}" twice`);
+        uniq.add(w);
+      }
+      authorities = [...(cmd.authorities as PrincipalAuthority[])];
+    }
     let modes: EpAuthzMode[] | undefined;
     if (cmd.targeted) {
       if (!Array.isArray(cmd.modes) || cmd.modes.length === 0)
@@ -242,6 +268,7 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
     return {
       name, class: cmd.class, targeted: cmd.targeted,
       ...(modes ? { modes } : {}),
+      ...(authorities ? { authorities } : {}),
       capability: cmd.capability, inputDigest: cmd.inputDigest, outputDigest: cmd.outputDigest,
       ...(traits ? { traits } : {}),
       ...(action ? { action } : {}),

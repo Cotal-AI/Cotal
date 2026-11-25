@@ -1,0 +1,4 @@
+# Streamed deltas merge into a harness source in one order across restarts, a late line from
+# another process publishes once, the journal writes at most one line per 250 ms, and an
+# abandoned stream ends once, across a restart, so its run can close.
+smoke:delta-merge

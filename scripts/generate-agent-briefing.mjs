@@ -8,6 +8,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BRIEFING_HARNESSES, briefing } from "../extensions/connector-core/src/briefing.ts";
+import { GATEWAY_TOOLS } from "../extensions/connector-core/src/gateway.ts";
 import { markdownToMdx } from "@cotal-ai/docs-content/generate";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -15,7 +16,10 @@ const out = join(here, "..", "docs", "agent-briefing.mdx");
 
 // A representative agent: named, with a role, without a feedback key, so the page shows the
 // keyless feedback sentence an agent on a plain mesh reads.
-const config = { name: "alice", role: "reviewer", space: "main" };
+const config = {
+  name: "alice", role: "reviewer", space: "main", servers: "nats://127.0.0.1:4222", kind: "agent", tls: false,
+  subscribe: [], allowSubscribe: [], allowPublish: [],
+};
 
 /** Where each harness places the text, for the heading under each rendering. */
 const PLACEMENT = {
@@ -25,11 +29,11 @@ const PLACEMENT = {
   opencode: "OpenCode: the system prompt of the first turn, after the persona. A seat with no persona gets none, because OpenCode's system prompt can only be replaced, never extended.",
   hermes: "Hermes: `SOUL.md` in the managed profile, after the persona. A seat with no persona gets none, for the same reason.",
   pi: "pi: appended to the system prompt while the send tools are active.",
-  gateway: "A conversation that joined with `cotal_connect` (the Claude Code plugin in a session you opened, Claude Desktop, or a hosted connector): the connect result, after the orientation card. How messages arrive is said by the connect result's own listening line, so the briefing leaves that sentence out.",
+  gateway: "A conversation that joined with `cotal_connect`: the connect result, after the orientation card. This example uses the default gateway tool set. A native connector can offer more tools to a conversation if its grant allows them.",
 };
 
 const sections = BRIEFING_HARNESSES.map(
-  (harness) => `## ${harness}\n\n${PLACEMENT[harness]}\n\n\`\`\`text\n${briefing(config, harness)}\n\`\`\`\n`,
+  (harness) => `## ${harness}\n\n${PLACEMENT[harness]}\n\n\`\`\`text\n${briefing(config, harness, harness === "gateway" ? GATEWAY_TOOLS : undefined)}\n\`\`\`\n`,
 );
 
 const metadata = [
@@ -46,9 +50,9 @@ const metadata = [
 const markdown = `Every connector hands its agent one briefing when the session starts: who it is, to orient
 first, to use its mesh tools rather than the command line, when to send feedback, to keep multi-agent
 work on the mesh, when a durable workflow run is the right tool, where to talk, how a peer message
-reaches it, how to reply, and the reply etiquette. The paragraphs are written once, in the connector
-core, and each harness adds only the sentence that says how a peer message appears in its model's
-context. This page is rendered from that module for an agent named \`alice\` with the role \`reviewer\`
+reaches it, how to reply, and the reply etiquette. Connector core renders the guidance from the tools
+the connection can call. Each harness adds how a peer message appears in its model's context.
+This page is rendered from that module for an agent named \`alice\` with the role \`reviewer\`
 in the space \`main\`, so a wording change shows up here as a diff of what each harness will read.
 
 The briefing is the ambient text. The live facts (identity, access, who is present, unread

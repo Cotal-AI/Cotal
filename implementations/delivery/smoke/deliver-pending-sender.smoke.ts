@@ -42,7 +42,7 @@ import {
 import { freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const EXPECTED = 29;
+const EXPECTED = 30;
 let pass = 0;
 let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -249,8 +249,15 @@ try {
   check("deliver pending --json respects the candidate limit in its one document",
     limitedLegacy.code === 0 && JSON.stringify(parse(limitedLegacy)?.result?.candidates) === JSON.stringify(expectedCandidates.slice(0, 2)), limitedLegacy);
   const absentName = await run(["deliver", "pending", "nobody-6007", ...namedArgs.slice(3), "--json"]);
+  const refusal = parse(absentName);
   check("an absent name returns one refused JSON document with no inferred empty durable",
-    absentName.code === 2 && parse(absentName)?.outcome === "refused" && parse(absentName)?.error?.code === "TARGET_NOT_FOUND", absentName);
+    absentName.code === 2 && refusal?.outcome === "refused" && refusal?.error?.code === "TARGET_NOT_FOUND" && refusal.result === null
+      && refusal.target?.space === space && refusal.target?.requested === "nobody-6007"
+      && refusal.error.message.includes(space) && refusal.error.message.includes("nobody-6007"), absentName);
+  const roster = await run(["who", "--all", "--space", space, "--server", servers, "--creds", adminCreds, "--json"]);
+  check("the absent recipient remedy reads the roster of the selected space and explicit broker",
+    refusal?.error?.remedy?.includes(`cotal who --all --space ${space} --server '${servers}' --creds ${adminCreds} --json`)
+      && roster.code === 0 && parse(roster)?.result?.items.some((row: { id: string }) => row.id === recipient.principal), { absentName, roster });
   const absentDurable = await run([...args.map((arg) => arg === durable ? dmDurable(DEV_OWNER, "absent", recipient.lifecycleUid) : arg), "--json"]);
   check("an absent lifecycle durable returns one refused JSON document",
     absentDurable.code === 2 && parse(absentDurable)?.outcome === "refused" && parse(absentDurable)?.error?.code === "TARGET_NOT_FOUND", absentDurable);

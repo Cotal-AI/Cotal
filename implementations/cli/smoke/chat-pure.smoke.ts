@@ -78,6 +78,15 @@ function frame(chunks: (string | Buffer)[], close = true): { lines: string[]; ov
   check("a line of exactly MAX_REQUEST_LINE code units is accepted", r.lines.length === 1 && r.lines[0].length === MAX_REQUEST_LINE && r.oversize === 0);
 }
 {
+  const line = "x".repeat(MAX_REQUEST_LINE);
+  const split = frame([line + "\r", "\n"]);
+  check("a line at the limit accepts CRLF split across chunks", split.lines[0] === line && split.oversize === 0);
+  const eof = frame([line + "\r"]);
+  check("a CR without LF counts toward the limit at end of input", eof.lines.length === 0 && eof.oversize === 1);
+  const over = frame([line + "\r", "\r\nok\n"]);
+  check("only the CR next to LF is excluded from the limit", JSON.stringify(over.lines) === '["ok"]' && over.oversize === 1);
+}
+{
   const r = frame(["x".repeat(MAX_REQUEST_LINE + 1) + "\nok\n"]);
   check("an oversize line in one chunk is dropped, reported once, and the next line survives", JSON.stringify(r.lines) === '["ok"]' && r.oversize === 1, { n: r.lines.length, o: r.oversize });
 }
@@ -113,7 +122,11 @@ check("not JSON → refused with id null", refused("{nope", null, /not valid JSO
 check("a JSON array → refused with id null", refused("[]", null, /JSON object/));
 check("a JSON string → refused with id null", refused('"x"', null, /JSON object/));
 check("missing id → id null", refused(JSON.stringify({ schemaVersion: 1, type: "roster" }), null, /request id/));
-check("id with a space → id null", refused(JSON.stringify({ schemaVersion: 1, id: "a b", type: "roster" }), null));
+check("an ASCII space is valid anywhere in an id", ["a b", " a ", " "].every((id) => {
+  const parsed = parseRequestLine(req({ type: "roster", id }));
+  return parsed.ok && parsed.request.id === id;
+}));
+check("empty, control and non-ASCII ids → id null", ["", "a\t", "a\n", "\x7f", "é"].every((id) => refused(req({ type: "roster", id }), null, /request id/)));
 check("id longer than MAX_REQUEST_ID → id null", refused(JSON.stringify({ schemaVersion: 1, id: "a".repeat(MAX_REQUEST_ID + 1), type: "roster" }), null));
 check("id of exactly MAX_REQUEST_ID is accepted", parseRequestLine(JSON.stringify({ schemaVersion: 1, id: "a".repeat(MAX_REQUEST_ID), type: "roster" })).ok);
 check("schemaVersion 2 → refused, id kept", refused(JSON.stringify({ schemaVersion: 2, id: "r1", type: "roster" }), "r1", /schemaVersion/));

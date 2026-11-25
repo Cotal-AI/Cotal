@@ -264,7 +264,7 @@ try {
     const persona = join(project, ".cotal", "agents", "default.md");
     assert.match(result.error.message, /persona file may be incomplete/);
     assert.equal(readFileSync(persona).length, 256);
-    assert.match(result.error.remedy, /file-size limit[\s\S]*cotal up/);
+    assert.match(result.error.remedy, /file-size limit[\s\S]*space create s --root/);
     assert.deepEqual(temporaryFiles(join(project, ".cotal", "agents")), []);
   });
 

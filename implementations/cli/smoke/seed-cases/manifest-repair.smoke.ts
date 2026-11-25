@@ -6,6 +6,12 @@ try {
     const cfg = track(freshCfg());
     listNames(cfg);
     writeFileSync(manifestPath(cfg), "{ broken");
+    for (const refused of [["ext", "list", "--plain"], ["ext", "add", "@cotal-ai/tmux"]]) {
+      const result = cotal(cfg, refused);
+      check(`${refused.join(" ")} names the preserving repair command`, result.status === 1 && result.stdout === "" &&
+        result.stderr.includes(manifestPath(cfg)) && /run `cotal ext seed --repair` to preserve the damaged file/.test(result.stderr) &&
+        readFileSync(manifestPath(cfg), "utf8") === "{ broken", result.stderr);
+    }
     const rep = cotal(cfg, args);
     const label = args.join(" ");
     check(`on-disk rebuild: ${label} exits 0 over a corrupt manifest`, rep.status === 0, rep.stderr);

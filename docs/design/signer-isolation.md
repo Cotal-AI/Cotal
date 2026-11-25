@@ -156,7 +156,7 @@ signer allowlist after §6, never as `cotal-agent`.
 | Profile | Function |
 |---|---|
 | `issuer` | `withIssuerSession` (`packages/core/src/issuer-session.ts`); any caller that already holds `SpaceAuth` |
-| `delivery` | `runDelivery` `--dev-mint` (`implementations/delivery/src/delivery.ts`); production delivery reads a pre-minted cred and does not load the signer |
+| `delivery` | `runDelivery` `--dev-mint` (`implementations/delivery/src/delivery-creds.ts`); production delivery reads a pre-minted cred and does not load the signer |
 | `run-mediator` / `run-admitter` | local `cotal run` (`implementations/runtime/src/run-command.ts`) from `conn.auth` |
 | `channel-purger` | `connectWithoutSeed` (`implementations/web/src/web.ts`), which returns the dashboard connection without `auth`, so no binding in `web()` holds the seed |
 | `session-serving` / `retirement-requester` / `endpoint-serve` / `remote-manager` / `goal-writer` / `session-ledger` | `mintPublicUserJwt` in `openAuthAuthorityPlane` (`implementations/auth/src/service.ts`): the `credential` helper at the `issueManagerServiceAuthority` arm, and the later session / retire / activate arms, each pass `issuerAuth()`, the stripped `SpaceAuth` from `dataAccountAuth` (`store.ts`) |

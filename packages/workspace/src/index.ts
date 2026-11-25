@@ -23,6 +23,7 @@ export * from "./maintenance.js";
 export * from "./store-entries.js";
 export * from "./manager-shutdown.js";
 export * from "./manager-name.js";
+export { loadRoster } from "./manager-roster.js";
 export * from "./seat-cap.js";
 export * from "./flags.js";
 // Lifted to @cotal-ai/core so the connector roster escapes presence text by the same rule;

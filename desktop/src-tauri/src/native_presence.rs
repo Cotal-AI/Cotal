@@ -2,6 +2,7 @@ use crate::presence::{has_connected_space, Preferences};
 use serde::Serialize;
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
+#[cfg(not(windows))]
 use tauri_plugin_autostart::ManagerExt;
 
 pub struct Presence(pub Mutex<Preferences>, pub Option<String>);
@@ -59,10 +60,130 @@ fn transient(app: &AppHandle) -> Result<bool, String> {
     { let _ = app; Ok(false) }
 }
 
+#[cfg(windows)]
+const MACHINE_LOGIN_REMAINS_MESSAGE: &str = "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.";
+
+#[cfg(windows)]
+fn windows_reg_string(
+    root: windows::Win32::System::Registry::HKEY,
+    subkey: windows::core::PCWSTR,
+    name: windows::core::PCWSTR,
+) -> Result<Option<String>, String> {
+    use windows::Win32::System::Registry::{RegGetValueW, RRF_NOEXPAND, RRF_RT_REG_SZ};
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(root, subkey, name, RRF_RT_REG_SZ | RRF_NOEXPAND, None, None, Some(&mut bytes))
+    };
+    if status.0 == 2 { return Ok(None); }
+    if status.0 != 0 { return Err(format!("Windows registry read failed ({}).", status.0)); }
+    let mut words = vec![0u16; (bytes as usize).div_ceil(2)];
+    let mut actual = (words.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(root, subkey, name, RRF_RT_REG_SZ | RRF_NOEXPAND, None, Some(words.as_mut_ptr().cast()), Some(&mut actual))
+    };
+    if status.0 == 2 { return Ok(None); }
+    if status.0 != 0 { return Err(format!("Windows registry read failed ({}).", status.0)); }
+    let words = &words[..(actual as usize / 2).min(words.len())];
+    let end = words.iter().position(|&c| c == 0).unwrap_or(words.len());
+    Ok(Some(String::from_utf16_lossy(&words[..end])))
+}
+
+#[cfg(windows)]
+const RUN_KEY: windows::core::PCWSTR = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+#[cfg(windows)]
+const APPROVED_KEY: windows::core::PCWSTR = windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run");
+#[cfg(windows)]
+const LOGIN_VALUE: windows::core::PCWSTR = windows::core::w!("Cotal");
+
+#[cfg(windows)]
+fn windows_hkcu_login_enabled() -> Result<bool, String> {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
+    if windows_reg_string(HKEY_CURRENT_USER, RUN_KEY, LOGIN_VALUE)?.is_none() { return Ok(false); }
+    let mut bytes = 0u32;
+    let status = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, APPROVED_KEY, LOGIN_VALUE, RRF_RT_REG_BINARY, None, None, Some(&mut bytes))
+    };
+    if status.0 == 2 { return Ok(true); }
+    if status.0 != 0 { return Err(format!("Windows startup approval read failed ({}).", status.0)); }
+    let mut buf = vec![0u8; bytes as usize];
+    let status = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, APPROVED_KEY, LOGIN_VALUE, RRF_RT_REG_BINARY, None, Some(buf.as_mut_ptr().cast()), Some(&mut bytes))
+    };
+    if status.0 == 2 { return Ok(true); }
+    if status.0 != 0 { return Err(format!("Windows startup approval read failed ({}).", status.0)); }
+    buf.truncate(bytes as usize);
+    Ok(crate::presence::windows_startup_approved_enabled(&buf))
+}
+
+#[cfg(windows)]
+fn windows_set_hkcu_login(enabled: bool) -> Result<(), String> {
+    use windows::{core::PCWSTR, Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegDeleteKeyValueW, RegOpenKeyExW, RegSetValueExW,
+        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_BINARY, REG_OPTION_NON_VOLATILE, REG_SZ,
+    }};
+    if !enabled {
+        let status = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, LOGIN_VALUE) };
+        return match status.0 {
+            0 | 2 => Ok(()),
+            code => Err(format!("Open at login could not be removed ({code}).")),
+        };
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let command = crate::presence::windows_login_command(&exe);
+    let bytes: Vec<u8> = command.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect();
+    let mut hkey = HKEY::default();
+    let status = unsafe {
+        RegCreateKeyExW(HKEY_CURRENT_USER, RUN_KEY, None, PCWSTR::null(), REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, None, &mut hkey, None)
+    };
+    if status.0 != 0 { return Err(format!("Open at login could not open the current-user Run key ({}).", status.0)); }
+    let status = unsafe {
+        let status = RegSetValueExW(hkey, LOGIN_VALUE, None, REG_SZ, Some(&bytes));
+        let _ = RegCloseKey(hkey);
+        status
+    };
+    if status.0 != 0 { return Err(format!("Open at login could not be written ({}).", status.0)); }
+    let mut approved = HKEY::default();
+    let status = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, APPROVED_KEY, None, KEY_SET_VALUE, &mut approved) };
+    if status.0 == 2 { return Ok(()); }
+    if status.0 != 0 { return Err(format!("Open at login startup approval key could not be opened ({}).", status.0)); }
+    let enabled_bytes = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let status = unsafe {
+        let status = RegSetValueExW(approved, LOGIN_VALUE, None, REG_BINARY, Some(&enabled_bytes));
+        let _ = RegCloseKey(approved);
+        status
+    };
+    if status.0 != 0 { return Err(format!("Open at login startup approval could not be updated ({}).", status.0)); }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reconcile_owned_hklm_login() -> Result<(), String> {
+    use windows::Win32::System::Registry::{RegDeleteKeyValueW, HKEY_LOCAL_MACHINE};
+    let Some(value) = windows_reg_string(HKEY_LOCAL_MACHINE, RUN_KEY, LOGIN_VALUE)? else { return Ok(()); };
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if !crate::presence::windows_run_matches_executable(&value, &exe) { return Ok(()); }
+    let status = unsafe { RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, RUN_KEY, LOGIN_VALUE) };
+    match status.0 {
+        0 | 2 => Ok(()),
+        5 => Err(MACHINE_LOGIN_REMAINS_MESSAGE.into()),
+        code => Err(format!("Machine-wide Open at login entry could not be removed ({code}).")),
+    }
+}
+
+fn is_login_enabled(app: &AppHandle) -> Result<bool, String> {
+    #[cfg(windows)]
+    { let _ = app; windows_hkcu_login_enabled() }
+    #[cfg(not(windows))]
+    { app.autolaunch().is_enabled().map_err(|e| e.to_string()) }
+}
+
 fn apply_login(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
     if preferences.recovered { return Ok(()); }
     let enabled = preferences.login_enabled() && !transient(app)?;
-    if app.autolaunch().is_enabled().map_err(|e| e.to_string())? != enabled {
+    if is_login_enabled(app)? != enabled {
+        #[cfg(windows)]
+        windows_set_hkcu_login(enabled)?;
+        #[cfg(not(windows))]
         if enabled { app.autolaunch().enable() } else { app.autolaunch().disable() }
             .map_err(|e| format!("Open at login could not be changed: {e}"))?;
     }
@@ -85,6 +206,8 @@ pub fn observe(app: &AppHandle, operation: &str, frame: &serde_json::Value) -> R
         p.connected = connected;
         apply_login(app, &p)?;
         if changed { save(app, &p)?; }
+        #[cfg(windows)]
+        if !p.recovered { reconcile_owned_hklm_login()?; }
     }
     Ok(())
 }
@@ -93,6 +216,9 @@ pub fn observe(app: &AppHandle, operation: &str, frame: &serde_json::Value) -> R
 #[serde(rename_all = "camelCase")]
 pub struct PresenceView {
     login_enabled: bool,
+    #[cfg(windows)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    login_error: Option<String>,
     relocation_offer: bool,
     pin_offer: bool,
     pin_message: String,
@@ -109,8 +235,16 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
     let (pin_offer, pin_message) = if connected && !pin_offered {
         pin_status(&app).await
     } else { (false, String::new()) };
+    #[cfg(windows)]
+    let login_error = {
+        let state = app.state::<Presence>();
+        let p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
+        if p.recovered { None } else { reconcile_owned_hklm_login().err() }
+    };
     Ok(PresenceView {
-        login_enabled: app.autolaunch().is_enabled().map_err(|e| e.to_string())?,
+        login_enabled: is_login_enabled(&app)?,
+        #[cfg(windows)]
+        login_error,
         relocation_offer: !relocation_declined && transient(&app)?,
         pin_offer,
         pin_message,
@@ -128,7 +262,10 @@ pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String>
     p.recovered = false;
     p.login = Some(enabled);
     apply_login(&app, &p)?;
-    save(&app, &p)
+    save(&app, &p)?;
+    #[cfg(windows)]
+    reconcile_owned_hklm_login()?;
+    Ok(())
 }
 
 #[tauri::command]

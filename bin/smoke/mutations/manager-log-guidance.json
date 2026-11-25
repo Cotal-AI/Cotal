@@ -8,7 +8,7 @@
   "mutations": [
     {
       "name": "the up success line goes back to the stale root-scoped manager log",
-      "file": "implementations/cli/src/commands/up.ts",
+      "file": "implementations/cli/src/commands/up-manifest.ts",
       "find": "a failed launch and its reason: ${managerLogDisplayPath(m.space)}`));",
       "replace": "a failed launch and its reason: .cotal/manager.log`));",
       "expectRed": "the up success line derives its logfile guidance",

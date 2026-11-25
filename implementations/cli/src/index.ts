@@ -11,35 +11,35 @@ import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { upCommand, upComplete, upFlags, validateUpArguments } from "./commands/up.js";
 import { runtimes, runtimesFlags } from "./commands/runtimes.js";
 import { down, downComplete, validateDownArguments } from "./commands/down.js";
-import { use, useComplete, useFlags } from "./commands/use.js";
+import { use, useComplete, useFlags, validateUseArguments } from "./commands/use.js";
 import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
-import { space, spaceComplete, spaceFlags } from "./commands/space.js";
+import { space, spaceComplete, spaceFlags, validateSpaceArguments } from "./commands/space.js";
 import { setup, setupFlags, validateSetupArguments } from "./commands/setup.js";
 import { setupStartEntry } from "./commands/setup-start.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions, validateSpawnArguments } from "./commands/spawn.js";
+import { refuseRemovedStart } from "./commands/removed-start.js";
 import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, inputArguments, managedAgentComplete, managedTarget, ps, psFlags, stop, stopFlags, validateStopArguments } from "./commands/agents.js";
-import { models, modelsComplete, modelsFlags } from "./commands/models.js";
-import { c } from "./ui.js";
+import { models, modelsComplete, modelsFlags, validateModelsArguments } from "./commands/models.js";
 import { watch, watchComplete, watchFlags, validateWatchArguments } from "./commands/watch.js";
-import { persona, personaComplete, personaFlags } from "./commands/persona.js";
+import { persona, personaComplete, personaFlags, validatePersonaArguments } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete, validateCompletionArguments } from "./commands/completion.js";
-import { config, configComplete, configFlags, configSubcommands } from "./commands/config.js";
+import { config, configComplete, configFlags, configSubcommands, validateConfigArguments } from "./commands/config.js";
 import { telemetry, telemetryFlags, validateTelemetryArguments } from "./commands/telemetry.js";
 import { trust, trustFlags, validateTrustArguments } from "./commands/trust.js";
 import { mint } from "./commands/mint.js";
 import { revokeCredential } from "./commands/revoke-credential.js";
 import { channels, channelArguments, channelComplete, channelFlags } from "./commands/channels.js";
 import { history, historyComplete, historyFlags, historySubcommands, validateHistoryArguments } from "./commands/history.js";
-import { clean, cleanComplete } from "./commands/clean.js";
+import { clean, cleanComplete, validateCleanArguments } from "./commands/clean.js";
 import { reset, resetComplete, resetFlags, validateResetArguments } from "./commands/reset.js";
 import { feedback, feedbackFlags, validateFeedbackArguments } from "./commands/feedback.js";
 import { send, sendComplete, sendFlags, sendArguments } from "./commands/send.js";
 import { chat, chatArguments, chatComplete, chatFlags } from "./commands/chat.js";
-import { ext, extFlags } from "./commands/ext.js";
+import { ext, extFlags, validateExtArguments } from "./commands/ext.js";
 import { help, helpFlags, version, versionFlags } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { team, teamComplete, teamFlags, validateTeamArguments } from "./commands/team.js";
@@ -53,7 +53,7 @@ import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags, v
 import { backup, backupComplete, backupFlags, validateBackupArguments } from "./commands/backup.js";
 import { update, updateFlags, validateUpdateArguments } from "./commands/update.js";
 import { service, serviceComplete, serviceFlags, validateServiceArguments } from "./commands/service-registry.js";
-import { sync, syncFlags } from "./commands/sync.js";
+import { sync, syncFlags, validateSyncArguments } from "./commands/sync.js";
 import { AUTH_PROCESS } from "./lib/auth-proc.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
@@ -74,7 +74,7 @@ const baseCommands: Command[] = [
     flags: setupFlags,
     validate: validateSetupArguments,
     outputs: ["json", "plain"],
-    examples: [{ command: "cotal setup", note: "choose your application and prepare a space" }, { command: "cotal setup --destination local -H claude --project <dir> -s <name> -y", note: "prepare a local space without questions" }, { command: "cotal setup --destination self-hosted --connection-file <bundle.json>", note: "connect to a space that runs elsewhere" }],
+    examples: [{ command: "cotal setup", note: "choose your application and prepare a space" }, { command: "cotal setup --destination local -H claude --project <dir> -s <name> -y", note: "prepare a local space without questions" }, { command: "cotal setup --destination self-hosted --connection-file <bundle.json>", note: "asks for the remaining inputs in a terminal" }],
     run: setup,
   },
   {
@@ -117,9 +117,11 @@ const baseCommands: Command[] = [
       { name: "__stage-verify", summary: "verify one extension in its parent's staged prefix", hidden: true },
     ],
     flags: extFlags,
+    flagNames: ["json", "plain"],
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ext", note: "list installed extensions" }, { command: "cotal ext add @cotal-ai/tmux", note: "add the tmux runtime" }, { command: "cotal ext remove <name>", note: "uninstall an extension" }],
     reads: true,
+    validate: validateExtArguments,
     run: ext,
   },
   {
@@ -135,6 +137,7 @@ const baseCommands: Command[] = [
     outputs: ["json", "plain"],
     examples: [{ command: "cotal config", note: "show your preferences and their sources" }, { command: "cotal config set harness opencode", note: "make OpenCode your default application" }, { command: "cotal config get harness", note: "show one preference and its source" }],
     reads: true,
+    validate: validateConfigArguments,
     run: config,
     complete: configComplete,
   },
@@ -162,7 +165,7 @@ const baseCommands: Command[] = [
     name: "trust",
     group: "Setup",
     summary: "trust a project folder, so its .cotal may declare MCP servers, spawn.env names and persona launch options",
-    usage: "cotal trust <path> [--json|--plain]",
+    usage: "cotal trust <path> [--hex] [--json|--plain]",
     positionals: "<path>",
     flags: trustFlags,
     outputs: ["json", "plain"],
@@ -220,6 +223,7 @@ const baseCommands: Command[] = [
     name: "up",
     group: "Mesh",
     summary: "start a local space in the background; --foreground keeps the native stack in this terminal",
+    usage: "cotal up [--foreground | [-d|--detach] [-j|--json|--plain]] [options]\ncotal up -f <cotal.yaml> [--dry-run] [options]",
     flags: upFlags,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal up", note: "start this folder's space in the background" }, { command: "cotal up --root <dir>", note: "start a space prepared in another folder" }, { command: "cotal up --foreground", note: "keep the space in this terminal until Ctrl-C" }],
@@ -256,9 +260,9 @@ const baseCommands: Command[] = [
     subcommands: ([
       { name: "list", flagNames: ["space", "json", "plain"], summary: "list the built-in services and the ones you saved, with their state", hidden: true, reads: true, prepareMeshTarget: false },
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a saved definition without exposing argument or credential contents", examples: [{ command: "cotal service show <name>", note: "read a saved service definition" }], usage: "cotal service show <name>", reads: true, prepareMeshTarget: false },
-      { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", examples: [{ command: "cotal service add <name> --exec \"<command>\"", note: "save a program as a service" }, { command: "cotal service add <name> --file <definition.json>", note: "save one from a definition file" }], usage: "cotal service add <name> --exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>", prepareMeshTarget: false },
+      { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", examples: [{ command: "cotal service add <name> --exec \"<command>\"", note: "save a program as a service" }, { command: "cotal service add <name> --file <definition.json>", note: "save one from a definition file" }], usage: "cotal service add <name> (--exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>)", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "instance", "yes", "json", "plain"], aliases: ["rm"], summary: "forget a stopped, unsupervised owned definition", examples: [{ command: "cotal service remove <name>", note: "forget a stopped service" }], usage: "cotal service remove <name> [--instance <full-id>] [--yes]", prepareMeshTarget: false },
-      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "no-open", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground|--dry-run]", prepareMeshTarget: false },
+      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "no-open", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]", prepareMeshTarget: false },
       { name: "stop", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "stop the exact owned process through its declared native policy", examples: [{ command: "cotal service stop <name>", note: "stop a service" }, { command: "cotal service stop <name> --dry-run", note: "show what stopping it affects" }], usage: "cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "restart", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "confirm an exact owned stop before one replacement launch", examples: [{ command: "cotal service restart <name>", note: "stop a service, then start it again" }], usage: "cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "status", flagNames: ["space", "instance", "json", "plain"], summary: "read instance identity and process observations without repair", examples: [{ command: "cotal service status <name>", note: "check whether a service runs" }], usage: "cotal service status <name> [--instance <id>]", reads: true, prepareMeshTarget: false },
@@ -275,7 +279,7 @@ const baseCommands: Command[] = [
     name: "down",
     group: "Mesh",
     summary: "stop named owned services or this root's recorded controller stack",
-    examples: [{ command: "cotal down", note: "stop this folder's space" }, { command: "cotal down --dry-run", note: "show what would stop, and stop nothing" }, { command: "cotal down --with-agents", note: "also stop every managed agent" }],
+    examples: [{ command: "cotal down", note: "stop this folder's space" }, { command: "cotal down --dry-run", note: "inspect the stack without stopping anything" }, { command: "cotal down --with-agents", note: "also stop every managed agent" }],
     positionals: "[<service-name> …]",
     usage: "cotal down [<service-name>] [--instance <full-id>] [--yes|--dry-run] [--space <space>] [--json|--plain]",
     outputs: ["json", "plain"], prepareMeshTarget: false,
@@ -285,7 +289,7 @@ const baseCommands: Command[] = [
       spaceFlag, jsonFlag, plainFlag,
       { name: "instance", type: "string", value: "<full-id>", description: "one named owned service: select its full instance ID, never a prefix" },
       { name: "yes", short: "y", type: "boolean", description: "acknowledge only the reviewed named-service or recorded whole-stack stop scope" },
-      { name: "dry-run", type: "boolean", description: "bare: inspect local records only; named: preview owned stop; mutate nothing" },
+      { name: "dry-run", type: "boolean", description: "bare: inspect local records only. For a running legacy stack, this is partial (exit 4), not a stop plan. Named: preview an owned stop. Neither form changes anything" },
       { name: "with-agents", type: "boolean", description: "bare whole stack: also stop and deprovision every managed agent" },
       { name: "abandon-stop", type: "string", value: "<request-id>", description: "bare whole stack, with --yes: abandon a member's stop that no receipt settles, once its process and the down that sent it have exited" },
       { name: "abandon-launch", type: "string", value: "<instance-id>", description: "bare whole stack, with --yes: record failed a member launch whose record names no process, once the up that launched it has exited" },
@@ -340,6 +344,7 @@ const baseCommands: Command[] = [
       { name: "force", type: "boolean", description: "required - destructive, no prompting" },
       { name: "dry-run", type: "boolean", description: "store/all: list what would be removed and remove nothing" },
     ],
+    validate: validateCleanArguments,
     run: clean,
     complete: cleanComplete,
   },
@@ -380,7 +385,16 @@ const baseCommands: Command[] = [
     usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y] | space export <name> --out <private-file>",
     positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y] | export <name> --out <private-file>]",
     subcommands: [
-      { name: "show", flagNames: ["json", "plain"], summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", examples: [{ command: "cotal space show", note: "show the selected space in full" }, { command: "cotal space show <name> --json", note: "one space as a JSON document" }], usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
+      {
+        name: "show", flagNames: ["json", "plain"],
+        summary: "show one space in full: broker, mode, root, origin and login. With no name, show this folder's space if it has one, otherwise the selected space.",
+        examples: [
+          { command: "cotal space show", note: "show this folder's space, or the selected one" },
+          { command: "cotal space show alpha", note: "show alpha from any folder" },
+          { command: "cotal space show <name> --json", note: "one space as a JSON document" },
+        ],
+        usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true,
+      },
       {
         name: "add",
         flagNames: ["server", "root", "mode", "file", "from", "tls", "allow-unencrypted-overlay", "force", "yes", "json", "plain"],
@@ -394,6 +408,7 @@ const baseCommands: Command[] = [
       { name: "delete", flagNames: ["dry-run", "yes", "json", "plain"], summary: "preview native impact or delete the exact space after confirmation; local records stay", examples: [{ command: "cotal space delete <name> --dry-run", note: "show what deleting a space would remove" }, { command: "cotal space delete <name>", note: "delete it after you type its name" }], usage: "cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
     ],
     flags: spaceFlags,
+    validate: validateSpaceArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal space", note: "list the spaces on this machine" }, { command: "cotal space show <name>", note: "show one space in full" }, { command: "cotal space add <name> --server <url> --root <dir>", note: "register a space that runs elsewhere" }],
     reads: true,
@@ -408,6 +423,7 @@ const baseCommands: Command[] = [
     examples: [{ command: "cotal sync", note: "refresh the spaces your sign-in gives you" }, { command: "cotal sync --json", note: "the same, as one JSON document" }],
     usage: "cotal sync [--idp <auth base URL>] [--json|--plain]",
     flags: syncFlags,
+    validate: validateSyncArguments,
     outputs: ["json", "plain"],
     run: sync,
   },
@@ -450,6 +466,7 @@ const baseCommands: Command[] = [
     usage: "cotal use [<space> | --clear] [--json|--plain]",
     positionals: "[<space>]",
     flags: useFlags,
+    validate: validateUseArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal use <space>", note: "select the space commands use" }, { command: "cotal use", note: "show the selected space" }, { command: "cotal use --clear", note: "clear the selection" }],
     run: use,
@@ -497,8 +514,8 @@ const baseCommands: Command[] = [
     flags: teamFlags, reads: true, prepareMeshTarget: false, outputs: ["json", "plain"],
     subcommands: [
       { name: "show", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], summary: "read one fresh boot summary or additive ownership ledger, not live state", examples: [{ command: "cotal team show <deployment-id>", note: "read one recorded deployment" }], usage: "cotal team show <deployment-id>", reads: true, prepareMeshTarget: false },
-      { name: "check", flagNames: ["space", "graph", "json", "plain"], outputs: ["json", "plain"], summary: "resolve a manifest and referenced personas offline", examples: [{ command: "cotal team check <file>", note: "check a manifest and its personas offline" }, { command: "cotal team check <file> --graph", note: "also show who can read and post where" }], usage: "cotal team check <file> [--graph]", reads: true, prepareMeshTarget: false },
-      { name: "boot", flagNames: ["space", "foreground", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "boot a fresh controller-owned stack; --foreground holds its terminal lifetime", examples: [{ command: "cotal team boot <file> --dry-run", note: "preview booting a new space from a manifest" }, { command: "cotal team boot <file>", note: "boot it in the background" }], usage: "cotal team boot <file> [--dry-run | --foreground]", prepareMeshTarget: false },
+      { name: "check", flagNames: ["space", "graph", "json", "plain"], outputs: ["json", "plain"], summary: "resolve a manifest and referenced personas offline; --space must match the manifest", examples: [{ command: "cotal team check <file>", note: "check a manifest and its personas offline" }, { command: "cotal team check <file> --graph", note: "also show who can read and post where" }], usage: "cotal team check <file> [--space <name>] [--graph]", reads: true, prepareMeshTarget: false },
+      { name: "boot", flagNames: ["space", "foreground", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "Boot a fresh controller-owned stack. A foreground preview accepts --json or --plain. A foreground apply accepts neither.", examples: [{ command: "cotal team boot <file> --dry-run", note: "preview booting a new space from a manifest" }, { command: "cotal team boot <file> --foreground --dry-run --json", note: "preview a terminal-bound boot as JSON" }, { command: "cotal team boot <file>", note: "boot it in the background" }], usage: "cotal team boot <file> [--dry-run] [--foreground]", prepareMeshTarget: false },
       { name: "deploy", flagNames: ["space", "runtime", "allow-stale", "dry-run", "json", "plain"], outputs: ["json", "plain"], summary: "add all-new live channels and static/open teams through one native manager", examples: [{ command: "cotal team deploy <file> --dry-run", note: "preview what a deploy would add" }, { command: "cotal team deploy <file>", note: "add its new channels and agents" }], usage: "cotal team deploy <file> [--dry-run]", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "dry-run", "yes", "json", "plain"], outputs: ["json", "plain"], summary: "retire a recorded static agent-only team; --dry-run reads native impact", examples: [{ command: "cotal team remove <deployment-id> --dry-run", note: "preview retiring a deployed team" }, { command: "cotal team remove <deployment-id>", note: "retire it after you confirm" }], usage: "cotal team remove <deployment-id> [--dry-run] [--yes]", prepareMeshTarget: false },
       { name: "list", flagNames: ["space", "json", "plain"], outputs: ["json", "plain"], hidden: true, summary: "read available local fresh and additive deployment records", reads: true, prepareMeshTarget: false },
@@ -514,6 +531,7 @@ const baseCommands: Command[] = [
     summary: "(legacy) validate + view a mesh manifest's access graph (read-only). `team check --graph` replaces it",
     positionals: "<view>",
     flags: [{ name: "file", type: "string", short: "f", value: "<cotal.yaml>", description: "the manifest to inspect" }],
+    reads: true,
     run: topology,
   },
   // ---- Messaging ----------------------------------------------------------------------------
@@ -575,7 +593,7 @@ const baseCommands: Command[] = [
     group: "Messaging",
     summary: "read the newest retained messages within this identity's read grant, clear history (`history clear`), or set how long it is kept (`history limit`)",
     usage:
-      "cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --yes [--dms] | cotal history limit [--max-age <age>] [--per-sender <n>] [--yes]",
+      "cotal history [<channel> | --dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --yes [--dms] | cotal history limit [--max-age <age>] [--per-sender <n>] [--yes]",
     positionals: "[<channel> | clear | limit]",
     flags: historyFlags,
     outputs: ["json", "ndjson", "plain"],
@@ -609,9 +627,11 @@ const baseCommands: Command[] = [
     summary:
       "run an agent in this terminal; -d launches it through a manager and returns once it joins, --on <instance> launches through that manager and attaches",
     examples: [{ command: "cotal spawn", note: "run an agent in this terminal" }, { command: "cotal spawn -d", note: "launch through a manager and return" }, { command: "cotal spawn <persona> -p \"review PR 12\"", note: "start a persona with a task" }],
-    usage: "cotal spawn [<persona>] [--file <persona-file>] [-d | --foreground] [--dry-run] [options]",
+    usage: "cotal spawn [<persona> | --file <persona-file>] [-d | --foreground] [--dry-run] [options]",
     positionals: "[<persona>]",
     flags: spawnFlags,
+    // Persisted launchers still parse --config. Do not list it for public callers.
+    flagNames: spawnFlags.filter((flag) => flag.name !== "config").map((flag) => flag.name),
     outputs: ["json", "plain"],
     validate: validateSpawnArguments,
     run: spawn,
@@ -622,9 +642,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "models",
     group: "Agents",
-    summary: "list connector model catalogs and variants from the manager",
+    summary: "List connector model catalogs and variants from the manager. Authenticated meshes must be registered. Raw credential files are not accepted.",
     usage: "cotal models [--json|--plain] [-H|--harness <connector>] [--refresh] [--on <manager-instance>]",
     flags: modelsFlags,
+    // Keep parsing --creds so existing invocations still get the explicit refusal and remedy.
+    flagNames: modelsFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
+    validate: validateModelsArguments,
     outputs: ["json", "plain"],
     examples: [{ command: "cotal models", note: "list the models each application offers" }, { command: "cotal models -H claude", note: "list one application's models" }, { command: "cotal models --refresh", note: "ask the applications to read their catalogs again" }],
     reads: true,
@@ -646,20 +669,12 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "start",
     group: "Agents",
-    // Tombstone (stage 2a): the verb is gone, the ability moved. Errors with the replacement —
-    // never a silent alias (no fallbacks). Hidden: not part of the surface, just a signpost.
     hidden: true,
     rawArgs: true,
     positionals: "…",
-    summary: "(removed) `cotal start` was merged into `cotal spawn --detach`",
-    run: async () => {
-      console.error(
-        c.red(
-          "✗ `cotal start` was merged into `cotal spawn --detach` - one launch grammar for foreground and detached (persona positional or --config; --name/--model/--cwd/--prompt/--subscribe/--allow-*/--share-tools all apply)",
-        ),
-      );
-      process.exit(1);
-    },
+    summary: "(removed) launch with `cotal spawn`",
+    validate: refuseRemovedStart,
+    run: async (args) => refuseRemovedStart(args),
   },
   {
     kind: "command",
@@ -683,6 +698,7 @@ const baseCommands: Command[] = [
     summary: "list managed agents + their mesh status",
     usage: "cotal ps [--json|--plain] [--wide | --slots] [--on <instance>]",
     flags: psFlags,
+    flagNames: psFlags.filter((flag) => flag.name !== "creds").map((flag) => flag.name),
     outputs: ["json", "plain"],
     examples: [{ command: "cotal ps", note: "list your managed agents" }, { command: "cotal ps --wide", note: "add each agent's folder, process and host" }, { command: "cotal ps --json", note: "the same as one JSON document" }],
     reads: true,
@@ -733,6 +749,7 @@ const baseCommands: Command[] = [
       { name: "remove", flagNames: ["space", "server", "yes", "json", "plain"], aliases: ["rm"], summary: "remove a named local definition after confirmation", examples: [{ command: "cotal persona remove <name>", note: "remove a persona after you confirm" }], usage: "cotal persona remove <name> [-y|--yes] [--json|--plain]", outputs: ["json", "plain"] },
     ],
     flags: personaFlags,
+    validate: validatePersonaArguments,
     outputs: ["json", "plain"],
     reads: true,
     prepareMeshTarget: false,
@@ -775,7 +792,7 @@ const baseCommands: Command[] = [
     positionals: "[show|add|remove|describe|invoke|watch|session|work|init|check|deregister] [target] [command-or-instance]",
     summary: "save references, author contracts offline, and inspect or invoke native endpoints",
     examples: [{ command: "cotal endpoint", note: "list the saved endpoint references" }, { command: "cotal endpoint describe <target>", note: "read an endpoint's commands" }, { command: "cotal endpoint invoke <target> <command>", note: "call one of its commands" }],
-    usage: "cotal endpoint [show | add | remove | describe | invoke | watch | session | work | init | check | deregister] [target] [command-or-instance] [options]",
+    usage: "cotal endpoint [--space <s>] [--json|--plain]\ncotal endpoint --live [--space <s>] [--server <url>] [--creds <path>] [--json|--plain]\ncotal endpoint <command> [target] [command-or-instance] [options]",
     flagNames: ["space", "live", "server", "creds", "json", "plain"],
     flags: endpointFlags, outputs: ["json", "ndjson", "plain"], reads: true, prepareMeshTarget: false,
     subcommands: ([
@@ -785,11 +802,11 @@ const baseCommands: Command[] = [
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a local reference and its revision", examples: [{ command: "cotal endpoint show <name>", note: "read a saved reference" }], reads: true, usage: "cotal endpoint show <name>" },
       { name: "describe", flagNames: ["space", "server", "creds", "on", "refresh", "json", "plain"], summary: "read the selected native endpoint's digest-verified contracts", examples: [{ command: "cotal endpoint describe <target>", note: "read an endpoint's commands and schemas" }, { command: "cotal endpoint describe ep:<class>", note: "read them by endpoint class" }], reads: true, usage: "cotal endpoint describe <ref:name | ep:class | target>" },
       { name: "invoke", flagNames: ["space", "server", "creds", "on", "args", "name", "self", "admin", "timeout", "handle", "wait", "cast", "all", "json", "plain"], summary: "invoke one declared command under the existing caller authority", examples: [{ command: "cotal endpoint invoke <target> <command>", note: "call one command" }, { command: "cotal endpoint invoke <target> <command> --args '<json>'", note: "call it with arguments" }], usage: "cotal endpoint invoke <target> <command> [--args '<json>']" },
-      { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "declared record/event watch; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint watch <target> <record-key-or-topic>", note: "watch a declared record or topic" }], usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
-      { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive session; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint session <target> <command>", note: "open a declared interactive session" }], usage: "cotal endpoint session <target> <command>" },
-      { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools; native declaration adapter unavailable in this author", examples: [{ command: "cotal endpoint work lease <target> <pool>", note: "lease an item from a work pool" }, { command: "cotal endpoint work commit <target> <pool> --lease <file> --result <json>", note: "commit the leased item's result" }], usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
-        { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "lease from a declared pool; no lease is created on refusal", examples: [{ command: "cotal endpoint work lease <target> <pool>", note: "lease an item from a work pool" }], usage: "cotal endpoint work lease <target> <pool>" },
-        { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "commit an original native lease tuple; unsupported routes read or consume nothing", examples: [{ command: "cotal endpoint work commit <target> <pool> --lease <file> --result <json>", note: "commit the leased item's result" }], usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>" },
+      { name: "watch", flagNames: ["space", "server", "creds", "on", "since", "json", "plain"], summary: "watching declared records or events is unavailable in this CLI", usage: "cotal endpoint watch <target> <record-key-or-topic> [--since <native-sequence>]", reads: true },
+      { name: "session", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "declared interactive sessions are unavailable in this CLI", usage: "cotal endpoint session <target> <command>" },
+      { name: "work", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "declared work pools are unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool> | work commit <target> <pool> --lease <private-file> --result <JSON>", subcommands: [
+        { name: "lease", flagNames: ["space", "server", "creds", "on", "json", "plain"], summary: "leasing from a work pool is unavailable in this CLI", usage: "cotal endpoint work lease <target> <pool>", outputs: ["json", "plain"] },
+        { name: "commit", flagNames: ["space", "server", "creds", "on", "lease", "result", "json", "plain"], summary: "committing a work result is unavailable in this CLI", usage: "cotal endpoint work commit <target> <pool> --lease <private-file> --result <JSON>", outputs: ["json", "plain"] },
       ] },
       { name: "add", flagNames: ["space", "file", "json", "plain"], summary: "save a validated local reference; launch and invoke nothing", examples: [{ command: "cotal endpoint add <name> --file <reference.json>", note: "save a reference from a file" }], usage: "cotal endpoint add [name] [--file <reference.json>]" },
       { name: "remove", flagNames: ["space", "yes", "json", "plain"], aliases: ["rm"], summary: "forget only a pinned local reference", examples: [{ command: "cotal endpoint remove <name>", note: "forget a saved reference" }], usage: "cotal endpoint remove <name> [--yes]" },

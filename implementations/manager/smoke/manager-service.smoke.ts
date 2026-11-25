@@ -44,16 +44,12 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS, MANAGER_STATUS_CONTRACT, type ManagerStatus } from "../src/manager-service-contract.js";
-import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-let pass = 0, fail = 0;
-const check = (name: string, cond: boolean, extra?: unknown) => {
-  if (cond) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 const enc = new TextEncoder(), dec = new TextDecoder();
 
 const space = `mgrsvc-${randomUUID().slice(0, 8)}`;
@@ -73,12 +69,12 @@ const M = mgr as unknown as {
   managerLifecycleUid: string;
   managerInstanceId: string;
   // P2 item 3: the PERSISTED logical registration id (distinct from the per-process managerLifecycleUid)
-  serviceServe?: { identity: { id: string; seed: string }; creds: string; grant: { epoch: number; instanceId: string; registrationRevision: number } };
   resumeRequired: boolean;
   withEndpointServeExecutor: <T>(fn: (kvs: { recordsKv: KV; authKv: KV }) => Promise<T>) => Promise<T>;
   retirement: {
     retiredPrincipals: Set<string>;
   };
+  servePlane: { serviceServe?: { identity: { id: string; seed: string }; creds: string; grant: { epoch: number; instanceId: string; registrationRevision: number } }; };
 };
 
 try {
@@ -110,11 +106,11 @@ try {
   };
 
   console.log("1. registration through the §13.1 gate (checklist 1/2/4)");
-  check("start() registered the service (serve state present)", M.serviceServe !== undefined);
+  check("start() registered the service (serve state present)", M.servePlane.serviceServe !== undefined);
   const specEntry = await recKv.get(recordSpecKey(RECORD_KINDS.svc, [MANAGER_ENDPOINT, iid]));
   check("the svc spec record exists for (manager, managerInstanceId)", specEntry !== null && specEntry.operation === "PUT");
   const gate = await readGate();
-  const servePrincipal = principalKey(DEV_OWNER, M.serviceServe!.identity.id).key;
+  const servePrincipal = principalKey(DEV_OWNER, M.servePlane.serviceServe!.identity.id).key;
   check("the gate is OPEN at generation 1 (the registration barrier traversed it: freeze -> reopen)",
     gate.state === "open" && gate.generation === 1, gate);
   check("the gate's registrationRevision is the spec's store revision (the §13.7 coordinate)",
@@ -122,10 +118,10 @@ try {
   check("the gate binds the SERVE principal (minted before the gate, §13.1 serving-principal binding)",
     gate.principal === servePrincipal, { gate: gate.principal, servePrincipal });
   check("processEpoch is the GATE's (0 on a FIRST registration), instanceId the persisted logical id — never conflated (checklist 4)",
-    gate.processEpoch === 0 && M.serviceServe!.grant.epoch === 0 && M.serviceServe!.grant.instanceId === iid);
+    gate.processEpoch === 0 && M.servePlane.serviceServe!.grant.epoch === 0 && M.servePlane.serviceServe!.grant.instanceId === iid);
   const family1 = await credRows();
   const rows1 = family1.filter((r) => r.holderPrincipal === servePrincipal);
-  const expectId = credentialIdOf(M.serviceServe!.creds);
+  const expectId = credentialIdOf(M.servePlane.serviceServe!.creds);
   check("EXACTLY one ACTIVE serve ledger row exists (the released credential's §13.1 row)",
     rows1.length === 1 && rows1[0].state === "active", rows1);
   check("the §13.1 family ALSO carries the goal-writer sibling (must-5 (b): a distinct active holder the takeover barrier revokes+evicts together)",
@@ -220,19 +216,19 @@ try {
     (await callStatus()).reply.ok === true && (await callPs()).reply.ok === true);
 
   console.log("4. standing renewal through the mint fence (checklist 7)");
-  const before = M.serviceServe!.creds;
+  const before = M.servePlane.serviceServe!.creds;
   // A renewal minutes later always differs; here 1.1s guarantees a fresh iat/exp second (the
   // ed25519 signature is deterministic, so a same-second re-mint would be byte-identical and the
   // create-only stage would — correctly — treat it as the SAME issuance).
   await wait(1100);
-  M.serviceServe!.creds = await M.withEndpointServeExecutor(({ authKv: execAuthKv }) =>
-    mintCreds(auth, M.serviceServe!.identity, "endpoint-serve", {
+  M.servePlane.serviceServe!.creds = await M.withEndpointServeExecutor(({ authKv: execAuthKv }) =>
+    mintCreds(auth, M.servePlane.serviceServe!.identity, "endpoint-serve", {
       serveIssuance: serveIssuanceGateKv(execAuthKv, space, { endpoint: MANAGER_ENDPOINT, instanceId: iid }),
-      endpointServe: M.serviceServe!.grant as never,
+      endpointServe: M.servePlane.serviceServe!.grant as never,
     }));
   const rows2 = (await credRows()).filter((r) => r.holderPrincipal === servePrincipal);
   check("the renewal released a NEW credential for the SAME stable serve nkey",
-    M.serviceServe!.creds !== before && idFromCreds(M.serviceServe!.creds) === M.serviceServe!.identity.id);
+    M.servePlane.serviceServe!.creds !== before && idFromCreds(M.servePlane.serviceServe!.creds) === M.servePlane.serviceServe!.identity.id);
   check("the renewal staged a SECOND ACTIVE serve ledger row behind the gate CAS (distinct per-JWT id, no overwrite)",
     rows2.length === 2 && rows2.every((r) => r.state === "active" && r.holderPrincipal === servePrincipal)
     && new Set(rows2.map((r) => r.credentialId)).size === 2, rows2);
@@ -261,14 +257,14 @@ try {
   // LOUDLY, naming the cure (start the delivery daemon) — never silently skip eviction (no-fallbacks).
   await mgr.stop({ withAgents: true });
   const mgr2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
-  const M2 = mgr2 as unknown as { managerInstanceId?: string; serviceServe?: unknown };
+  const M2 = mgr2 as unknown as { managerInstanceId?: string; servePlane: { serviceServe?: unknown; } };
   let reupErr: string | undefined;
   try { await mgr2.start(); } catch (e) { reupErr = (e as Error).message; }
   check("the no-oracle restart-takeover REFUSES (no silent success)", reupErr !== undefined, reupErr);
   check("the refusal names the CURE (verify-evict the superseded family + start the delivery daemon) — pin 3",
     reupErr !== undefined && /delivery daemon/i.test(reupErr) && /verify-evict|superseded serve family/i.test(reupErr), reupErr);
   check("the refused takeover registered NO serve surface (fail-closed, gate frozen for reconciliation)",
-    M2.serviceServe === undefined);
+    M2.servePlane.serviceServe === undefined);
   check("the restart preserved the SAME persisted logical instanceId (not a fresh mint)", M2.managerInstanceId === iid);
   await mgr2.stop({ withAgents: true }).catch(() => {});
   await callerNc.drain().catch(() => callerNc.close());
@@ -278,5 +274,6 @@ try {
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
-console.log(`\n${fail === 0 ? "MANAGER SERVICE SMOKE OK ✅" : "MANAGER SERVICE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${failed() === 0 ? "MANAGER SERVICE SMOKE OK ✅" : "MANAGER SERVICE SMOKE FAILED"}  (${passed()} passed, ${failed()} failed)`);
+finish();
+process.exit(failed() === 0 ? 0 : 1);

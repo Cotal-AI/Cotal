@@ -89,16 +89,18 @@ type Handles = {
 };
 const snapshot = (endpoint: CotalEndpoint): Handles => {
   const e = endpoint as unknown as {
-    nc?: unknown;
-    deliveryServeSub?: unknown;
-    deliveryAdminServeSub?: unknown;
-    subs?: unknown[];
+    conn: { nc?: unknown };
+    deliveryPlane: { deliveryServeSub?: unknown; deliveryAdminServeSub?: unknown };
+    delivery: { subs?: unknown[] };
   };
+  // A path that does not reach the endpoint's subscription list must fail here, not read as cleared.
+  const subs = e.delivery?.subs;
+  if (!Array.isArray(subs)) throw new Error("failed-bind-cleanup: the endpoint's subscription list (delivery.subs) is not an array; the reflection path is wrong");
   return {
-    nc: e.nc !== undefined,
-    deliveryServeSub: e.deliveryServeSub !== undefined,
-    deliveryAdminServeSub: e.deliveryAdminServeSub !== undefined,
-    subsLen: Array.isArray(e.subs) ? e.subs.length : 0,
+    nc: e.conn.nc !== undefined,
+    deliveryServeSub: e.deliveryPlane.deliveryServeSub !== undefined,
+    deliveryAdminServeSub: e.deliveryPlane.deliveryAdminServeSub !== undefined,
+    subsLen: subs.length,
   };
 };
 
@@ -232,7 +234,7 @@ try {
     endpoint.on("error", () => {});
     const bindMsg = "fixture close-throws bind failure";
     (endpoint as unknown as { startPresenceWatch: () => Promise<void> }).startPresenceWatch = async () => {
-      const nc = (endpoint as unknown as { nc?: { close: () => Promise<void> } }).nc;
+      const nc = (endpoint as unknown as { conn: { nc?: { close: () => Promise<void> } } }).conn.nc;
       if (!nc) throw new Error("expected live nc before presence watch");
       nc.close = async () => {
         throw new Error("injected close failure");

@@ -75,6 +75,14 @@ try{
  const liveReads:string[]=[];
  check.equal(await reportRunningManagers({},async flags=>{liveReads.push(String(flags.on));return readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true});},flags=>recordedUpdateManagers(flags,entry)),'none','dead registrations do not prevent reading live local custody');
  check.deepEqual(liveReads,[ids[0]],'install-wide update still reads the actual local Manager beside dead registrations');
+ const sessions=join(env.COTAL_HOME!,'idp-sessions.json'),savedSessions=sessions+'.held';
+ renameSync(sessions,savedSessions);
+ try{
+  await check.rejects(readManagerContinuity({space,on:ids[0]},{installedEntry:entry,readOnly:true,retainGraph:true}),error=>(error as {cause?:{code?:string}}).cause?.code==='signed-out','real control resolve confirms own-home missing session');
+  check.equal(await reportRunningManagers({space},flags=>readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true}),()=>recordedUpdateManagers({space},entry),{retainGraph:true}),'none','retained own-home signed-out update leaves Manager running');
+  check.equal(recordedUpdateManagers({space},entry)[0]?.instanceId,ids[0],'same native Manager identity survives signed-out read');
+  check.equal(children[0].exitCode,null,'signed-out read does not stop Manager');
+ }finally{renameSync(savedSessions,sessions);}
  const otherInstall=join(root,'tmp','other-install');mkdirSync(join(otherInstall,'dist'),{recursive:true,mode:0o700});
  writeFileSync(join(otherInstall,'package.json'),JSON.stringify({name:'cotal-ai',bin:{cotal:'dist/cotal.js'}}));writeFileSync(join(otherInstall,'dist','cotal.js'),'');
  const otherEntry=join(otherInstall,'dist','cotal.js');

@@ -3,12 +3,12 @@ import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
 import { seedDir } from "./paths.js";
 import { reconcileSeededConnectors, seedStoreMoved } from "./reconcile.js";
 
-/** `up` reconciles the connector seed store when it first starts a process, not at the dispatcher's
- *  boot gate, so every refusal before that leaves the operator-global store as it found it. */
+/** `up` and `backup restore` defer connector reconciliation to startup, so refusals before launch
+ *  leave the operator-global store as they found it. */
 let deferred = false;
 let moveReported = false;
 
-/** Called by the dispatcher in place of the boot-gate reconcile, for `up` only. */
+/** Called by the dispatcher in place of the boot-gate reconcile for startup commands. */
 export function deferSeedToLaunch(): void {
   deferred = true;
 }

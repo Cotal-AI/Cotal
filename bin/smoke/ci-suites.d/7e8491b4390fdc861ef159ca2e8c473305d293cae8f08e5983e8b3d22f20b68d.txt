@@ -1,0 +1,3 @@
+# The release script's cotal plugin loads every hooks module it imports, and a hooks module that
+# imports a file the asset list omits fails the script.
+smoke:materialize-claude-plugin

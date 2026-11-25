@@ -1,11 +1,8 @@
 /** Frozen legacy suites must keep exact indices; whole-shard moves cannot hide behind modulo. */
 import { changedSuiteIndices } from "./shard-stability.mjs";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0, fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) { pass++; console.log(`  ✓ ${name}`); }
-  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const base = Array.from({ length: 41 }, (_, index) => `smoke:position-${index}`);
 const insertAt = 13;
@@ -28,6 +25,6 @@ check("removing a frozen suite moves every surviving legacy index", removed.chan
 check("the removed suite is absent from the examined count", removed.examined === base.length - 1, removed);
 
 const EXPECTED = 6;
-check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED);
-console.log(`SHARD INDEX SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
-if (fail) process.exitCode = 1;
+check(`every cell ran (${EXPECTED} before sentinel)`, passed() + failed() === EXPECTED);
+console.log(`SHARD INDEX SMOKE ${failed() === 0 ? "OK" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+finish();

@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { mintCreds, newIdentity, validateChannelConfig } from "@cotal-ai/core";
-import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
+import { mintCreds, newIdentity } from "@cotal-ai/core";
+import { acquireMaintenanceLock, recordOperationSpace, brokerAddressForDisplay, canonicalRoot, CommandFailure, connectOrThrow, findMesh, findPreparedSpace, presentationOf, readMaintenanceJournal, releaseMaintenanceLock, serviceMetadataDigest, shellPath, userViewAuth, writeResult, type Report, resolveControlTarget } from "@cotal-ai/workspace";
 import { buildLaunchSpec, cardOf, genRunId } from "../lib/manifest/apply.js";
 import { verifyOriginalIncarnations } from "../lib/team-retained.js";
 import { hashManifestSource, listLedgerFiles } from "../lib/manifest/ledger.js";
 import { loadManifest } from "../lib/manifest/index.js";
 import { additiveChannelAttemptSettled, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, writeAdditiveChannelReceipt, writeAdditiveChannelStep, writeAdditiveTeamAttempt, type AdditiveChannelReceipt, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { cardsWithoutLiveDelivery, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
+import { cardsWithoutLiveDelivery, invalidTeamChannelCards, liveDeliveryRemedy, readOwnedChannelRevisions, stoppedTeamDeploy } from "../lib/team-deploy-inspection.js";
+import { canonicalServer } from "../lib/broker-service.js";
 import { openAdditiveChannelWriter } from "../lib/team-additive-native.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { retainedRemovalRemedy } from "../lib/team-text.js";
@@ -28,25 +29,30 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   if (prepared.agents.length || manifest.runtime !== undefined || values.runtime !== undefined || values["allow-stale"] !== undefined)
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route accepts no agent or runtime phase; no channel card was created in place of that request", { target: { space, requestedAgents: prepared.agents.length } });
   if (!manifest.channels.length) throw new CommandFailure("refused", "USAGE_INVALID", "this channel-only additive route needs at least one declared channel; no empty deployment was recorded", { target: { space } });
-  if (manifest.defaults !== undefined || manifest.broker?.host !== undefined || manifest.channels.some((channel) => channel.subscribe.length || channel.allowSubscribe.length || channel.allowPublish.length))
+  if (Object.keys(manifest.defaults ?? {}).length || manifest.broker?.host !== undefined || manifest.channels.some((channel) => channel.subscribe.length || channel.allowSubscribe.length || channel.allowPublish.length))
     throw new CommandFailure("refused", "UNSUPPORTED", "this channel-only route cannot apply a broker bind, space defaults or agent access edges; none was silently dropped", { target: { space } });
   const registered = findMesh(space), preparedSpace = findPreparedSpace(space), root = canonicalRoot(cotalRoot());
-  if (!registered || canonicalRoot(registered.root) !== root || preparedSpace && canonicalRoot(preparedSpace.root) !== root)
-    throw new CommandFailure("refused", "CONFLICT", "additive creation needs an existing registered mesh in this checkout; no foreign root was adopted", { target: { root, space } });
+  const registeredRoot = registered && canonicalRoot(registered.root), preparedRoot = preparedSpace && canonicalRoot(preparedSpace.root);
+  if (registeredRoot && registeredRoot !== root && (preparedRoot === undefined || preparedRoot === registeredRoot)) {
+    const format = presentationOf(values), spaceFlag = values.space === undefined ? "" : ` --space ${shellWord(values.space)}`;
+    const atRoot = `cd ${shellPath(registeredRoot)} && `;
+    const remedy = `${atRoot}cotal team deploy ${shellPath(path)}${spaceFlag}${format === "rich" ? "" : ` --${format}`}`;
+    throw new CommandFailure("refused", "CONFLICT", `apply this deployment from the registered project root ${registeredRoot}`, { target: { root, space }, remedy, remedyIsCommand: true });
+  }
+  if (!registered || registeredRoot !== root || preparedRoot !== undefined && preparedRoot !== root)
+    throw (!registered ? stoppedTeamDeploy(preparedSpace, root) : undefined) ?? new CommandFailure("refused", "CONFLICT", "additive creation needs an existing registered mesh in this checkout; no foreign root was adopted", { target: { root, space } });
   if (registered.server.includes(","))
     throw new CommandFailure("refused", "UNSUPPORTED", "channel-only additive creation needs one registered broker address; a server list cannot pin one native target", { target: { root, space } });
-  if (manifest.broker?.servers !== undefined && manifest.broker.servers !== registered.server)
+  if (manifest.broker?.servers !== undefined && canonicalServer(manifest.broker.servers) !== canonicalServer(registered.server))
     throw new CommandFailure("refused", "CONFLICT", "the manifest broker differs from the registered target; no alternate server was selected", { target: { root, space } });
   const requestedMode = manifest.broker?.auth === false ? "open" : manifest.broker?.auth === "user" ? "user" : "auth";
   if (manifest.broker?.auth !== undefined && requestedMode !== registered.mode)
     throw new CommandFailure("refused", "CONFLICT", "the manifest authentication mode differs from this registered mesh; no identity mode was substituted", { target: { root, space, recordedMode: registered.mode, requestedMode } });
-  if (registered.mode === "open" && manifest.channels.some((channel) => channel.deliveryClass === "durable"))
-    throw new CommandFailure("refused", "UNSUPPORTED", "an open mesh has no durable delivery daemon; no durable channel card was created", { target: { root, space } });
   const notLive = cardsWithoutLiveDelivery(manifest.channels);
   if (notLive)
-    throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: LIVE_DELIVERY_REMEDY });
-  try { for (const channel of manifest.channels) validateChannelConfig(cardOf(channel)); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "a declared channel card exceeds native policy or text limits; no intent or channel was written", { target: { root, space } }); }
+    throw new CommandFailure("refused", "UNSUPPORTED", `channel-only additive apply creates a card only with explicit live delivery, and ${notLive.cards} ${notLive.verb} not set deliveryClass: live; inherited or durable delivery needs a verified daemon first, so nothing was created`, { target: { root, space, cards: notLive.names }, remedy: liveDeliveryRemedy(registered.mode) });
+  const invalidCard = invalidTeamChannelCards(manifest.channels).values().next().value;
+  if (invalidCard) throw new CommandFailure("refused", "SCHEMA_INVALID", `${invalidCard}; no intent or channel was written`, { target: { root, space } });
   let source: string;
   try { source = readFileSync(path, "utf8"); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the additive manifest source could not be read for an exact pre-effect comparison", { target: { path, space } }); }
@@ -179,7 +185,7 @@ export async function applyChannelOnlyTeam(file: string, values: TeamValues): Pr
   }
   writeResult(presentationOf(values), { command: "team deploy", target: { root, space, deploymentId: attempt!.deploymentId }, result: { kind: "additive-channel-only", deploymentId: attempt!.deploymentId, root, space, server: brokerAddressForDisplay(registered.server) ?? "not displayable", createdChannels: created, requestedAgents: [], returnedReceipt: true, currentCardState: "not-checked", removalAuthority: "not-established" }, warnings: [{ code: "CURRENT_CHANNEL_STATE_UNCHECKED", target: { space, deploymentId: attempt!.deploymentId }, message: "The returned revisions are historical; current cards and readers were not re-read." }, ...(writerCloseUnconfirmed ? [{ code: "WRITER_CLOSE_UNCONFIRMED", target: { space, deploymentId: attempt!.deploymentId }, message: "The create receipts were confirmed, but closing the writer connection did not confirm." }] : [])] }, (data): Report => ({ sections: [
     { title: "Additive channels returned", blocks: [{ kind: "fields", rows: [["Deployment", data.deploymentId], ["Space", data.space], ["Root", data.root], ["Broker", data.server], ["Created cards", String(data.createdChannels.length)], ["Agent launches", "none requested"], ["Current card state", "not checked"], ["Removal authority", "not established"]] }, { kind: "table", columns: [{ key: "channel", label: "Channel" }, { key: "revision", label: "Returned revision" }], rows: data.createdChannels.slice(0, 100).map((row) => ({ channel: `#${row.name}`, revision: String(row.revision) })) }, { kind: "lines", lines: [...(data.createdChannels.length > 100 ? ["Additional accepted revisions are in the saved receipt."] : []), "The receipt is historical. Existing cards were not patched and no agent was launched. Guarded team removal checks the original card revisions; it does not purge history, change grants or stop readers."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId}`, description: "Read the returned channel-only receipt" }, { command: `cotal status --space ${data.space}`, description: "Inspect the selected mesh without assuming these cards are unchanged" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: `cotal team show ${data.deploymentId} --space ${shellWord(data.space)}`, description: "Read the returned channel-only receipt" }, { command: `cotal status --space ${data.space}`, description: "Inspect the selected mesh without assuming these cards are unchanged" }] }] },
   ] }));
 }
 
@@ -204,6 +210,10 @@ export async function applyRetainedTeam(file: string, values: TeamValues, previo
   if (matching.length !== 1 || JSON.stringify(matching[0]) !== JSON.stringify(previous) || !receipt || receipt.kind === "additive-channel-receipt")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the retained deployment for this manifest is unsettled or has no returned agent receipt; no uncertain launch was retried", { target });
   const selected = findMesh(space);
+  if (!selected && canonicalRoot(previous.root) === root) {
+    const stopped = stoppedTeamDeploy(findPreparedSpace(space), root);
+    if (stopped) throw stopped;
+  }
   if (!selected || canonicalRoot(selected.root) !== root || canonicalRoot(previous.root) !== root || selected.server !== previous.server || selected.mode !== previous.authMode || (selected.tlsRequired === true) !== previous.tlsRequired || !previous.managerInstanceId)
     throw new CommandFailure("refused", "CONFLICT", "the registered root, broker, auth mode or transport differs from the retained deployment; no target was substituted", { target });
   if (selected.mode === "user") throw new CommandFailure("refused", "UNSUPPORTED", "user-auth managers expose no durable static slot store to prove the original incarnations; the retained deployment was not verified or changed", { target });

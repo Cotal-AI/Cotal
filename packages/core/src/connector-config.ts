@@ -214,6 +214,18 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
  *  its own config. The caller answers it from the operator's trust records (see `cotal trust`). */
 export type ProjectTrust = (root: string) => boolean;
 
+/** A command that passes the same folder through POSIX shells, PowerShell, and cmd.exe. Use
+ *  hex when a path contains shell metacharacters, a control character, or a trailing backslash. */
+export function trustProjectCommand(root: string): string {
+  if (/^[A-Za-z0-9_./:-]+$/.test(root) && !root.startsWith("-")) return `cotal trust ${root}`;
+  if (/^[A-Za-z0-9_./:\\ -]+$/.test(root) && !/\\\\|\\$/.test(root)) return `cotal trust -- "${root}"`;
+  return `cotal trust --hex ${Buffer.from(root, "utf8").toString("hex")}`;
+}
+
+export function projectTrustProblem(declared: readonly string[], root: string): string {
+  return `declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`${trustProjectCommand(root)}\``;
+}
+
 /** Whether a file or folder with owner `uid` belongs to another account. Windows has no owner ids here. */
 const foreignOwner = (uid: number): boolean => typeof process.getuid === "function" && uid !== process.getuid();
 
@@ -262,7 +274,7 @@ export function loadCotalConfig(root: string, trusted: ProjectTrust): CotalConfi
   const project = parseCotalConfig(path, text);
   const declared = trustedOnlyEntries(project);
   if (declared.length && !trusted(root))
-    throw configError(path, `declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``);
+    throw configError(path, projectTrustProblem(declared, root));
   return mergeConfig(operator, project);
 }
 

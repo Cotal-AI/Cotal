@@ -87,7 +87,7 @@ export function useFeedView() {
   const [top, setTop] = useState(0);
   const [sel, setSel] = useState(0);
   // The bottom `top` last followed, and the channel and query `sel` was last placed for.
-  const placed = useRef<{ maxTop: number; channel?: string; q?: string }>({ maxTop: 0 });
+  const placed = useRef<{ maxTop: number; channel?: string | null; q?: string }>({ maxTop: 0 });
   return { top, setTop, sel, setSel, placed };
 }
 
@@ -112,7 +112,7 @@ export function Feed({
 }: {
   view: ReturnType<typeof useFeedView>;
   entries: FeedEntry[];
-  activeChannel: string;
+  activeChannel: string | null;
   query: string;
   boxWidth: number;
   boxHeight: number;
@@ -129,7 +129,7 @@ export function Feed({
 
   const q = query.trim().toLowerCase();
   const filtered = entries.filter((e) => {
-    if (activeChannel !== "all" && !(e.delivery === "multicast" && e.channel === activeChannel)) return false;
+    if (activeChannel !== null && !(e.delivery === "multicast" && e.channel === activeChannel)) return false;
     return q ? matches(e, q) : true;
   });
 
@@ -208,7 +208,7 @@ export function Feed({
     >
       <Text wrap="truncate-end">
         <Text bold>feed</Text>
-        <Text dimColor>{" · " + activeChannel}</Text>
+        <Text dimColor>{" · " + (activeChannel === null ? "all" : "#" + activeChannel)}</Text>
         {q ? <Text color="yellow">{"  /" + query}</Text> : null}
         {below > 0 ? <Text color="yellow">{"  ↓" + below + " more · G to follow"}</Text> : null}
       </Text>

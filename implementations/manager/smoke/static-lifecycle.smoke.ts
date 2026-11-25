@@ -165,7 +165,6 @@ registry.register(con);
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string }; seed?: string }>;
-  freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   lifecycleMembershipRefusal: (caller: string) => string | undefined;
   renewManagedStaticCred: (a: unknown) => Promise<void>;
   reconcileStaticLifecycles: () => Promise<void>;
@@ -173,6 +172,9 @@ const M = mgr as unknown as {
     retiring: Map<string, { target: { lifecycleUid: string } }>;
     retiredPrincipals: Set<string>;
     deprovision: (a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }) => Promise<void>;
+  };
+  namesCapacity: {
+    freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   };
 };
 M.managerInstanceId = "smoke-manager-instance";
@@ -370,7 +372,7 @@ try {
   check("no renewal is minted at the horizon, and the refusal says to respawn (#4942)", /reached its horizon .* respawn the agent .*#4942/.test(refusal), refusal);
 
   // ── 4. Terminal (F1) ───────────────────────────────────────────────────────
-  M.freeSlot(managedA, false, "process-exit");
+  M.namesCapacity.freeSlot(managedA, false, "process-exit");
   check("the name is HELD pending the static retirement (freeSlot -> retiring hold)", M.retirement.retiring.has("worker"));
   await M.retirement.deprovision({ id: idA, name: "worker", lifecycleUid: uidA, secretPaths: managedA.secretPaths });
   const settled = await until(async () => !M.retirement.retiring.has("worker"), 30_000, "the static terminal to clear the hold");

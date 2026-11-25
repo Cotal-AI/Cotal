@@ -99,6 +99,8 @@ export interface EventWalLocation {
   threadDir: string;
   /** The WAL document itself. */
   walPath: string;
+  /** `<threadDir>/deltas.jsonl` — the thread's streamed deltas, see {@link DeltaJournal}. */
+  deltaJournalPath: string;
 }
 
 /** What {@link ensureEventWalDir} returns: the location, plus the lock it actually took for it. */
@@ -121,7 +123,7 @@ export function eventWalLocation(opts: {
 }): EventWalLocation {
   const principal = eventPrincipalLocation(opts);
   const threadDir = join(principal.principalDir, h(opts.threadId));
-  return { ...principal, threadDir, walPath: join(threadDir, "wal.json") };
+  return { ...principal, threadDir, walPath: join(threadDir, "wal.json"), deltaJournalPath: join(threadDir, "deltas.jsonl") };
 }
 
 /** Every refusal on the lock path is one of these, so a caller never mistakes it for an I/O blip. */

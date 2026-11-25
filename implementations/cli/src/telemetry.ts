@@ -6,11 +6,12 @@ import { Worker } from "node:worker_threads";
 import { findSubcommand, type Command, type Registry } from "@cotal-ai/core";
 import {
   CommandFailure,
+  claimTelemetryInstallEvent,
   effectiveTelemetry,
   extensionProvides,
   homeCotalDir,
+  isCommandFailure,
   loadExtensionsManifest,
-  markTelemetryInstallEvent,
   markTelemetryNoticeShown,
   readMeshRegistry,
   type ErrorCode,
@@ -73,11 +74,16 @@ export function scrubStack(stack: string): string {
 }
 
 interface ErrorText {
-  readonly message: string;
+  readonly message: string | null;
   readonly stack: string | null;
 }
 
-function errorText(error: unknown): ErrorText {
+export function telemetryErrorText(command: string, error: unknown): ErrorText {
+  // Help shows the requested topic and can suggest commands from local extensions.
+  if (command === "help" && isCommandFailure(error) && error.code === "USAGE_INVALID") return { message: null, stack: null };
+  // A spawn diagnostic can include native terminal output or the original launch arguments.
+  if (command === "spawn" && isCommandFailure(error) && (error.native !== undefined
+      || (error.code === "USAGE_INVALID" && error.message.includes("--on <instance>")))) return { message: null, stack: null };
   if (error instanceof Error) return { message: scrubErrorText(error.message), stack: error.stack ? scrubStack(error.stack) : null };
   return { message: scrubErrorText(String(error)), stack: null };
 }
@@ -151,15 +157,14 @@ interface Pending {
   readonly flags: string[];
   readonly startedAt: number;
   readonly version: string;
-  failure?: { outcome: Outcome; code: ErrorCode };
+  failure?: { outcome: Outcome; code: ErrorCode | null };
   error?: ErrorText;
 }
 
 let pending: Pending | undefined;
 
-/** Record the typed failure the kernel is exiting with, so the event carries its code, and its
- *  text unless {@link recordTelemetryError} already recorded the error it was classified from. */
-export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode, error?: unknown): void {
+/** Record the command's failure outcome and its typed code, if it has one. */
+export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode | null, error?: unknown): void {
   if (!pending) return;
   pending.failure = { outcome, code };
   if (error !== undefined) recordTelemetryError(error);
@@ -168,7 +173,7 @@ export function recordTelemetryFailure(outcome: Outcome, code: ErrorCode, error?
 /** Record the error a command threw, once: the first one recorded is the original, and a wrapper
  *  the kernel builds from it afterwards does not replace it. */
 export function recordTelemetryError(error: unknown): void {
-  if (pending && !pending.error) pending.error = errorText(error);
+  if (pending && !pending.error) pending.error = telemetryErrorText(pending.command, error);
 }
 
 /**
@@ -179,21 +184,23 @@ export function recordTelemetryError(error: unknown): void {
  */
 export function armTelemetry(registry: Registry, cmd: Command, words: readonly string[], startedAt: number): void {
   if (pending || silent(cmd)) return;
-  const effective = effectiveTelemetry(process.env);
-  if (effective.level === "off" || !effective.settings) return;
+  const raw = cmd.rawArgs === true;
+  const subcommand = raw || !cmd.subcommands?.length ? null : subcommandName(cmd, words);
+  if (subcommand?.startsWith("__")) return;
+  const effective = whenSettingsFree(() => effectiveTelemetry(process.env, true, 0));
+  if (!effective?.settings || effective.level === "off") return;
   const url = telemetryUrl();
   let settings = effective.settings;
   if (effective.source === "file" && effective.level === "regular" && !settings.noticeShownAt && process.stderr.isTTY) {
-    console.error(TELEMETRY_NOTICE);
-    settings = markTelemetryNoticeShown();
+    const marked = whenSettingsFree(() => markTelemetryNoticeShown(0));
+    if (marked) { settings = marked; console.error(TELEMETRY_NOTICE); }
   }
-  const raw = cmd.rawArgs === true;
   pending = {
     level: effective.level,
     settings,
     account: effective.level === "regular" ? accountHash() : null,
     command: cmd.name,
-    subcommand: raw ? null : subcommandName(cmd, words),
+    subcommand,
     flags: raw ? [] : flagNames(cmd, words),
     startedAt,
     version: cliVersion(),
@@ -207,18 +214,25 @@ export function armTelemetry(registry: Registry, cmd: Command, words: readonly s
   });
 }
 
+function whenSettingsFree<T>(read: () => T): T | undefined {
+  try { return read(); } catch (error) {
+    if (isCommandFailure(error) && error.native?.code === "TELEMETRY_BUSY") return undefined;
+    throw error;
+  }
+}
+
 const sameUtcDay = (a: string, b: Date): boolean => a.slice(0, 10) === b.toISOString().slice(0, 10);
 
 /** The bodies to send: at `regular`, the day's install event first when none was sent today. */
 function eventsAtExit(registry: Registry, p: Pending, code: number, now: Date): string[] {
   const bodies: string[] = [];
-  if (p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
+  // Bundled docs never open the extension inventory. Leave the install event due for another command.
+  if (p.command !== "docs" && p.level === "regular" && !(p.settings.lastInstallEventAt && sameUtcDay(p.settings.lastInstallEventAt, now))) {
     try {
       const body = JSON.stringify(installEvent(registry, p, now));
-      markTelemetryInstallEvent(now);
-      bodies.push(body);
+      if (claimTelemetryInstallEvent(p.settings.installId, now)) bodies.push(body);
     } catch {
-      // An unreadable manifest or registry costs the install event, never the command event.
+      // A busy settings writer or unreadable inventory costs the install event, never the command event.
     }
   }
   bodies.push(JSON.stringify(commandEvent(p, code, now)));
@@ -244,9 +258,7 @@ function base(p: Pending) {
   };
 }
 
-/** The outcome and code an exit carries: the typed failure the kernel recorded, else what the exit
- *  code alone says (2 is a refusal, 3 and 4 each stand for one code, and any other non-zero code is
- *  an error whose code the kernel never saw). */
+/** Prefer the recorded failure to the generic meaning of a nonzero exit code. */
 function classify(p: Pending, exitCode: number): { outcome: "ok" | "error" | "refused"; errorCode: ErrorCode | null } {
   if (exitCode === 0) return { outcome: "ok", errorCode: null };
   if (p.failure) return { outcome: p.failure.outcome === "refused" ? "refused" : "error", errorCode: p.failure.code };

@@ -1,6 +1,6 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, installedExtensionPackage, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
 
@@ -64,8 +64,9 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
  * Why `cotal update` still has to reinstall a first-party operator extension, or undefined when npm's
  * own record in the prefix proves it installed at this generation: the entry is recorded at this
  * generation with the spec the update would install, the prefix lock records the package at that
- * version, and every package the lock records is on disk at its recorded version
- * ({@link prefixLockDiffers}). Any doubt is a reason, and a reason runs the ordinary reinstall.
+ * version, every package the lock records is on disk at its recorded version
+ * ({@link prefixLockDiffers}), and the extension's resolved entry is a nonempty regular file.
+ * Any doubt is a reason, and a reason runs the ordinary reinstall.
  */
 export function operatorInstallDiffers(entry: InstalledExtension, generation: string): string | undefined {
   const spec = `${entry.pkg}@${generation}`;
@@ -77,6 +78,12 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   const locked = lock.packages[`node_modules/${entry.pkg}`]?.version;
   if (locked === undefined) return "the prefix lock does not record it";
   if (locked !== generation) return `the prefix lock records it at ${String(locked)}`;
+  const installed = installedExtensionPackage(entry.pkg);
+  if (!installed) return "not installed on disk";
+  const path = resolveExtensionEntry(extensionPackageDir(entry.pkg), installed);
+  const file = statSync(path, { throwIfNoEntry: false });
+  if (!file?.isFile()) return "entry file is missing";
+  if (file.size === 0) return "entry file is empty";
   return undefined;
 }
 

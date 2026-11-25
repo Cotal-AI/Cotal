@@ -12,23 +12,23 @@
   "mutations": [
     {
       "name": "a set cap is validated but not rendered",
-      "file": "packages/core/src/provision.ts",
-      "find": "  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore} }`;\n",
-      "replace": "  return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;\n",
+      "file": "packages/core/src/provision-server-config.ts",
+      "find": "  return `jetstream { store_dir: ${JSON.stringify(storeDir)}, max_file_store: ${maxFileStore}${limits} }`;\n",
+      "replace": "  return `jetstream { store_dir: ${JSON.stringify(storeDir)}${limits} }`;\n",
       "expectRed": "openServerConfig: a set maxFileStore renders max_file_store inside the jetstream block",
       "cell": "openServerConfig: a set maxFileStore renders max_file_store inside the jetstream block"
     },
     {
       "name": "unset renders a different jetstream line",
-      "file": "packages/core/src/provision.ts",
-      "find": "  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)} }`;\n",
-      "replace": "  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)}, }`;\n",
+      "file": "packages/core/src/provision-server-config.ts",
+      "find": "  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)}${limits} }`;\n",
+      "replace": "  if (maxFileStore === undefined) return `jetstream { store_dir: ${JSON.stringify(storeDir)}${limits}, }`;\n",
       "expectRed": "openServerConfig: unset maxFileStore renders byte-identical config",
       "cell": "openServerConfig: unset maxFileStore renders byte-identical config"
     },
     {
       "name": "an invalid cap is rendered instead of refused",
-      "file": "packages/core/src/provision.ts",
+      "file": "packages/core/src/provision-server-config.ts",
       "find": "  if (!Number.isSafeInteger(maxFileStore) || maxFileStore <= 0)\n",
       "replace": "  if (Number.isNaN(maxFileStore))\n",
       "expectRed": "openServerConfig: maxFileStore 0 is refused naming the option",
@@ -36,9 +36,9 @@
     },
     {
       "name": "serverConfig drops the cap on the way to the block",
-      "file": "packages/core/src/provision.ts",
-      "find": "renderJetStreamBlock(\"serverConfig\", opts.storeDir, opts.maxFileStore)",
-      "replace": "renderJetStreamBlock(\"serverConfig\", opts.storeDir, undefined)",
+      "file": "packages/core/src/provision-server-config.ts",
+      "find": "renderJetStreamBlock(\"serverConfig\", opts.storeDir, opts.maxFileStore, opts.brokerVersion)",
+      "replace": "renderJetStreamBlock(\"serverConfig\", opts.storeDir, undefined, opts.brokerVersion)",
       "expectRed": "serverConfig: a set maxFileStore renders max_file_store inside the jetstream block",
       "cell": "serverConfig: a set maxFileStore renders max_file_store inside the jetstream block"
     }

@@ -1,6 +1,6 @@
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
-import { acquireLock, globalConfigDir, parseAgentFileSource, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
+import { acquireLock, globalConfigDir, parseAgentFileBytes, projectTrustProblem, writeSecretFileAtomic, type AgentDef } from "@cotal-ai/core";
 import { parseLaunchPersonaSource, PersonaSourceError } from "./launch-persona.js";
 import { CommandFailure, isCommandFailure } from "./output.js";
 import { localRecordAccess, prepareCotalHomeForWrite, protectedLocalDirectory } from "./protected-records.js";
@@ -201,7 +201,7 @@ export function isTrustedProject(root: string): boolean {
 /** The refusal for a trusted-only entry a project folder declares while it is not trusted: the
  *  file, what it declares, the folder and the command that trusts it. */
 export function untrustedProjectRefusal(file: string, declared: readonly string[], root: string): string {
-  return `${file} declares ${declared.join(", ")}, which a project may declare only when its folder is trusted. ${root} is not trusted, so nothing was launched. If you trust this folder, run \`cotal trust ${root}\``;
+  return `${file} ${projectTrustProblem(declared, root)}`;
 }
 
 /** The project folder a persona path belongs to, when it sits in one: the folder holding the
@@ -271,8 +271,8 @@ function walkPersonaPath(file: string): WalkedPersona {
 
 /** Read the file a walk ended at, refusing when it is no longer the file the walk judged: the last
  *  component is opened without following a link, and the opened file must be the same one. */
-function readWalked(file: string, walked: WalkedPersona, as: "launch" | "agent"): string {
-  const notRegular = () => as === "launch" ? new PersonaSourceError(`persona is not a regular file: ${file}`) : new Error(`agent file ${file} is not a regular file`);
+function readWalked(file: string, walked: WalkedPersona, as: "launch" | "agent"): Buffer {
+  const notRegular = () => as === "launch" ? new PersonaSourceError(`persona is not a regular file: ${file}`, { remedy: "pass a regular persona file" }) : new Error(`agent file ${file} is not a regular file`);
   if (!walked.stat.isFile()) throw notRegular();
   const fd = openSync(walked.final, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
   try {
@@ -280,7 +280,7 @@ function readWalked(file: string, walked: WalkedPersona, as: "launch" | "agent")
     if (!opened.isFile()) throw notRegular();
     if (localRecordAccess() === "posix" && (opened.dev !== walked.stat.dev || opened.ino !== walked.stat.ino))
       throw walkFailure("ESTALE", `${file} changed while it was read, so it was not used`);
-    return readFileSync(fd, "utf8");
+    return readFileSync(fd);
   } finally {
     closeSync(fd);
   }
@@ -319,7 +319,7 @@ function launchOptionsRefusal(file: string, walked: WalkedPersona, launchOptions
 export function loadTrustCheckedPersona(file: string, as: "launch" | "agent"): { def: AgentDef; refusal?: string } {
   const walked = walkPersonaPath(file);
   const source = readWalked(file, walked, as);
-  const def = as === "launch" ? parseLaunchPersonaSource(source, file) : parseAgentFileSource(source, file);
+  const def = as === "launch" ? parseLaunchPersonaSource(source, file) : parseAgentFileBytes(source, file);
   const refusal = launchOptionsRefusal(file, walked, def.launchOptions);
   return { def, ...(refusal ? { refusal } : {}) };
 }
@@ -342,7 +342,7 @@ export function manifestPersonaLaunchOptionsRefusal(personaPath: string | undefi
   }
   if (untrustedSpelling(walked) === undefined) return undefined;
   let declared: Record<string, unknown> | undefined;
-  try { declared = parseAgentFileSource(readWalked(personaPath, walked, "agent"), personaPath).launchOptions; }
+  try { declared = parseAgentFileBytes(readWalked(personaPath, walked, "agent"), personaPath).launchOptions; }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     return unreadable(e);

@@ -6,7 +6,7 @@
  * Live checks that need the network (broker reachability for `up -f` vs `spawn -f`) or the connector
  * registry stay in the command wiring; this is the fail-fast, file-level half.
  */
-import { existsSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { type AgentDef } from "@cotal-ai/core";
 import { findCotalRoot, loadTrustCheckedPersona } from "@cotal-ai/workspace";
@@ -29,7 +29,10 @@ export function missingPersona(path: string, sourcePath: string): string {
   if (dirname(path) !== dir || extname(path) !== "") return `persona file not found: ${path}`;
   const rule = `persona file not found: ${path}; \`persona\` takes a path to a persona file, relative to the manifest`;
   const catalog = join(findCotalRoot(dir), ".cotal", "agents", `${name}.md`);
-  if (!existsSync(catalog)) return rule;
+  try {
+    if (!statSync(catalog).isFile()) return rule;
+    accessSync(catalog, constants.R_OK);
+  } catch { return rule; }
   const at = relative(dir, catalog);
   return `${rule}, so the catalog persona ${name} is ${at.startsWith("..") ? at : `./${at}`}`;
 }

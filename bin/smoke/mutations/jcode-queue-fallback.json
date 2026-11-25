@@ -49,7 +49,7 @@
     },
     {
       "name": "M4 any inbox drain counts as automatic progress",
-      "file": "extensions/connector-core/src/agent.ts",
+      "file": "extensions/connector-core/src/agent-inbox.ts",
       "find": "    const automatic = selected.some((p) => !p.pullOnly);\n    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length && automatic) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
       "replace": "    const items = this.commitPending(selected);\n    if (items.length) this._lastInboxDrainedAt = Date.now();\n    if (items.length) this._lastAutomaticDrainedAt = Date.now();\n    for (const id of requested) {",
       "expectRed": "draining pull-only traffic is not automatic progress, so the stall stands",
@@ -60,7 +60,7 @@
     },
     {
       "name": "M5 the fallback delivers without recording what it delivered",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "      promoteToSurfaced(keys);\n      release();\n      publishInboundHealth();",
       "replace": "      release();\n      publishInboundHealth();",
       "expectRed": "and the acceptance is recorded, so the loop stops re-handing over a batch the session took",
@@ -70,7 +70,7 @@
     },
     {
       "name": "M7 acceptance is inferred from the resolve, so a swallowed send is treated as delivered",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "      if (!acknowledged) {\n",
       "replace": "      if (false) {\n",
       "command": "pnpm smoke:jcode-queue-fallback-loss",
@@ -80,8 +80,8 @@
     },
     {
       "name": "M8 a new turn takes over items another handover is still delivering",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !reservedIds.has(item.recvKey));",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
+      "find": "      const inbox = agent.peekInbox(\"automatic\").filter((item) => !hostState.reservedIds.has(item.recvKey));",
       "replace": "      const inbox = agent.peekInbox(\"automatic\");",
       "expectRed": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
       "cell": "a handover in flight survives an unrelated idle/new-turn boundary and is not executed twice (#1233)",
@@ -90,7 +90,7 @@
     },
     {
       "name": "M10 the run handle is returned bare, so promise assimilation extends the gate to the whole turn",
-      "file": "extensions/connector-jcode/src/host.ts",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
       "find": "        return { dispatched };\n",
       "replace": "        return dispatched as unknown as { dispatched: Promise<void> };\n",
       "expectRed": "a message reaches the session while an earlier turn is still open, so the dispatch gate is bounded by acceptance rather than by the turn (#1233)",
@@ -100,8 +100,8 @@
     },
     {
       "name": "M11 a lapsed unacknowledged send leaves acceptance trustworthy, so a late ack settles another batch",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "        acceptanceSuspectUntilBridgeReplaced = true;\n        release();\n",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
+      "find": "        hostState.acceptanceSuspectUntilBridgeReplaced = true;\n        release();\n",
       "replace": "        release();\n",
       "expectRed": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
       "cell": "an unrelated send's acknowledgement does not settle a swallowed handover (#1233)",
@@ -110,9 +110,9 @@
     },
     {
       "name": "M12 a run holding acceptance unattributable does not defer the send",
-      "file": "extensions/connector-jcode/src/host.ts",
-      "find": "      if (attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {",
-      "replace": "      if (false && attributionBlockedByOpenRun(unsettledLapsedDispatches, blockedForMs)) {",
+      "file": "extensions/connector-jcode/src/host-turns.ts",
+      "find": "      if (attributionBlockedByOpenRun(hostState.unsettledLapsedDispatches, blockedForMs)) {",
+      "replace": "      if (false && attributionBlockedByOpenRun(hostState.unsettledLapsedDispatches, blockedForMs)) {",
       "expectRed": "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
       "cell": "a send is NOT written repeatedly while a run holds acceptance unattributable (#1233)",
       "note": "Severs the CALL SITE, not the predicate. An earlier version of this mutation replaced the pure function's body and SURVIVED, because it sat inside a branch whose condition was the same expression and could not disagree with it. Measured by hand at this anchor: severed gives sendFrames=4 with the run still open, fixed gives 0."

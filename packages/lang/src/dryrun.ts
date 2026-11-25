@@ -19,6 +19,7 @@
 
 import { run } from "./interpret.js";
 import { SimHandler, type SimScript } from "./sim.js";
+import { simScopeFaults } from "./sim-scope-faults.js";
 import { stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 import { Journal } from "./journal.js";
@@ -129,7 +130,10 @@ export class RecordingHandler implements Required<EffectHandler> {
   readonly checkpointsAsked: { req: CheckpointRequest; step: string }[] = [];
   readonly waits: { req: ObserveRequest; step: string }[] = [];
 
-  constructor(private readonly inner: EffectHandler) {}
+  constructor(private readonly inner: EffectHandler) {
+    const check = simScopeFaults.get(inner);
+    if (check) simScopeFaults.set(this, check);
+  }
 
   now(): number {
     return this.inner.now();

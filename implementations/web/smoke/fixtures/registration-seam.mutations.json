@@ -7,7 +7,7 @@
   "mutations": [
     {
       "name": "the server stops serving stylesheets",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "  \".css\": \"text/css; charset=utf-8\",\n",
       "replace": "",
       "expectRed": "every file the built page references is served",
@@ -16,7 +16,7 @@
     },
     {
       "name": "the server stops serving fonts, so the stylesheet's url(...) to the Inter woff2 files is a 404",
-      "file": "implementations/web/src/web.ts",
+      "file": "implementations/web/src/web-read.ts",
       "find": "  \".woff2\": \"font/woff2\",\n",
       "replace": "",
       "expectRed": "every file in dist/web/assets is served",

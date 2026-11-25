@@ -59,6 +59,7 @@ export async function mintEndpointCaller(args: ParsedArgs): Promise<void> {
   validateCredentialMintArguments(args);
   if (typeof args.values.endpoint !== "string") throw new CommandFailure("refused", "USAGE_INVALID", "this caller action requires an explicit --endpoint class; no fixed-profile request was reinterpreted");
   const values = args.values, name = args.positionals[0]!, endpoint = String(values.endpoint), out = resolve(String(values.out));
+  const parent = dirname(out);
   const requestId = randomUUID(), intentPath = `${out}.issuance.json`;
   const channels = String(values.channels ?? "").split(",").map((channel) => channel.trim()).filter(Boolean);
   let target: Record<string, unknown> = { name, endpoint, path: out, intentPath };
@@ -72,7 +73,14 @@ export async function mintEndpointCaller(args: ParsedArgs): Promise<void> {
     if (!selected.auth || selected.auth.account.pub !== auth.account.pub) throw new CommandFailure("refused", "CONFLICT", "the registered broker target and caller signer do not share one native account authority", { target });
     assertExternalCredentialExport(out, [selected.root, currentRoot]);
     assertExternalCredentialExport(intentPath, [selected.root, currentRoot]);
-    protectedLocalDirectory(dirname(out));
+    try { protectedLocalDirectory(parent); }
+    catch (error) {
+      const { code, syscall } = error as NodeJS.ErrnoException;
+      if (code !== "ENOENT" || syscall !== "lstat") throw error;
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the --out parent directory ${parent} does not exist`, {
+        target: { ...target, parent }, remedy: "create the directory privately or choose an existing protected directory for --out",
+      });
+    }
     held = acquireLock(`${out}.mint.lock`, { label: "endpoint caller output", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds the endpoint caller output", { target }) });
     if (lstatSync(out, { throwIfNoEntry: false })) throw new CommandFailure("refused", "CONFLICT", "the caller output already exists; it was not replaced and no new caller was provisioned", { target });
     if (lstatSync(intentPath, { throwIfNoEntry: false })) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an original caller issuance intent is retained; no second identity or footprint was allocated", { target, remedy: "inspect the original private intent, identity/lifecycle and output before a new issuance; an absent output is not proof of no footprint" });
@@ -96,7 +104,7 @@ export async function mintEndpointCaller(args: ParsedArgs): Promise<void> {
     const creds = await provisionAgent(provisioner, auth, identity, { lifecycleUid, capabilities: [], endpointCapabilities: scope.capabilities, allowSubscribe: channels, allowPublish: channels, subscribe: channels, ...(values["expires-in"] === undefined ? {} : { expiresInSeconds: Number(values["expires-in"]) }) });
     changed.push({ kind: "native-caller-footprint", identity: identity.id, lifecycleUid, acknowledged: true });
     if (identityFromCreds(creds).id !== identity.id) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native caller result did not retain its intended identity; no credential bytes were published", { target, changed });
-    protectedLocalDirectory(dirname(out));
+    protectedLocalDirectory(parent);
     writeSecretFileCreateOnly(out, creds);
     changed.push({ kind: "private-caller-file", path: out, acknowledged: true });
     protectedCredentialReference(out);
