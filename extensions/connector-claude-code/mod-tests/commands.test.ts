@@ -39,11 +39,12 @@ interface Options {
   readerFails?: boolean
   drop?: string
   usage?: { context: { tokens?: number; window: number }; cost?: { usd: number } }
+  model?: string
 }
 
 // Stands in for Claude Code under the mod and for the seat server beyond its reader and helper.
 function seat(on: On, options: Options = {}) {
-  const record = { reader: [] as string[][], helper: [] as string[][], runs: [] as string[][], aborts: [] as string[], stops: [] as string[], prompts: [] as unknown[] }
+  const record = { reader: [] as string[][], helper: [] as string[][], runs: [] as string[][], aborts: [] as string[], stops: [] as string[], prompts: [] as unknown[], steps: [] as unknown[][] }
   const lines: string[] = []
   const answers = new Map<string, (frame: Frame) => void>()
   let wake = () => {}
@@ -78,6 +79,12 @@ function seat(on: On, options: Options = {}) {
   })
   on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], ...(options.usage ?? { context: { window: 200000 } }) } }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('session.model', () => ({ value: options.model ?? 'claude-opus-5-5' }))
+  // The engine's request: what each step goes out on.
+  on('turn.step', async function* ($, e) {
+    record.steps.push([e.turnId, e.agentId ?? 'main', e.model, e.effort ?? 'none'])
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+  })
   // Claude writes the results an abort moved to the background just after the abort resolves, so
   // they show only once a turn completed.
   let settled = false
@@ -107,6 +114,13 @@ function seat(on: On, options: Options = {}) {
 }
 
 const start = ($: Engine) => $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+// One model request of turn `turnId` at the launch model and effort, read to its end.
+async function step($: Engine, turnId: string, agentId?: string) {
+  const stream = $.turn.step({ turnId, index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1, ...(agentId ? { agentId } : {}) })
+  for await (const chunk of stream) void chunk
+  return stream.result
+}
+const PRESENTATION = { isFullscreen: false, columns: 80 }
 // An abort Claude accepts: the aborted turn completes a moment later.
 const completes = ($: Engine) => (turnId: string): Stub => {
   setTimeout(() => void $.turn.complete({ turnId, answer: '', durationMs: 5, isAborted: true, reason: 'aborted' }), 1)
@@ -335,6 +349,57 @@ describe('usage', () => {
     const { ask } = seat(on, { usage: { context: { window: 200000 } } })
     await start($)
     expect(await ask({ op: 'usage' })).toEqual({ id: 'r1', op: 'usage', window: 200000 })
+  })
+})
+
+describe('model', () => {
+  test('a switch applies from the next main turn, at every step, and the running turn keeps its model', async ($, on) => {
+    const { ask, record } = seat(on)
+    await start($)
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    expect(await ask({ op: 'model', model: 'haiku', effort: 'low' })).toEqual({ id: 'r1', op: 'model', model: 'haiku', effort: 'low' })
+    await step($, 't1')
+    await $.turn.complete({ turnId: 't1', answer: '', durationMs: 5, isAborted: false, reason: 'answer' })
+    await $.turn.start({ text: 'again', turnId: 't2' })
+    await step($, 't2')
+    await step($, 't2')
+    expect(record.steps).toEqual([['t1', 'main', 'claude-opus-5-5', 'high'], ['t2', 'main', 'haiku', 'low'], ['t2', 'main', 'haiku', 'low']])
+  })
+  test('a subagent\'s steps keep the model Claude picks', async ($, on) => {
+    const { ask, record } = seat(on)
+    await start($)
+    await ask({ op: 'model', model: 'haiku' })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await $.turn.start({ text: 'sub', turnId: 't2', agentId: 'a1' })
+    await step($, 't2', 'a1')
+    await step($, 't1')
+    expect(record.steps).toEqual([['t2', 'a1', 'claude-opus-5-5', 'high'], ['t1', 'main', 'haiku', 'high']])
+  })
+  test('an effort alone keeps the model in force, and a model alone drops a switched effort', async ($, on) => {
+    const { ask } = seat(on, { model: 'sonnet' })
+    await start($)
+    expect(await ask({ op: 'model', effort: 'low' })).toEqual({ id: 'r1', op: 'model', model: 'sonnet', effort: 'low' })
+    expect(await ask({ op: 'model', model: 'haiku', effort: 'max' })).toEqual({ id: 'r2', op: 'model', model: 'haiku', effort: 'max' })
+    expect(await ask({ op: 'model', effort: 'medium' })).toEqual({ id: 'r3', op: 'model', model: 'haiku', effort: 'medium' })
+    expect(await ask({ op: 'model', model: 'opus' })).toEqual({ id: 'r4', op: 'model', model: 'opus' })
+  })
+  test('a /model run at the seat ends the switch from the next turn', async ($, on) => {
+    const { ask, record } = seat(on)
+    await start($)
+    await ask({ op: 'model', model: 'haiku', effort: 'low' })
+    await $.command.run({ command: 'model', args: 'sonnet', origin: { kind: 'composer' }, presentation: PRESENTATION })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await step($, 't1')
+    expect(record.steps).toEqual([['t1', 'main', 'claude-opus-5-5', 'high']])
+  })
+  test('an /effort run at the seat ends the switched effort and keeps the switched model', async ($, on) => {
+    const { ask, record } = seat(on)
+    await start($)
+    await ask({ op: 'model', model: 'haiku', effort: 'low' })
+    await $.command.run({ command: 'effort', args: 'max', origin: { kind: 'composer' }, presentation: PRESENTATION })
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await step($, 't1')
+    expect(record.steps).toEqual([['t1', 'main', 'haiku', 'high']])
   })
 })
 

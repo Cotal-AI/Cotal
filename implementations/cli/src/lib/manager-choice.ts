@@ -355,7 +355,7 @@ export async function managerSelection(
   const shown = mode === "user" ? (await yourLiveManagers(flags)).find((m) => m.instanceId === instanceId) : undefined;
   const manager = shown ?? managerCandidate(instanceId, undefined);
   if (manager.host !== null || target === undefined) return { manager, selector: String(values.on ?? instanceId) };
-  const host = await reportedManagerHost(cliControl, target.space, target.server, target.auth, instanceId);
+  const { host } = await reportedManagerHost(cliControl, target.space, target.server, target.auth, instanceId);
   return { manager: { ...manager, host: host ?? null }, selector: String(values.on ?? instanceId) };
 }
 

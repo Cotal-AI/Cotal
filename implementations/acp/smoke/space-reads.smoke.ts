@@ -8,7 +8,10 @@
  *    frames;
  *  - a credential without the payload history row is refused the read the bridge makes;
  *  - when the payload history cannot be read, the thread fails to replay, saying that the seat's
- *    earlier tool inputs and results cannot be read, and why.
+ *    earlier tool inputs and results cannot be read, and why;
+ *  - on the open space, a seat shows the label it took in place of its name, a rename that drops the
+ *    label shows the new name and reaches the roster follower, and another run of the seat shows none.
+ *  - with no manager registered, the agent list rejects with the error that names it.
  *
  * Run: pnpm smoke:acp-space-reads (needs nats-server on PATH).
  */
@@ -17,7 +20,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AGUI_FRAME_KIND, chatSubject, CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, eventPayloadStream, eventPayloadSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey, serverConfig, setupSpaceStreams, spacePrefix, type SpaceAuth } from "@cotal-ai/core";
+import { AGENT_LABEL_META_KEY, AGUI_FRAME_KIND, chatSubject, CotalEndpoint, createSpaceAuth, DEV_OWNER, eventChannel, eventPayloadStream, eventPayloadSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey, serverConfig, setupSpaceStreams, spacePrefix, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "../../../packages/smoke-kit/src/index.js";
 import { openLiveMesh } from "../src/live-mesh.js";
@@ -122,8 +125,34 @@ async function checkSpace(label: string, s: Space): Promise<void> {
     const unread = await mesh.frameHistory(seat).then(() => undefined, (e: Error) => e);
     check(`${label} when the payload history cannot be read: replay fails, saying the earlier tool inputs and results cannot be read, and why`,
       unread?.message.startsWith("seat's earlier tool inputs and results cannot be read from its payload history: ") === true && unread.message.length > 80, unread?.message);
+    const none = await mesh.seats().then(() => undefined, (e: Error) => e);
+    check(`${label} with no manager registered: the agent list rejects saying so, as NoManagerRegistered`,
+      none?.name === "NoManagerRegistered" && none.message === `No live manager is registered for ${s.name}`, none && { name: none.name, message: none.message });
   } finally {
     await nc.close();
+    await mesh.close();
+  }
+}
+
+/** The name a seat shows, as the thread's title follows it. */
+async function checkShownName(s: Space): Promise<void> {
+  const run: SeatRef = { name: "namer", owner: DEV_OWNER, actor: "namer", lifecycleUid: mintLifecycleUid() };
+  const mesh = await openLiveMesh({ space: s.name, log: () => {}, stop: () => {} });
+  let changes = 0;
+  mesh.followRoster(() => changes++);
+  const ep = new CotalEndpoint({ space: s.name, servers: s.server, lifecycleUid: run.lifecycleUid, channels: [], consume: false, watchPresence: false, watchChannels: false,
+    card: { name: run.name, actor: run.actor, kind: "agent", meta: { [AGENT_LABEL_META_KEY]: "Login fix" } } });
+  try {
+    await ep.start();
+    for (let i = 0; i < 50 && mesh.shownName(run) === undefined; i++) await tick(100);
+    check("open space: a seat shows the label it took in place of its name", mesh.shownName(run) === "Login fix", mesh.shownName(run));
+    const before = changes;
+    await ep.setCardName("Namer Two", { [AGENT_LABEL_META_KEY]: undefined });
+    for (let i = 0; i < 50 && mesh.shownName(run) !== "Namer Two"; i++) await tick(100);
+    check("open space: a rename that drops the label shows the new name, and the roster follower sees it", mesh.shownName(run) === "Namer Two" && changes > before, { shown: mesh.shownName(run), changes: changes - before });
+    check("open space: another run of the seat shows no name", mesh.shownName({ ...run, lifecycleUid: mintLifecycleUid() }) === undefined);
+  } finally {
+    await ep.stop();
     await mesh.close();
   }
 }
@@ -134,6 +163,7 @@ try {
   await checkSpace("static space", spaces[0]!);
   spaces.push(await startSpace("acpopen", undefined));
   await checkSpace("open space", spaces[1]!);
+  await checkShownName(spaces[1]!);
 } finally {
   for (const s of spaces) {
     await killAndAwaitExit(s.broker, "SIGTERM");

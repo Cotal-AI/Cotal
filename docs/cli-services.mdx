@@ -18,7 +18,7 @@ cotal service show <name>
 cotal service add <name> --exec "<command>" [--cwd <dir>]
 cotal service add <name> --preset <preset> <preset-options>
 cotal service add <name> --file <definition.json>
-cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--foreground] [--dry-run]
+cotal service start <name> [<preset-options>] [--instance <id>|--new-instance] [--idle-exit <seconds>] [--foreground] [--dry-run]
 cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]
 cotal service status <name> [--instance <id>]
@@ -41,6 +41,7 @@ Every form takes `--json` except `start --foreground` without `--dry-run`.
 | `--instance <full-id>` | Select one instance by its full ID, not a prefix |
 | `--new-instance` | start: allocate another instance of a process definition |
 | `--foreground` | start: keep the process in this terminal |
+| `--idle-exit <seconds>` | start of the manager: stop it once it has held no agents for that long; this start only (see [manager](cli-maintenance.mdx#manager)) |
 | `--with-agents` | stop, restart: request the manager's native agent-stop policy |
 | `--dry-run` | start, stop, restart: preview the effect. install, uninstall: inspect the unit |
 | `-y, --yes` | stop, restart, remove, uninstall: confirm in a script |
@@ -79,7 +80,8 @@ adapter's foreground and multi-instance capabilities even before the definition 
 The manager preset does not support `--new-instance`, so `cotal service start manager --help`
 omits it. Generic `cotal service start --help` lists it for services that support it.
 A preset that needs something only you can give, such as the intake's keys, refuses with those flags
-named, and takes them on the start line. A default the space cannot fill yet, such as the `web`
+named, and takes them on the start line. If you gave `--new-instance`, the retry tells you to remove
+it before adding the missing flags. A default the space cannot fill yet, such as the `web`
 dashboard's `web.creds` on a space
 `cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
 replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
@@ -465,6 +467,15 @@ ambient credentials and agent identity markers are not inherited by generic proc
 A component needing the invoking caller must supply its supported native handoff, not infer a new
 operator identity. In particular, the web service does not receive the invoking caller's
 authority.
+
+The manager service also receives the [`spawn.env`](config.mdx#launcher-variables) names that are
+set where it starts, read from the config the manager reads. No value is printed. A manager gives
+its seats their provider keys and `spawn.env` names from its own environment. So when
+`cotal manager start`, `cotal acp` or a controller stack's `cotal up` starts the manager, its seats
+get a provider key or harness folder from the environment only when `spawn.env` lists it. A name
+added to `spawn.env` later reaches seats once the manager starts again. A manager that `cotal up`
+starts on the [legacy launcher](cli-startup.mdx#controller-startup) inherits the whole environment
+of `up`.
 
 
 ## Native auth service [#native-auth-service]

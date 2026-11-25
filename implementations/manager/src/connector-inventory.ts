@@ -135,9 +135,9 @@ export class ConnectorInventory {
   }
 }
 
-/** The connector rows a status read serves. A row's `prompts` holds the connector's declaration, and a
- *  session serves prompts only where its endpoint names a caller, which only a user-auth mesh does
- *  (SPEC 13.21). The mesh mode is known only after boot inspected the connectors, so it is applied here. */
-export function servedConnectorStatuses(rows: readonly ManagerConnectorStatus[], userMode: boolean): ManagerConnectorStatus[] {
-  return rows.map((row) => ({ ...row, binaries: { ...row.binaries }, prompts: userMode && row.prompts }));
+/** The connector rows a status read serves, copied so a reader cannot change the inventory. A row's
+ *  `prompts` is the connector's declaration on every mesh mode, since a session serves its `agent`
+ *  endpoint on each (SPEC 13.21). */
+export function servedConnectorStatuses(rows: readonly ManagerConnectorStatus[]): ManagerConnectorStatus[] {
+  return rows.map((row) => ({ ...row, binaries: { ...row.binaries } }));
 }

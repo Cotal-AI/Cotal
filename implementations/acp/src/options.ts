@@ -3,10 +3,11 @@
  *
  * The model select lists `<agent>/<model>` grouped by agent, with a `<agent>/default` choice for
  * the application's own default. A catalog model whose id is `default` is that choice, with its
- * name and variants. Each choice's name starts with its agent, because a client may
- * flatten the groups and drop their names (T3 Code does). A Harness select names the application on
- * its own. The model value names it too, so the two always agree: choosing a model moves the harness
- * to its application, and choosing another harness starts it on that application's default model.
+ * name and variants, and a spawn names it. Each choice's name starts with its agent, because a
+ * client may flatten the groups and drop their names (T3 Code does). A Harness select names the
+ * application on its own. The model value names it too, so the two always agree: choosing a model
+ * moves the harness to its application, and choosing another harness starts it on that
+ * application's default model.
  * A client must be able to select the default again after a named model ran, so it is a real choice
  * rather than an absent value. Applications without an event
  * plane are not offered: the bridge reads a seat's turns from that plane and has nothing to show
@@ -60,13 +61,21 @@ export interface Offer {
   readonly seatOnly?: boolean;
 }
 
-/** Split a model choice into its application and model. */
-export function parseModel(value: string): { agent: string; model?: string } {
+/** Split a model choice into its application and model, as written. A model {@link DEFAULT_MODEL}
+ *  may be the application's default or a catalog model of that id; only the catalog tells
+ *  ({@link spawnModel}). */
+export function parseModel(value: string): { agent: string; model: string } {
   const slash = value.indexOf("/");
   if (slash <= 0 || slash === value.length - 1) throw new Error(`model "${value}" is not <agent>/<model>`);
-  const agent = value.slice(0, slash);
-  const model = value.slice(slash + 1);
-  return { agent, ...(model === DEFAULT_MODEL ? {} : { model }) };
+  return { agent: value.slice(0, slash), model: value.slice(slash + 1) };
+}
+
+/** The model a spawn names for a model choice: the chosen model, or none for `<agent>/default` when
+ *  the application's catalog lists no model of that id, which leaves the model to the application. */
+export function spawnModel(offer: Offer, value: string): string | undefined {
+  const { agent, model } = parseModel(value);
+  const listed = offer.catalogs.find((c) => c.agent === agent)?.models.some((m) => m.id === model) === true;
+  return model === DEFAULT_MODEL && !listed ? undefined : model;
 }
 
 /** A thread can drive a running seat of the application: it is available and has an event plane. */
@@ -104,9 +113,26 @@ export function defaultManager(managers: readonly ManagerChoice[]): ManagerChoic
 }
 
 /** Why a thread with no manager chosen starts no agent. It never leaves the spawn unpinned, which
- *  would let the space's exchange pick any manager. */
-export function noMachine(space: string): string {
+ *  would let the space's exchange pick any manager. `unreadable` is why this machine's identity could
+ *  not be read, when it could not. */
+export function noMachine(space: string, unreadable?: string): string {
+  if (unreadable !== undefined) return machineUnknown(unreadable, "", "choose a machine in the Machine option");
   return `No manager of yours runs on this machine. Start one with \`cotal manager start --space ${space}\`, or choose another computer in the Machine option.`;
+}
+
+/** Why a new thread starts no manager when this machine's identity could not be read and no manager is
+ *  listed. One started here would name no machine either, so it would never read as this machine's
+ *  and every thread would start another. */
+export function noManagerKnownHere(space: string, unreadable: string): string {
+  return machineUnknown(unreadable, " and starts none", `start a manager with \`cotal manager start --space ${space}\` and choose it in the Machine option`);
+}
+
+/** That this machine's identity could not be read, so no manager is known to run here, and what to do:
+ *  make it readable, where Cotal knows how, or `instead`. */
+function machineUnknown(unreadable: string, starts: string, instead: string): string {
+  const head = `This machine's identity could not be read (${unreadable}), so Cotal cannot tell which manager runs here${starts}.`;
+  if (process.platform === "linux") return `${head} Create /etc/machine-id with \`systemd-machine-id-setup\` and open a new thread, or ${instead}.`;
+  return `${head} ${instead.charAt(0).toUpperCase()}${instead.slice(1)}.`;
 }
 
 /** The selection a new session starts with. */
@@ -135,7 +161,7 @@ function selectionOf(offer: Offer, model: string, machine = defaultManager(offer
 /** The variants of one `<agent>/<model>` choice, as its catalog entry lists them: for an
  *  application's default, the entry whose id is `default`. None for a custom id. */
 function variantsOfModel(offer: Offer, value: string): readonly string[] {
-  const { agent, model = DEFAULT_MODEL } = parseModel(value);
+  const { agent, model } = parseModel(value);
   return offer.catalogs.find((c) => c.agent === agent)?.models.find((m) => m.id === model)?.variants ?? [];
 }
 
@@ -226,7 +252,7 @@ function listed(offer: Offer, selection: Selection): AgentCatalog[] {
 /** The model select's choices, grouped by application. */
 function modelGroups(offer: Offer, selection: Selection): { group: string; name: string; options: { value: string; name: string }[] }[] {
   return listed(offer, selection).map((c) => {
-    // A model whose id is the default's is the default choice, since its value already means the application's default.
+    // A model whose id is the default's is the default choice, since both have the value `<agent>/default`.
     const own = c.models.find((m) => m.id === DEFAULT_MODEL);
     const named = c.models.filter((m) => m !== own);
     // A seat-only thread offers the model its agent runs, and the default only when it names none.
@@ -301,7 +327,7 @@ export function configOptions(offer: Offer, selection: Selection): SessionConfig
       category: "thought_level",
       type: "select",
       currentValue: selection.variant,
-      options: [{ value: DEFAULT_VARIANT, name: "Model default" }, ...variants.map((v) => ({ value: v, name: v }))],
+      options: [{ value: DEFAULT_VARIANT, name: "Model default" }, ...withCurrent([...variants], selection.variant, DEFAULT_VARIANT).map((v) => ({ value: v, name: v }))],
     });
   if (offer.personas.length)
     options.push({

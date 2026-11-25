@@ -139,7 +139,6 @@ export class ServePlane {
   sessionLedgerCreds?: string;
 
   constructor(private readonly config: Readonly<ManagerConfig>, private readonly deps: ServePlaneDeps, private readonly parts: Pick<ManagerParts, "brokerTransport" | "connectorInventory" | "credentialRenewal" | "goalWriter">, private readonly state: ManagerStartState) {}
-  private get userMode() { return this.state.userMode; }
 
   private get auth(): SpaceAuth | undefined { return this.state.auth; }
   private get remoteAuthority(): Pick<NonNullable<ManagerOptions["remoteAuthority"]>, "identities" | "goalWriterCreds" | "sessionLedgerCreds" | "serveCreds" | "serveGrant" | "mintSessionServing"> | undefined { return this.config.remoteAuthority; }
@@ -150,7 +149,7 @@ export class ServePlane {
   private get connectorStatuses(): readonly ManagerConnectorStatus[] {
     const inventory = this.parts.connectorInventory;
     inventory.refreshUnavailableConnectors();
-    return servedConnectorStatuses(inventory.connectorStatuses, this.userMode);
+    return servedConnectorStatuses(inventory.connectorStatuses);
   }
 
   /** #2073: dial the manager's ONE control-plane connection and serve its typed command surface on
