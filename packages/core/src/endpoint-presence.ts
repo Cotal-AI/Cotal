@@ -29,8 +29,9 @@ export interface EndpointPresenceDeps {
   isPublishPermissionDenied: (error: unknown) => boolean;
 }
 
-/** Changes to a card's advisory `meta`: each key set to its string value, or removed with `undefined`. */
-export type CardMetaChanges = Readonly<Record<string, string | undefined>>;
+/** Changes to a card's advisory `meta`: each key set to its value, a string or a flat record of
+ *  strings such as `ai.cotal.model-set`, or removed with `undefined`. */
+export type CardMetaChanges = Readonly<Record<string, string | Readonly<Record<string, string>> | undefined>>;
 
 /** Trust state of this endpoint's local presence roster. `fresh` remains for older consumers:
  * unpopulated is deliberately false so they fail toward unknown rather than treating a partial
@@ -407,7 +408,7 @@ export class EndpointPresence {
   private metaWith(changes: CardMetaChanges): Record<string, unknown> | undefined {
     if (Object.keys(changes).some((key) => !key)) throw new TypeError("card meta keys must be non-empty strings");
     const meta = this.identity.card.meta ?? {};
-    const changed = Object.entries(changes).filter(([key, value]) => (value === undefined ? Object.hasOwn(meta, key) : meta[key] !== value));
+    const changed = Object.entries(changes).filter(([key, value]) => (value === undefined ? Object.hasOwn(meta, key) : !sameMetaValue(meta[key], value)));
     if (!changed.length) return this.identity.card.meta;
     const next: Record<string, unknown> = { ...meta };
     for (const [key, value] of changed) {
@@ -812,7 +813,7 @@ export class EndpointPresence {
       prev.card.name === p.card.name &&
       prev.card.meta?.[AGENT_LABEL_META_KEY] === p.card.meta?.[AGENT_LABEL_META_KEY] &&
       prev.card.meta?.[AGENT_NAMING_META_KEY] === p.card.meta?.[AGENT_NAMING_META_KEY] &&
-      sameModelSet(prev.card.meta?.[AGENT_MODEL_SET_META_KEY], p.card.meta?.[AGENT_MODEL_SET_META_KEY]) &&
+      sameMetaValue(prev.card.meta?.[AGENT_MODEL_SET_META_KEY], p.card.meta?.[AGENT_MODEL_SET_META_KEY]) &&
       prev.lifecycleUid === p.lifecycleUid &&
       sameRuntime(prev.runtime, p.runtime) &&
       prev.status === p.status &&
@@ -930,11 +931,13 @@ function sameCondition(a: PresenceCondition | undefined, b: PresenceCondition | 
     && a?.since === b?.since;
 }
 
-/** Whether two `ai.cotal.model-set` values name one model and variant. Each record parses to a new
- *  object, so they are compared by field. */
-function sameModelSet(a: unknown, b: unknown): boolean {
-  const x = a as { model?: unknown; variant?: unknown } | undefined, y = b as { model?: unknown; variant?: unknown } | undefined;
-  return typeof a === typeof b && x?.model === y?.model && x?.variant === y?.variant;
+/** Whether two card meta values are the same: a string by value, and a flat record such as
+ *  `ai.cotal.model-set` by its fields, since each record parses to a new object. */
+function sameMetaValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  const x = Object.entries(a), y = b as Record<string, unknown>;
+  return x.length === Object.keys(y).length && x.every(([k, v]) => Object.hasOwn(y, k) && y[k] === v);
 }
 
 function sameAgentEndpoint(a: PresenceAgentEndpoint | undefined, b: PresenceAgentEndpoint | undefined): boolean {
