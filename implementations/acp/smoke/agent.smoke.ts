@@ -44,11 +44,16 @@
  *    a rename made elsewhere; a refused rename, an unchanged name or a seat the roster stops showing
  *    sends no title;
  *  - where the session lists a thread server (a stand-in for T3 Code's `t3-code` MCP server), the
- *    bridge sets the client's own title through it too, and a listed server without the thread tools
- *    is never called; a rename in the client renames the agent before the next prompt reaches it and
- *    is not written back; a title the bridge wrote is not read back as a rename; a read the server
- *    fails, or a rename the agent refuses, is said in the thread and logged, and the prompt still runs;
- *    a refused title goes back to the agent's name;
+ *    bridge starts it with only the variables the client gave and sets the client's own title through
+ *    it too, and a listed server without the thread tools is listed once and never called; a rename in
+ *    the client labels the agent before the next prompt reaches it, keeps its name, and is not written
+ *    back; a title the bridge wrote is not read back as a rename; a read the server fails, or a label
+ *    the agent refuses, is said in the thread and logged, and the prompt still runs; a refused title
+ *    goes back to the agent's name; each title the bridge wrote or read is stored with the thread's
+ *    link; a second session of the same bridge starts the server with its own variables and lists
+ *    no server again; and a load in a new bridge labels the agent with a title the person gave the
+ *    thread while no bridge ran, and otherwise titles the thread with the name the agent shows, as it
+ *    does when the link stored no title;
  *  - where seats serve their `agent` endpoint, a prompt the harness opens is asked once as a
  *    permission request, without options ACP cannot answer and only when its digest matches, and the
  *    answer goes back with that digest; a prompt whose read fails once is logged, read again and
@@ -186,6 +191,15 @@ class FakeMesh implements Mesh {
     this.renamed.push({ seat: seat.name, name });
     return name;
   }
+  relabelled: { seat: string; label: string }[] = [];
+  /** Why the agent refuses a label, when it does. */
+  labelRefusal: string | undefined;
+  async relabel(seat: SeatRef, label: string) {
+    if (this.labelRefusal) throw new Error(this.labelRefusal);
+    this.relabelled.push({ seat: seat.name, label });
+    this.show(seat.actor, label);
+    return label;
+  }
   spawnNameError(name: string) { return /^[a-z0-9_]+$/.test(name) ? undefined : `unsafe name ${JSON.stringify(name)}`; }
   async despawn(seat: SeatRef) { this.despawned.push(seat.name); }
   async interrupt(seat: SeatRef) { this.onInterrupt(seat); this.interrupted.push(seat.name); }
@@ -234,7 +248,7 @@ class BigMesh extends FakeMesh {
 
 class MemoryLinks implements ThreadLinks {
   readonly rows: (ThreadLink & { space: string })[] = [];
-  read(space: string) { return this.rows.filter((row) => row.space === space).map(({ thread, lifecycleUid }) => ({ thread, lifecycleUid })); }
+  read(space: string) { return this.rows.filter((row) => row.space === space).map((row) => ({ thread: row.thread, lifecycleUid: row.lifecycleUid, ...(row.title !== undefined ? { title: row.title } : {}) })); }
   add(space: string, link: ThreadLink) { this.rows.push({ space, ...link }); }
 }
 
@@ -1204,47 +1218,115 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   const space = new FakeMesh();
   const c = connect(async () => space);
   await c.init;
-  const state = join(dir, "thread.json");
-  const calls = join(dir, "thread-calls.jsonl");
-  const otherCalls = join(dir, "other-calls.jsonl");
-  const setThread = (t: { title: string; failRead?: string }) => writeFileSync(state, JSON.stringify({ threadId: "t3-thread-1", ...t }));
+  const at = (name: string) => join(dir, name);
+  const state = at("thread.json");
+  const setThread = (t: { title: string; failRead?: string }, file = state, threadId = "t3-thread-1") => writeFileSync(file, JSON.stringify({ threadId, ...t }));
   setThread({ title: "New thread" });
-  writeFileSync(calls, "");
-  writeFileSync(otherCalls, "");
   const fixture = fileURLToPath(new URL("./fake-thread-server.mjs", import.meta.url));
-  const server = (name: string, env: Record<string, string>) => ({ name, command: process.execPath, args: [fixture], env: Object.entries(env).map(([key, value]) => ({ name: key, value })) });
-  const title = () => (JSON.parse(readFileSync(state, "utf8")) as { title: string }).title;
-  const writes = () => readFileSync(calls, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as { tool: string; args: { title?: string } }).filter((x) => x.tool === "t3_thread_update").map((x) => x.args.title);
-  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: [server("other", { THREAD_STATE: state, THREAD_CALLS: otherCalls, THREAD_TOOLS: "t3_thread_read" }), server("t3-code", { THREAD_STATE: state, THREAD_CALLS: calls })] });
+  const server = (name: string, env: Record<string, string>, tools?: string) =>
+    ({ name, command: process.execPath, args: tools ? [fixture, tools] : [fixture], env: Object.entries(env).map(([key, value]) => ({ name: key, value })) });
+  const servers = (calls: string, file = state) =>
+    [server("other", { THREAD_STATE: file, THREAD_CALLS: at("other-calls.jsonl") }, "t3_thread_read"), server("t3-code", { THREAD_STATE: file, THREAD_CALLS: calls })];
+  type Event = { start?: string[]; list?: true; tool?: string; args?: { title?: string } };
+  const events = (file: string): Event[] => {
+    try {
+      return readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Event);
+    } catch {
+      return [];
+    }
+  };
+  const kinds = (file: string) => events(file).map((e) => (e.start ? "start" : e.list ? "list" : e.tool));
+  const title = (file = state) => (JSON.parse(readFileSync(file, "utf8")) as { title: string }).title;
+  const writes = (file: string) => events(file).filter((e) => e.tool === "t3_thread_update").map((e) => e.args?.title);
+  const until = async (done: () => boolean, ms = 10_000) => {
+    for (const end = Date.now() + ms; !done() && Date.now() < end; ) await tick(50);
+    return done();
+  };
+  const calls = at("thread-calls.jsonl");
+  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: servers(calls) });
   const said = (): string => c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
   space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
-  for (let i = 0; i < 100 && title() !== "acp-s1"; i++) await tick(100);
-  check("once the agent starts, the client's thread server titles the thread with its name", title() === "acp-s1" && JSON.stringify(writes()) === '["acp-s1"]', { title: title(), writes: writes() });
-  check("a listed server without the thread tools is never called", readFileSync(otherCalls, "utf8") === "", readFileSync(otherCalls, "utf8"));
-  let renamedAtInput = -1;
-  space.onInput = (seat) => { renamedAtInput = space.renamed.length; space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
-  const prompt = (text: string) => within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text }] }));
+  await until(() => title() === "acp-s1");
+  check("once the agent starts, the client's thread server titles the thread with its name", title() === "acp-s1" && JSON.stringify(writes(calls)) === '["acp-s1"]', { title: title(), writes: writes(calls) });
+  check("the bridge starts the thread server with only the variables the client gave it", JSON.stringify(events(calls)[0]?.start) === '["THREAD_CALLS","THREAD_STATE"]', events(calls)[0]);
+  check("a listed server without the thread tools is started and listed once, and never called", JSON.stringify(kinds(at("other-calls.jsonl"))) === '["start","list"]', kinds(at("other-calls.jsonl")));
+  let labelledAtInput = -1;
+  space.onInput = (seat) => { labelledAtInput = space.relabelled.length; space.present.set(seat.actor, "working"); setTimeout(() => space.present.set(seat.actor, "idle"), 20); };
+  const prompt = (text: string, sessionId = s.sessionId) => within(c.agent.request(methods.agent.session.prompt, { sessionId, prompt: [{ type: "text", text }] }));
   setThread({ title: "Login work" });
   await prompt("next");
-  check("a rename in the client renames the agent before the next prompt reaches it", JSON.stringify(space.renamed) === '[{"seat":"acp-s1","name":"Login work"}]' && renamedAtInput === 1 && space.typed.at(-1)?.text === "next", { renamed: space.renamed, renamedAtInput, typed: space.typed.at(-1) });
-  check("and is not written back to the client", !writes().includes("Login work"), writes());
-  space.show("actor-acp-s1", "Login work");
+  check("a rename in the client labels the agent before the next prompt reaches it, and keeps its name",
+    JSON.stringify(space.relabelled) === '[{"seat":"acp-s1","label":"Login work"}]' && space.renamed.length === 0 && labelledAtInput === 1 && space.typed.at(-1)?.text === "next",
+    { relabelled: space.relabelled, renamed: space.renamed, labelledAtInput, typed: space.typed.at(-1) });
+  check("and is not written back to the client", !writes(calls).includes("Login work"), writes(calls));
   space.show("actor-acp-s1", "Fixing login");
-  for (let i = 0; i < 50 && title() !== "Fixing login"; i++) await tick(100);
+  await until(() => title() === "Fixing login");
   await prompt("again");
-  check("a name the agent shows is written to the client, and is not read back as a rename", title() === "Fixing login" && JSON.stringify(writes()) === '["acp-s1","Fixing login"]' && space.renamed.length === 1 && space.typed.at(-1)?.text === "again", { title: title(), writes: writes(), renamed: space.renamed });
+  check("a name the agent shows is written to the client, and is not read back as a rename",
+    title() === "Fixing login" && JSON.stringify(writes(calls)) === '["acp-s1","Fixing login"]' && space.relabelled.length === 1 && space.typed.at(-1)?.text === "again",
+    { title: title(), writes: writes(calls), relabelled: space.relabelled });
   setThread({ title: "Fixing login", failRead: "the thread store is down" });
   c.updates.length = 0;
   await prompt("still");
-  check("a read the client's server fails is said in the thread and logged, and the prompt still runs", said().includes("the thread store is down") && c.logs.some((l) => l.includes("the thread store is down")) && space.typed.at(-1)?.text === "still", { said: said(), typed: space.typed.at(-1) });
-  setThread({ title: "Other name" });
-  space.renameRefusal = "the name is taken";
+  check("a read the client's server fails is said in the thread and logged, and the prompt still runs",
+    said().includes("the thread store is down") && c.logs.some((l) => l.includes("the thread store is down")) && space.typed.at(-1)?.text === "still", { said: said(), typed: space.typed.at(-1) });
+  setThread({ title: "Other/name" });
+  space.labelRefusal = 'invalid name "Other/name": "/" is reserved (the owner/name separator)';
   c.updates.length = 0;
   await prompt("onward");
-  check("a rename the agent refuses is said in the thread, the title goes back to the agent's name, and the prompt still runs", said().includes('Could not rename acp-s1 to "Other name": the name is taken') && title() === "Fixing login" && space.typed.at(-1)?.text === "onward", { said: said(), title: title(), typed: space.typed.at(-1) });
-  space.renameRefusal = undefined;
+  check("a label the agent refuses is said in the thread, the title goes back to the agent's name, and the prompt still runs",
+    said().includes('Could not rename acp-s1 to "Other/name": invalid name') && title() === "Fixing login" && space.typed.at(-1)?.text === "onward", { said: said(), title: title(), typed: space.typed.at(-1) });
+  space.labelRefusal = undefined;
+  const stored = c.links.rows.filter((r) => r.thread === s.sessionId && r.title !== undefined);
+  check("each title the bridge wrote or read is stored with the thread's link to the seat's run",
+    JSON.stringify(stored.map((r) => r.title)) === '["New thread","acp-s1","Login work","Fixing login","Other/name","Fixing login"]' && stored.every((r) => r.lifecycleUid === "life-acp-s1"),
+    stored);
+
+  const state2 = at("thread-2.json");
+  setThread({ title: "New thread" }, state2, "t3-thread-2");
+  const calls2 = at("thread-calls-2.jsonl");
+  const s2 = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: servers(calls2, state2) });
+  await prompt("go", s2.sessionId);
+  await until(() => title(state2) === "acp-s2");
+  check("a second session starts the thread server with its own variables, and the bridge lists no server again",
+    title(state2) === "acp-s2" && title() === "Fixing login" && kinds(calls2)[0] === "start" && !kinds(calls2).includes("list") && JSON.stringify(kinds(at("other-calls.jsonl"))) === '["start","list"]',
+    { title: title(state2), calls: kinds(calls2), other: kinds(at("other-calls.jsonl")) });
   c.conn.close();
+  await tick(50);
+
+  // A load in a new bridge, as a client starts one per thread.
+  space.rows = [{ name: "acp-s1", owner: "local", actor: "actor-acp-s1", lifecycleUid: "life-acp-s1", managerInstanceId: "m1", agent: "claude", cwd: dir, status: "running" }];
+  const loadIn = async (links: ThreadLink[], calls: string) => {
+    const b = connect(async () => space);
+    b.links.rows.push(...links.map((link) => ({ space: space.space, ...link })));
+    await b.init;
+    await b.agent.request(methods.agent.session.load, { sessionId: s.sessionId, cwd: dir, mcpServers: [server("t3-code", { THREAD_STATE: state, THREAD_CALLS: calls })] });
+    return b;
+  };
+  const labels = space.relabelled.length;
+  space.show("actor-acp-s1", "Login v2");
+  const first = await loadIn(c.links.rows, at("load-1.jsonl"));
+  await until(() => title() === "Login v2");
+  check("a load in a new bridge titles the client's thread with the name the agent shows now, when the thread kept the title its link stored",
+    title() === "Login v2" && space.relabelled.length === labels, { title: title(), relabelled: space.relabelled });
+  first.conn.close();
+  await tick(50);
+  setThread({ title: "Signup flow" });
+  const second = await loadIn(first.links.rows, at("load-2.jsonl"));
+  await until(() => space.relabelled.length > labels);
+  await tick(200);
+  check("a load in a new bridge labels the agent with a title the person gave the thread while no bridge ran, and keeps that title",
+    JSON.stringify(space.relabelled.slice(labels)) === '[{"seat":"acp-s1","label":"Signup flow"}]' && title() === "Signup flow" && writes(at("load-2.jsonl")).length === 0,
+    { relabelled: space.relabelled, title: title(), writes: writes(at("load-2.jsonl")) });
+  second.conn.close();
+  await tick(50);
+  setThread({ title: "Picked elsewhere" });
+  const third = await loadIn(c.links.rows.filter((r) => r.title === undefined), at("load-3.jsonl"));
+  await until(() => title() !== "Picked elsewhere");
+  check("with no title stored with the link, a load titles the client's thread with the name the agent shows",
+    title() === "Signup flow" && space.relabelled.length === labels + 1, { title: title(), relabelled: space.relabelled });
+  third.conn.close();
 }
 
 // A space whose persona catalog and channel list are longer than a client select shows.
