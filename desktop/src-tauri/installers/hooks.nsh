@@ -187,3 +187,23 @@ FunctionEnd
     Call CreateOrUpdateDesktopShortcut
   ${EndIf}
 !macroend
+
+; Uninstalling removes the background service this installation registered, through the packaged
+; runtime's own uninstall, before the program files go. An update (/UPDATE) keeps the service.
+; A refusal stops the uninstall, so no task is left running a deleted program.
+!macro NSIS_HOOK_PREUNINSTALL
+  ${If} $UpdateMode <> 1
+  ${AndIf} ${FileExists} "$INSTDIR\cotal-desktop.exe"
+    nsExec::ExecToStack /TIMEOUT=300000 '"$INSTDIR\cotal-desktop.exe" --remove-service'
+    Pop $0
+    Pop $1
+    ${If} $0 != "0"
+      DetailPrint "$1"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONSTOP|MB_OK "Cotal could not remove its background service, so nothing was uninstalled.$\r$\n$\r$\n$1"
+      ${EndIf}
+      SetErrorLevel 21
+      Quit
+    ${EndIf}
+  ${EndIf}
+!macroend

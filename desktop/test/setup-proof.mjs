@@ -708,6 +708,12 @@ try {
         check('Foreign CLI service keeps its old PID and version', status.pid === report.before.pid && status.version === report.before.version);
         check('Foreign service receipt is unchanged', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
         check('Setup names untouched foreign service', diagnostic.message.includes('another installation'));
+        // The app's uninstaller removes only the service its own installation registered.
+        const uninstalled = await run(join(root, 'uninstall.exe'), ['/S', `_?=${root}`], 300_000);
+        check('App uninstaller exits 0 beside a foreign CLI service', uninstalled.code === 0);
+        const kept = JSON.parse((await required(process.execPath, [report.foreignCli, 'daemon', 'status', '--json'])).stdout).result;
+        check('App uninstall keeps the foreign CLI service and its PID', kept.pid === report.before.pid);
+        check('App uninstall keeps the foreign service receipt', readText(join(root, 'daemon', 'service-unit.json')) === report.foreignReceipt);
       } else if (cell === 'absent' || cell === 'fresh') check('No service was installed', !existsSync(join(root, 'daemon/service-unit.json')));
       else if (cell === 'stopped') {
         const stopped = await daemon('status');

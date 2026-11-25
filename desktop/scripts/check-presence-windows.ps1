@@ -215,6 +215,14 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     Stop-Process -Id $owned.Id
     Wait-Process -Id $owned.Id -ErrorAction SilentlyContinue
     $owned = $null
+    # Sign-in installs the background service. Install it the same way, through the app's bridge, so the uninstaller must remove it.
+    $receiptPath = Join-Path $env:LOCALAPPDATA 'Cotal\daemon\service-unit.json'
+    $bridgeOut = @('{"op":"install"}' | & (Join-Path $directory 'node.exe') (Join-Path $directory 'runtime\dist\cotal.js') daemon desktop)
+    $bridgeOut | Set-Content (Join-Path $out "$kind-service-install.txt")
+    $installFrames = @($bridgeOut | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.event -eq 'result' })
+    if ($installFrames.Count -ne 1 -or $installFrames[0].ok -ne $true) { throw "$kind app bridge did not install the background service: $($bridgeOut -join ' ')" }
+    $serviceTask = (Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json).unit
+    if (@(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -ceq $serviceTask }).Count -ne 1) { throw "$kind background service task $serviceTask is not registered before uninstall" }
     # The disconnected welcome cannot enable startup. Seed the real plugin's exact Run entry to test uninstaller cleanup separately.
     $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     New-ItemProperty -Path $run -Name Cotal -PropertyType String -Value "`"$path`" --background" -Force | Out-Null
@@ -227,9 +235,12 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     if ($p.ExitCode -notin @(0, 3010)) { throw "$kind uninstall exited $($p.ExitCode)" }
     foreach ($link in $links) { if (Test-Path $link) { throw "Shortcut remains: $link" } }
     if (Get-ItemProperty -Path $run -Name Cotal -ErrorAction SilentlyContinue) { throw 'App login entry remains after uninstall.' }
+    if (@(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -ceq $serviceTask }).Count -ne 0) { throw "$kind uninstall left the background service task $serviceTask registered" }
+    if (Test-Path -LiteralPath $receiptPath) { throw "$kind uninstall left the background service receipt" }
     $installed = $false
     $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
+    $checks += 'uninstall-service'
     $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {

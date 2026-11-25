@@ -113,10 +113,13 @@
     {{/if}}
     <InstallExecuteSequence>
       <RemoveShortcuts>Installed AND NOT UPGRADINGPRODUCTCODE</RemoveShortcuts>
+      <Custom Action="RemoveCotalService" Before="RemoveCotalLogin">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RemoveCotalLogin" Before="RemoveFiles">REMOVE = "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="LaunchApplication" After="InstallFinalize">AUTOLAUNCHAPP AND NOT Installed</Custom>
     </InstallExecuteSequence>
     <CustomAction Id="RemoveCotalLogin" FileKey="Path" ExeCommand="--remove-login" Execute="deferred" Impersonate="yes" Return="check" />
+    <!-- The installing user's background service, removed through the packaged runtime before the files go; a refusal rolls the uninstall back. -->
+    <CustomAction Id="RemoveCotalService" FileKey="Path" ExeCommand="--remove-service" Execute="deferred" Impersonate="yes" Return="check" />
     <SetProperty Id="ARPINSTALLLOCATION" Value="[INSTALLDIR]" After="CostFinalize" />
   </Product>
 </Wix>

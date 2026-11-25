@@ -9,7 +9,7 @@ import { CommandFailure, readLocalRecordSource, readUpdateSettings, setUpdateSet
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
-import { applyInstall, planUninstall, startInstalled } from "./install.js";
+import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
@@ -21,7 +21,7 @@ export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
-  | { [K in "about" | "status" | "status-watch" | "install" | "log"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log"]
+  | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
@@ -34,7 +34,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "status-watch", "install", "log", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -55,7 +55,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "status-watch" | "install" | "log" | "remove-service" | "update-check" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -195,6 +195,16 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
         .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
       emit({ v: 1, event: "result", ok: true, result: { text, truncated } });
+      return;
+    }
+    if (req.op === "remove-service") {
+      // Only the app's uninstaller sends this; the window's requests never include it. It removes the
+      // service this installation registered and keeps one another installation registered here.
+      if (!preflightInstalledDaemon(paths, home)) { emit({ v: 1, event: "result", ok: true, result: { state: "absent" } }); return; }
+      const identity = installedDaemonIdentity(paths, home);
+      if (!identity.same) { emit({ v: 1, event: "result", ok: true, result: { state: "kept", installed: identity.installed } }); return; }
+      const removed = await applyUninstall(paths, home);
+      emit({ v: 1, event: "result", ok: true, result: { state: removed.state, unit: removed.unit } });
       return;
     }
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
@@ -403,7 +413,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
     const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
     const baseMessage = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
-      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
+      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install" || req.op === "remove-service") ? e.message
       : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")
