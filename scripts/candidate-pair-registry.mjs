@@ -12,9 +12,9 @@ function inspect(directory) {
   const bytes = readFileSync(join(directory, 'manifest.json'));
   const manifest = JSON.parse(bytes);
   assert.match(manifest.source, /^[a-f0-9]{40}$/, 'immutable source SHA required');
-  assert.equal(expected.length, 24, 'expected 24 first-party packages');
+  assert.equal(expected.length, 25, 'expected 25 first-party packages');
   assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), expected, 'complete unique package census required');
-  assert.equal(new Set(manifest.packages.map(pkg => pkg.archive)).size, 24, 'archive basenames must be unique');
+  assert.equal(new Set(manifest.packages.map(pkg => pkg.archive)).size, 25, 'archive basenames must be unique');
   for (const pkg of manifest.packages) assert.match(pkg.sha256, /^[a-f0-9]{64}$/, 'archive SHA256 required');
   const versions = [...new Set(manifest.packages.map(pkg => pkg.version))];
   assert.equal(versions.length, 1, 'closure must be lockstep');

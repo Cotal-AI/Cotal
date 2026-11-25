@@ -16,7 +16,7 @@ import { loadManagerAuthorityRoute, managerAuthorityRouteUrl, pinManagerAuthorit
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { assertDerivedOwnerToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, isCredentialTransportUrl, registry, type AuthPreflightInput, type AuthPreflightVerdict, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagerParticipationAuthorizationRequest, type RemoteManagerParticipationAuthorizationResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserAuthGrant, type ManagerInstanceListing, type UserCredentialsRequest, type UserCredentialsResult } from "@cotal-ai/core";
 import { loginRecoveryCommand, assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, loadMeshes, probeLiveness, spaceSegment, userAuthStateDir, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -140,7 +140,13 @@ export const cotalAuthProvider: AuthProvider = {
   },
   async requestRemoteRunAttempt({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRunAttemptRequest }): Promise<RemoteRunAttemptResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "issuing hosted run credentials");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as Promise<RemoteRunAttemptResult>;
+    try {
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as RemoteRunAttemptResult;
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status === 503 && request.operator && request.operator.answers === undefined)
+        throw new EpEnvelopeError("unavailable", "the run authority is temporarily unavailable; retry the read in a few seconds", undefined, "not-executed");
+      throw error;
+    }
   },
   async requestRemoteRunCancel({ store, dir, request }) {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "cancelling a hosted run");
@@ -322,6 +328,46 @@ export const cotalAuthProvider: AuthProvider = {
     return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...exchangeAuthority(out, `the auth service's exchange at ${info.url}/exchange`) };
   },
 
+  /** Client side: this machine's login session -> a fresh IdP JWT -> the auth service's
+   *  `/manager-instances`, local or pinned remote, as {@link userCredentials} reaches `/exchange`.
+   *  A refused or malformed answer throws; nothing is read into a failure. */
+  async listManagerInstances({ store, dir, space }) {
+    const idp = loadPinnedIdp(dir);
+    const callout = await loadCalloutAuth(store, space);
+    const remote = !idp || !callout ? remoteUserAuthEntry(dir, space) : undefined;
+    if ((!idp || !callout) && !remote)
+      throw new Error(
+        `space "${space}" has no user-auth material on this machine - run \`cotal up --user-auth\` where the mesh runs, or register a remote user mesh with \`cotal meshes add ${space} --from <url>\` and sign in with \`cotal login --idp <idp-url>\``,
+      );
+    const idpUrl = remote ? remote.idp.url : idp!.url;
+    // A remote pin's transport rule is static, so it is checked before the login gate, as the exchange does.
+    const remoteUrl = remote ? managerInstancesUrl(remote.endpoints.url, space) : undefined;
+    const session = requireIdpSession(idpSessionDir(), idpUrl);
+    let url: string;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (remoteUrl) url = remoteUrl;
+    else {
+      const info = loadAuthServiceInfo(dir);
+      if (!info || !pidAlive(info.pid))
+        throw credentialFailure("unavailable", `the user-auth service for space "${space}" is not running - restart it with \`cotal up\``);
+      url = `${info.url}/manager-instances`;
+      headers.authorization = `Bearer ${info.cap}`;
+    }
+    const idpToken = await fetchIdpJwt(idpUrl, session.token);
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "POST", redirect: "manual", headers, body: JSON.stringify({ idpToken }), signal: AbortSignal.timeout(15_000) });
+    } catch (e) {
+      throw credentialFailure("unavailable", `the user-auth service for space "${space}" did not answer its manager list at ${url} (${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (res.status >= 300 && res.status < 400)
+      throw credentialFailure("refused", `the auth service's manager list at ${url} answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login proof cannot be walked onto another host`);
+    const body = await readAuthResponseJson(res, `the auth service's manager list at ${url}`);
+    if (!res.ok)
+      throw credentialFailure("refused", `signed in, but the manager list for space "${space}" was refused: ${(body as { error?: string } | null)?.error ?? `HTTP ${res.status}`}`);
+    return managerInstanceList(body, url);
+  },
+
   async serviceEndpointInfo({ store, dir, space, signal }) {
     const target = serviceClientTarget(store, dir, space);
     return readRemoteServiceAuthorityInfo(target.base, space, signal);
@@ -389,7 +435,13 @@ export const cotalAuthProvider: AuthProvider = {
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "requesting manager-service authority");
-    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager-service authority") as Promise<RemoteManagerAuthorityMaterial>;
+    try {
+      return await postManagerAuthority(endpoint, idpUrl, authorization, request, "manager-service authority") as RemoteManagerAuthorityMaterial;
+    } catch (error) {
+      if (error instanceof ManagerAuthorityRefusal && error.status === 503 && request.operation === "renewStandingBundle")
+        throw new EpEnvelopeError("unavailable", error.message, undefined, "unknown");
+      throw error;
+    }
   },
 
   async maintainRemoteManager({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerMaintenanceRequest }): Promise<RemoteManagerMaintenanceResult> {
@@ -824,6 +876,29 @@ function managerAuthorityUrl(base: string, space: string): string {
   return u.toString();
 }
 
+/** The manager list shares the verified exchange origin, as the manager-authority route does. */
+function managerInstancesUrl(base: string, space: string): string {
+  const u = new URL(pinnedExchangeUrl(base, space));
+  u.pathname = `${u.pathname.slice(0, -"/exchange".length)}/manager-instances`;
+  return u.toString();
+}
+
+const MANAGER_INSTANCE_STATES: ReadonlySet<string> = new Set(["candidate", "unknown", "not open", "not this owner's", "not registered"]);
+
+/** The catalog `/manager-instances` answers, checked whole. Anything else is an error, never a
+ *  partial list. */
+function managerInstanceList(body: unknown, url: string): ManagerInstanceListing[] {
+  const malformed = () => new Error(`the auth service's manager list at ${url} is malformed - its build may be stale; restart it with \`cotal up\``);
+  const o = body as { v?: unknown; complete?: unknown; instances?: unknown } | null;
+  if (!o || o.v !== 1 || o.complete !== true || !Array.isArray(o.instances)) throw malformed();
+  return o.instances.map((i: unknown): ManagerInstanceListing => {
+    const r = i as { instanceId?: unknown; placement?: unknown; state?: unknown } | null;
+    if (!r || typeof r.instanceId !== "string" || (r.placement !== "remote" && r.placement !== "local") || typeof r.state !== "string" || !MANAGER_INSTANCE_STATES.has(r.state))
+      throw malformed();
+    return { instanceId: assertLifecycleToken(r.instanceId, "managerInstanceId"), placement: r.placement, state: r.state as ManagerInstanceListing["state"] };
+  });
+}
+
 /** Retain provider-owned nonsecret routing before a hosted Manager can register. */
 export async function retainManagerAuthorityRoute(store: SecretStore, dir: string, space: string): Promise<void> {
   await managerAuthorityEndpoint(store, dir, space, "retaining hosted Manager cleanup authority");
@@ -891,7 +966,11 @@ async function postManagerAuthority(
   if (response.status >= 300 && response.status < 400)
     throw new Error(`the ${what} endpoint answered ${response.status} with redirect Location ${JSON.stringify(response.headers.get("location") ?? "")} - redirects are refused`);
   // A stand-in object would reach the caller as a result the endpoint never sent.
-  const body = await response.json().catch(() => { throw new Error(`the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`); });
+  const body = await response.json().catch(() => {
+    const message = `the ${what} endpoint at ${endpoint} answered HTTP ${response.status} with a body that could not be read as JSON`;
+    if (response.status === 503) throw new ManagerAuthorityRefusal(message, response.status, undefined);
+    throw new Error(message);
+  });
   signal?.throwIfAborted();
   if (!response.ok) throw managerAuthorityRefusal(what, request, body, response.status);
   return body;
@@ -919,7 +998,8 @@ function heldConflict(message: string, body: unknown, actor: string): EpEnvelope
  *  that names a field this request carries as unknown predates that field: say it is version skew
  *  and which side has to move. The field is never dropped to fit the older host. */
 function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): ManagerAuthorityRefusal {
-  const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
+  const why = (body as { error?: unknown } | null)?.error;
+  const reason = typeof why === "string" ? why : `HTTP ${status}`;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`

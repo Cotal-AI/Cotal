@@ -136,8 +136,12 @@ async function captureAsync<T>(fn: () => Promise<T>): Promise<{ lines: string[];
 function reap(handle: AgentHandle, cause: FreeSlotCause): { lines: string[]; seat: string | undefined } {
   const { manager } = managerWith(handle);
   const lines = capture(() =>
-    (manager as unknown as { freeSlot(a: unknown, f: boolean, c: FreeSlotCause): void })
-      .freeSlot((manager as unknown as { agents: Map<string, ManagedLike> }).agents.get(handle.name), true, cause),
+    (manager as unknown as {
+      namesCapacity: {
+        freeSlot(a: unknown, f: boolean, c: FreeSlotCause): void;
+      };
+    })
+      .namesCapacity.freeSlot((manager as unknown as { agents: Map<string, ManagedLike> }).agents.get(handle.name), true, cause),
   );
   return { lines, seat: lines.find((l) => /seat reaped/i.test(l)) };
 }

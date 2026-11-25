@@ -1,17 +1,20 @@
 /** Drive the shipped stdio MCP command against private static and open brokers. No native host needed. */
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SMOKE_BROKER_TOKEN, freePort, killAndAwaitExit, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 import type { IssuedAuthorityRef } from "@cotal-ai/core";
 
 const { check, finish } = createSuite();
 const scratch = mkdtempSync(join(tmpdir(), "cotal-mcp-live-"));
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] =>
+  !entry[0].startsWith("COTAL_") && entry[1] !== undefined));
 for (const [key, folder] of Object.entries({ HOME: "home", XDG_CONFIG_HOME: "config", XDG_RUNTIME_DIR: "run", COTAL_HOME: "cotal", TMPDIR: "tmp" })) {
   env[key] = join(scratch, folder);
   mkdirSync(env[key]!, { recursive: true, mode: 0o700 });
@@ -33,7 +36,7 @@ async function until(test: () => boolean | Promise<boolean>, message: string): P
 }
 
 interface Reply {
-  result?: { isError?: boolean; content?: Array<{ type: string; text?: string }>; tools?: Array<{ name: string }> };
+  result?: { isError?: boolean; instructions?: string; content?: Array<{ type: string; text?: string }>; tools?: Array<{ name: string; description?: string }> };
   error?: unknown;
 }
 const text = (reply: Reply): string => reply.result?.content?.map((c) => c.text ?? "").join("\n") ?? "";
@@ -44,7 +47,7 @@ class Rpc {
   readonly pending = new Map<number, { resolve: (r: Reply) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   seq = 0;
   badOutput = "";
-  constructor(readonly space: string, tag: string) {
+  constructor(readonly space: string, readonly tag: string) {
     this.child = spawn(process.execPath, [bin, "mcp", "--space", space], { cwd: scratch, env, stdio: "pipe" });
     children.push(this);
     let output = "", errors = "";
@@ -82,27 +85,60 @@ class Rpc {
   call(name: string, args: Record<string, unknown> = {}): Promise<Reply> {
     return this.request("tools/call", { name, arguments: args });
   }
-  async initialize(): Promise<void> {
+  async initialize(): Promise<string | undefined> {
     const reply = await this.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mcp-smoke", version: "1" } });
     assert.ok(reply.result);
     assert.equal(reply.error, undefined);
     this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    return reply.result.instructions;
   }
   async end(signal?: "SIGINT" | "SIGTERM"): Promise<void> {
     if (signal) this.child.kill(signal);
     else this.child.stdin.end();
     let timer: NodeJS.Timeout | undefined;
     try {
-      const code = await Promise.race([this.exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("MCP shutdown timed out")), 15_000); })]);
+      const code = await Promise.race([this.exited, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`MCP shutdown of ${this.tag} (pid ${this.child.pid}) timed out after ${signal ?? "stdin EOF"}`)), 15_000); })]);
       assert.equal(code, 0);
       assert.equal(this.badOutput, "", "stdout is exclusively MCP");
     } finally { clearTimeout(timer); }
   }
 }
+const nameRaces: Array<{ space: string; names: string[]; routed: boolean }> = [];
+/** Distinct stdio hosts contend before either one's presence has settled. */
+async function competingNames(space: string, mode: "race" | "sequential"): Promise<void> {
+  const name = `twin_${mode}`;
+  const pair = [new Rpc(space, `${space}-${mode}-one`), new Rpc(space, `${space}-${mode}-two`)];
+  const probe = new Rpc(space, `${space}-${mode}-probe`);
+  try {
+    await Promise.all([...pair, probe].map((rpc) => rpc.initialize()));
+    const replies: Reply[] = [];
+    if (mode === "race") replies.push(...await Promise.all(pair.map((rpc) => rpc.call("cotal_connect", { name }))));
+    else for (const rpc of pair) replies.push(await rpc.call("cotal_connect", { name }));
+    for (const reply of replies) assert.ok(!reply.result?.isError, text(reply));
+    const names = replies.map((reply) => /^Connected as ([\w-]+)/.exec(text(reply))?.[1] ?? "");
+    const connected = await probe.call("cotal_connect", { name: `probe_${mode}` });
+    assert.ok(!connected.result?.isError, text(connected));
+    const connection_id = /connection_id: ([^\s]+)/.exec(text(connected))?.[1];
+    assert.ok(connection_id, text(connected));
+    const roster = text(await probe.call("cotal_roster", { connection_id }));
+    const delivered = await Promise.all(names.map((to) => probe.call("cotal_dm", { connection_id, to, text: "unique name routing proof" })));
+    const routed = delivered.every((reply) => !reply.result?.isError && reply.error === undefined);
+    const evidence = { space, mode, names, roster, routed, dm: delivered.map(text) };
+    writeFileSync(join(scratch, `${space}-${mode}.json`), JSON.stringify(evidence, null, 2));
+    console.log(`Name contention: ${JSON.stringify(evidence)}`);
+    if (mode === "race") nameRaces.push({ space, names, routed });
+    else check(`${space}: sequential hosts retain the name and report its next free suffix`,
+      names[0] === name && names[1] === `${name}_2` && text(replies[1]!).includes("was taken") && routed);
+  } finally {
+    await Promise.all([...pair, probe].map((rpc) => rpc.end()));
+  }
+}
+
 function run(args: string[]) {
   return spawnSync(process.execPath, [bin, ...args], { cwd: scratch, env, encoding: "utf8", timeout: 30_000 });
 }
-const identities = () => readdirSync(env.TMPDIR!).filter((name) => name.startsWith("cotal-app-identity-"));
+/** This suite's identity directories, under the Cotal home where provision makes them or in the temp dir where earlier versions did. */
+const identities = () => [join(env.COTAL_HOME!, "app-identities"), env.TMPDIR!].flatMap((parent) => (existsSync(parent) ? readdirSync(parent) : []).filter((name) => name.startsWith("cotal-app-identity-")));
 const persona = "---\nname: default\nsubscribe: [general]\nallowSubscribe: [general, team.>]\nallowPublish: [general]\ncapabilities: []\n---\n\nA local conversation.\n";
 const staticSpace = `mcpstatic${process.pid}`;
 const auth = await createSpaceAuth(staticSpace);
@@ -139,8 +175,13 @@ try {
   await sender.start();
 
   const rpc = new Rpc(staticSpace, "static");
-  await rpc.initialize();
-  const tools = (await rpc.request("tools/list", {})).result?.tools?.map((t) => t.name) ?? [];
+  const instructions = await rpc.initialize();
+  const advertised = (await rpc.request("tools/list", {})).result?.tools ?? [];
+  const tools = advertised.map((t) => t.name);
+  for (const [surface, copy] of [["initialize", instructions], ["tools/list cotal_connect", advertised.find((t) => t.name === "cotal_connect")?.description]]) {
+    check(`${surface} describes direct local connections and persona narrowing, not approval`,
+      Boolean(copy?.includes("Open and static local spaces connect directly") && copy.includes("default persona") && copy.includes("narrow") && !/approv/i.test(copy)), copy);
+  }
   check("the stock gateway advertises connect, wait, inbox and docs, not managed-seat authority", ["cotal_connect", "cotal_wait", "cotal_inbox", "cotal_docs"].every((t) => tools.includes(t)) && !tools.includes("cotal_spawn") && !tools.includes("cotal_yield"));
   check("initialize and tools/list create no identity", identities().length === 0);
   check("initialization never seeds connector packages", !existsSync(join(env.XDG_CONFIG_HOME!, "cotal", "seed")) && !existsSync(join(env.XDG_CONFIG_HOME!, "cotal", "extensions")));
@@ -149,6 +190,10 @@ try {
   const handle = /connection_id: ([^\s]+)/.exec(text(connected))?.[1];
   assert.ok(handle, text(connected));
   check("cotal_connect returns a real connection and the persona channel grants", text(connected).includes("general") && identities().length === 1);
+  for (const [surface, copy] of [["initialize", instructions ?? ""], ["cotal_connect", text(connected)]]) {
+    const unavailable = [...new Set(copy.match(/\bcotal_[a-z][a-z_]*\b/g))].filter((name) => !tools.includes(name));
+    check(`${surface} names only tools served by stdio MCP`, unavailable.length === 0, unavailable);
+  }
   await until(() => observer!.getRoster().some((p) => p.card.name === "reader"), "reader presence missing");
   const presence = observer.getRoster().find((p) => p.card.name === "reader")!;
   check("presence uses the mcp connector and one stable lifecycle", presence.card.meta?.connector === "mcp" && Boolean(presence.lifecycleUid));
@@ -190,6 +235,26 @@ try {
   check("a disconnected handle cannot be reused", Boolean((await rpc.call("cotal_roster", { connection_id: handle })).result?.isError));
   await rpc.end();
 
+  const client = new Client({ name: "mcp-live", version: "1" });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [bin, "mcp", "--space", staticSpace], cwd: scratch, env });
+  try {
+    await client.connect(transport);
+    // The SDK does not expose the exit status. Observe the child without changing how close signals it.
+    const child = (transport as unknown as { _process: ChildProcess })._process;
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null; identities: number }>((resolveExit) => {
+      child.once("exit", (code, signal) => resolveExit({ code, signal, identities: identities().length }));
+    });
+    const reply = await client.callTool({ name: "cotal_connect", arguments: { name: "sdk_close" } });
+    assert.ok(!reply.isError, JSON.stringify(reply));
+    assert.equal(identities().length, 1);
+    await client.close();
+    const exit = await exited;
+    assert.deepEqual(exit, { code: 0, signal: null, identities: 0 });
+    check("TypeScript SDK close exits normally with the static identity retired", true);
+  } finally {
+    await client.close();
+  }
+
   for (const signal of [undefined, "SIGINT", "SIGTERM"] as const) {
     const server = new Rpc(staticSpace, `exit-${signal ?? "eof"}`);
     await server.initialize();
@@ -229,6 +294,8 @@ try {
   const bad = await narrowed.call("cotal_connect", { name: "limited", channels: [{ channel: "forbidden", access: "read-post" }] });
   check("connect refuses permissions outside the persona without issuing an identity", Boolean(bad.result?.isError) && identities().length === 0);
   await narrowed.end();
+  await competingNames(staticSpace, "sequential");
+  await competingNames(staticSpace, "race");
 
   const openSpace = `mcpopen${process.pid}`;
   const port = await freePort();
@@ -245,6 +312,8 @@ try {
   check("an open mesh also connects through the shipped command", !openReply.result?.isError && Boolean(/connection_id:/.test(text(openReply))));
   await open.end();
   check("open-mesh EOF removes its identity record", identities().length === 0);
+  await competingNames(openSpace, "sequential");
+  await competingNames(openSpace, "race");
 
   const userSpace = `mcpuser${process.pid}`;
   recordMesh({ space: userSpace, server: servers, root, mode: "user", origin: "manual", ts: new Date().toISOString(),
@@ -255,6 +324,9 @@ try {
   check("signed-in spaces refuse instead of inventing native session identity", Boolean(refused.result?.isError) && /native conversation identity/.test(text(refused)) && identities().length === 0);
   await user.end();
   console.log(`Evidence retained at ${scratch}`);
+  check("simultaneous hosts on static and open spaces receive distinct names that route unambiguously",
+    nameRaces.length === 2 && nameRaces.every(({ names, routed }) =>
+      names.length === 2 && names.includes("twin_race") && names.includes("twin_race_2") && routed));
 } finally {
   for (const rpc of children) await killAndAwaitExit(rpc.child);
   await sender?.stop();

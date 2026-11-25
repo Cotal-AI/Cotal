@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
 // Every account and registry file this run touches lives under a throwaway home.
 const home = mkdtempSync(join(tmpdir(), "linear-accounts-smoke-"));
@@ -31,8 +32,7 @@ const { linearService } = await import("../src/service-adapter.js");
 const { registry } = await import("@cotal-ai/core");
 await import("../src/index.js");
 
-let pass = 0, fail = 0;
-const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
+const { check, finish, passed, failed } = createSuite();
 /** The refusal a call throws or rejects with, as code and remedy, or undefined when it returns. */
 const refusal = async (fn: () => unknown) => {
   try { await fn(); return undefined; }
@@ -110,5 +110,6 @@ try {
   rmSync(home, { recursive: true, force: true });
 }
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+console.log(`\n${passed()} passed, ${failed()} failed`);
+finish();
+process.exit(failed() ? 1 : 0);

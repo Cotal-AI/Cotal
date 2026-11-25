@@ -1,0 +1,3 @@
+# A workflow message wait matches the principal the broker bound to the message, and ignores a
+# message whose from.id differs from its subject sender.
+smoke:runtime-wait-sender

@@ -15,7 +15,7 @@
   "mutations": [
     {
       "name": "restore defective listMembers complete inventory omission",
-      "file": "packages/core/src/endpoint.ts",
+      "file": "packages/core/src/endpoint-delivery-plane.ts",
       "find": "const channels = await listLifecycleMemberChannels(await this.membersRegistry(), principal, uid);",
       "replace": "const rows = await listMembers(await this.membersRegistry(), { owner: principal }); const channels = [...new Set(rows.filter((r) => r.lifecycleUid === uid).map((r) => r.channel))].sort();",
       "expectRed": "SAFETY: corrupt lifecycle-keyed membership row is gone before alias is freed",

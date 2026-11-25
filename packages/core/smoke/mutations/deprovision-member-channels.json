@@ -14,7 +14,7 @@
   "mutations": [
     {
       "name": "deprovisionAgent skips deleting member rows on the target channels",
-      "file": "packages/core/src/streams.ts",
+      "file": "packages/core/src/deprovision.ts",
       "find": "const mRes = await purgeKvKeyWithAccounting(jsm, membersKv, membersBucket(opts.space), mKeyStr);",
       "replace": "const mRes: any = { outcome: \"absent\", status: \"absent\" }; /* member row deletion skipped */",
       "expectRed": "MEMBERS: the retired lifecycle's named-channel rows are GONE",

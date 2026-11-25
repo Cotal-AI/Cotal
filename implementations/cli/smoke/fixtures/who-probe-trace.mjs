@@ -7,15 +7,24 @@ import { registerHooks } from "node:module";
 const trace = process.env.SMOKE_WHO_PROBE_TRACE;
 if (!trace) throw new Error("missing who probe trace path");
 const write = (record) => appendFileSync(trace, `${JSON.stringify(record)}\n`);
+const targetModule = "/packages/core/dist/endpoint-dial.js";
+const missingClassifier = `expected exactly one classifyProbeFailure definition in ${targetModule}`;
+let matched = false;
+process.on("exit", (code) => {
+  if (matched || code !== 0) return;
+  console.error(missingClassifier);
+  process.exitCode = 1;
+});
 write({ kind: "hook-registered", node: process.versions.node });
 registerHooks({
   load(url, context, nextLoad) {
     const loaded = nextLoad(url, context);
-    if (!new URL(url).pathname.endsWith("/packages/core/dist/endpoint.js")) return loaded;
+    if (!new URL(url).pathname.endsWith(targetModule)) return loaded;
     if (loaded.format !== "module" || loaded.source == null) throw new Error("unexpected core probe module format");
     const source = typeof loaded.source === "string" ? loaded.source : Buffer.from(loaded.source).toString("utf8");
     const anchor = 'function classifyProbeFailure(e, opts, authRequired = false, otherwise = "unreachable") {';
-    if (source.split(anchor).length !== 2) throw new Error("native probe classifier anchor is not unique");
+    if (source.split(anchor).length !== 2) throw new Error(missingClassifier);
+    matched = true;
     write({ kind: "module-matched", sourceSha256: createHash("sha256").update(source).digest("hex") });
     const replacement = `function classifyProbeFailure(e, opts, authRequired = false, otherwise = "unreachable") {
       const result = __cotalOriginalProbeFailure(e, opts, authRequired, otherwise);

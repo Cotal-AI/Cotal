@@ -37,7 +37,7 @@ writeFileSync(preload, `import { register } from 'node:module';\nregister(${JSON
 const env = {
   HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"),
   XDG_RUNTIME_DIR: join(home, "runtime"), COTAL_HOME: join(home, "state"),
-  TMPDIR: tmpdir(), PATH: path, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1",
+  TMPDIR: tmpdir(), PATH: path, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", DO_NOT_TRACK: "1",
 };
 const run = (args: string[], cwd = project, extraEnv: Record<string, string> = {}) => {
   const r = spawnSync(process.execPath, ["--import", preload, bin, ...args], { cwd, env: { ...env, ...extraEnv }, encoding: "utf8", timeout: 120_000 });

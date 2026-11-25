@@ -21,12 +21,15 @@ export interface ObserverOptions {
    *  the broker enforces nothing; on an authed mesh a read-only credential gets a clean publish
    *  denial. */
   operator?: boolean;
+  /** The lifecycle of a user-mode sign-in, so the observer can read history through that
+   *  lifecycle's own `chathist_` reader ({@link CotalEndpoint.channelHistoryPage}). */
+  lifecycleUid?: string;
 }
 
 /** A read-only endpoint over one space, invisible to peers: it registers no presence, binds no
  *  durables, and reads through tap, history and presence watch. It is returned unstarted; the
  *  caller's `MeshView` or lifecycle owns `start` and `stop`. */
-export function openObserver({ space, server, name, auth = {}, operator = false }: ObserverOptions): CotalEndpoint {
+export function openObserver({ space, server, name, auth = {}, operator = false, lifecycleUid }: ObserverOptions): CotalEndpoint {
   if (auth.creds && credsClaims(auth.creds).name === "agent") {
     throw new CommandFailure("refused", "PERMISSION_DENIED", "an agent-profile credential cannot watch the space's chat feed", {
       remedy: "mint a separate observer credential with `cotal auth mint <label> --profile observer --out <file>`, then pass that file with --creds",
@@ -36,7 +39,7 @@ export function openObserver({ space, server, name, auth = {}, operator = false 
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    ...(operator ? { lifecycleUid: mintLifecycleUid() } : {}),
+    ...(operator ? { lifecycleUid: mintLifecycleUid() } : lifecycleUid !== undefined ? { lifecycleUid } : {}),
     ...(auth.user
       ? {
           bearer: auth.user.source,

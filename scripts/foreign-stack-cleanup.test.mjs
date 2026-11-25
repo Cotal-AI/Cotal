@@ -7,16 +7,22 @@ const fixture = () => ({
   after: { Id: 'owned', Config: { Labels: { 'cotal.upgrade.cell': 'cell' } }, State: { Running: false, Pid: 0, ExitCode: 0, OOMKilled: false, StartedAt: '2026-11-14T06:44:51Z', FinishedAt: '2026-11-14T06:45:38.667841852Z' } },
   noProcesses: true,
   observedAt: '2026-11-14T06:45:38.670Z',
+  observedUntil: '2026-11-14T06:45:38.670Z',
 });
-test('Docker finish just after the exec clock is bounded by the immediate inspect start', () => {
+test('Docker finish after the exec clock is bounded by the end of the immediate inspect', () => {
   const f = fixture();
-  f.stop.startedAt = '2026-11-14T16:06:54.260Z';
-  f.stop.finishedAt = '2026-11-14T16:06:55.035Z';
-  f.after.State.FinishedAt = '2026-11-14T16:06:55.036366009Z';
-  f.observedAt = '2026-11-14T16:06:55.036Z';
+  f.stop.startedAt = '2026-11-20T12:27:14.470Z';
+  f.stop.finishedAt = '2026-11-20T12:27:15.294Z';
+  f.after.State.FinishedAt = '2026-11-20T12:27:15.297190874Z';
+  f.observedAt = '2026-11-20T12:27:15.295Z';
+  f.observedUntil = '2026-11-20T12:27:17.043Z';
   assert.equal(foreignStackEnded(f), true);
-  f.observedAt = f.stop.finishedAt;
+  f.after.State.FinishedAt = '2026-11-20T12:27:17.044Z';
   assert.equal(foreignStackEnded(f), false);
+  f.after.State.FinishedAt = '2026-11-20T12:27:15.297190874Z';
+  f.observedAt = '2026-11-20T12:27:15.293Z';
+  assert.equal(foreignStackEnded(f), false);
+  for (const observedUntil of [undefined, 'unknown', '2026-11-20T12:27:15.294Z']) assert.equal(foreignStackEnded({ ...f, observedAt: '2026-11-20T12:27:15.295Z', observedUntil }), false);
 });
 test('the inspect boundary must be present, ordered and no earlier than the container finish', () => {
   const f0 = fixture();
@@ -24,6 +30,7 @@ test('the inspect boundary must be present, ordered and no earlier than the cont
   f0.stop.finishedAt = '2026-11-14T21:10:04.065Z';
   f0.after.State.FinishedAt = '2026-11-14T21:10:04.06311167Z';
   f0.observedAt = '2026-11-14T21:10:04.066Z';
+  f0.observedUntil = '2026-11-14T21:10:04.066Z';
   assert.equal(foreignStackEnded(f0), true);
   assert.equal(foreignStackEnded({ ...f0, observedAt: undefined }), false);
   for (const observedAt of [undefined, 'unknown', '2026-11-14T06:45:38.668Z']) {

@@ -466,6 +466,10 @@
           "description": "Epoch ms when the current `activity` was set. A status change does not move it, so an activity left behind while hooks flip the status every turn still reads as old.",
           "type": "number"
         },
+        "agentEndpoint": {
+          "$ref": "#/definitions/PresenceAgentEndpoint",
+          "description": "The `agent` endpoint commands this process serves now (SPEC §6, §13.22). Present, with all four flags, under the same gate as `prompts`. It follows what the connector runs at the moment, so it can change within a lifecycle. Advisory: it carries no authority."
+        },
         "attention": {
           "$ref": "#/definitions/AttentionMode",
           "description": "This instance's current global attention mode. Advisory, within-space observability — a peer can see \"they're in focus\" and choose to DM. Published from the connector's authoritative state (presence is a mirror, never the source of truth for delivery). `open`/absent ⇒ receives all."
@@ -492,6 +496,10 @@
           "description": "This incarnation's lifecycle UID (SPEC §6/§13.1: MUST in auth mode from v0.4) — the value the alias currently maps to, published so peers/observers can attribute the alias's live occupant. Advisory observability, never authority (authority is the ledger/broker grants).",
           "type": "string"
         },
+        "prompts": {
+          "$ref": "#/definitions/PresencePrompts",
+          "description": "The prompts this process serves on its `agent` endpoint (SPEC §6, §13.22). Present, with zero, exactly while the endpoint is served and the broker accepted its subscription. Advisory: it carries no prompt content and no authority."
+        },
         "runtime": {
           "$ref": "#/definitions/PresenceRuntime",
           "description": "The process that publishes this record, with its observed start. Status, activity, heartbeats and reconnects inside the process leave it unchanged; a new process publishes a new one. An offline record keeps it to name the process that went away, so it dates a running duration only while the record is live. Missing means the publisher reports none: unknown, not zero."
@@ -512,6 +520,30 @@
         "card",
         "status",
         "ts"
+      ],
+      "type": "object"
+    },
+    "PresenceAgentEndpoint": {
+      "description": "Which `agent` endpoint commands a process serves now. `interrupt` stops its turn, `turn` starts one on its owner's words, `images` takes images with such a turn, and `usage` reports the harness's context and cost. False means that call answers `unimplemented`, or `supported: false` for `usage`.",
+      "properties": {
+        "images": {
+          "type": "boolean"
+        },
+        "interrupt": {
+          "type": "boolean"
+        },
+        "turn": {
+          "type": "boolean"
+        },
+        "usage": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "interrupt",
+        "turn",
+        "images",
+        "usage"
       ],
       "type": "object"
     },
@@ -557,6 +589,24 @@
         "failed"
       ],
       "type": "string"
+    },
+    "PresencePrompts": {
+      "description": "How many prompts a process holds `open` or `sent`, and a counter that goes up by one each time a prompt opens or changes state. The counter restarts with the process, so it means something only together with `runtime.id`.",
+      "properties": {
+        "open": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "open",
+        "seq"
+      ],
+      "type": "object"
     },
     "PresenceRuntime": {
       "description": "The running process behind a presence record, as that process observed itself. Advisory display data, never authority. It carries no pid, host, path, command line or environment.",

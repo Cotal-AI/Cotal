@@ -1,0 +1,3 @@
+# `cotal down` on a controller stack whose broker address another registration names refuses
+# LIFECYCLE_BLOCKED and names that registration with its space show / space forget remedy.
+smoke:down-shared-broker:live

@@ -46,7 +46,7 @@ try {
   for (let i = 0; i < 100 && !(await isReachable(servers)); i++) await sleep(50);
   for (const mode of ["timeout", "refusal", "accepted", "late-ok", "late-error"] as const) {
     const cell = join(root, mode);
-    mkdirSync(cell);
+    mkdirSync(cell, { mode: 0o700 }); // the control socket below needs a directory private to this user
     const log = join(cell, "fake.jsonl");
     const entries = (): Entry[] => existsSync(log)
       ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Entry) : [];
@@ -82,7 +82,7 @@ try {
           COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_ID: "steerseat", COTAL_NAME: "steerseat",
           COTAL_LIFECYCLE_UID: mintLifecycleUid(), COTAL_SUBSCRIBE: "team", COTAL_ALLOW_SUBSCRIBE: "team", COTAL_ALLOW_PUBLISH: "team",
           COTAL_JCODE_HOME: cell, COTAL_JCODE_TUI: "1", COTAL_JCODE_PROMPT: "Owned kickoff after native turn",
-          COTAL_JCODE_REQUEST_TIMEOUT_MS: "1000", COTAL_CONTROL_SOCKET: join(cell, "control.sock"), COTAL_CONTROL_TOKEN: "owned-control",
+          COTAL_JCODE_REQUEST_TIMEOUT_MS: "1000", COTAL_CONTROL_SOCKET: join(cell, "control.sock"), COTAL_CONTROL_KEY: "owned-control", COTAL_CONTROL_VERSION: "1",
         },
         stdio: ["ignore", "ignore", "pipe"],
       });

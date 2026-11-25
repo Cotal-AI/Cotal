@@ -302,12 +302,14 @@ try {
   }
 
   {
+    const prefix = "[cotal-fixture] diagnostic: ";
+    const diagnostic = prefix + "x".repeat(4351 - prefix.length) + "🙂";
     const rec = launchSeat({
       root,
       name: "fast-print",
       spec: {
         command: process.execPath,
-        args: ["-e", "process.stdout.write('FAST_MARK=1\\n'); process.exit(0)"],
+        args: ["-e", `process.stdout.write(${JSON.stringify(`${diagnostic} extra\nFAST_MARK=1\n`)}, () => process.exit(0))`],
         env: { PATH: process.env.PATH ?? "" },
       },
       cwd: process.cwd(),
@@ -331,6 +333,7 @@ try {
     await until(() => exited, 5_000);
     const seen = buf.replace(/\x1b\][^\x07]*\x07/g, "").replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     check("fast-exit print reaches onData before onExit", exited && seen.includes("FAST_MARK=1"), { exited, seen });
+    check("exit keeps a generic connector diagnostic up to the code point limit", h.exitInfo()?.diagnostic === `${diagnostic}…`);
   }
 
   {

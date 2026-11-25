@@ -23,9 +23,10 @@ const command: Command = {
       throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal mcp [--space <name>]");
   },
   async run(args) {
-    const { serveGatewayStdio } = await import("@cotal-ai/connector-core");
+    const { GATEWAY_LISTENING, serveGatewayStdio } = await import("@cotal-ai/connector-core");
     const { createMcpHost } = await import("./mcp-host.js");
     const host = createMcpHost(args.values.space as string | undefined);
+    const directConnect = "Open and static local spaces connect directly using their default persona. You can narrow its channels, role and capabilities, but cannot widen them. For a signed-in space, use its hosted connector or a native Cotal connector instead.";
     let served: Awaited<ReturnType<typeof serveGatewayStdio>> | undefined;
     let ending: Promise<void> | undefined;
     let finish!: () => void;
@@ -48,7 +49,12 @@ const command: Command = {
     process.on("SIGINT", onEnd);
     process.on("SIGTERM", onEnd);
     try {
-      served = await serveGatewayStdio(host, { source: "mcp", selection: true });
+      served = await serveGatewayStdio(host, {
+        source: "mcp",
+        selection: true,
+        instructions: `Call cotal_connect with a short name. ${directConnect} Pass the returned connection_id on every other Cotal tool call. Never reuse another conversation's connection_id. ${GATEWAY_LISTENING}`,
+        connectDescription: `Connect this conversation to the local space. ${directConnect} If the name is taken, the server chooses and reports the next free name (name_2, name_3, ...). Pass the returned connection_id on every other Cotal tool call.`,
+      });
       if (ending) await served.close();
       if (process.stdin.readableEnded || process.stdin.destroyed) onEnd();
       await done;

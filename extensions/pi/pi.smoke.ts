@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, type PresenceCondition } from "@cotal-ai/core";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,12 +7,13 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { ProjectTrustStore, SessionManager } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
+import { applyAguiEgressPolicy } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
 import cotalMesh, { persistSessionId, supervisedProjectTrust } from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
 import { wrapped } from "./src/wrap.js";
-import { createPiMapper } from "./src/agui-map.js";
+import { createPiMapper, type PiSessionEntry } from "./src/agui-map.js";
 /** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
 const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
 import { PiSessionSource } from "./src/agui-source.js";
@@ -59,6 +60,7 @@ class FakeMesh {
   items: InboxItem[] = [];
   drained: string[] = [];
   statuses: Array<{ status: string; activity?: string }> = [];
+  conditions: Array<PresenceCondition | null> = [];
   modes = new Map<string, "quiet" | "muted">();
   pullOnly = new Set<string>();
 
@@ -124,6 +126,10 @@ class FakeMesh {
     await new Promise((resolve) => setTimeout(resolve, status === "working" && activity === "thinking" ? 3 : 0));
     this.statuses.push({ status, activity });
   }
+
+  async setCondition(condition: PresenceCondition | null): Promise<void> {
+    this.conditions.push(condition);
+  }
 }
 
 class FakeHost implements PiHost {
@@ -152,6 +158,7 @@ function context(signal?: AbortSignal): PiContextLike & { idle: boolean; notific
     shutdown(): void {
       value.shutdowns++;
     },
+    abort(): void {},
   };
   return value;
 }
@@ -170,7 +177,12 @@ function confirm(driver: PiDriver, details: CotalBatchDetails): void {
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-// The persistent Pi JSONL is the data path. Live extension deltas never enter the source.
+// The persistent Pi JSONL is the data path. A session whose replies streamed nothing maps from its
+// saved records alone, so these cells read them without a delta journal.
+const savedMapper = (threadId: string) => {
+  const map = createPiMapper(threadId);
+  return (entry: PiSessionEntry) => map({ harness: entry });
+};
 {
   const root = mkdtempSync(join(tmpdir(), "cotal-pi-native-source-"));
   const path = join(root, "session.jsonl");
@@ -186,28 +198,47 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
       entry("partial", "assistant", { content: [{ type: "text", text: "uncommitted" }] }).slice(0, -1));
     const read = await source.read("pi:first-file");
     ok(read.records.length === 6, "first-file sentinel reads complete native JSONL lines but not trailing partial line");
-    const map = createPiMapper("native");
+    const map = savedMapper("native");
     const events = read.records.flatMap(({ value }) => unitOf(map(value))?.events ?? []);
     ok(events.map((event) => event.type).join() ===
-      "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_END,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
+      "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,CUSTOM,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
       "native assistant and tool records produce ordered, balanced AG-UI events without invented compaction turns");
-    ok(!JSON.stringify(events).includes("private"), "mixed-authorship user content and tool output never enter the event plane");
+    ok(!JSON.stringify(applyAguiEgressPolicy(events)).includes("private"), "mixed-authorship user content and tool output never enter the public event plane");
     ok((await source.read(read.cursor)).records.length === 0, "the durable cursor never rereads an acknowledged native message");
     ok((await new PiSessionSource(path).read(undefined)).records.length === 0, "an existing resumed transcript begins at its end, not old history");
-    const boundaryMap = createPiMapper("resumed");
+    const boundaryMap = savedMapper("resumed");
     ok(boundaryMap({ type: "message", id: "orphan", message: { role: "toolResult", toolCallId: "old-call" } }) === null,
       "a result for a call before the adopted boundary is not emitted as an orphan tool end");
-    const failedMap = createPiMapper("failed");
+    const failedMap = savedMapper("failed");
     const failure = unitOf(failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
       role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "err-tool", name: "bash" }], stopReason: "error",
     } }));
-    ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_ERROR",
+    ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,RUN_ERROR",
       "failed assistant closes native tool brackets before the run error");
     const recovered = unitOf(failedMap({ type: "message", id: "later", timestamp: "2026-01-01T00:00:01.000Z", message: {
       role: "assistant", timestamp: 1_767_225_601_000, content: [{ type: "text", text: "later answer" }], stopReason: "stop",
     } }));
     ok(recovered?.events[0]?.type === "RUN_STARTED" && recovered.events.at(-1)?.type === "RUN_FINISHED",
       "a native error does not silence the next completed turn");
+    const aborted = unitOf(savedMapper("aborted")({ type: "message", id: "abort-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
+      role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "abort-tool", name: "bash" }], stopReason: "aborted",
+    } }));
+    ok(aborted?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,RUN_FINISHED" &&
+      JSON.stringify((aborted.events.at(-1) as { outcome?: unknown }).outcome) ===
+        JSON.stringify({ type: "interrupt", interrupts: [{ id: "abort-call", reason: "aborted" }] }),
+      "an aborted assistant closes its native tool calls and ends its run as an interrupt, not an error");
+    // The shape Pi 0.84.3 wrote live when Escape landed during a bash call: the tool result, then a
+    // reply recorded as an error with the platform's AbortError text and no content.
+    const toolAbortMap = savedMapper("tool-abort");
+    const toolAbort = [
+      { type: "message", id: "tool-turn", message: { role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "loop", name: "bash" }], stopReason: "toolUse" } },
+      { type: "message", id: "tool-result", message: { role: "toolResult", timestamp: 1_767_225_601_000, toolCallId: "loop" } },
+      { type: "message", id: "after-abort", message: { role: "assistant", timestamp: 1_767_225_602_000, content: [], stopReason: "error", errorMessage: "This operation was aborted" } },
+    ].flatMap((value) => unitOf(toolAbortMap(value))?.events ?? []);
+    ok(toolAbort.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,CUSTOM,RUN_FINISHED" &&
+      JSON.stringify((toolAbort.at(-1) as { outcome?: unknown }).outcome) ===
+        JSON.stringify({ type: "interrupt", interrupts: [{ id: "after-abort", reason: "aborted" }] }),
+      "an error carrying the AbortError text after an aborted tool ends its run as an interrupt");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -610,8 +641,8 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(wake({ fromName: "" }).includes("by local.blank while"), "an empty mention sender is named by id");
   const broken = wake({ fromName: "\n" });
   ok(broken.includes("by local.blank while") && !broken.includes("\n"), "a newline mention sender is named by id on one line");
-  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank/worker while"), "a whitespace mention sender keeps its role beside the id");
-  ok(wake({ fromName: " ada" }).includes("by  ada while"), "a mention sender with a leading space keeps that name");
+  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank/worker (unverified role) while"), "a whitespace mention sender keeps its unverified role beside the id");
+  ok(wake({ fromName: " ada" }).includes("by  ada (unverified name) while"), "a mention sender with a leading space keeps that unverified name");
 }
 
 // Abort retains even provider-confirmed work, holds new traffic, then a clean continuation commits.
@@ -872,6 +903,57 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   long.requestShutdown();
 }
 
+// A failed turn is relayed as the presence condition observers read for it (SPEC §6), carrying
+// Pi's own error. Without it a failed turn read as plain `waiting` (a held batch) or plain `idle`
+// (no batch) everywhere presence is shown. An aborted turn is someone's Stop, not a failure.
+{
+  const strip = (c: PresenceCondition | null | undefined) => (c ? { code: c.code, source: c.source, message: c.message, since: typeof c.since } : c);
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "Unknown provider:\n  unknown" };
+  const expected = { code: "failed", source: "error", message: "Unknown provider: unknown", since: "number" };
+
+  const held = new FakeMesh();
+  held.items = [item("m1")];
+  const heldHost = new FakeHost();
+  const heldCtx = context();
+  const heldDriver = new PiDriver(held as unknown as MeshAgent, 200);
+  heldDriver.bind(heldHost);
+  heldDriver.onSessionStart(heldCtx);
+  startBatch(heldDriver, heldHost);
+  heldDriver.onAgentStart(heldCtx);
+  heldDriver.onAgentEnd([failed], heldCtx);
+  await heldDriver.flushPresence();
+  assert.deepEqual(held.conditions.map(strip), [expected], "a held failed turn relays exactly one failed condition with Pi's error");
+  checks++;
+  ok(held.statuses.at(-1)?.status === "waiting", "the held failed turn still reads waiting beside its condition");
+  heldDriver.requestShutdown();
+
+  const bare = new FakeMesh();
+  const bareCtx = context();
+  const bareDriver = new PiDriver(bare as unknown as MeshAgent, 200);
+  bareDriver.bind(new FakeHost());
+  bareDriver.onSessionStart(bareCtx);
+  bareDriver.onAgentStart(bareCtx);
+  bareDriver.onAgentEnd([{ role: "assistant", stopReason: "error" }], bareCtx);
+  await bareDriver.flushPresence();
+  assert.deepEqual(bare.conditions.map(strip), [{ code: "failed", source: "error", message: undefined, since: "number" }], "a failed turn with no batch and no error text still relays failed, with no invented message");
+  checks++;
+  bareDriver.requestShutdown();
+
+  for (const end of [{ role: "assistant", stopReason: "aborted" }, { role: "assistant", stopReason: "stop" }]) {
+    const quiet = new FakeMesh();
+    const quietCtx = context();
+    const quietDriver = new PiDriver(quiet as unknown as MeshAgent, 200);
+    quietDriver.bind(new FakeHost());
+    quietDriver.onSessionStart(quietCtx);
+    quietDriver.onAgentStart(quietCtx);
+    quietDriver.onAgentEnd([end], quietCtx);
+    quietCtx.idle = true;
+    await quietDriver.flushPresence();
+    ok(quiet.conditions.length === 0, `a turn that ended on ${end.stopReason} relays no condition`);
+    quietDriver.requestShutdown();
+  }
+}
+
 // Controls that must not weaken: zero batches still returns to idle on the same error boundary.
 {
   const mesh = new FakeMesh();
@@ -883,6 +965,24 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   driver.onAgentStart(ctx);
   driver.onAgentEnd([{ role: "assistant", stopReason: "error" }], ctx);
   ok(driver.state === "idle", "an error with zero batches still returns to idle, never a retry");
+}
+
+// Pi's extension runner builds a new context for every event, so a turn's start and end never share
+// one. A turn with no Cotal batch, aborted by its user or ended on an error, still publishes idle.
+for (const stopReason of ["aborted", "error"]) {
+  const mesh = new FakeMesh();
+  const host = new FakeHost();
+  const controller = new AbortController();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 200);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  driver.onAgentStart(context(controller.signal));
+  if (stopReason === "aborted") controller.abort();
+  const end = context();
+  end.idle = true;
+  driver.onAgentEnd([{ role: "assistant", stopReason }], end);
+  await driver.flushPresence();
+  ok(mesh.statuses.at(-1)?.status === "idle", `a ${stopReason} turn with no Cotal batch publishes idle from its own end context`);
 }
 
 // Controls that must not weaken: a user abort holds without any automatic retry, even past the
@@ -1214,7 +1314,7 @@ for (const assistant of [
     "COTAL_HOME",
     "COTAL_DEFAULT_AGENT",
     "COTAL_CONTROL_SOCKET",
-    "COTAL_CONTROL_TOKEN",
+    "COTAL_CONTROL_KEY",
     "COTAL_LAUNCH_MATERIAL",
     "COTAL_SPACE",
     "COTAL_ID",
@@ -1234,7 +1334,7 @@ for (const assistant of [
     registerTool(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control key could be resolved/);
   checks++;
 
   // Managed reload has already consumed its launch material. It must bind the existing
@@ -1347,7 +1447,7 @@ for (const assistant of [
       typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
       "managed Pi launch env carries the exact session-state path",
     );
-    ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
+    ok(launch.args.some((arg) => arg.endsWith("spawn-entry.js")), "managed Pi launches use the dedicated bundled entry");
     if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
     assert.throws(
@@ -1355,6 +1455,15 @@ for (const assistant of [
       /mutually exclusive/,
     );
     ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");
+    for (const resume of ["--help", "-v", "-"]) {
+      assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", resume, events: false }), /session id cannot start with '-'/);
+      checks++;
+    }
+    const stateBeforePreview = join(root, ".cotal", "pi-sessions", "preview-life.json");
+    mkdirSync(dirname(stateBeforePreview), { recursive: true });
+    writeFileSync(stateBeforePreview, "keep this session");
+    const preview = piConnector.buildLaunch({ space: "test", name: "preview", lifecycleUid: "life", workspaceRoot: root, events: false, validateOnly: true });
+    ok(!preview.artifacts?.length && readFileSync(stateBeforePreview, "utf8") === "keep this session", "validation creates no artifacts and preserves existing session state");
     ok(piConnector.supportsSessionContinuation === true, "Pi declares exact-session crash continuation support");
     const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)", events: false });
     const forkAt = forked.args.indexOf("--fork");
@@ -1371,7 +1480,32 @@ for (const assistant of [
       /mutually exclusive/,
     );
     checks += 6;
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
+    // A variant is pi's thinking level, rendered as `--thinking` beside `--model`. A `:<level>`
+    // suffix would name another model when the id has a colon, as this OpenRouter id does.
+    ok(piConnector.supportsModelVariant === true, "Pi declares model variant support");
+    const colonId = "openrouter/anthropic/claude-opus-4.6:batch";
+    const thinking = piConnector.buildLaunch({ space: "test", name: "pi", model: colonId, variant: "high", prompt: "go", events: false });
+    ok(
+      thinking.args.slice(-5).join(" ") === `--model ${colonId} --thinking high go` && thinking.env?.COTAL_VARIANT === "high",
+      "a variant renders --thinking after the model, which stays as given, and labels the seat",
+    );
+    ok(!thinking.args.some((arg) => arg.endsWith(":high")), "a variant never becomes a model suffix");
+    for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      const args = piConnector.buildLaunch({ space: "test", name: "pi", variant: level, events: false }).args;
+      ok(args.at(-2) === "--thinking" && args.at(-1) === level, `pi's ${level} level renders as --thinking ${level}`);
+    }
+    // pi applies `--thinking` over a session's saved level, as `--model` over its saved model, so a
+    // restarted or resumed seat runs the level it was launched with.
+    for (const session of [{ resume: "source" }, { continueSession: "current" }, { reopenSession: "current" }]) {
+      const args = piConnector.buildLaunch({ space: "test", name: "pi", ...session, variant: "high", events: false }).args;
+      ok(args.at(-2) === "--thinking" && args.at(-1) === "high", `a ${Object.keys(session)[0]} launch passes its level again`);
+    }
+    const plain = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", events: false });
+    ok(!plain.args.includes("--thinking") && plain.env?.COTAL_VARIANT === undefined, "no variant renders no --thinking and no label");
+    for (const variant of ["turbo", "HIGH", ""]) {
+      assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant, events: false }), /is not one pi takes \(off, minimal, low, medium, high, xhigh, max\)/);
+      checks++;
+    }
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);
     // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser

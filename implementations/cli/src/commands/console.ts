@@ -2,7 +2,7 @@ import { writeSync } from "node:fs";
 import { userInfo } from "node:os";
 import { createElement } from "react";
 import { chatWildcard, type ParsedArgs } from "@cotal-ai/core";
-import { colorEnabled } from "@cotal-ai/workspace";
+import { colorEnabled, inputDisabledByFlag } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
 import { runLog } from "../render.js";
 import { openObserver, type ObserverAuth } from "@cotal-ai/workspace/view";
@@ -26,10 +26,9 @@ async function loadTui() {
 }
 
 /**
- * `cotal console` — the live protocol view. A real terminal gets the lazygit-style Ink TUI; a pipe
- * or `--plain` gets the passive line stream. With no `--space` on an open mesh it opens an admin
- * overview of every space first (pick one to drill in, `b` to come back); `--space X` goes straight
- * in. Renders over a read-only observer whose lifecycle `useMesh` owns. See docs/mesh-view.mdx.
+ * `cotal console` opens the Ink TUI when stdin and stdout are terminals. Non-terminal streams,
+ * `--plain` and `--no-input` use the passive line stream. On an open mesh, the TUI opens the
+ * space picker unless `--space` selects a space. The `useMesh` hook owns the read-only observer.
  */
 export async function console_(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; plain?: boolean; creds?: string };
@@ -44,9 +43,6 @@ export async function console_(args: ParsedArgs): Promise<void> {
     ? { user: { source: user.source, sentinelCreds: user.sentinelCreds, owner: user.owner, actor: user.actor } }
     : { creds };
 
-  // Operator identity for sent messages (still off the roster). Open mode or an explicit --creds can
-  // write; the self-minted observer cred (auth default) and the user-mode admin view are read-only,
-  // so the palette/`D` are inert there.
   const operator = (() => {
     try {
       return userInfo().username || "operator";
@@ -54,6 +50,15 @@ export async function console_(args: ParsedArgs): Promise<void> {
       return "operator";
     }
   })();
+  // The line stream cannot host the overview picker, so use the resolved mesh's space.
+  if (values.plain || inputDisabledByFlag() || process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    const s = space ?? resolvedSpace;
+    await runLog(openObserver({ space: s, server, auth: observerAuth, name: operator, operator: true }), s, creds || user ? chatWildcard(s) : undefined, values.plain === true, conn);
+    return;
+  }
+
+  // Open mode and explicit --creds can send messages. Default observer credentials and the
+  // user-mode admin view can only observe.
   const canWrite = user ? false : !creds || !!values.creds;
   // Control (kill / spawn / purge) never rides the observer: each action resolves the mesh
   // and mints its own one-shot instrument through the CLI's control path (console/control.ts), so
@@ -66,14 +71,6 @@ export async function console_(args: ParsedArgs): Promise<void> {
   // Never at module top: Ink's yoga-layout wasm initialization can fail on macOS with large
   // argv/environment (#4088). The shared loader also applies the requested color mode first.
   const { render, Root } = await loadTui();
-
-  // No TTY (piped/headless) or --plain → the passive line stream; Ink needs a real terminal, and a
-  // stream can't host the picker, so it falls back to the RESOLVED mesh's space (not the cwd's).
-  if (values.plain || process.stdout.isTTY !== true) {
-    const s = space ?? resolvedSpace;
-    await runLog(openObserver({ space: s, server, auth: observerAuth, name: operator, operator: true }), s, creds || user ? chatWildcard(s) : undefined, values.plain === true, conn);
-    return;
-  }
 
   // Full-screen takeover + mouse-wheel scroll: the alternate screen gives a clean app-like
   // canvas (and restores the user's scrollback on exit), and xterm alt-scroll (?1007h) makes the

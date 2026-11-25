@@ -38,7 +38,7 @@ import {
 import { issueRemoteManagerAuthority } from "@cotal-ai/auth";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, createSuite } from "@cotal-ai/smoke-kit";
 import { stopOwnedChild } from "./_owned-child-cleanup.js";
 
 const enc = new TextEncoder();
@@ -59,21 +59,11 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], {
   storeDir: join(dir, "js"),
 }));
 
-let passed = 0;
-let failed = 0;
+const { check, finish, passed, failed } = createSuite();
 const outcomes: Record<string, number> = {
   participantSweepDenied: 0,
   pushBodies: 0,
   foreignDurablesDeleted: 0,
-};
-const check = (name: string, condition: unknown, detail?: unknown) => {
-  if (condition) {
-    passed++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    failed++;
-    console.log(`  ✗ FAIL: ${name}`, detail ?? "");
-  }
 };
 
 const server = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
@@ -225,8 +215,8 @@ try {
     outcomes.participantSweepDenied === 1 && outcomes.pushBodies === 0 && outcomes.foreignDurablesDeleted === 0,
     outcomes);
   console.log(`REMOTE EXECUTOR AUTHORITY OUTCOMES ${JSON.stringify(outcomes)}`);
-  console.log(`REMOTE EXECUTOR AUTHORITY PROBE ${failed === 0 ? "PROVED" : "FAILED"} (${passed} passed, ${failed} failed)`);
-  if (failed) process.exitCode = 1;
+  console.log(`REMOTE EXECUTOR AUTHORITY PROBE ${failed() === 0 ? "PROVED" : "FAILED"} (${passed()} passed, ${failed()} failed)`);
+  finish();
 } finally {
   if (executor) await executor.drain().catch(() => executor?.close());
   if (fixture) await fixture.close().catch(() => {});

@@ -150,7 +150,7 @@
     },
     {
       "name": "skip the run's frozen grant",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "          if (spawner.run !== undefined)\n            assertWithinRunDelegation(",
       "replace": "          if (false)\n            assertWithinRunDelegation(",
       "expectRed": "FAIL: U1 a run's admission freezes its starter's grant and a later widening reaches no helper",
@@ -170,7 +170,7 @@
     },
     {
       "name": "the verify door skips the ledger walk",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "      assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, \"spawn\");\n      return { request: r, parent: spawner.parent };",
       "replace": "      return { request: r, parent: spawner.parent };",
       "expectRed": "FAIL: U1 the verify door refuses a served spawn wider than its caller",
@@ -180,7 +180,7 @@
     },
     {
       "name": "the verify door skips the run's frozen grant",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "      if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper);\n",
       "replace": "",
       "expectRed": "FAIL: U1 the verify door refuses a run's helper wider than the grant its admission froze",
@@ -190,9 +190,9 @@
     },
     {
       "name": "the verify door answers the manager as the parent",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "      return { request: r, parent: spawner.parent };",
-      "replace": "      return { request: r, parent: principalKey(owner, r.actor).key };",
+      "replace": "      return { request: r, parent: `${owner}.${r.actor}` };",
       "expectRed": "FAIL: U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
       "cell": "U1 the verify door answers the caller it observed as the parent, again for a retry, and refuses another enrollment of that spawn",
       "completionMarker": "COTAL_SMOKE_SENTINEL cells=28",
@@ -240,7 +240,7 @@
     },
     {
       "name": "the verify door measures only the target's read list",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe), allowPublish: t.allowPublish ?? [], role: t.role };",
       "replace": "allowSubscribe: t.allowSubscribe ?? [], allowPublish: t.allowPublish ?? [], role: t.role };",
       "expectRed": "FAIL: U1 the verify door refuses a served spawn whose subscribe set reads past its caller",
@@ -250,7 +250,7 @@
     },
     {
       "name": "the enrollment bounds and records only the target's read list",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "      const allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);",
       "replace": "      const allowSubscribe = t.allowSubscribe ?? [];",
       "expectRed": "FAIL: U1 a served spawn whose subscribe set reads past its caller is refused by the host",
@@ -260,7 +260,7 @@
     },
     {
       "name": "an enrollment retry provisions any read its request resolves to",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "          if (held !== undefined && !(new Set(held.allowSubscribe).size",
       "replace": "          if (false && held !== undefined && !(new Set(held.allowSubscribe).size",
       "expectRed": "FAIL: U1 a retried enrollment whose grant records no read set is refused before its subscribe set becomes the read",
@@ -270,7 +270,7 @@
     },
     {
       "name": "a no-read enrollment's retry provisions the subscribe set it names",
-      "file": "implementations/auth/src/service.ts",
+      "file": "implementations/auth/src/service-managed-agents.ts",
       "find": "          if (held !== undefined && !(new Set(held.allowSubscribe).size",
       "replace": "          if (false && held !== undefined && !(new Set(held.allowSubscribe).size",
       "expectRed": "FAIL: U1 a no-read enrollment retried with a subscribe set is refused before that set becomes the read",

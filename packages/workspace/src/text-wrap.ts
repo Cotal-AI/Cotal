@@ -23,11 +23,11 @@ function wrapUnits(text: string): string[] {
   const parts = text.split(" "), words: string[] = [];
   for (let i = 0; i < parts.length; i++) {
     let end = i;
-    const open = /^[("']*(`+)[^`]*$/.exec(parts[i]!);
+    const open = /^[("']*(`+)/.exec(parts[i]!);
     if (open) {
       const fence = new RegExp(`(?<!\`)\`{${open[1]!.length}}(?!\`)`);
-      const close = parts.findIndex((part, j) => j > i && fence.test(part));
-      if (close > 0) end = close;
+      const close = parts.findIndex((part, j) => j >= i && fence.test(j === i ? part.slice(open[0].length) : part));
+      if (close >= i) end = close;
     }
     words.push(parts.slice(i, end + 1).join(" "));
     i = end;

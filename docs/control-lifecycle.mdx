@@ -11,11 +11,13 @@ Manager `inspect` keeps its successful response as the live managed-agent row. A
 not read durable lifecycle state, so a temporary records-store failure cannot break inspection of
 an agent the manager currently holds.
 
-For static and open callers, the connector's named `inspect` calls, including the post-spawn
-model audit, resolve the seat through live presence first. Managed connectors publish their
-holding manager in `card.meta["ai.cotal.manager.instance"]`. The caller addresses that instance,
-using only its existing credential. A class-only credential receives `permission-denied` on
-the instance rail. No caller retries the class queue to obtain a different answer.
+The connector's named `inspect` calls, including the post-spawn model audit, resolve the seat
+through live presence first. On user-auth spaces, that lookup is scoped to the caller's owner.
+Managed connectors publish their holding manager in `card.meta["ai.cotal.manager.instance"]`.
+Static and open callers address that instance using only their existing credential. User-auth
+callers request a manager-call bearer for that instance. A class-only credential receives
+`permission-denied` on the instance rail, and a refused manager-call exchange remains
+`permission-denied`. No caller retries the class queue to obtain a different answer.
 Managed static seats with `spawn`, `run` or `admin` also receive instance-only `describe` and
 `inspect` grants for their holding manager. This permits same-manager named inspection,
 model-pin audits and named despawn without reads on sibling managers or instance writes.
@@ -43,8 +45,8 @@ expiry alone remains recoverable.
 An explicit class-only caller file cannot make a named read and is refused without substituting an operator credential.
 `inspect` is the manager's only read keyed by a running seat name. Persona, workflow, goal and
 durable-slot reads keep their own manager-local scopes. An explicit instance still selects only
-that manager, which never relays or returns another manager's live row. Generic user-auth
-invocation retains its existing credential path.
+that manager, which never relays or returns another manager's live row. Other user-auth
+invocations retain their existing credential path.
 
 On a live miss, a static manager point-reads its durable slot row. A name with no slot, or a slot
 whose phase is `retired`, remains `not-found`. A nonterminal slot returns
@@ -291,14 +293,17 @@ turns already have somewhere to go.
 
 **Who may call it is narrower than either of those**, and the reasoning is worth stating because
 the natural assumption is wrong. `despawn` and `attach` are granted to anything holding `spawn`;
-`input` is granted only to operator credentials. The tempting argument for treating them alike is
+`input` is granted to operator credentials and to a person's own sign-in, never to an agent. The
+tempting argument for treating them alike is
 that an attach session's `write` already reaches the same terminal, so `input` adds nothing. It
 does not reach it: an attach yields a signed session offer, and redeeming one needs a per-session
 credential minted from the space signing seed, which no agent holds. So `input` would be new
 authority, and the own-owner rule that bounds `despawn` covers every seat under an owner rather
 than only the ones a caller launched. Killing a peer is denial; typing into a peer is control of
-it. The write therefore sits with the credential that is already the administrative authority for
-the domain.
+it. The write therefore sits with the credentials that are already the administrative authority
+for the domain: an operator's, and on a user-auth mesh a person's own for the agents under their
+owner. A person's rows come from their ledger row being `interactive`, never from a scope token,
+so a person cannot hand them to an agent they spawn.
 
 Only a runtime that owns the child's input stream can serve it. The `pty` runtime does; the
 external terminal runtimes attach to a process they do not own, and there the command refuses
@@ -309,6 +314,15 @@ runtime rejects once delivery has started states no outcome, so a caller reads i
 The manager's other control refusals follow the same rule: one raised before the command's first
 effect, such as a denied caller, a stale target or a missing persona file, carries `not-executed`.
 See [cli.md](cli.mdx#input).
+
+The manager's `interrupt` writes the key the seat's connector declares as `interruptKey` into the
+seat's terminal as one keypress, which stops a live turn. It takes no input and answers with the
+seat's name. `input` cannot do this, because it delivers text as a bracketed paste, and a harness
+reads a pasted Escape as text. The command shares `input`'s row shape, authorization and grant. It refuses before writing when the seat is not running, when its connector declares no
+interrupt key, or when its runtime owns no input stream. The reply means the key was written. The
+turn's end, if any, rides the event plane. The `agent` endpoint's own `interrupt`
+([SPEC §13.22](../SPEC.md#1322-the-agent-endpoint)) is a separate command that stops the turn
+through the agent's connector and answers `interrupted` or `idle`.
 
 ## Grants [#grants]
 

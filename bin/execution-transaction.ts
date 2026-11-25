@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
-import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
+import { assertWritableExecutionDirectory, retainExecutionGeneration, type RetainedExecutionGeneration, writableExecutionStore, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
   v: 1;
@@ -13,27 +13,26 @@ interface ExecutionTransaction {
   target: RetainedExecutionGeneration;
 }
 
-/** The admission check runs before creating staging, records or configuration directories. */
-export function assertExecutionDestination(installed: string): void {
+/** Restore owner write on owned update directories before creating staging, records or configuration. */
+export function assertExecutionDestination(installed: string): boolean {
   if (existsSync(join(installed, "desktop-runtime.json"))) throw new Error("staged execution updates are unavailable on the desktop runtime");
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("staged execution updates are unavailable on this platform");
-  for (const path of [installed, dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) {
     const stat = lstatSync(path);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`unsafe staged update destination: ${path}`);
     executionLocation(path);
   }
-  try {
-    for (const path of [installed, join(installed, "dist"), dirname(dirname(installed))]) accessSync(path, constants.W_OK);
-  } catch {
-    throw new Error(`installation is not writable; have an administrator run: sudo npm install -g --prefix '${dirname(dirname(dirname(installed))).replace(/'/g, "'\\''")}' cotal-ai@latest; then run \`cotal update\` as your normal account, without sudo`);
-  }
+  let repaired = false;
+  for (const path of [installed, join(installed, "dist"), dirname(installed), dirname(dirname(installed))])
+    if (assertWritableExecutionDirectory(path, installed)) repaired = true;
   selectExecutionProgram(installed);
+  return repaired;
 }
 
-function atomicFile(path: string, bytes: string | Buffer, mode: number): void {
+function atomicFile(path: string, bytes: string | Buffer, mode: number, flush = false): void {
   const temporary = `${path}.${randomBytes(16).toString("hex")}`;
   try {
-    writeFileSync(temporary, bytes, { flag: "wx", mode });
+    writeFileSync(temporary, bytes, { flag: "wx", mode, flush });
     chmodSync(temporary, mode);
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
@@ -53,7 +52,7 @@ export function journalExecutionTransaction(installed: string, target: RetainedE
     }, target,
   };
   const path = join(directory, "execution.json");
-  writeFileSync(path, JSON.stringify(transaction), { flag: "wx", mode: 0o600 });
+  atomicFile(path, JSON.stringify(transaction), 0o600, true);
   return path;
 }
 
@@ -104,10 +103,7 @@ export function completeExecutionTransaction(installed: string, path: string): v
  *  an attempt that ended, and it is removed first. */
 export function executionStagingPrefix(installed: string): string {
   assertExecutionDestination(installed);
-  const store = executionStore(installed);
-  if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (executionShared(installed)) chmodSync(store, 0o755); }
-  if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
-  protectedExecutionEntry(store);
+  const store = writableExecutionStore(installed, executionShared(installed));
   return mkdtempSync(join(store, ".installing-"));
 }
 
@@ -115,10 +111,12 @@ export function executionStagingPrefix(installed: string): string {
 export function repairExecutionInstallModes(installed: string, repair: () => number): number {
   const selected = selectExecutionProgram(installed);
   const descriptor = selected.retained ? executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor : undefined;
+  const before = descriptor?.launch && (descriptor.launch.path === join(realpathSync.native(installed), "package.json")
+    ? executionLaunchBinding(installed, descriptor.launch.entry).ctime : descriptor.launch.ctime);
   const changed = repair();
   if (descriptor?.launch) {
     const launch = executionLaunchBinding(installed, descriptor.launch.entry);
-    const { ctime: before, ...previous } = descriptor.launch;
+    const { ctime: _, ...previous } = descriptor.launch;
     const { ctime: after, ...current } = launch;
     if (JSON.stringify(previous) !== JSON.stringify(current)) throw new Error("execution launch route changed during permission repair");
     if (before !== after) {

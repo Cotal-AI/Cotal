@@ -6,7 +6,7 @@
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/deprovision-kv-race.json",
   "mutations": [{
     "name": "report a live row lost to a competing purge as previously absent",
-    "file": "packages/core/src/streams.ts",
+    "file": "packages/core/src/deprovision.ts",
     "find": "return { outcome: before.live ? \"disappeared\" : \"absent\", status: \"raced-loss\" };",
     "replace": "return { outcome: \"absent\", status: \"raced-loss\" };",
     "expectRed": "RACE: acls CAS loser reports disappearance rather than prior absence",

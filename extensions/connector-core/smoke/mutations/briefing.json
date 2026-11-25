@@ -24,8 +24,8 @@
     "M4 drops the sentence that sends a status meant for one peer to the shared channel with a",
     "mention. Claude Code reads the briefing before it picks a tool, and loads a tool's description only after.",
     "",
-    "M5 and M6 put back two false claims: that a live channel reaches every connected agent,",
-    "and that once works on every harness."
+    "M5 puts back a false claim, that a live channel reaches every connected agent. M6 puts back",
+    "the harness list for once, which the manager's refusal makes a list nobody maintains."
   ],
   "mutations": [
     {
@@ -69,26 +69,26 @@
       "file": "extensions/connector-core/src/orientation.ts",
       "find": "\"and one that is offline gets it when it comes back; on a live channel, one that is disconnected or \" +\n  \"busy then misses it, unless the post mentions it by a name only it has and it may read the channel. \" +",
       "replace": "\"and one that is offline gets it when it comes back; on a live channel, every connected agent \" +\n  \"gets it. \" +",
-      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
-      "cell": "the briefing says a live post misses an agent that is away, and where once works",
+      "expectRed": "the briefing says a live post misses an agent that is away, and offers once without a harness list",
+      "cell": "the briefing says a live post misses an agent that is away, and offers once without a harness list",
       "note": "SPEC §4: a live post misses an agent that is disconnected or busy."
     },
     {
-      "name": "M6 the briefing offers once on every harness",
+      "name": "M6 the briefing restores the harness list for once",
       "file": "extensions/connector-core/src/orientation.ts",
-      "find": "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.",
-      "replace": "starts a helper that is stopped when the task ends.",
-      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
-      "cell": "the briefing says a live post misses an agent that is away, and where once works",
-      "note": "The manager refuses once for a connector without supportsTurnRelay."
+      "find": "starts a helper that is stopped when the task ends.",
+      "replace": "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.",
+      "expectRed": "the briefing says a live post misses an agent that is away, and offers once without a harness list",
+      "cell": "the briefing says a live post misses an agent that is away, and offers once without a harness list",
+      "note": "The manager refuses unsupported connectors before launch, so the briefing does not maintain a harness list."
     },
     {
       "name": "M7 the briefing drops the mention exception on a live channel",
       "file": "extensions/connector-core/src/orientation.ts",
       "find": "  \"busy then misses it, unless the post mentions it by a name only it has and it may read the channel. \" +",
       "replace": "  \"busy then misses it. \" +",
-      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
-      "cell": "the briefing says a live post misses an agent that is away, and where once works",
+      "expectRed": "the briefing says a live post misses an agent that is away, and offers once without a harness list",
+      "cell": "the briefing says a live post misses an agent that is away, and offers once without a harness list",
       "note": "SPEC §4: a mention on a live channel keeps a durable copy for a mentioned target allowed to read it."
     }
   ]

@@ -1,0 +1,3 @@
+# A Hermes seat streams reply text on its event plane from Hermes's drafts, before Hermes saves
+# the response, and the saved response closes the stream with the text of record.
+smoke:hermes-stream

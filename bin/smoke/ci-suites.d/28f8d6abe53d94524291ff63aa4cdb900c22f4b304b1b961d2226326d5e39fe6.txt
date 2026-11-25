@@ -1,0 +1,3 @@
+# askPermissions and reasoningEvents reach the connector and its launch material through a real
+# Manager, and a connector that does not declare one is refused before anything is provisioned.
+smoke:managed-launch-fields

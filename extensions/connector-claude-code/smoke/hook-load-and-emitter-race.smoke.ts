@@ -123,8 +123,8 @@ check("…and FAILS past the window rather than resolving as if connected",
 // review found that by mutation; it is the reason this section exists.
 //
 // The SHIPPED method runs here. Only its collaborators are faked: `whenConnected` reads `_connected`,
-// `ep` (for the connection event) and `config` (for the remedy text), so an object on the real
-// prototype with those three fields executes the real body — including any mutation to it. Faking
+// `ep` (for the connection event and its `retryNow`) and `config` (for the remedy text), so an object
+// on the real prototype with those three fields executes the real body — including any mutation to it. Faking
 // the collaborators is the point; faking the component under test would prove nothing.
 // SOURCE, not the package. `@cotal-ai/connector-core` resolves to the BUILT dist, so a mutation to
 // `src/agent.ts` would not be in the code this cell executes — measured: the fail-open mutant
@@ -133,7 +133,7 @@ check("…and FAILS past the window rather than resolving as if connected",
 const { MeshAgent } = await import("../../connector-core/src/agent.js");
 const { EventEmitter } = await import("node:events");
 const fakeAgent = (connected: boolean): { whenConnected(ms?: number): Promise<void>; ep: InstanceType<typeof EventEmitter> } => {
-  const ep = new EventEmitter();
+  const ep = Object.assign(new EventEmitter(), { retryNow: () => {} });
   const a = Object.create(MeshAgent.prototype) as Record<string, unknown>;
   a._connected = connected;
   a.ep = ep;

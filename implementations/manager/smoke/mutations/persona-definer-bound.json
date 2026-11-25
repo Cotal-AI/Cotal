@@ -35,7 +35,7 @@
     },
     {
       "name": "P3 bound only a definition that names capabilities or endpoints",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined || channels.allowSubscribe.length || channels.allowPublish.length) {",
       "replace": "    if (composed.def.capabilities?.length || composed.def.endpoints !== undefined) {",
       "expectRed": "a read channel the definer does not hold, from the prompt's frontmatter, is refused by name",
@@ -43,15 +43,15 @@
     },
     {
       "name": "P4 drop the channels from the static definer bound",
-      "file": "implementations/manager/src/manager.ts",
-      "find": "        this.spawnBoundRefusal(bound, { capabilities, allowSubscribe, allowPublish, ...(endpoints.length ? { endpoints } : {}) }, false, \"define-persona\");",
-      "replace": "        this.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, \"define-persona\");",
+      "file": "implementations/manager/src/persona-catalog.ts",
+      "find": "        this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, allowSubscribe, allowPublish, ...(endpoints.length ? { endpoints } : {}) }, false, \"define-persona\");",
+      "replace": "        this.parts.seatLaunch.spawnBoundRefusal(bound, { capabilities, ...(endpoints.length ? { endpoints } : {}) }, false, \"define-persona\");",
       "expectRed": "a post channel the definer does not hold, as an argument, is refused by name",
       "cell": "a post channel the definer does not hold, as an argument, is refused by name"
     },
     {
       "name": "P5 drop the read channels from the user-auth definer bound",
-      "file": "implementations/manager/src/manager.ts",
+      "file": "implementations/manager/src/persona-catalog.ts",
       "find": "      const overSub = allowSubscribe.filter((ch) => !patternInAllow(held?.allowSubscribe ?? [], ch));",
       "replace": "      const overSub: string[] = [];",
       "expectRed": "a read channel beyond the definer's row is refused by name, writing nothing",

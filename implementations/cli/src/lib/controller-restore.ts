@@ -17,7 +17,8 @@ import {
 import { assertControllerCoupling, assertControllerResumeEligible } from "./controller-resume.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "./service-definitions.js";
 import { observeServiceProcess, serviceInstanceStore } from "./service-instances.js";
-import { assertNoServiceUnitAttempts } from "./service-process.js";
+import { assertNoServiceUnitAttempts, removeInstanceSidecars, removeServiceLogs } from "./service-process.js";
+import { removeCustodyCapability } from "./service-custody-win32.js";
 import { configuredStoreDir } from "./store-dir.js";
 
 const CONFIG_LIMIT = 1024 * 1024;
@@ -215,6 +216,9 @@ export function removeRetiredBrokerInstance(space: string, cut: ControllerCutBin
     assertNoServiceUnitAttempts(space, member.definition);
     pinned.check();
     serviceInstanceStore(space).commit(member.instanceId, row, undefined);
+    removeCustodyCapability(space, value.custody);
+    removeInstanceSidecars(space, member.instanceId, value.launchRequestId);
+    removeServiceLogs(space, [member.instanceId]);
   } finally {
     pinned.release();
   }

@@ -149,7 +149,7 @@ export interface Preferences {
   readonly spaces: Readonly<Record<string, Readonly<Partial<Record<PreferenceKey, string>>>>>;
 }
 
-const EMPTY: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: 0, defaults: {}, spaces: {} };
+const EMPTY: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: 0, defaults: {}, spaces: Object.create(null) };
 
 /** `<globalConfigDir()>/preferences.json`, private to its owner. */
 export function preferencesPath(): string {
@@ -206,7 +206,7 @@ function parsePreferences(text: string): Preferences {
     if (problem) throw invalid(`spaces: ${problem}`);
     checkScope(`spaces.${space}`, scope, true);
   }
-  return doc as Preferences;
+  return { ...(doc as Preferences), spaces: Object.assign(Object.create(null), spaces) };
 }
 
 /** Refuse a preferences file that is a symbolic link, as every private record's link is, naming its
@@ -336,7 +336,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
         remedy: "run the command again",
       });
     const defaults = { ...current.defaults };
-    const spaces: Record<string, Partial<Record<PreferenceKey, string>>> = { ...current.spaces };
+    const spaces: Record<string, Partial<Record<PreferenceKey, string>>> = Object.assign(Object.create(null), current.spaces);
     const target = scope.space === undefined ? defaults : { ...spaces[scope.space] };
     if (target[spec.key] === value) return { changed: false, revision: current.revision };
     if (value === undefined) delete target[spec.key];
@@ -377,7 +377,7 @@ export function removeSpacePreferences(space: string, expectedRevision: number):
       });
     const removed = { ...current.spaces[space] };
     if (!Object.keys(removed).length) return { removed, revision: current.revision };
-    const spaces: Record<string, Partial<Record<PreferenceKey, string>>> = { ...current.spaces };
+    const spaces: Record<string, Partial<Record<PreferenceKey, string>>> = Object.assign(Object.create(null), current.spaces);
     delete spaces[space];
     const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults: { ...current.defaults }, spaces };
     writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`);

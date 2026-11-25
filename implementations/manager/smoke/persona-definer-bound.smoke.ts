@@ -86,7 +86,7 @@ const until = async (cond: () => boolean, ms = 20_000) => {
   return cond();
 };
 
-type Reply = { ok: boolean; code?: string; message: string; data?: { name?: string } };
+type Reply = { ok: boolean; code?: string; outcome?: string; message: string; data?: { name?: string } };
 type Conn = Awaited<ReturnType<typeof connect>>;
 const conns: Conn[] = [];
 let mgr: InstanceType<typeof Manager> | undefined;
@@ -114,8 +114,8 @@ async function door(creds: string, who: IssuedCaller) {
   const call = async (command: string, args: Record<string, unknown>): Promise<Reply> => {
     try {
       const r = await invokeCommand(nc, space, svc, command, args, { deadlineMs: 20_000 });
-      const reply = (r as { reply?: { ok?: boolean; data?: { name?: string }; error?: { code?: string; message?: string } } }).reply;
-      return { ok: reply?.ok === true, code: reply?.error?.code, message: reply?.error?.message ?? "", data: reply?.data };
+      const reply = (r as { reply?: { ok?: boolean; data?: { name?: string }; error?: { code?: string; outcome?: string; message?: string } } }).reply;
+      return { ok: reply?.ok === true, code: reply?.error?.code, outcome: reply?.error?.outcome, message: reply?.error?.message ?? "", data: reply?.data };
     } catch (e) {
       const err = e as { code?: string; message?: string };
       return { ok: false, code: err.code, message: err.message ?? String(e) };
@@ -138,6 +138,10 @@ const reads = (acl: { sub: string[] } | undefined, ch: string) => acl !== undefi
 const posts = (acl: { pub: string[] } | undefined, ch: string) => acl !== undefined && acl.pub.some((s) => s.endsWith(`.${ch}`));
 const optsOf = (name: string) => launched.get(name)?.launchOptions;
 const frontmatter = (lines: string[]) => ["---", ...lines, "---", "You help."].join("\n");
+const noRead = { subscribe: [], allowSubscribe: [] };
+const noPost = { allowPublish: [] };
+const readRemedy = /`subscribe: \[\]` and `allowSubscribe: \[\]`/;
+const postRemedy = /`allowPublish: \[\]`/;
 
 try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
@@ -163,6 +167,12 @@ try {
   const readSpawn = await spawner.spawn("planted_read");
   const readSeat = readSpawn.ok ? await seat("planted_read") : undefined;
   check("so a wider spawner starts no child that reads the definer's planted channel", !readSpawn.ok && !reads(aclOf(readSeat), "secret"), { readSpawn, acl: aclOf(readSeat) });
+  const readFixed = await definer.define("planted_read", frontmatter(["subscribe: []", "allowSubscribe: [review, secret]"]), noRead);
+  check("the printed read override saves the definition without reads", readRemedy.test(plantedRead.message) && readFixed.ok && !loadAgentFile(file("planted_read")).allowSubscribe?.length, readFixed);
+  const postFixed = await definer.define("planted_post", "You help.", { subscribe: [], ...noPost });
+  check("the printed post override saves the definition without posts", postRemedy.test(plantedPost.message) && postFixed.ok && !loadAgentFile(file("planted_post")).allowPublish?.length, postFixed);
+  const subFixed = await definer.define("planted_sub", "You help.", noRead);
+  check("clearing both read fields also works when the startup list set the ACL", readRemedy.test(plantedSub.message) && subFixed.ok && !loadAgentFile(file("planted_sub")).subscribe?.length, subFixed);
 
   console.log("static mesh: a wire persona carries no launch options");
   const opts = await definer.define("planted_opts", frontmatter(["subscribe: [review]", "launchOptions:", "  add-dir: /planted", "  permission-mode: bypassPermissions"]));
@@ -205,7 +215,7 @@ try {
   const U = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: userRoot });
   const M = U as unknown as {
     userMode: boolean;
-    remoteAuthority?: unknown;
+    config: { remoteAuthority?: unknown };
     managerInstanceId: string;
     agents: Map<string, { name: string }>;
     opDefinePersona: (args: Record<string, unknown>, caller: string, admin: boolean) => Promise<ControlReply>;
@@ -229,6 +239,8 @@ try {
   const definerKey = principalKey(owner, "definer").key;
   const define = (who: string, name: string, args: Record<string, unknown>) => M.opDefinePersona({ name, persona: "You help.", ...args }, who, false);
   const refused = (r: ControlReply, part: RegExp) => r.ok === false && part.test(r.error ?? "");
+  const fixed = (refusal: ControlReply, part: RegExp, result: ControlReply) =>
+    refusal.outcome === "not-executed" && refused(refusal, part) && result.ok;
   check("control: the provider reads the definer's row", JSON.stringify(await cotalAuthProvider.actorScope({ dir: ledger, owner, actor: "definer" })) === JSON.stringify(["spawn"]));
 
   const within = await define(definerKey, "u_inside", { subscribe: ["review"], allowPublish: ["review"] });
@@ -239,8 +251,14 @@ try {
   const overPost = await define(definerKey, "u_post", { persona: frontmatter(["subscribe: []", "allowPublish: [secret]"]) });
   check("a post channel beyond the definer's row, from the prompt, is refused by name, writing nothing",
     refused(overPost, /allowPublish secret beyond \[review\]/) && !existsSync(file("u_post", userAgents)), overPost);
+  const userReadFixed = await define(definerKey, "u_read", noRead);
+  check("the printed read override works on a local user-auth manager", fixed(overRead, readRemedy, userReadFixed), userReadFixed);
+  const userPostFixed = await define(definerKey, "u_post", { persona: frontmatter(["subscribe: []", "allowPublish: [secret]"]), ...noPost });
+  check("the printed post override also replaces a prompt grant", fixed(overPost, postRemedy, userPostFixed), userPostFixed);
   const stranger = await define(principalKey(owner, "stranger").key, "u_stranger", { subscribe: ["review"] });
   check("a user-auth definer with no row puts no channel into a persona", refused(stranger, /has no grant in this space/) && !existsSync(file("u_stranger", userAgents)), stranger);
+  const strangerFixed = await define(principalKey(owner, "stranger").key, "u_stranger", noRead);
+  check("clearing reads saves content without a channel grant", fixed(stranger, readRemedy, strangerFixed), strangerFixed);
   const boss = await define(principalKey(owner, "boss").key, "u_boss", { subscribe: [], allowSubscribe: ["secret"] });
   check("a definer whose row holds admin is exempt", boss.ok && existsSync(file("u_boss", userAgents)), boss);
   const userOpts = await define(definerKey, "u_opts", { persona: frontmatter(["subscribe: [review]", "launchOptions:", "  add-dir: /planted"]) });
@@ -258,13 +276,18 @@ try {
   const resaved = await define(demoted, "u_saved", { persona: "New body." });
   check("a redefine that keeps a saved channel its definer no longer holds is refused, naming the saved list, writing nothing",
     saved.ok && refused(resaved, /allowSubscribe secret beyond \[review\].*`allowSubscribe` comes from the saved persona/) && loadAgentFile(file("u_saved", userAgents)).persona === "You help.", { saved, resaved });
+  const savedFixed = await define(demoted, "u_saved", { persona: "New body.", ...noRead });
+  check("the printed overrides clear an inherited read grant and allow redefine",
+    fixed(resaved, readRemedy, savedFixed) && loadAgentFile(file("u_saved", userAgents)).persona === "New body." && !loadAgentFile(file("u_saved", userAgents)).subscribe?.length, savedFixed);
 
-  M.remoteAuthority = {};
+  M.config.remoteAuthority = {};
   const hosted = await define(definerKey, "u_hosted", { subscribe: ["review"] });
   const hostedPlain = await define(definerKey, "u_hosted_plain", {});
-  M.remoteAuthority = undefined;
   check("a hosted manager reads no ledger, so its definer puts no channel into a persona", refused(hosted, /user authority is hosted/) && !existsSync(file("u_hosted", userAgents)), hosted);
   check("control: a hosted definer still saves a persona that names no channel", hostedPlain.ok, hostedPlain);
+  const hostedFixed = await define(definerKey, "u_hosted", { ...noRead, capabilities: [] });
+  check("the printed overrides work while authority is still hosted", fixed(hosted, readRemedy, hostedFixed), hostedFixed);
+  M.config.remoteAuthority = undefined;
 
   // The spawn is bounded against its own spawner by the ledger, for a file whatever its source.
   writeFileSync(file("u_wide", userAgents), "---\nname: u_wide\nsubscribe: []\nallowSubscribe: [secret]\n---\nbody\n");

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CommandFailure, serviceLoginRecovery, serviceLoginStores, spaceKey } from "@cotal-ai/workspace";
-import { loadIdpSession, saveIdpSession, type IdpSession } from "../src/login.js";
+import { loadIdpSession, requireIdpSession, saveIdpSession, type IdpSession } from "../src/login.js";
 import { clearSharedServiceSessions, refreshServiceSessions } from "../src/service-sessions.js";
 
 assert.equal(process.platform, "linux", "this smoke exercises Linux direct-unit discovery");
@@ -159,6 +159,24 @@ try {
   assert.ok(recovery.includes(custom) && recovery.includes("COTAL_HOME=") && recovery.includes(`cotal login --idp ${idp}`), "custom recovery names explicit store and login command");
   publicOnly(recovery);
   console.log("PASS hand-made custom unit excluded from auto writes with explicit-store login recovery");
+  if (process.getuid?.() !== 0) {
+    const inaccessible = join(root, "unreadable-session-parent");
+    privateDir(inaccessible);
+    const store = join(inaccessible, "store");
+    privateDir(store);
+    saveIdpSession(store, idp, approved);
+    chmodSync(inaccessible, 0o000);
+    try {
+      assert.equal(existsSync(join(store, "idp-sessions.json")), false, "native existence check hides inaccessible parent");
+      assert.throws(() => readFileSync(join(store, "idp-sessions.json")), (error: unknown) => (error as NodeJS.ErrnoException).code === "EACCES", "native read confirms permission denial");
+      assert.throws(() => requireIdpSession(store, idp), (error: unknown) => error instanceof Error && /EACCES/.test(error.message) && (error as { code?: string }).code !== "signed-out", "unreadable cache must not become missing credentials");
+    } finally { chmodSync(inaccessible, 0o700); }
+    assert.equal(requireIdpSession(store, idp).token, approved.token, "restored permissions recover the same session");
+  } else {
+    console.log("SKIP native EACCES session control requires an unprivileged user");
+  }
+  assert.throws(() => requireIdpSession(join(root, "absent-session-store"), idp), (error: unknown) => (error as { code?: string }).code === "signed-out", "confirmed ENOENT remains signed out");
+  console.log("PASS session absence remains distinct from unreadable session state");
 } finally {
   for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
   Object.assign(process.env, originalEnv);

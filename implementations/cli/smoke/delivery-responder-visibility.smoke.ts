@@ -133,7 +133,7 @@ try {
   releaseBroker = teardownOnSignal(broker, root);
   for (let i = 0; i < 120 && !(await portOpen(port)); i++) await sleep(50);
   check("fixture broker started", await portOpen(port));
-  const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open");
+  const add = cli("meshes", "add", SPACE, "--server", server, "--root", root, "--mode", "open", "--force");
   check("fixture mesh registered", add.status === 0, add.text);
 
   // ---------- the reported state: lease claimed, responder NOT bound ----------

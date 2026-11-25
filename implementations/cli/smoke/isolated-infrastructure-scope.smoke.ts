@@ -4,18 +4,9 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { infrastructureMaintenancePermissions, startIsolatedBroker } from "../src/lib/isolated-broker.js";
 import { endpointPlaneStreamNames, hardenedAuthorityStreamNames } from "@cotal-ai/core";
+import { createSuite } from "@cotal-ai/smoke-kit";
 
-let pass = 0;
-let fail = 0;
-const check = (name: string, condition: boolean, extra?: unknown) => {
-  if (condition) {
-    pass++;
-    console.log(`  ✓ ${name}`);
-  } else {
-    fail++;
-    console.log(`  ✗ FAIL: ${name}`, extra ?? "");
-  }
-};
+const { check, finish, passed, failed } = createSuite();
 
 const permissions = infrastructureMaintenancePermissions("SCOPE_TEST", ["EPJ_space", "KV_records_space", "EPJ_space"], ["KV_records_space", "KV_records_space"]);
 const allow = ((permissions as { pub?: { allow?: string[] } }).pub?.allow ?? []);
@@ -95,5 +86,5 @@ check("an invalid maintenance stream name is rejected", invalid.includes("invali
     refused.includes("did not become reachable") && elapsed < 30_000, { refused, elapsed });
 }
 
-console.log(`\nisolated infrastructure scope: ${pass} passed, ${fail} failed`);
-process.exitCode = fail === 0 ? 0 : 1;
+console.log(`\nisolated infrastructure scope: ${passed()} passed, ${failed()} failed`);
+finish();

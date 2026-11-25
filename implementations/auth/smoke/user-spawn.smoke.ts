@@ -88,6 +88,12 @@ type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
 type PsRow = { name: string; id: string; mesh: PresenceStatus | "absent"; pid?: number; authHealth?: "auth-renewal-failed" | "auth-unknown" | "auth-stale" };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
+type ResumeAgent = import("../../manager/dist/index.js").ManagerResumeAgent;
+const retainedSeat = (m: object) => m as {
+  agents: Map<string, unknown>;
+  resumeEntryOf: (seat: unknown) => ResumeAgent;
+  validateRetainedAuthority: (entry: ResumeAgent) => Promise<unknown>;
+};
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -182,10 +188,15 @@ const cliEnv = {
 };
 function cotal(args: string[], timeoutMs = 20_000): Promise<{ status: number | null; out: string; timedOut: boolean; launchError?: string }> {
   return new Promise((resolve) => {
-    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: cliEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(TSX, [CLI_BIN, ...args], { cwd: root, env: cliEnv, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let out = "";
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid !== undefined) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }, timeoutMs);
     child.stdout.on("data", (data: Buffer) => { out += data.toString(); });
     child.stderr.on("data", (data: Buffer) => { out += data.toString(); });
     child.on("error", (error) => { clearTimeout(timer); resolve({ status: null, out, timedOut, launchError: error.message }); });
@@ -555,12 +566,28 @@ try {
     alphaEnv.includes("COTAL_EVENTS=1") && alphaEnv.includes("COTAL_EVENTS_REQUIRED=1"), alphaEnv.filter((v) => v.startsWith("COTAL_EVENTS")));
   check("required policy adds the child's own event channel to its managed grant",
     alphaRow.allowPublish?.includes(alphaEvent) === true, alphaRow.allowPublish);
+  writeFileSync(join(root, ".cotal", "agents", "retained_scope.md"),
+    "---\nname: retained_scope\ncapabilities: [spawn, custom]\n---\nRetained scope fixture.\n");
+  const retainedSpawn = await manager.startAgent({ name: "retained_scope", agent: "e2e", owner: OWNER });
+  const heldSeat = retainedSeat(manager);
+  const seat = heldSeat.agents.get("retained_scope");
+  if (!retainedSpawn.ok || !seat) throw new Error(`retained scope fixture did not start: ${retainedSpawn.error}`);
+  const inventory = heldSeat.resumeEntryOf(seat);
+  const scopeRow = JSON.parse(readFileSync(rowFile("managed", OWNER, "retained_scope"), "utf8")) as { scope: string[] };
+  check("local user-mode provisioning records the granted scope and retains the persona capabilities",
+    scopeRow.scope.join(",") === "spawn" && inventory.launch.capabilities?.join(",") === "spawn,custom");
+  const validate = (entry: ResumeAgent) => heldSeat.validateRetainedAuthority(entry).then(() => undefined, (error: Error) => error.message);
+  const retainedError = await validate(inventory);
+  check("the local retained authority accepts the same effective scope", retainedError === undefined, retainedError);
+  const changedScope = await validate({ ...inventory, launch: { ...inventory.launch, capabilities: ["run", "custom"] } });
+  check("the local retained authority refuses a genuinely different inventory scope",
+    /no longer matches the inventory/.test(changedScope ?? ""), changedScope);
   const optedOutRequired = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER, events: false });
   check("required user-auth policy refuses events false by space name before provisioning",
     optedOutRequired.ok === false && (optedOutRequired.error ?? "").includes(SPACE) && /--no-events/.test(optedOutRequired.error ?? "") && !existsSync(rowFile("managed", OWNER, "beta")), optedOutRequired);
   // The remaining sections exercise explicit opt-outs and unrelated authorization paths. They predate
   // the required-policy scenario above, so return this in-process fixture to unrestricted behavior.
-  (manager as unknown as { eventsRequired: boolean }).eventsRequired = false;
+  (manager as unknown as { config: { eventsRequired: boolean } }).config.eventsRequired = false;
   const alphaToken = readFileSync(incFiles("alpha").actorToken, "utf8").trim(); // capture for D + F
   // Witness the presence join on the OPERATOR's OWN user bearer (login → exchange → connect), watching the roster.
   const opCreds = await cotalAuthProvider.userCredentials({ store, dir, space: SPACE, actor: "cli" });
@@ -979,9 +1006,13 @@ try {
   // use its real channel grant, include its own send and refuse a channel outside that grant.
   grantActor(dir, { ...cliRow0, scope: [] });
   try {
-  const narrowAttach = await cliResult(["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE]);
-  check("the shipped attach CLI reports permission denial after its actor loses spawn scope",
-    !narrowAttach.timedOut && narrowAttach.status !== null && narrowAttach.status !== 0 && /Code:\s+PERMISSION_DENIED/.test(narrowAttach.plain) && !/attached to alpha/.test(narrowAttach.plain), narrowAttach);
+  const attachArgs = ["attach", "--name", "alpha", "--no-reconnect", "--space", SPACE];
+  const narrowAttach = await cliResult(attachArgs, 12_000);
+  check("a person's sign-in still attaches to its own seat without spawn scope, and the smoke deadline closes the CLI's pipes",
+    narrowAttach.timedOut && /attached to alpha/.test(narrowAttach.plain), narrowAttach);
+  const deniedAttach = await cliResult([...attachArgs, "--on", mintLifecycleUid()]);
+  check("the shipped attach CLI exits with PERMISSION_DENIED when the auth service refuses its manager pin",
+    !deniedAttach.timedOut && deniedAttach.status === 2 && /Code:\s+PERMISSION_DENIED/.test(deniedAttach.plain) && !/attached to alpha/.test(deniedAttach.plain), deniedAttach);
   const nativeText = `narrow native history ${Date.now()}`;
   const postedHistory = await cliResult(["send", "-c", "general", nativeText, "--space", SPACE]);
   check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
@@ -1222,7 +1253,11 @@ try {
   // While the delivery daemon is absent, the manager's membership inventory challenge cannot
   // reach a responder. Lack of daemon NEVER proves empty storage: retirement stays held,
   // the name remains reserved pending retirement, and a same-name spawn is refused.
-  const mRetiring = (manager as unknown as { retiring: Map<string, { opId: string; target: { lifecycleUid: string }; lastError?: string }> }).retiring;
+  const mRetiring = (manager as unknown as {
+    retirement: {
+      retiring: Map<string, { opId: string; target: { lifecycleUid: string }; lastError?: string }>;
+    };
+  }).retirement.retiring;
   for (let i = 0; i < 50 && (!mRetiring.has("delta") || !mRetiring.get("delta")?.lastError); i++) await wait(100);
   check("absent delivery daemon holds retirement: delta is held in retiring with incomplete inventory",
     mRetiring.has("delta") && /membership inventory incomplete/i.test(mRetiring.get("delta")?.lastError ?? ""),
@@ -1245,7 +1280,11 @@ try {
   // still be in flight here. A re-drive joins an in-flight teardown of the same lifecycle instead of
   // starting another, so re-driving now would only rejoin the one whose inventory found no responder.
   // Let it settle first; the re-drive below then reads the inventory from the daemon that now serves.
-  const teardowns = (manager as unknown as { deprovisioningFlight: Map<string, Promise<void>> }).deprovisioningFlight;
+  const teardowns = (manager as unknown as {
+    retirement: {
+      deprovisioningFlight: Map<string, Promise<void>>;
+    };
+  }).retirement.deprovisioningFlight;
   await teardowns.get(JSON.stringify(["delta", deltaUid]))?.catch(() => {});
   await manager.startAgent({ name: "delta", agent: "e2e", events: false }).catch(() => {});
 
@@ -2016,7 +2055,7 @@ try {
   check("cell 4: admin explicit plane remains served with the own-channel grant",
     adminResult.reply.ok === true && adminRow?.allowPublish?.includes(eventChannel({ owner: OWNER, actor: "adminprobe" })) === true,
     { ok: adminResult.reply.ok, error: adminResult.reply.error?.message });
-  (participant as unknown as { eventsRequired: boolean }).eventsRequired = false;
+  (participant as unknown as { config: { eventsRequired: boolean } }).config.eventsRequired = false;
   // Observe the options entering the real provisioning method, not a stubbed success reply.
   // A u_-owner foreign caller is refused later by enrollment, so its notice never reaches the wire.
   const actualStart = participant.startAgent.bind(participant);
@@ -2043,9 +2082,8 @@ try {
   // Main adds three shared-Manager status cells; the redesign adds five focused CLI cells.
   // These combined expectations still require an actual integrated run.
   // 148 -> 151: D2's spawn and admin views also read ps.
-  // One CLI attach denial after the operator loses spawn scope.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 71 : 160;
+  const EXPECTED = endpointCliFocus ? 75 : 164;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

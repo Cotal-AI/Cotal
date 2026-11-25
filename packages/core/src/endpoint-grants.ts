@@ -13,10 +13,12 @@ import { spacePrefix } from "./subjects.js";
 import { epcStreamName } from "./endpoint-binding.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, assertBoundedOwner,
-  type EpCaller, type EpTarget,
+  type EpCaller, type EpTarget, type PrincipalAuthority,
   epCallerReplyFilter, epResponderReplyPattern, epResponderIssuedReplyPattern, epClassQueueGroup,
   epPlaneTokens, callerRailTokens, callerTokens, epGoalProgressGrantRow, EP_RAIL_V1,
+  EP_PRINCIPAL_ROUTE, EP_PRINCIPAL_REPLY_ROUTE, epPrincipalCallerReplyFilter,
 } from "./endpoint-subjects.js";
+import { AGENT_CLUSTER, AGENT_ENDPOINT } from "./agent-endpoint.js";
 
 /** A minted request capability: one endpoint command a caller may invoke, on the named rails.
  *  `routes` defaults to `["one"]`; `instanceId` additionally pins the instance form to exactly
@@ -203,8 +205,10 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-par
  *  detached resume needs the answer before it carries the session. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn", "resolve-agent"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
-/** The two commands that WRITE INTO a seat, granted ONLY into operator-authorized credentials
- *  (see the note above for why `input` is not in the spawn set; `turn` is the same authority
+/** The commands that WRITE INTO a seat, granted into operator-authorized credentials and never to an
+ *  agent; a person's own manager view holds `input` and `interrupt` in owner mode through
+ *  {@link PERSON_SEAT_COMMANDS} (see the note above for why `input` is not in the spawn set; `interrupt` writes one key into the
+ *  same terminal and rides with it, so it grants no agent new reach; `turn` is the same authority
  *  through a different door: a run's turn is a payload the seat is shown and works on, and the run
  *  driver submits it under its own operator instrument, so it rides the same placement). Both
  *  modes are minted here, unlike `despawn`/`attach`, whose owner-mode rows an operator inherits
@@ -214,7 +218,14 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  leave `cotal input`, and every run that turns a seat, broker-denied on exactly the mesh mode
  *  the feature is for. Measured: no profile carried a `turn` row at all until it joined this set,
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
-export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
+export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "interrupt", "turn"] as const);
+/** The commands a PERSON's own sign-in holds over every agent under their owner (SPEC 13.21): stop or
+ *  attach to one, type into it and interrupt it. A person controls their own agents whatever else
+ *  their grant says, so no scope token gates these. The rows ride owner mode pinned to the person's
+ *  own owner, and the auth callout mints them from the ledger row's kind, never from a scope token,
+ *  so a person cannot hand them to the agents they spawn. `turn` stays with the run driver's
+ *  operator instrument. */
+export const PERSON_SEAT_COMMANDS = Object.freeze(["despawn", "attach", "input", "interrupt"] as const);
 /** Untargeted manager endpoint additions for the `spawn` capability: persona writes, persona-catalog
  *  reads, per-agent inspection, and goal outcome reads. Each command's responder enforces its
  *  caller scope. */
@@ -318,6 +329,7 @@ const SELF_LIFECYCLE_SNAP = Object.freeze([...BASELINE_SELF_LIFECYCLE_COMMANDS])
 const SPAWN_CREATE_SNAP = Object.freeze([...SPAWN_CREATE_COMMANDS]);
 const SPAWN_OWNER_SNAP = Object.freeze([...SPAWN_OWNER_LIFECYCLE_COMMANDS]);
 const OPERATOR_SEAT_SNAP = Object.freeze([...OPERATOR_SEAT_COMMANDS]);
+const PERSON_SEAT_SNAP = Object.freeze([...PERSON_SEAT_COMMANDS]);
 const SPAWN_SERVICE_SNAP = Object.freeze([...SPAWN_SERVICE_COMMANDS]);
 const RUN_WRITE_SNAP = Object.freeze([...RUN_WRITE_COMMANDS]);
 const RUN_READ_SNAP = Object.freeze([...RUN_READ_COMMANDS]);
@@ -362,6 +374,15 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
   ];
 }
 
+/** A person's owner-mode control of the agents under their own owner ({@link PERSON_SEAT_COMMANDS}).
+ *  `tOwner` is the person's own owner, never a wildcard (§13.2). */
+export function personSeatCapabilities(owner: string): EpCapability[] {
+  return PERSON_SEAT_SNAP.map((command) => ({
+    endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
+    target: { mode: "owner", tOwner: owner } as EpTarget,
+  }));
+}
+
 /** The `run` capability's addition (SPEC 14.3): the seven `run-*` commands PLUS the
  *  whole spawn set. The implication is deliberate and one-way: a program is free to `spawn`, so a
  *  caller that may start one must hold what the program's spawns need, and the manager checks
@@ -384,7 +405,7 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
- *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the
+ *  (tOwner `"*"`), BOTH modes of `input` (which no agent credential holds), and the
  *  `manager.admin` command family. The 1c admin-reach decision: operator
  *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
  *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the
@@ -413,6 +434,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // through the class rail, and this instrument is pinned and one-shot.
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "list-dir" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "harness-commands" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
@@ -580,4 +602,74 @@ export function epServeGrantRows(
   const pub = epServePublishRows(space, serve.endpoint, serve.instanceId, serve.epoch); // validates the tuple's tokens + epoch
   sub.push(`${spacePrefix(space)}.ept.${endpointToken(serve.endpoint)}.${assertLifecycleToken(serve.instanceId, "instanceId")}.${serve.epoch}.*.fire`);
   return { pub, sub };
+}
+
+// ---- the principal route (SPEC 13.21) ------------------------------------------------------------
+
+// PRIVATE module-load snapshot of the agent cluster's (command, word) pairs. The row builders below
+// read only this, so no row can name a command or a word the cluster constant does not admit, and a
+// post-import mutation of an export cannot widen what they build. `describe` is reserved, served by
+// the machinery, and admits every word.
+const PRINCIPAL_COMMANDS: ReadonlyMap<PrincipalAuthority, readonly string[]> = new Map(
+  (["owner", "grant"] as const).map((word) => [word, Object.freeze(["describe", ...AGENT_CLUSTER.commands.filter((c) => c.authorities?.includes(word)).map((c) => c.name)])]),
+);
+
+/** The commands of the `agent` endpoint a caller may name with `word`: `describe` and every command
+ *  whose declaration admits it. */
+export function principalRouteCommands(word: PrincipalAuthority): readonly string[] {
+  const commands = PRINCIPAL_COMMANDS.get(word);
+  if (commands === undefined) throw new Error(`"${word}" is not a principal-route authority word`);
+  return commands;
+}
+
+/** The rows a principal holds to serve its own `agent` endpoint (SPEC 13.21): subscribe its own
+ *  head for every runtime of its lifecycle, and publish replies under that head only. The runtime id
+ *  is not known at mint, so it is the one spanned head token. */
+export function epPrincipalServeGrantRows(space: string, self: EpCaller): { pub: string[]; sub: string[] } {
+  const head = `${AGENT_ENDPOINT}.${callerTokens(self).join(".")}`;
+  return {
+    sub: [`${spacePrefix(space)}.ep.${EP_PRINCIPAL_ROUTE}.${head}.*.*.*.*.*.*.*`],
+    pub: [`${spacePrefix(space)}.ep.${EP_PRINCIPAL_REPLY_ROUTE}.${head}.*.*.*.*.*`],
+  };
+}
+
+/** The `owner` rows of an interactive principal (SPEC 13.21): one publish row per command the
+ *  `agent` cluster admits with `owner`, with the head's owner pinned to the caller's own owner and
+ *  never wildcarded, and the reply read. */
+export function epPrincipalOwnerGrantRows(space: string, caller: EpCaller): { pub: string[]; sub: string[] } {
+  const c = callerTokens(caller);
+  return {
+    pub: principalRouteCommands("owner").map((cmd) =>
+      `${spacePrefix(space)}.ep.${EP_PRINCIPAL_ROUTE}.${AGENT_ENDPOINT}.${c[0]}.*.*.*.${cmd}.owner.${c.join(".")}.*`),
+    sub: [epPrincipalCallerReplyFilter(space, caller)],
+  };
+}
+
+/** The `grant` rows of one grantee lifecycle for one target lifecycle (SPEC 13.21): one publish row
+ *  per named command, the target's principal and lifecycle literal, and the reply read. Refuses a
+ *  target that is the grantee's own principal, since an agent never answers its own prompt, and a
+ *  command the cluster does not admit with `grant`. Issuing a grant is separate work: this builds
+ *  the rows a grant would carry. */
+export function epPrincipalGrantRows(
+  space: string,
+  grantee: EpCaller,
+  target: { owner: string; actor: string; uid: string },
+  commands: readonly string[],
+): { pub: string[]; sub: string[] } {
+  const g = callerTokens(grantee).join(".");
+  const t = callerTokens(target);
+  if (target.owner === grantee.owner && target.actor === grantee.actor)
+    throw new Error(`a grant row whose target ${target.owner}.${target.actor} is the grantee itself is refused: an agent never answers its own prompt (SPEC 13.21)`);
+  if (commands.length === 0) throw new Error("a grant names at least one command");
+  const admitted = principalRouteCommands("grant");
+  const seen = new Set<string>();
+  for (const cmd of commands) {
+    if (!admitted.includes(cmd)) throw new Error(`command "${cmd}" is not one the agent endpoint admits with "grant"`);
+    if (seen.has(cmd)) throw new Error(`command "${cmd}" is named twice`);
+    seen.add(cmd);
+  }
+  return {
+    pub: commands.map((cmd) => `${spacePrefix(space)}.ep.${EP_PRINCIPAL_ROUTE}.${AGENT_ENDPOINT}.${t.join(".")}.*.${cmd}.grant.${g}.*`),
+    sub: [epPrincipalCallerReplyFilter(space, grantee)],
+  };
 }

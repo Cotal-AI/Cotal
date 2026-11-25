@@ -3,10 +3,11 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realDirNoSymlink, registry, resolveAuthProvider, type AuthProvider } from "@cotal-ai/core";
 import {
   BROKER_AUTH_KEY, SPACE_AUTH_KEY, CommandFailure, DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND, WEB_CREDS_KIND, agentSecretKeysUnder,
-  getSpaceAuth, meshesForRoot, resolveSpace, segmentedKey, spaceAccountKey, spaceFromSegment, spaceSegment,
+  authDir, getSpaceAuth, meshesForRoot, resolveSpace, segmentedKey, soleSpaceOf, spaceAccountKey, spaceFromSegment, spaceSegment,
   workspaceSecretStore,
 } from "@cotal-ai/workspace";
 import { localIdentityCleanupTargets, type ReviewedIdentityCleanup } from "../commands/clean.js";
+import { retainedOpenSpace } from "./legacy-start.js";
 
 interface PathObservation {
   path: string;
@@ -17,6 +18,7 @@ interface PathObservation {
 export interface ResetSpaceIdentityPlan {
   root: string;
   space: string;
+  mode: "open" | "auth" | "user";
   controlIdentity: string;
   paths: readonly PathObservation[];
   provider: AuthProvider | null;
@@ -76,13 +78,14 @@ function observePaths(root: string, space: string, inputs: readonly string[]): P
   return [...rows.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
 
-function scope(root: string, space: string, provider: AuthProvider | null) {
+function scope(root: string, space: string, mode: ResetSpaceIdentityPlan["mode"], provider: AuthProvider | null) {
   const controlDirectory = realDirNoSymlink(root, ".cotal");
   if (!controlDirectory || process.getuid === undefined) throw new Error("identity cleanup needs an owned local control directory");
   const controlStat = lstatSync(controlDirectory, { bigint: true });
   if (controlStat.uid !== BigInt(process.getuid()) || (controlStat.mode & 0o022n) !== 0n) throw new Error("identity cleanup control directory is not exclusively writable by its owner");
   realDirNoSymlink(root, ".cotal", "auth", "creds");
-  if (resolveSpace(root) !== space || meshesForRoot(root).some((mesh) => mesh.space !== space)) throw new Error("identity cleanup cannot attribute this entire root to the named space");
+  const owner = mode === "open" ? soleSpaceOf(authDir(root)) ?? retainedOpenSpace(root) ?? resolveSpace(root) : resolveSpace(root);
+  if (owner !== space || meshesForRoot(root).some((mesh) => mesh.space !== space)) throw new Error("identity cleanup cannot attribute this entire root to the named space");
   const control = join(root, ".cotal"), targets = localIdentityCleanupTargets(root, space);
   const providerKeys = provider?.deprovisionSecretKeys?.(space);
   if (provider && !providerKeys || providerKeys && (providerKeys.length > 1000 || new Set(providerKeys).size !== providerKeys.length)) throw new Error("auth provider has no complete bounded cleanup key declaration");
@@ -106,19 +109,19 @@ function scope(root: string, space: string, provider: AuthProvider | null) {
 
 /** A complete bounded inventory of the native clean-all filesystem composition, not hosted data.
  * Provider declarations are read without executing their deletion hooks. */
-export async function planResetSpaceIdentity(root: string, space: string, mode: "open" | "auth" | "user"): Promise<ResetSpaceIdentityPlan> {
+export async function planResetSpaceIdentity(root: string, space: string, mode: ResetSpaceIdentityPlan["mode"]): Promise<ResetSpaceIdentityPlan> {
   try {
     const registered = registry.all<AuthProvider>("auth-provider");
     const provider = registered.length ? resolveAuthProvider() : null;
     if (mode === "user" && !provider) throw new Error("local user-auth reset needs its native provider");
-    const planned = scope(root, space, provider);
+    const planned = scope(root, space, mode, provider);
     const before = observePaths(root, space, planned.paths);
     if (mode === "open" && [spaceAccountKey(space), BROKER_AUTH_KEY, SPACE_AUTH_KEY].some((key) => before.some((row) => row.path === join(".cotal", key) && row.kind !== "absent"))) throw new Error("open registration retains unvalidated signing authority");
     const trust = await getSpaceAuth(workspaceSecretStore(root), space);
     if (mode === "open" ? trust !== undefined : trust === undefined) throw new Error("registered authentication mode and local full trust disagree");
     const after = observePaths(root, space, planned.paths);
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("identity paths changed while trust was validated");
-    return { root, space, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys, accountPub: trust?.account.pub };
+    return { root, space, mode, controlIdentity: planned.controlIdentity, paths: after, provider, providerKeys: planned.providerKeys, agentKeys: planned.agentKeys, secretKeys: planned.secretKeys, accountPub: trust?.account.pub };
   } catch (error) {
     // A refusal about one path names it and what is wrong with it, so the reader can act.
     if (error instanceof ScopePathRefusal) {
@@ -132,7 +135,7 @@ export async function planResetSpaceIdentity(root: string, space: string, mode: 
 export function recheckResetSpaceIdentity(plan: ResetSpaceIdentityPlan): void {
   const currentProvider = registry.all<AuthProvider>("auth-provider").length ? resolveAuthProvider() : null;
   if (currentProvider !== plan.provider) throw new Error("auth cleanup provider changed");
-  const current = scope(plan.root, plan.space, currentProvider);
+  const current = scope(plan.root, plan.space, plan.mode, currentProvider);
   if (current.controlIdentity !== plan.controlIdentity || JSON.stringify(current.providerKeys) !== JSON.stringify(plan.providerKeys) || JSON.stringify(observePaths(plan.root, plan.space, current.paths)) !== JSON.stringify(plan.paths)) throw new Error("reviewed identity scope changed");
 }
 
@@ -180,7 +183,7 @@ export function reviewedResetIdentityCleanup(plan: ResetSpaceIdentityPlan, onSec
 }
 
 export function resetSpaceIdentityProjection(plan: ResetSpaceIdentityPlan) {
-  return { provider: plan.provider?.name ?? null, providerKeyCount: plan.providerKeys.length, paths: plan.paths.map(({ path, kind }) => ({ path, state: kind })), trust: "validated-native-local-chain" as const };
+  return { provider: plan.provider?.name ?? null, providerKeyCount: plan.providerKeys.length, paths: plan.paths.map(({ path, kind }) => ({ path, state: kind })), trust: plan.mode === "open" ? "absent-open-space" as const : "validated-native-local-chain" as const };
 }
 
 export function assertResetIdentityRemoved(plan: ResetSpaceIdentityPlan): void {

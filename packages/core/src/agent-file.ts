@@ -31,8 +31,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
 import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
-import { utf16Problem } from "./text-encoding.js";
-import { assertValidChannel, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { utf16Problem, utf8Problem } from "./text-encoding.js";
+import { assertValidChannel, assertValidRole, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 import { assertBoundedOwner } from "./endpoint-subjects.js";
 import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
@@ -124,7 +124,7 @@ function parseFrontmatter(src: string, path: string): Record<string, unknown> {
 }
 
 /** The frontmatter fence {@link loadAgentFile} and a frontmattered `cotal_persona` prompt share. */
-const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
+const AGENT_FILE_FENCE = /^---(?:\n([\s\S]*?))?\n---[ \t]*(?:\n|$)([\s\S]*)$/;
 
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
@@ -157,40 +157,49 @@ export function assertValidKind(kind: unknown, where?: string): EndpointKind {
   );
 }
 
-/** Load and parse an agent definition file (Markdown + `---` frontmatter). */
-export function loadAgentFile(path: string): AgentDef {
-  return parseAgentFileSource(readFileSync(path, "utf8"), path);
+/** Load and parse an agent definition file (Markdown + `---` frontmatter). A consumer that
+ *  validates the effective role after applying its own overrides can defer role syntax checking. */
+export function loadAgentFile(path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
+  const bytes = readFileSync(path);
+  const source = bytes.toString("utf8");
+  const encoding = utf8Problem(bytes, source);
+  if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
+  return parseAgentFileSource(source, path, options);
 }
 
 /** Parse an agent-file document already in memory. `path` is only for error text. A leading UTF-8
  *  BOM and CRLF line endings, as Windows editors and git's `core.autocrlf` write them, read as LF. A
  *  file saved as UTF-16 is refused by its encoding (see {@link utf16Problem}). */
-export function parseAgentFileSource(src: string, path: string): AgentDef {
+export function parseAgentFileSource(src: string, path: string, options?: { deferRoleValidation?: boolean }): AgentDef {
   const encoding = utf16Problem(src);
   if (encoding) throw new Error(`agent file ${path}: ${encoding}; save it as UTF-8`);
-  const m = AGENT_FILE_FENCE.exec(src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n"));
-  if (!m) throw new Error(`agent file ${path}: missing "---" frontmatter block`);
-  const fm = parseFrontmatter(m[1], path);
+  const normalized = src.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+  const m = AGENT_FILE_FENCE.exec(normalized);
+  if (!m) throw new Error(`agent file ${path}: ${normalized.startsWith("---\n") ? 'missing closing "---" frontmatter fence on its own line' : 'missing "---" frontmatter block'}`);
+  const fm = parseFrontmatter(m[1] ?? "", path);
   const persona = m[2].trim();
 
+  const yamlType = (v: unknown): string => v === null ? "null" : Array.isArray(v) ? "array" : typeof v === "object" ? "mapping" : typeof v;
   const str = (k: string): string | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    if (typeof v === "object") throw new Error(`agent file ${path}: "${k}" must be a scalar`);
-    return String(v);
+    if (v === undefined) return undefined;
+    if (typeof v !== "string") throw new Error(`agent file ${path}: "${k}" must be a string; got ${yamlType(v)}`);
+    return v;
   };
   const list = (k: string): string[] | undefined => {
     const v = fm[k];
-    if (v === undefined || v === null) return undefined;
-    return (Array.isArray(v) ? v : [v]).map((x) => {
-      if (x === null || typeof x === "object") throw new Error(`agent file ${path}: "${k}" list items must be scalars`);
-      return String(x);
+    if (v === undefined) return undefined;
+    if (!Array.isArray(v)) throw new Error(`agent file ${path}: "${k}" must be an array of strings; got ${yamlType(v)}`);
+    return v.map((x, index) => {
+      if (typeof x !== "string") throw new Error(`agent file ${path}: "${k}" must be an array of strings; item ${index} got ${yamlType(x)}`);
+      return x;
     });
   };
 
   const name = str("name");
   if (!name) throw new Error(`agent file ${path}: "name" is required`);
   assertValidName(name);
+  const agent = str("agent");
   const model = str("model");
   const variant = str("variant");
   assertLaunchSelectors({ model, variant }, `agent file ${path}`);
@@ -217,14 +226,16 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const allowPublish = list("allowPublish");
   const quiet = list("quiet");
   const muted = list("muted");
-  // Reject channel names the wire layer would silently rewrite — a policy name must equal its wire
-  // token, or the ACL aliases (see assertValidChannel). Covers all three scope fields.
-  for (const ch of [...(subscribe ?? []), ...(allowSubscribe ?? []), ...(allowPublish ?? [])])
+  // A policy channel must match its wire token so the ACL cannot grant access to a different channel.
+  const checkChannel = (field: string, ch: string): void => {
     try {
       assertValidChannel(ch);
     } catch (e) {
-      throw new Error(`agent file ${path}: ${(e as Error).message}`);
+      throw new Error(`agent file ${path}: "${field}": ${(e as Error).message}`);
     }
+  };
+  for (const [field, chans] of [["subscribe", subscribe], ["allowSubscribe", allowSubscribe], ["allowPublish", allowPublish]] as const)
+    for (const ch of chans ?? []) checkChannel(field, ch);
   // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
   // subscribe ⇒ NOTHING; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
   // An omitted or empty read set means NO channels, not `general`: a file that names no channel
@@ -246,11 +257,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     throw new Error(`agent file ${path}: channel(s) [${both.join(", ")}] are in both quiet and muted - pick one`);
   for (const [field, chans] of [["quiet", quiet], ["muted", muted]] as const)
     for (const ch of chans ?? []) {
-      try {
-        assertValidChannel(ch);
-      } catch (e) {
-        throw new Error(`agent file ${path}: ${(e as Error).message}`);
-      }
+      checkChannel(field, ch);
       if (!isConcreteChannel(ch))
         throw new Error(`agent file ${path}: ${field} channel "${ch}" must be a concrete channel (no wildcard)`);
       if (!channelInAllow(effAllow, ch))
@@ -263,11 +270,18 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     throw new Error(`agent file ${path}: "eventPayloads" must be a boolean`);
   const launchOptionsRaw = fm["launchOptions"];
   let launchOptions: Record<string, unknown> | undefined;
-  if (launchOptionsRaw !== undefined && launchOptionsRaw !== null) {
-    if (typeof launchOptionsRaw !== "object" || Array.isArray(launchOptionsRaw))
+  if (launchOptionsRaw !== undefined) {
+    if (launchOptionsRaw === null || typeof launchOptionsRaw !== "object" || Array.isArray(launchOptionsRaw))
       throw new Error(`agent file ${path}: "launchOptions" must be a mapping of key: value pairs`);
     launchOptions = launchOptionsRaw as Record<string, unknown>;
   }
+  const role = str("role");
+  if (role !== undefined && !options?.deferRoleValidation) {
+    try { assertValidRole(role); }
+    catch { throw new Error(`agent file ${path}: "role" must be a single token using letters, digits, underscores or hyphens`); }
+  }
+  if (fm.endpoints === null)
+    throw new Error(`agent file ${path}: "endpoints" must be a list, not null. Remove the key or supply a list such as endpoints: []`);
 
   // Sweep every scalar frontmatter key we don't model into meta, verbatim — connector launcher
   // hints ride here so core stays ignorant of surface-specific keys.
@@ -276,11 +290,11 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
   return {
     name,
-    role: str("role"),
+    role,
     kind,
     description: str("description"),
     tags: list("tags"),
-    agent: str("agent"),
+    agent: agent?.trim() ? agent : undefined,
     subscribe,
     allowSubscribe,
     allowPublish,
@@ -513,15 +527,14 @@ export function agentFilePath(root: string, nameOrPath: string): string {
 
 /** One local persona catalog entry. A malformed file is an error row, not a throw. */
 export interface PersonaCatalogEntry {
-  /** The filename stem (`.cotal/agents/<name>.md`), which is also the spawn name. */
+  /** The catalog selector, taken from the filename stem in `.cotal/agents/<name>.md`. */
   name: string;
   path: string;
   /** Parsed definition, or undefined when the file failed to parse (see `error`). */
   def?: AgentDef;
-  /** Parse error message, if the file is malformed — surfaced rather than crashing the list. */
+  /** Why the selector or file cannot be used. */
   error?: string;
-  /** Why the file cannot be read when it was saved as UTF-16: the one parse reason that quotes nothing
-   *  from the file, so a list that keeps `error` private can still name it. */
+  /** The encoding problem when the file is not valid UTF-8. */
   encoding?: string;
   /** Set when the file is not a regular file, such as a FIFO, so it was not opened (see `error`). */
   notRegular?: true;
@@ -562,12 +575,16 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
     accessSync(dir, constants.X_OK);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" && !lstatSync(dir, { throwIfNoEntry: false })) return [];
     throw e;
   }
   return files.sort().map((f) => {
     const name = f.slice(0, -3);
     const path = join(dir, f);
+    if (!name.trim()) return {
+      name, path,
+      error: `persona filename has a blank stem: ${path}. Rename the file or launch it with \`cotal spawn --file <persona.md>\`.`,
+    };
     const link = personaLinkTarget(path);
     try {
       // A FIFO or a device would block the read, so only a regular file is opened. A link is
@@ -576,7 +593,10 @@ export function readPersonaCatalog(root: string): PersonaCatalogEntry[] {
       return { name, path, def: loadAgentFile(path), ...(link !== undefined ? { link } : {}) };
     } catch (e) {
       let encoding: string | undefined;
-      try { encoding = utf16Problem(readFileSync(path, "utf8")); } catch { /* unreadable: `error` says so */ }
+      try {
+        const bytes = readFileSync(path);
+        encoding = utf8Problem(bytes, bytes.toString("utf8"));
+      } catch { /* unreadable: `error` says so */ }
       return { name, path, error: (e as Error).message, ...(encoding ? { encoding } : {}), ...(link !== undefined ? { link } : {}) };
     }
   });
@@ -639,8 +659,9 @@ export function firstFreeName(base: string, taken: (name: string) => boolean, op
  *  name (the manager's spawn ref, identity, roster entry and persona-define; the CLI's `--name`).
  *
  *  Two constraints, and they are not the same constraint:
- *   - ALWAYS: the name becomes a `.cotal/agents/<name>.md` path, so it must be a bare token and
- *     never a path — this is the traversal guard, and it holds in every mode.
+ *   - ALWAYS: the name becomes a `.cotal/agents/<name>.md` path and a CLI positional/flag target,
+ *     so it must be a bare token without a leading `-`, never a path, and within {@link assertValidName}'s
+ *     128-character transport bound in every mode.
  *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must be one the exchange can
  *     serve: the principal grammar (no `-`) AND the 64-character rail bound. Static/open mode keys
  *     the actor on the freshly minted nkey instead of the name, so the narrow rule does not apply
@@ -655,6 +676,13 @@ export function firstFreeName(base: string, taken: (name: string) => boolean, op
 export function spawnNameError(name: string, opts: { userMode: boolean }): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name))
     return `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;
+  if (name.startsWith("-"))
+    return `name ${JSON.stringify(name)} cannot start with "-" (choose a name that starts with a letter, digit or _)`;
+  try {
+    assertValidName(name);
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
   if (!opts.userMode) return undefined;
   try {
     assertBoundedOwner(name, "actor");

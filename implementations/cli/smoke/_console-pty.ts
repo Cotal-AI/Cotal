@@ -8,7 +8,7 @@
  *
  * Every session starts node itself with tsx's loader, so the same argv runs the binary under a
  * Linux or macOS pty and under Windows ConPTY. The `.bin/tsx` shim is a shell script on POSIX and a
- * `.cmd` file on Windows, and a pty runs one executable, not a shell.
+ * `.cmd` file on Windows. Only the POSIX stdin-redirection case needs a shell before execing Node.
  */
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -38,13 +38,19 @@ export interface PtyOptions {
   env: Record<string, string>;
   cols?: number;
   rows?: number;
+  /** POSIX only: detach stdin from the pty while leaving stdout and stderr on it. */
+  redirectStdin?: boolean;
   /** The terminal name, which the child sees as `TERM`. */
   name?: string;
 }
 
 /** Run node under a real pty with tsx's loader registered, so `args` may name a `.ts` entry. */
 export function nodePty(args: string[], opts: PtyOptions): Pty {
-  return ptySpawn(process.execPath, ["--import", TSX_LOADER, ...args], {
+  const nodeArgs = ["--import", TSX_LOADER, ...args];
+  const [file, ...argv]: [string, ...string[]] = opts.redirectStdin
+    ? ["/bin/sh", "-c", 'exec "$0" "$@" </dev/null', process.execPath, ...nodeArgs]
+    : [process.execPath, ...nodeArgs];
+  return ptySpawn(file, argv, {
     name: opts.name ?? "xterm-256color",
     cols: opts.cols ?? 120,
     rows: opts.rows ?? 32,
@@ -91,11 +97,11 @@ export class ConsoleSession {
   out = "";
   exited: { code: number } | undefined;
   private readonly p: Pty;
-  constructor(args: string[], home: string, extraEnv: Record<string, string> = {}, size = { cols: 120, rows: 32 }) {
+  constructor(args: string[], home: string, extraEnv: Record<string, string> = {}, options: { cols: number; rows: number; cwd?: string } = { cols: 120, rows: 32 }) {
     this.p = cotalPty(["console", ...args], {
-      cols: size.cols,
-      rows: size.rows,
-      cwd: repoRoot,
+      cols: options.cols,
+      rows: options.rows,
+      cwd: options.cwd ?? repoRoot,
       // XDG_CONFIG_HOME isolates the seed engine's config-rooted store into the suite's own temp
       // home (COTAL_HOME does not relocate it). These are console feature smokes, not seed smokes,
       // so skip reconciliation entirely: cold extension seeding is covered by its own suite and can
@@ -205,9 +211,10 @@ export class ConsoleSession {
     return clean(this.out.slice(from)).includes("Enter sends");
   }
   /** `q`, then wait for the exit; true iff the console exited 0. */
-  async quit(): Promise<boolean> {
+  async quit(timeoutMs = 5_000): Promise<boolean> {
     this.write("q");
-    for (let i = 0; i < 50 && !this.exited; i++) await wait(100);
+    const deadline = Date.now() + timeoutMs;
+    while (!this.exited && Date.now() < deadline) await wait(100);
     return this.exited?.code === 0;
   }
   async close(): Promise<void> {

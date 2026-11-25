@@ -282,7 +282,7 @@ registry.register(recNoResumeCon);
   // the forked session, not a special resume-only launch shape.
   {
     const a = cArgs({ ...base, prompt: "hello mesh", resume: "sess-p" });
-    check("claude: prompt+resume → prompt is the leading positional", a[0] === "hello mesh", a[0]);
+    check("claude: prompt+resume → prompt is the leading positional", a[0] === " hello mesh", a[0]);
     check("claude: prompt+resume → --resume still emitted", a.includes("--resume"), a);
     check("claude: prompt+resume → --fork-session still emitted", a.includes("--fork-session"), a);
   }
@@ -463,6 +463,36 @@ for (const probe of [
       : logs.some((line) => line.includes(probe.name) && line.includes(reason)), logs);
 }
 
+// Claude Code refuses the connector's `--plugin-dir` under an org's `disableSideloadFlags` with one
+// long line that names its cause first, then exits 1 (2.1.330's text, verbatim). The real Claude
+// connector and pty runtime launch a fake `claude` that does the same, and the spawn reply must carry
+// that whole line. POSIX only: the fake is a shebang script.
+if (!onWin) {
+  const REFUSAL = "--plugin-dir is disabled by your organization's managed settings (disableSideloadFlags). Plugins, custom agents, and MCP servers can only be loaded from sources your administrator has approved. Ask your administrator to remove disableSideloadFlags from managed settings, or use an approved marketplace / settings file instead.";
+  const sandbox = mkdtempSync(join(tmpdir(), "cotal-start-sideload-"));
+  const bin = join(sandbox, "bin");
+  const claudeConfig = join(sandbox, "claude-config");
+  const cwd = join(sandbox, "workspace");
+  for (const dir of [bin, claudeConfig, cwd]) mkdirSync(dir);
+  writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { cotal: { command: "node" } } }));
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif (process.argv.includes("--plugin-dir")) { process.stderr.write(${JSON.stringify(`${REFUSAL}\n`)}); process.exit(1); }\nprocess.exit(2);\n`, { mode: 0o700 });
+  writeFileSync(join(agentsDir, "sideload1.md"), "---\nname: sideload1\n---\n");
+  const saved = { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+  process.env.CLAUDE_CONFIG_DIR = claudeConfig;
+  const real = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
+  (real as unknown as { ep: unknown }).ep = fakeEp({}, () => [], real); // nobody joins, so only the exit settles it
+  let reply: { ok: boolean; error?: string };
+  try {
+    reply = await real.startAgent({ name: "sideload1", agent: "claude", cwd, events: false });
+  } finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+  check("sideload refusal: the launch fails as an exit", !reply.ok && /sideload1 exited on launch/.test(reply.error ?? ""), reply);
+  check("sideload refusal: the reply carries Claude's whole reason", (reply.error ?? "").includes(REFUSAL), reply.error);
+  check("sideload refusal: leaves no live agent", agentCount(real) === 0, agentCount(real));
+}
+
 // The same diagnostic must survive a connector refusing its supervised relaunch.
 {
   const name = "tail-restart";
@@ -627,7 +657,7 @@ for (const probe of [
 {
   const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
   (mgr as unknown as { ep: unknown }).ep = fakeEp({}, () => [], mgr); // roster reports nobody → never "joins"
-  (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 40;
+  (mgr as unknown as { config: { readinessTimeoutMs: number } }).config.readinessTimeoutMs = 40;
   (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
     kind: "fake",
     spawn: (name) => ({ name, kind: "fake", status: () => "running", stop: () => {}, interrupt: () => {}, attach: () => fakeSession }),
