@@ -71,7 +71,7 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { client, methods, ndJsonStream, PROTOCOL_VERSION, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
+import { client, methods, ndJsonStream, PROTOCOL_VERSION, type McpServerStdio, type NewSessionResponse, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { agentPromptDigest, assertValidOwnerToken, type AgentPrompt, type PromptContent, type PromptSummary } from "@cotal-ai/core";
 import { cotalAgent, defaultName, type HiddenSessions, type ThreadLink, type ThreadLinks } from "../src/agent.js";
 import { MAX_CHOICES } from "../src/options.js";
@@ -1223,8 +1223,10 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   const setThread = (t: { title: string; failRead?: string }, file = state, threadId = "t3-thread-1") => writeFileSync(file, JSON.stringify({ threadId, ...t }));
   setThread({ title: "New thread" });
   const fixture = fileURLToPath(new URL("./fake-thread-server.mjs", import.meta.url));
-  const server = (name: string, env: Record<string, string>, tools?: string) =>
+  const server = (name: string, env: Record<string, string>, tools?: string): McpServerStdio =>
     ({ name, command: process.execPath, args: tools ? [fixture, tools] : [fixture], env: Object.entries(env).map(([key, value]) => ({ name: key, value })) });
+  // With servers in the list the SDK types session/new's answer as unknown, so it is typed here.
+  const newThread = (mcpServers: McpServerStdio[]) => c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers }) as Promise<NewSessionResponse>;
   const servers = (calls: string, file = state) =>
     [server("other", { THREAD_STATE: file, THREAD_CALLS: at("other-calls.jsonl") }, "t3_thread_read"), server("t3-code", { THREAD_STATE: file, THREAD_CALLS: calls })];
   type Event = { start?: string[]; list?: true; tool?: string; args?: { title?: string } };
@@ -1243,7 +1245,7 @@ for (const others of [["m2"], ["m2", "m3"]]) {
     return done();
   };
   const calls = at("thread-calls.jsonl");
-  const s = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: servers(calls) });
+  const s = await newThread(servers(calls));
   const said = (): string => c.updates.filter((u) => u.sessionId === s.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => (u.update as { content: { text: string } }).content.text).join("\n");
   space.script = { before: [[{ type: "RUN_STARTED", runId: "r1" }]], after: [[{ type: "RUN_FINISHED", runId: "r1" }]] };
   await within(c.agent.request(methods.agent.session.prompt, { sessionId: s.sessionId, prompt: [{ type: "text", text: "go" }] }));
@@ -1286,7 +1288,7 @@ for (const others of [["m2"], ["m2", "m3"]]) {
   const state2 = at("thread-2.json");
   setThread({ title: "New thread" }, state2, "t3-thread-2");
   const calls2 = at("thread-calls-2.jsonl");
-  const s2 = await c.agent.request(methods.agent.session.new, { cwd: dir, mcpServers: servers(calls2, state2) });
+  const s2 = await newThread(servers(calls2, state2));
   await prompt("go", s2.sessionId);
   await until(() => title(state2) === "acp-s2");
   check("a second session starts the thread server with its own variables, and the bridge lists no server again",
