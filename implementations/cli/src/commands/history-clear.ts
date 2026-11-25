@@ -6,7 +6,7 @@ import { canPrompt } from "./meshes-wizard.js";
 import { targetWords, yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
 import { deniedWrite } from "../lib/denied-write.js";
-import { readNativeReadyServer } from "../lib/native-stack-home.js";
+import { readNativeReadyServer } from "../lib/native-ready-target.js";
 import { readStackJournal } from "../lib/stack-journal.js";
 
 interface Values { space?: string; server?: string; creds?: string; dms?: boolean; yes?: boolean; json?: boolean; plain?: boolean; "dry-run"?: boolean }

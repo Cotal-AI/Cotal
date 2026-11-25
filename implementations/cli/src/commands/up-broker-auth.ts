@@ -56,6 +56,7 @@ import { resolveNatsServer, unreadVersion, type NatsServer } from "../lib/nats-b
 import { cotalPath, cotalRoot } from "../lib/paths.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { namedOpenConfig } from "../lib/legacy-start.js";
+import { clearNativeReadyTarget } from "../lib/native-ready-target.js";
 import { unparsableDaemonCredsNotice } from "./stack-up.js";
 import { configuredStoreDir } from "../lib/store-dir.js";
 import { freePort } from "../lib/up-broker-address.js";
@@ -113,6 +114,7 @@ export function writeOpenBrokerConf(storeDir: string, space: string, opts: { bro
  *  left as it is. Moving it aside loses nothing, because the next `up` writes the file again.
  *  Other write failures name the path and errno, and remain known failures before a launch. */
 function writeBrokerConfig(path: string, text: string): void {
+  clearNativeReadyTarget(cotalRoot());
   try { writeSecretFile(path, text); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
