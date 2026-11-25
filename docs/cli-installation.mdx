@@ -335,7 +335,8 @@ manager does not affect the update. Relative `PATH` entries are resolved from th
 ran `update`. On Linux and macOS, an empty entry also refers to that folder, just like `.`.
 On Linux and macOS, self-update makes its selected Node available to npm install scripts as `node`,
 including when the executable has a versioned name or its directory contains a colon. The temporary
-link is private to npm and does not change your shell's `PATH`.
+link is private to npm and does not change your shell's `PATH`. `update --check` does not create
+the link when it can start npm directly on the selected Node.
 Removing an unrelated working folder before or during update does not block it or its npm and
 reconciliation children. A relative `--creds` path keeps its meaning from the original folder.
 

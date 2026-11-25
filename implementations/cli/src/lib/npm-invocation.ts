@@ -96,7 +96,7 @@ export function npmUpdateChildEnvironment(env: NodeJS.ProcessEnv): NodeJS.Proces
 }
 
 function selectNpm(env: NodeJS.ProcessEnv, args: string[]): {
-  file: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; node?: string; pathNode?: string;
+  file: string; args: string[]; env: NodeJS.ProcessEnv; cwd: string; node?: string; pathNode?: string; direct?: true;
 } {
   const cwd = parse(homedir()).root;
   const pathKey = pathVariable(env);
@@ -140,7 +140,7 @@ function selectNpm(env: NodeJS.ProcessEnv, args: string[]): {
         (directories.includes(inheritedBin) || (!windows && inheritedBin.includes(delimiter))) &&
         resolveOnPath(inheritedNode, env) === inheritedNode) {
       const node = compatibleNode(inheritedNode, cwd, cwd, probeEnv, engine.range);
-      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], ...withRuntime(node, true), cwd, node };
+      if (node === inheritedNode) return { file: node, args: [engine.entry, ...args], ...withRuntime(node, true), cwd, node, direct: true };
     }
     const seen = new Set<string>();
     const candidates: string[] = [];
@@ -150,13 +150,13 @@ function selectNpm(env: NodeJS.ProcessEnv, args: string[]): {
       try { if (realpathSync(candidate) === current) continue; } catch { continue; }
       candidates.push(candidate);
       const node = project === undefined ? undefined : compatibleNode(candidate, project, cwd, probeEnv, engine.range);
-      if (node) return { file: node, args: [engine.entry, ...args], ...withRuntime(node, true), cwd, node };
+      if (node) return { file: node, args: [engine.entry, ...args], ...withRuntime(node, true), cwd, node, direct: true };
     }
     for (const candidate of candidates) {
       // Keep the shim's invocation name and environment for npm if isolated version lookup succeeds.
       const version = spawnSync(candidate, ["--version"], { cwd, env: probeEnv, encoding: "utf8", timeout: 1000, killSignal: "SIGKILL", windowsHide: true });
       if (version.status === 0 && satisfies(version.stdout.trim(), engine.range))
-        return { file: candidate, args: [engine.entry, ...args], ...withRuntime(candidate), cwd };
+        return { file: candidate, args: [engine.entry, ...args], ...withRuntime(candidate), cwd, direct: true };
     }
   }
   if (windows) return { file: "npm", args, env, cwd };
@@ -164,13 +164,14 @@ function selectNpm(env: NodeJS.ProcessEnv, args: string[]): {
   if (node && realpathSync(node) === realpathSync(process.execPath))
     return { file: literal ? file : "npm", args, env, cwd };
   const runtime = withRuntime(process.execPath);
-  if (engine && runtime.pathNode) return { file: process.execPath, args: [engine.entry, ...args], ...runtime, cwd };
+  if (engine && runtime.pathNode) return { file: process.execPath, args: [engine.entry, ...args], ...runtime, cwd, direct: true };
   return { file, args, ...runtime, cwd };
 }
 
-export function npmInvocation(env: NodeJS.ProcessEnv, args: string[]) {
-  const { pathNode, ...npm } = selectNpm(env, args);
-  if (!pathNode) return { ...npm, [Symbol.dispose]() {} };
+export function npmInvocation(env: NodeJS.ProcessEnv, args: string[], phase: "preflight" | "lifecycle") {
+  const { pathNode, direct, ...npm } = selectNpm(env, args);
+  // A wrapper may need `node` to start. A direct preflight already has its executable.
+  if (!pathNode || (direct && phase === "preflight")) return { ...npm, [Symbol.dispose]() {} };
   const temp = realpathSync(tmpdir());
   if (temp.includes(delimiter)) throw new Error(`npm cannot use a temporary directory containing ${JSON.stringify(delimiter)} on PATH: ${temp}`);
   protectedLocalDirectory(temp, "the npm Node link parent");

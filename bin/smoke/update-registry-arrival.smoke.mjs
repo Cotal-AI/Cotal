@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
-import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lutimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -317,12 +317,29 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
     armed = true;
     if (lifecycle) {
       const node = lifecycleNode(root, env);
+      const normalTmp = env.TMPDIR;
+      env.TMPDIR = join(root, 'metadata:tmp');
+      mkdirSync(env.TMPDIR);
+      const otherNode = join(env.PATH, 'node');
+      for (const competingNode of [false, true]) {
+        if (competingNode) writeFileSync(otherNode, '#!/bin/sh\nexit 97\n', { mode: 0o700 });
+        const requestsBeforeCheck = requests.length;
+        const check = await run(node, [entry, 'update', '--check', '--json'], 60000);
+        assert.equal(check.code, 0, check.output);
+        assert.equal(JSON.parse(check.output).result.latest, target);
+        assert(requests.slice(requestsBeforeCheck).some(({ path }) => path === '/cotal-ai'));
+      }
+      unlinkSync(otherNode);
+      assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, previous);
+      assert.deepEqual(readdirSync(env.TMPDIR), []);
+      env.TMPDIR = normalTmp;
       const update = await run(node, [entry, 'update', '--self'], 60000);
       assert.equal(update.code, 0, update.output);
       assert.match(update.output, /installed globally and reconciled/);
       assert.equal(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version, target);
       assert.equal(readFileSync(join(packageRoot, 'postinstall-node'), 'utf8'), node);
       assert.equal(JSON.parse(readFileSync(join(env.COTAL_HOME, 'update-recovery.json'), 'utf8')), null);
+      assert(!readdirSync(normalTmp, { recursive: true }).some(name => basename(name).startsWith('cotal-npm-node-')));
       return { scenario, ...update };
     }
     if (stagingTimeout) {
