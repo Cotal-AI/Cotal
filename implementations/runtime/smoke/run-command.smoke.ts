@@ -981,18 +981,21 @@ const takeoverRun = startedId()!;
     filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
 
   const listCommand = `run list --local --space ${SPACE} --server ${shellPath(servers)} --endpoint ${endpoint}`;
-  for (const [kind, ids, correction] of [
-    ["missing", [], "Then add a run ID after `run resume` in the original command"],
-    ["malformed", ["bad/id"], "Then replace only the run ID in the original command"],
+  const replaceId = "Then replace only the run ID in the original command";
+  for (const [kind, positionals, flags, correction] of [
+    ["missing", ["resume"], { file: PURE, timeout: "5m" }, "Then add a run ID after `run resume` in the original command"],
+    ["malformed", ["resume", "bad/id"], { file: PURE, timeout: "5m" }, replaceId],
+    ["malformed", ["answer", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
+    ["malformed", ["amend", "bad/id", "/checkpoint:a#0"], { by: "operator", value: "true" }, replaceId],
   ] as const) {
-    const refusal = await wf(["resume", ...ids], { endpoint, file: PURE, timeout: "5m" }).then(() => undefined, (e: Error) => e);
+    const refusal = await wf([...positionals], { endpoint, ...flags }).then(() => undefined, (e: Error) => e);
     const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
     const inventory = /`([^`]+)`/.exec(remedy ?? "")?.[1];
     const [, ...listArgs] = ["cotal", "pnpm cotal"].some((cli) => inventory === `${cli} ${listCommand}`)
       ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory!.replace(/^.*? run /, "run ")}`], { encoding: "utf8" }).split("\0").slice(0, -1) : [];
     reset();
     const listed = run && listArgs.length > 0 && await runWorkflow(parseCommandArgs(run, listArgs)).then(() => true, () => false);
-    c(`a ${kind} local resume ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager`,
+    c(`a ${kind} local ${positionals[0]} ID refuses with exit 1 and its remedy finds the same endpoint's run without a manager`,
       isCommandFailure(refusal) && refusal.code === "USAGE_INVALID" && exitCode(refusal.outcome, refusal.code) === 1
         && remedy?.endsWith(correction) === true
         && listed === true && (process.exitCode ?? 0) === 0 && stateOf(psRow(rid)) === "completed", { refusal, remedy, out: captured() });
@@ -1162,7 +1165,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 139;
+const DECLARED = 141;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
