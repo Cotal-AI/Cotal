@@ -104,7 +104,7 @@ try {
       rmSync(trustFile);
       const blockedRestart = cotal("service", "restart", "mgr", "--space", space, "--yes", "--json");
       check("manager service restart refuses before stopping the existing process",
-        blockedRestart.status === 2 && blockedRestart.env?.error?.message.includes(`\`${trustRemedy}\``) && running("mgr")?.pid === mgr.pid, shown(blockedRestart));
+        blockedRestart.status === 2 && blockedRestart.env?.error?.message.includes(`\`${trustRemedy}\``) === true && running("mgr")?.pid === mgr.pid, shown(blockedRestart));
     } finally { writeFileSync(trustFile, trusted, { mode: 0o600 }); }
   }
 
