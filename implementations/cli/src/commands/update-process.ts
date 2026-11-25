@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { cmdSpawnSpec, beginGlobalUpdateChild, processGroupMembers, processStartToken } from "@cotal-ai/workspace";
 import { withInstallUmask } from "../lib/install-umask.js";
-import { npmInvocation } from "../lib/npm-invocation.js";
+import { npmInvocation, npmUpdateChildEnvironment } from "../lib/npm-invocation.js";
 import { compareSemver } from "../seed/reconcile.js";
 
 export interface CommandResult {
@@ -131,6 +131,7 @@ export function runNpm(args: string[], inherit = false): CommandResult {
 }
 
 export function runProcess(file: string, args: string[], env: NodeJS.ProcessEnv, inherit = false): CommandResult {
+  env = npmUpdateChildEnvironment(env);
   const result = withInstallUmask(() => spawnSync(file, args, inherit ? { stdio: "inherit", env } : { encoding: "utf8", env }));
   return {
     status: result.status,
@@ -160,6 +161,7 @@ export async function runGlobalProcess(
   let idle: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<void> | undefined;
   try {
+    if (operation === "reconcile") env = npmUpdateChildEnvironment(env);
     const npm = operation === "install" && file === "npm" ? npmInvocation(env, args) : undefined;
     if (npm) ({ file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env));
     const reconcileCache = gated && operation === "reconcile";
