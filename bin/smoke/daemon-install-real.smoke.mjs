@@ -142,6 +142,13 @@ try {
     && recorded.unitSha256 === plan.sha256 && recorded.unitPath === plan.unitPath && recorded.daemonHome === home);
   const first = (await statusUntil(true)).body.result;
   check("installed service answers with a PID and start time", Number.isInteger(first.pid) && first.pid > 0 && typeof first.startedAt === "string");
+  // The app's Background service log reads the file the native supervisor writes; drive the shipped reader.
+  const logRead = spawnSync(process.execPath, [cli, "daemon", "desktop", "--daemon-home", home], {
+    encoding: "utf8", timeout: 60_000, maxBuffer: 256 * 1024, windowsHide: true, input: `${JSON.stringify({ op: "log" })}\n`,
+  });
+  const logFrame = JSON.parse((logRead.stdout ?? "").trim().split("\n").at(-1) || "{}");
+  report.calls.push({ verb: "desktop log", exit: logRead.status, ok: logFrame.ok, code: logFrame.error?.code, message: logFrame.error?.message });
+  check("the app's service log view reads the installed service's log", logFrame.ok === true && typeof logFrame.result?.text === "string" && logFrame.result.text.length > 0);
   if (process.platform === "linux") {
     const unit = linuxUnit();
     check("systemd supervises the answering daemon from the recorded unit", unit.LoadState === "loaded"
