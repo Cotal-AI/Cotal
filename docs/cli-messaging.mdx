@@ -32,7 +32,7 @@ It also keeps `--json` or `--plain` when requested.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. The suggested
 stdin command also keeps `--json` or `--plain` when requested. An empty
-`--to`, `--channel` or `--role` value is refused for that flag, and the remedy keeps it.
+`--to`, `--channel` or `--role` value is refused before reading the body. Set that destination in the original command to keep the body source, space and output format.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
 `name one concrete channel, without wildcards`, and a channel or role name outside the grammar is
