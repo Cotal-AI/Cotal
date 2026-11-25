@@ -1,5 +1,5 @@
 import { lstatSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import { agentFilePath, personaDir, personaLinkTarget } from "@cotal-ai/core";
 import { cachedPreferences, canonicalRoot, CommandFailure, describeLayer, isWorkspaceTargetError, OFFICIAL_CONNECTORS, preparedNeverStarted, pruneStaleMeshes, resolveMeshTarget, resolvePreference, resolveReadsLiveness, type MeshTarget, type PreferenceContext } from "@cotal-ai/workspace";
 import { defaultPersonaFix } from "./default-persona.js";
@@ -71,17 +71,25 @@ export function brokenPersonaLink(path: string, target: object, shippedDefault =
   });
 }
 
-function nonDirectoryParent(path: string): { path: string; link?: string } | undefined {
-  for (let parent = dirname(path); parent !== path; path = parent, parent = dirname(path)) {
-    try { return statSync(parent).isDirectory() ? undefined : { path: parent }; }
-    catch (error) {
+function nonDirectoryComponent(path: string): { path: string; link?: string; trailingSlash?: true; regularFile?: boolean } | undefined {
+  const withoutSlash = path.replace(process.platform === "win32" ? /[\\/]+$/ : /\/+$/, "");
+  const leaf = withoutSlash !== path && withoutSlash.length > parse(path).root.length ? withoutSlash : undefined;
+  let component = leaf ?? dirname(path);
+  while (true) {
+    try {
+      const stat = statSync(component);
+      if (stat.isDirectory()) return undefined;
+      return component === leaf ? { path: component, trailingSlash: true, regularFile: stat.isFile() } : { path: component };
+    } catch (error) {
       // If the path changed, report only what the original ENOTDIR established.
       if ((error as NodeJS.ErrnoException).code !== "ENOTDIR") return undefined;
-      const link = personaLinkTarget(parent);
-      if (link !== undefined) return { path: parent, link };
+      const link = personaLinkTarget(component);
+      if (link !== undefined) return { path: component, link, ...(component === leaf ? { trailingSlash: true } : {}) };
     }
+    const parent = dirname(component);
+    if (parent === component) return undefined;
+    component = parent;
   }
-  return undefined;
 }
 
 /** ENOTDIR can come from the persona link's target or from a component of the given path. */
@@ -92,13 +100,17 @@ export function personaNotDirectoryFailure(path: string, target: object, source:
     const folder = catalogFolderProblem(dirname(path), { target, launch: true });
     if (folder) return folder;
   }
-  const parent = nonDirectoryParent(path);
-  if (parent?.link !== undefined) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${parent.path} links to ${parent.link}, which crosses a component that is not a directory`, {
-    target, remedy: "correct the link's target so it points to a directory, then retry",
+  const component = nonDirectoryComponent(path);
+  if (component?.link !== undefined) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${component.path} links to ${component.link}, which crosses a component that is not a directory`, {
+    target, remedy: component.trailingSlash ? "correct the link's target so it points to a persona file and remove the trailing slash"
+      : "correct the link's target so it points to a directory, then retry",
   });
-  const message = parent === undefined
-    ? `the persona path ${path} has a parent that is not a directory`
-    : `${parent.path} is not a directory, so the persona file ${path} cannot be reached`;
+  if (component?.trailingSlash) return new CommandFailure("refused", "TARGET_NOT_FOUND", `${component.path} is not a directory, but the trailing slash in ${path} requires one`, {
+    target, remedy: component.regularFile ? "remove the trailing slash from the persona file path, then retry" : "pass a regular persona file path without a trailing slash",
+  });
+  const message = component === undefined
+    ? `the persona path ${path} crosses a component that is not a directory`
+    : `${component.path} is not a directory, so the persona file ${path} cannot be reached`;
   const remedy = source === "catalog" ? "restore the persona catalog folder, then retry"
     : source === "file" ? "pass the correct persona file path to --file" : "check the persona file path, then retry";
   return new CommandFailure("refused", "TARGET_NOT_FOUND", message, { target, remedy });

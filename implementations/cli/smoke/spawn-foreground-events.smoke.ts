@@ -249,6 +249,7 @@ async function checkPersonaRefusals() {
   const repaired = invoke(["notdir-link", "--dry-run", "--plain", ...selectors]);
   check("foreground preview follows the symlink once its target is restored", repaired.status === 0 && repaired.stdout.includes(link), repaired.stderr);
   checkNonDirectoryComponents(invoke, selectors);
+  checkTrailingPersonaSlash(invoke, selectors);
   checkBlockedCatalog(invoke, selectors);
 }
 
@@ -294,6 +295,29 @@ function checkNonDirectoryComponents(invoke: SpawnInvoke, selectors: string[]) {
     enrollmentPreview.status === 2 && enrollmentLaunch.status === 1 && [enrollmentPreview, enrollmentLaunch].every(({ stderr }) =>
       stderr.includes(`${component} is not a directory`) && stderr.includes(remedy) && !stderr.includes(fixture)),
     [enrollmentPreview.stderr, enrollmentLaunch.stderr]);
+}
+
+function checkTrailingPersonaSlash(invoke: SpawnInvoke, selectors: string[]) {
+  const persona = join(realpathSync(caller), "regular-target");
+  const bytes = "---\nname: trailing-slash-probe\nagent: opencode\n---\n";
+  writeFileSync(persona, bytes);
+  const path = `${persona}/`;
+  const args = ["--foreground", ...selectors, path];
+  const message = `${persona} is not a directory, but the trailing slash in ${path} requires one`;
+  const remedy = "remove the trailing slash from the persona file path, then retry";
+  const preview = invoke([...args, "--dry-run", "--json"]);
+  const refusal = preview.stdout.trim() ? JSON.parse(preview.stdout) : undefined;
+  check("direct preview names the file requiring removal of a trailing slash",
+    preview.status === 2 && refusal?.outcome === "refused" && refusal.target?.path === path &&
+    refusal.error?.code === "TARGET_NOT_FOUND" && refusal.error.message === message && refusal.error.remedy === remedy, preview);
+  const launch = invoke(args);
+  check("foreground launch names the file requiring removal of a trailing slash",
+    launch.status === 1 && launch.stderr.includes(message) && launch.stderr.includes(remedy), launch.stderr);
+  const retry = invoke(["--foreground", ...selectors, persona, "--dry-run", "--json"]);
+  const success = retry.stdout.trim() ? JSON.parse(retry.stdout) : undefined;
+  check("removing the slash previews the same unchanged persona file",
+    retry.status === 0 && success?.result?.kind === "direct-launch-preview" && success.result.persona.path === persona &&
+    success.result.launched === false && readFileSync(persona, "utf8") === bytes, retry);
 }
 
 function checkBlockedCatalog(invoke: SpawnInvoke, selectors: string[]) {
@@ -587,7 +611,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = process.platform === "win32" ? 41 : 58;
+const EXPECTED = process.platform === "win32" ? 41 : 61;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
