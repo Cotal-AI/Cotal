@@ -277,6 +277,8 @@ If the Cotal home is removed while a controller stack runs, the project's journa
 its members. On Linux, if `status` verifies the broker's process identity from that journal but
 its instance record is missing, it reports a running broker process and a partial result (exit 4).
 The JSON broker row names `stack-journal` as its `source`. It does not report broker readiness.
+If the journal retains an unresolved broker replacement, `status` reports ownership as unknown.
+An unreadable mesh registry still yields a partial status report and blocks stop guidance.
 When the records permit recovery, status points to `cotal down --dry-run` in that project to
 inspect the recovery stop, then `cotal down --yes` to stop the pinned members.
 This Linux recovery route requires the journal's launch-time Cotal home,

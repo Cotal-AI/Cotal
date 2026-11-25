@@ -26,6 +26,7 @@ import {
   isCommandFailure,
   brokerAddressForDisplay,
   brokerUrlKey,
+  canonicalRoot,
   CLI_USER_ACTOR,
   credentialFileExposure,
   CommandFailure,
@@ -629,7 +630,7 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   return { name: "web", verdict: "not-serving", facts: [...facts, `host ${bound.host}`, `port ${bound.port}`, "http not answered"] };
 }
 
-async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | undefined): Promise<ComponentHealth> {
+async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | undefined, folder: StatusResult["folder"]): Promise<ComponentHealth> {
   const address = brokerAddressForDisplay(target.server);
   if (address === undefined)
     return { name: "broker", verdict: "refused", facts: ["registered address unavailable", "invalid broker address"] };
@@ -638,6 +639,9 @@ async function brokerHealth(target: MeshTarget, store: StoreWriteObservation | u
     const journal = readStackJournal(target.root)?.journal;
     const serverKey = brokerUrlKey(target.server);
     if (journal?.space === target.space && brokerUrlKey(journal.server) === serverKey) {
+      const missing = folder.missingStackRecords;
+      if (missing?.space === target.space && folder.root === canonicalRoot(journal.root))
+        return { name: "broker", verdict: "refused", facts: [`registered ${address}`, "owned broker health unavailable", missing.message] };
       const member = journal.members.find((row) => row.role === "broker");
       const instance = serviceInstances(target.space, STACK_DEFINITION.broker).find((row) => row.name === member?.instanceId);
       const observed = instance && instanceProjection(instance).observedProcess;
@@ -691,7 +695,8 @@ async function movedStackTargetHealth(report: SelectedResult, meshes: StatusResu
   return movedStackComponent("target", [`registered ${address}`, ...(reachable ? ["reachable"] : [])]);
 }
 
-export async function printComponentHealth(selected: Selected, store: StoreWriteObservation | undefined, report: SelectedResult, meshes: StatusResult["meshes"], selectedHint: string | undefined, starting?: string): Promise<void> {
+export async function printComponentHealth(selected: Selected, result: StatusResult, selectedHint: string | undefined, starting?: string): Promise<void> {
+  const { selected: report, meshes, store, folder } = result;
   section("Component Health");
   if (!report.resolved && report.code === "missing-stack-records")
     return printComponents([{ name: "target", verdict: "refused", facts: [report.message, ...(selectedHint ? [selectedHint] : [])] }]);
@@ -728,7 +733,7 @@ export async function printComponentHealth(selected: Selected, store: StoreWrite
   // probes so the two rows cannot disagree about whose credential they probed with.
   const credential = await componentCredential(target);
   const broker = target.mode === "open" && report.resolved && report.connection === "root-gone"
-    ? movedStackBrokerHealth(target, meshes) : await brokerHealth(target, store);
+    ? movedStackBrokerHealth(target, meshes) : await brokerHealth(target, store, folder);
   const components = await Promise.all([
     managerHealth(target, context, credential, broker),
     deliveryHealth(target, context, credential, report.resolved && report.connection === "unreachable" && broker.verdict === "absent"),

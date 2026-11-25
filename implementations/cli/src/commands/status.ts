@@ -333,7 +333,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       recovery, stoppedForeignListener, stackStarting, selectedStarting,
     }),
   );
-  if (values.components) await printComponentHealth(selected, store, target, meshes, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined);
+  if (values.components) await printComponentHealth(selected, result, recovery && !recoveringOtherSpace ? recovery : selectedHints[0], !target.resolved && selectedStarting ? target.message : undefined);
 }
 
 /** Why this account cannot list or search `root`, or undefined when it can. */
@@ -767,7 +767,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   const brokerIndex = processes.findIndex((row) => row.name === "nats");
   if (brokerIndex !== -1) processes[brokerIndex] = unusable
     ? { name: "nats", state: "unreadable", pid: null, detail: "stack journal unreadable; no broker stopped state was inferred" }
-    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps, missingStackRecords?.pid);
+    : brokerProcess(processes[brokerIndex]!, controllerStack ? journal : undefined, gaps, missingStackRecords);
   const managerIndex = !unusable && !controllerStack && (nats?.liveness === "alive" || nats?.liveness === "dead")
     ? processes.findIndex((row) => row.name === "manager" && row.state === "stopped" && row.pid === null)
     : -1;
@@ -857,13 +857,14 @@ function processRow(name: string, p: PidfileState, detail: string | null): Proce
 
 /** A controller broker has no legacy pidfile. Observe its saved process identity instead, keeping
  *  the pidfile result as a separate fact. A failed owned-record read never selects the legacy row. */
-function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps, journalPid?: number): ProcessRow {
+function brokerProcess(legacy: ProcessRow, journal: StackJournal | undefined, gaps: Gaps, missing?: StatusResult["folder"]["missingStackRecords"]): ProcessRow {
   const { state, pid, detail } = legacy;
   const row: ProcessRow = { ...legacy, source: journal ? "owned-service" : "legacy-pidfile", legacyPidfile: { state, pid, detail }, ownedService: null };
   if (!journal) return row;
-  if (journalPid !== undefined) {
+  if (missing) {
     gaps.add("FOLDER_BROKER_UNAVAILABLE", "owned broker observation unavailable · the stack's recorded broker instance is missing", { root: journal.root, space: journal.space });
-    return { ...row, source: "stack-journal", state: "running", pid: journalPid, detail: "process verified from the stack journal; instance record missing" };
+    return { ...row, source: "stack-journal", state: missing.pid === null ? "unknown" : "running", pid: missing.pid,
+      detail: missing.pid === null ? missing.message : "process verified from the stack journal; instance record missing" };
   }
   const recordedHome = journal.recovery?.home;
   if (recordedHome !== homeCotalDir() && stackRunsUnderOtherHome(journal.root, journal)) {

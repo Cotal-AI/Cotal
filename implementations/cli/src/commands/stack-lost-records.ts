@@ -2,10 +2,10 @@
  * The root journal must retain its launch-time home, host and member creation pins. */
 import { resolve } from "node:path";
 import type { ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, isCommandFailure, loadMeshes, localProcessOwnerStatus, presentationOf, probeLiveness, readMaintenanceLockHolder, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, isCommandFailure, isMeshRegistryError, loadMeshes, localProcessOwnerStatus, presentationOf, probeLiveness, readMaintenanceLockHolder, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
 import { serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
-import { acquireStackOperationLock, knownStackRecoveryHost, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, knownStackRecoveryHost, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, withSettledMembers, writeStackJournal, type StackJournal, type StackMember } from "../lib/stack-journal.js";
 import { displayCmd, displayRemedy } from "../lib/self-exec.js";
 
 const ORDER = ["manager", "delivery", "auth", "broker"];
@@ -22,27 +22,49 @@ function missingRecord(row: StackMember, store: ReturnType<typeof serviceInstanc
 }
 
 /** Missing launch evidence also includes a child whose instance ID never reached the root journal. */
-export function stackRecordsLost({ journal }: StackJournalSnapshot): boolean {
+export function stackRecordsLost(journal: StackJournal): boolean {
   const space = journal.space, store = serviceInstanceStore(space);
   return journal.members.some((row) => missingRecord(row, store))
     || (unconfirmedLaunches(journal).length > 0 && journal.members.every((row) => serviceInstances(space, row.definition).length === 0));
 }
 
-/** Observe a live broker whose exact instance record is gone, without inferring service health. */
-export function lostBrokerRecord(journal: StackJournal): { space: string; pid: number; message: string; hint: string } | undefined {
+/** A replacement with its own matching instance record can be adopted by the ordinary stop. */
+export function recordedReplacementSupersedesLostRecords(journal: StackJournal): boolean {
+  const pending = journal.members.filter((row) => row.replacement !== undefined && row.instanceId !== null);
+  if (pending.length === 0) return false;
+  let adopted: StackJournal;
+  try { adopted = withSettledMembers(journal, undefined); }
+  catch (error) { if (isCommandFailure(error)) return false; throw error; }
+  const store = serviceInstanceStore(journal.space);
+  for (const row of pending) {
+    const next = adopted.members.find((member) => member.role === row.role);
+    if (!next || next.instanceId === null || next.instanceId === row.instanceId || missingRecord(next, store)) return false;
+  }
+  return !stackRecordsLost(adopted);
+}
+
+/** Observe what the journal still proves when the exact broker instance record is missing. */
+export function lostBrokerRecord(journal: StackJournal): { space: string; pid: number | null; message: string; hint: string } | undefined {
   if (process.platform !== "linux" || journal.recovery?.home !== resolve(homeCotalDir()) || journal.recovery.host !== knownStackRecoveryHost()) return undefined;
-  if (journal.members.some((row) => row.replacement !== undefined)) return undefined;
   const broker = journal.members.find((row) => row.role === "broker");
   if (broker === undefined) return undefined;
   const pin = broker.process;
-  if (pin === undefined || assertRecordIdentity(pin).kind !== "match" || !missingRecord(broker, serviceInstanceStore(journal.space))) return undefined;
-  return { space: journal.space, pid: pin.pid, message: `the broker for "${journal.space}" is still running, but the stack's member records are missing from this Cotal home`, hint: missingRecordsStopHint(journal) };
+  const pid = broker.replacement === undefined && pin !== undefined && assertRecordIdentity(pin).kind === "match" ? pin.pid : null;
+  if ((pid === null && broker.replacement === undefined) || !missingRecord(broker, serviceInstanceStore(journal.space))) return undefined;
+  const replacement = journal.members.some((row) => row.replacement !== undefined);
+  if (replacement && recordedReplacementSupersedesLostRecords(journal)) return undefined;
+  const missing = "the stack's member records are missing from this Cotal home";
+  const message = replacement
+    ? `${missing}; the journal retains an unresolved replacement launch, so ownership of the replacement is unconfirmed`
+    : `the broker for "${journal.space}" is still running, but ${missing}`;
+  return { space: journal.space, pid, message, hint: missingRecordsStopHint(journal) };
 }
 
 /** Use the stop's read-only preflight to distinguish a preview from a records repair. */
 function missingRecordsStopHint(journal: StackJournal): string {
   try { members(journal); }
   catch (error) {
+    if (isMeshRegistryError(error)) return "repair the unreadable mesh registry before attempting the recovery stop";
     if (!isCommandFailure(error)) throw error;
     return `restore the original stack member records in ${journal.root} before stopping or starting the stack`;
   }
@@ -97,7 +119,7 @@ export async function lostRecordsStackDown(root: string, values: ParsedArgs["val
     if (!snapshot) throw new CommandFailure("refused", "CONFLICT", "the stack journal disappeared before recovery; nothing was inferred");
     if (values.space !== undefined && values.space !== snapshot.journal.space)
       throw new CommandFailure("refused", "CONFLICT", "--space is not this folder's stack; no member was stopped");
-    if (!stackRecordsLost(snapshot)) throw new CommandFailure("refused", "CONFLICT", "the stack instance records changed before recovery; run down again");
+    if (!stackRecordsLost(snapshot.journal)) throw new CommandFailure("refused", "CONFLICT", "the stack instance records changed before recovery; run down again");
     return { snapshot, rows: members(snapshot.journal) };
   };
   const initial = inspect();

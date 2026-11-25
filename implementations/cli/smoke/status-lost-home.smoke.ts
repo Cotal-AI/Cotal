@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,8 +7,9 @@ import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { strict as assert } from "node:assert";
 import { assertSmokeSandboxDown, freePort, recordSmokeSandbox, skipSuite } from "@cotal-ai/smoke-kit";
-import { assertRecordIdentity, type ProcessIdentityRecord } from "@cotal-ai/workspace";
+import { assertRecordIdentity, spaceKey, type ProcessIdentityRecord } from "@cotal-ai/workspace";
 import type { StatusResult } from "../src/commands/status-model.js";
+import type { StackJournal } from "../src/lib/stack-journal.js";
 
 if (process.platform !== "linux") skipSuite("status-lost-home: Linux creation-pinned recovery");
 
@@ -73,6 +75,26 @@ function checkIntactHome(pin: ProcessIdentityRecord): void {
   console.log("PASS: intact home resolves the named space and reports a running owned broker");
 }
 
+function checkMissingInstance(pin: ProcessIdentityRecord): void {
+  const before = readFileSync(journalPath, "utf8");
+  const journal = JSON.parse(before) as StackJournal;
+  const instanceId = journal.members.find((row) => row.role === "broker")?.instanceId;
+  assert(instanceId);
+  const instance = join(home, "services", spaceKey(space), "instances", `${spaceKey(instanceId)}.json`);
+  renameSync(instance, `${instance}.retained`);
+  try {
+    const { result } = JSON.parse(cli(["status", "--json"], 4)) as { result: StatusResult };
+    assert(result.selected.resolved && result.selected.connection === "ok");
+    assert.equal(result.folder.processes?.find(({ name }) => name === "nats")?.pid, pin.pid);
+    const components = cli(["status", "--components"], 3).split("Component Health")[1] ?? "";
+    assert.match(components, /broker\s+refused[\s\S]*owned broker health unavailable/);
+    assert.doesNotMatch(components, /broker\s+(absent|serving)/);
+    preview("missing-records-stack-stop-preview", pin);
+    assert.equal(readFileSync(journalPath, "utf8"), before);
+    console.log("PASS: a reachable registered broker with a missing instance refuses the owned health check");
+  } finally { renameSync(`${instance}.retained`, instance); }
+}
+
 function checkLostHome(pin: ProcessIdentityRecord): void {
   preview("missing-records-stack-stop-preview", pin);
   console.log("PASS: missing-home stop preview sees the running broker and does not signal it");
@@ -117,6 +139,48 @@ function checkMissingMemberPin(pin: ProcessIdentityRecord): void {
   } finally { writeFileSync(journalPath, before); }
 }
 
+function checkUnresolvedReplacement(pin: ProcessIdentityRecord): void {
+  const before = readFileSync(journalPath, "utf8");
+  const journal = JSON.parse(before) as StackJournal;
+  const broker = journal.members.find((row) => row.role === "broker")!;
+  broker.replacement = { operation: journal.operation.id, instanceId: randomUUID(), launchRequestId: randomUUID() };
+  const replaced = JSON.stringify(journal);
+  writeFileSync(journalPath, replaced);
+  try {
+    const { result } = JSON.parse(cli(["status", "--json"], 4)) as { result: StatusResult };
+    assert(!result.selected.resolved && result.selected.code === "missing-stack-records");
+    assert.match(result.selected.message, /unresolved replacement launch.*ownership.*unconfirmed/);
+    const row = result.folder.processes?.find(({ name }) => name === "nats");
+    assert.equal(row?.state, "unknown");
+    assert.equal(row?.pid, null);
+    assert.doesNotMatch(result.hints.join("\n"), /cotal down --yes|clean store --force|cotal space create/);
+    assert.match(cli(["down", "--dry-run", "--json"], 2), /unresolved replacement launch/);
+    assert.equal(readFileSync(journalPath, "utf8"), replaced);
+    assert.equal(assertRecordIdentity(pin).kind, "match");
+    console.log("PASS: an unresolved replacement blocks stop and cleanup advice without claiming its process");
+  } finally { writeFileSync(journalPath, before); }
+}
+
+function checkDamagedRegistry(pin: ProcessIdentityRecord): void {
+  const before = readFileSync(journalPath, "utf8");
+  const meshes = join(home, "meshes"), record = join(meshes, "broken.json");
+  mkdirSync(meshes, { recursive: true, mode: 0o700 });
+  writeFileSync(record, "{", { mode: 0o600, flag: "wx" });
+  try {
+    const { result, warnings } = JSON.parse(cli(["status", "--json"], 4)) as { result: StatusResult; warnings: { code: string }[] };
+    assert(!result.selected.resolved && result.selected.code === "registry-unreadable");
+    assert(warnings.some(({ code }) => code === "MESH_REGISTRY_UNREADABLE"));
+    const broker = result.folder.processes?.find(({ name }) => name === "nats");
+    assert.deepEqual([broker?.source, broker?.state, broker?.pid], ["stack-journal", "running", pin.pid]);
+    assert.match(result.hints.join("\n"), /repair the unreadable mesh registry/);
+    assert.doesNotMatch(result.hints.join("\n"), /cotal down --yes|clean store --force|cotal space create/);
+    assert.match(cli(["down", "--dry-run", "--json"], 1), /SCHEMA_INVALID/);
+    assert.equal(readFileSync(journalPath, "utf8"), before);
+    assert.equal(assertRecordIdentity(pin).kind, "match");
+    console.log("PASS: registry damage blocks recovery advice but preserves the partial report and running broker observation");
+  } finally { renameSync(record, `${record}.retained`); }
+}
+
 cli(["space", "create", space, "--root", "."], 0);
 const server = `nats://127.0.0.1:${await freePort()}`;
 const up = spawn(process.execPath, [binary, "up", "--foreground", "--open", "--no-manager", "--space", space, "--server", server], { cwd: root, env, stdio: ["ignore", "inherit", "inherit"] });
@@ -125,12 +189,15 @@ let pin: ProcessIdentityRecord | undefined, lostHome = false;
 try {
   pin = await runningBroker(up);
   checkIntactHome(pin);
+  checkMissingInstance(pin);
   renameSync(home, `${home}-retained`);
   anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: env.XDG_CONFIG_HOME });
   lostHome = true;
   checkLostHome(pin);
   console.log("PASS: status identifies missing records and names the recovery stop without writing the journal");
   checkMissingMemberPin(pin);
+  checkUnresolvedReplacement(pin);
+  checkDamagedRegistry(pin);
 } finally {
   if (!pin) up.kill("SIGTERM");
   else if (assertRecordIdentity(pin).kind === "match") {
