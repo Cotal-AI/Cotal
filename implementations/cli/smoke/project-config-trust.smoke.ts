@@ -10,7 +10,7 @@
  * The control cell comes first: a trusted folder's declared server must start and its `spawn.env`
  * name must reach the host, or every refusal below could pass on a launch that never happened.
  *
- * Needs `nats-server` on PATH. Skipped on Windows, where the stand-in host cannot run as written.
+ * POSIX needs `nats-server` on PATH. Windows checks the printed remedy in both native shells.
  *
  * Run: pnpm smoke:project-config-trust
  */
@@ -35,11 +35,12 @@ if (process.platform === "win32") {
   try {
     for (const shell of ["powershell.exe", "cmd.exe"]) {
       for (const suffix of ["a project with spaces", "a project %PATH% $HOME & '!"]) {
-        const root = join(sandbox, shell, suffix);
-        mkdirSync(root, { recursive: true });
+        const project = join(sandbox, shell, suffix);
+        mkdirSync(project, { recursive: true });
+        const root = realpathSync(project);
         const reason = projectTrustProblem(["spawn.env"], root);
         const command = /`(cotal trust [^`]+)`/.exec(reason)?.[1];
-        const expected = suffix.includes("%") ? `cotal trust --hex ${Buffer.from(root).toString("hex")}` : `cotal trust -- "${root}"`;
+        const expected = /^[A-Za-z0-9_./:\\ -]+$/.test(root) ? `cotal trust -- "${root}"` : `cotal trust --hex ${Buffer.from(root).toString("hex")}`;
         if (command !== expected) {
           failed++;
           console.error(`wrong trust command: ${reason}`);
