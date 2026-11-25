@@ -144,7 +144,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     // A preset name reaches the stack member built on it. Starting that member by itself launches
     // its process and leaves the space unregistered, so it refuses before the start saves or launches.
     // A running member needs no start: the start reports it running, as for any running service.
-    // A restart of a running member names the stop and the `cotal up` that restart it (#7057).
+    // A running broker's restart preview points to a whole-stack stop preview.
     const member = resolved?.name ?? suppliedName!;
     if ((mode === "start" || mode === "restart") && isStackMember(space, member)) {
       const memberTarget = { space, name: member, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) };
@@ -159,7 +159,10 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
         const stopStep = member === STACK_DEFINITION.broker
           ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then review and stop the whole stack with \`cotal down\``
           : `stop it with ${codeSpan(`${stop} --space ${shellWord(space)}${instance}${withAgents} --yes`)}`;
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy: `${stopStep}, then run ${up} to start it again with its stack` });
+        const remedy = member === STACK_DEFINITION.broker && args.values["dry-run"]
+          ? `change to the project folder with ${codeSpan(`cd ${shellWord(root)}`)}, then run ${codeSpan(`cotal down --dry-run${presentation === "rich" ? "" : ` --${presentation}`} --space ${shellWord(space)}`)}. This previews only the stop part of a restart.`
+          : `${stopStep}, then run ${up} to start it again with its stack`;
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy });
       }
       if (!live)
         throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: memberTarget, remedy: `start the stack with ${up}` });
@@ -232,7 +235,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
       if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's instance records stay with its stack; nothing was removed", { target: at, remedy: `they go with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
       removableServiceInstances(space, row.name, id);
       if (!args.values.yes) {
-        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id }, presentation === "json")}\`` });
+        if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing an instance record outside interactive input requires --yes", { target: at, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, { instance: id }, presentation)}\`` });
         const answer = await prompts.confirm({ message: `Forget stopped instance ${id} of ${oneLine(row.name)}? No process or OS unit will be removed.`, initialValue: false });
         if (prompts.isCancel(answer) || !answer) return cancelled("Instance record kept");
       }
@@ -244,7 +247,7 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if ((Object.values(STACK_DEFINITION) as string[]).includes(row.name)) throw new CommandFailure("refused", "UNSUPPORTED", "a controller stack member's definition stays with its stack, whose up and down read it; nothing was removed", { target: { ...target, name: row.name }, remedy: `it goes with the stack: \`cotal down --yes\`, then \`cotal space forget ${space}\`` });
     removableServiceInstances(space, row.name);
     if (!args.values.yes) {
-      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {}, presentation === "json")}\`` });
+      if (!canPrompt() || presentation === "json") throw new ConfirmationRequired("removing a service definition outside interactive input requires --yes", { target: { ...target, name: row.name }, remedy: `confirm with \`${serviceConfirmCommand("remove", row.name, space, {}, presentation)}\`` });
       const answer = await prompts.confirm({ message: `Forget ${oneLine(row.name)} in ${oneLine(space)} and delete its instances' logs? No process or OS unit will be removed.`, initialValue: false });
       if (prompts.isCancel(answer) || !answer) return cancelled("Service definition kept");
     }

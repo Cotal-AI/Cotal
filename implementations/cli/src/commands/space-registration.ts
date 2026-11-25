@@ -725,9 +725,13 @@ export async function spaceForget(rest: readonly string[], presentation: Present
       throw refuse("LIFECYCLE_BLOCKED", `could not tell whether "${name}" is running from ${m.root}: ${(e as Error).message}`, target, "check it with `cotal status`");
     }
     // A stack's down keeps the space prepared at its root, so it is forgotten by a second forget.
-    if (running) throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, stack
-      ? `stop it with \`cotal down\` in ${m.root}, which keeps it as a prepared space there, then run \`cotal space forget ${name}\` again`
-      : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`);
+    if (running) {
+      const confirm = presentation === "json" || !canPrompt();
+      const remedy = stack
+        ? `stop it with \`cotal down${confirm ? " --yes" : ""}\` in ${m.root}${confirm ? " to explicitly confirm the stop" : ""}. The stop keeps it as a prepared space there. Then run \`cotal space forget ${name}\` again.`
+        : keepsRegistration(m) ? `stop it with \`cotal down\` in ${m.root}, which keeps its record, then run \`cotal space forget ${name}\` again` : `stop it with \`cotal down\` in ${m.root}, which also drops its record`;
+      throw refuse("LIFECYCLE_BLOCKED", `"${name}" is running from ${m.root} (${running})`, target, stack && presentation !== "json" ? displayRemedy(remedy) : remedy);
+    }
     // A deleted folder takes the pidfiles and stack journal that check reads, so a stack left running
     // there shows only in this machine's instance records or at its recorded address (#7325).
     if (obstructed || !existsSync(m.root) || goneLegacyRoot(m.space, m) !== undefined) await refuseGoneFolderStack(m, registry.entries);

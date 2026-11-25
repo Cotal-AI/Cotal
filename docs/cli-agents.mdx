@@ -228,7 +228,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--harness <connector>`, `-H` | persona's `agent:`, else the [`harness` preference](config.mdx#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on). `--agent` is the legacy spelling; giving both is refused |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>`, `-m` | persona's `model:` | Model override |
-| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
+| `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers or Claude effort levels) |
 | `--cwd <dir>`, `-C` | this cwd; on a managed launch, the serving manager's workspace root | Working directory to root the agent at. Refuses an empty value with `USAGE_INVALID`. On a spawn in this terminal, a path that does not exist or is not a directory is refused with `TARGET_UNAVAILABLE` before provisioning. On a managed launch, a relative path resolves against the manager's workspace root, not your shell, and a directory that does not exist on the serving manager's host is refused before launch. Without it, a terminal asks for the folder when the manager is not known to run on this host. |
 | `--prompt <text>`, `-p` | none | Initial prompt auto-submitted at start |
 | `--opt <k=v>` | none | Connector-specific launch option, repeatable. Wins per key over the persona's `launchOptions:`; a connector with no option surface refuses it |
@@ -494,9 +494,9 @@ raw credential files (`--creds`).
 An empty or whitespace-only `--harness` or `-H` refuses with
 `USAGE_INVALID`, exit 1, before selecting a space or contacting a manager.
 Claude Code, OpenCode, Codex and pi ask the installed application.
-Claude Code lists the models its login can use, and pi lists the models of providers it holds
-credentials for. Jcode reads providers that enable `model_catalog = true` in the operator Jcode
-`config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
+Claude Code lists the models its login can use, with their effort levels as variants, and pi lists
+the models of providers it holds credentials for. Jcode reads providers that enable
+`model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed effort tiers render as `<tiers> (declared, not provider-verified)`,
 and launch can still refuse one.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as a logged-out Claude Code or a pi without provider credentials, gives

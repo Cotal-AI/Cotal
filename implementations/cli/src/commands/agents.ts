@@ -674,7 +674,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     const parts = isConnectRefusal(e) ? e.parts : isWorkspaceTargetError(e) && e.code === "not-started" ? workspaceErrorParts({ kind: "target", error: e }) : undefined;
     if (parts?.restartRoot !== undefined) {
       const cause = isConnectRefusal(e) ? e.cause : e;
-      const writeProblem = isWorkspaceTargetError(cause) && cause.code === "not-started" && preparedNeverStarted(cause.details) ? preparedRootWriteProblem(parts.restartRoot) : undefined;
+      const writeProblem = isWorkspaceTargetError(cause) && cause.code === "not-started" && (cause.details.stopped || preparedNeverStarted(cause.details)) ? preparedRootWriteProblem(parts.restartRoot) : undefined;
       const block = writeProblem ?? channelSeedRestartBlock(parts.restartRoot) ?? (isWorkspaceTargetError(cause) && cause.details.lastRun
         ? await legacyRestartAddressProblem(cause.details.server, `${displayCmd()} up`)
         : isWorkspaceTargetError(e) && e.details.stopped && e.details.space !== undefined

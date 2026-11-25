@@ -196,7 +196,7 @@ check("supervise is hidden", command("supervise")?.hidden === true);
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_") || key === "INVOCATION_ID") delete env[key];
 Object.assign(env, { HOME: home, USERPROFILE: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", NO_COLOR: "1", COLUMNS: "200" });
-const cotal = (args: string[]) => spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+const cotal = (args: string[], commandEnv = env) => spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env: commandEnv, encoding: "utf8", timeout: 120_000 });
 const out = (run: ReturnType<typeof cotal>) => `${run.stdout ?? ""}${run.stderr ?? ""}`;
 const definitions = () => {
   const run = cotal(["service", "--space", SPACE, "--json"]);
@@ -469,6 +469,19 @@ try {
   check("the printed confirmation returns a JSON receipt, forgets that space's service and keeps this folder's",
     confirmed?.status === 0 && JSON.parse(confirmed.stdout).result?.kind === "service-definition-removed"
       && serviceDefinitionStore(PREPARED).read("hello") === undefined && serviceDefinitionStore(SPACE).read("hello") !== undefined, confirmed && out(confirmed));
+
+  const colorEnv: NodeJS.ProcessEnv = { ...env, FORCE_COLOR: "1" };
+  delete colorEnv.NO_COLOR;
+  const addedPlain = cotal(["service", "add", "plain-retry", "--exec", "/bin/true", "--space", PREPARED, "--json"]);
+  const refusedPlain = cotal(["service", "remove", "plain-retry", "--space", PREPARED, "--plain", "--no-input"], colorEnv);
+  const confirmPlain = /confirm with `(?:pnpm )?cotal ([^`]+)`/.exec(refusedPlain.stderr)?.[1];
+  check("service remove with --plain keeps the definition until confirmed and prints a plain confirmation",
+    addedPlain.status === 0 && refusedPlain.status === 1 && serviceDefinitionStore(PREPARED).read("plain-retry") !== undefined
+      && confirmPlain === `svc remove plain-retry --space ${PREPARED} --yes --plain`, out(refusedPlain));
+  const removedPlain = confirmPlain ? cotal(confirmPlain.split(" "), colorEnv) : undefined;
+  check("the copied plain confirmation removes the definition and writes no ANSI even with color forced",
+    removedPlain?.status === 0 && removedPlain.stdout.includes("Service definition forgotten") && !removedPlain.stdout.includes("\x1b")
+      && serviceDefinitionStore(PREPARED).read("plain-retry") === undefined, removedPlain && out(removedPlain));
 
   const definitionFile = join(prepared, "service definition.json");
   writeFileSync(definitionFile, JSON.stringify({ schemaVersion: 1, space: PREPARED, launch: { type: "process", executable: "echo", args: ["hello"], cwd: prepared }, readiness: { type: "process", timeoutMs: 1000 } }));
