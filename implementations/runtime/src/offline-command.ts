@@ -85,7 +85,15 @@ function scriptOf(file: string | undefined): SimScript {
   const script = value as Record<string, unknown>;
   const fields = new Set(["turns", "asks", "checkpoints", "events", "clock", "faults"]);
   for (const [key, item] of Object.entries(script)) {
-    if (!fields.has(key)) throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field '${key}'`);
+    if (!fields.has(key)) {
+      const plural = `${key}s`;
+      const name = JSON.stringify(key);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `unknown simulation script field ${name} in the simulation results script ${file}`, {
+        target: { file }, remedy: fields.has(plural)
+          ? `replace ${name} in ${file} with "${plural}", then rerun the simulation`
+          : `remove ${name} from ${file} or use a supported top-level key: ${[...fields].join(", ")}`,
+      });
+    }
     if (key === "faults" ? !Array.isArray(item) : !item || typeof item !== "object" || Array.isArray(item)) {
       const shape = key === "faults" ? "an array of fault objects" : key === "clock" ? "an object of clock settings"
         : `an object keyed by ${key === "checkpoints" ? "checkpoint" : "step"} name`;
@@ -268,7 +276,7 @@ function simulationFailure(error: unknown, file: string, journal: Journal, prese
   // only showing the result object. When a results file was passed, it names that file.
   const sourceWord = shellPath(file.startsWith("-") ? `./${file}` : file);
   const handlerArg = `${handler?.startsWith("-") ? "=" : " "}${shellPath(handler ?? "results.json")}`;
-  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}${presentation === "json" ? " --json" : ""}`);
+  const command = codeSpan(`cotal run simulate ${sourceWord} --handler${handlerArg}${presentation === "rich" ? "" : ` --${presentation}`}`);
   const rerun = handler !== undefined
     ? `add it to ${oneLine(handler)} and rerun with ${command}`
     : `save it in a results file, for example results.json, and rerun with ${command}`;

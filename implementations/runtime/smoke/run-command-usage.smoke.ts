@@ -719,6 +719,30 @@ if (process.platform !== "win32") {
         && corrected.stderr === "" && report.result?.outcome === "completed" && report.result.elapsedMs === 1000, corrected);
     }
 
+    const typoHandler = "typo.json";
+    writeFileSync(join(dir, timerProgram), 'await sleep("1ms", { name: "timer" });\n');
+    writeFileSync(join(dir, typoHandler), '{"turn":{}}');
+    const typoJson = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    const typoPlain = run("simulate", timerProgram, "--handler", typoHandler, "--plain");
+    const typoError = JSON.parse(typoJson.stdout);
+    const typoMessage = `unknown simulation script field "turn" in the simulation results script ${typoHandler}`;
+    const typoRemedy = `replace "turn" in ${typoHandler} with "turns", then rerun the simulation`;
+    c("an unknown top-level key names the handler file and its supported replacement",
+      typoJson.status === 1 && typoJson.stderr === "" && typoError.outcome === "refused" && typoError.target?.file === typoHandler
+      && typoError.error?.code === "SCHEMA_INVALID" && typoError.error?.message === typoMessage && typoError.error?.remedy === typoRemedy
+      && typoPlain.status === 1 && typoPlain.stdout === "" && typoPlain.stderr.includes(typoMessage)
+      && typoPlain.stderr.includes(`\nNext\n  ${typoRemedy}`), { typoJson, typoPlain });
+    writeFileSync(join(dir, typoHandler), '{"turns":{}}');
+    const fixedTypo = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    const fixedResult = JSON.parse(fixedTypo.stdout).result;
+    c("replacing turn with turns lets the timer simulation complete in 1 ms",
+      fixedTypo.status === 0 && fixedTypo.stderr === "" && fixedResult?.outcome === "completed" && fixedResult.elapsedMs === 1, fixedTypo);
+    writeFileSync(join(dir, typoHandler), '{"other":{}}');
+    const unknownKey = run("simulate", timerProgram, "--handler", typoHandler, "--json");
+    c("an unknown key with no suggested replacement lists the supported keys",
+      unknownKey.status === 1 && JSON.parse(unknownKey.stdout).error?.remedy ===
+        `remove "other" from ${typoHandler} or use a supported top-level key: turns, asks, checkpoints, events, clock, faults`, unknownKey);
+
     const parallelProgram = "parallel.cotal.js", parallelHandler = "parallel-fault.json";
     writeFileSync(join(dir, parallelProgram), 'await parallel({ first: () => sleep("1s"), second: () => sleep("2s") }, { name: "batch" });\n');
     const step = "/parallel:batch#0";
@@ -730,22 +754,29 @@ if (process.platform !== "win32") {
       && report.result.failure?.step === step && report.result.failure.code === "L4002" && report.result.failure.title === "simulated batch failure"
       && report.result.elapsedMs === 0 && report.result.effects.length === 1 && report.result.effects[0]?.status === "failed", parallel);
 
-    for (const handler of [undefined, "timer's $results file.json"]) for (const jsonMode of [false, true]) {
+    const colorEnv = Object.assign({}, env, { FORCE_COLOR: "1" });
+    delete colorEnv.NO_COLOR;
+    for (const handler of [undefined, "timer's $results file.json"]) for (const mode of ["rich", "plain", "json"]) {
       if (handler !== undefined) writeFileSync(join(dir, handler), "{}");
-      const missing = run("simulate", program, ...(handler === undefined ? [] : ["--handler", handler]), ...(jsonMode ? ["--json"] : []));
+      const retryOptions = mode === "plain" ? { ...options, env: colorEnv } : options;
+      const args = ["run", "simulate", program, ...(handler === undefined ? [] : ["--handler", handler]), ...(mode === "rich" ? [] : [`--${mode}`])];
+      const missing = spawnSync(cli[0]!, [...cli.slice(1), ...args], retryOptions);
+      const jsonMode = mode === "json";
       const failure = jsonMode ? JSON.parse(missing.stdout) : undefined;
       const retry = /rerun with `([^`]+)`/.exec(jsonMode ? failure.error?.remedy ?? "" : missing.stderr ?? "")?.[1];
       writeFileSync(join(dir, handler ?? "results.json"), '{"checkpoints":{"expiry":{"status":"expired"}}}');
-      const replayed = retry?.startsWith("cotal run simulate ")
-        ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\n${retry}`], options)
+      const replayed = retry && /^(?:pnpm )?cotal run simulate /.test(retry)
+        ? spawnSync("sh", ["-c", `cotal() { ${cli.map(shellPath).join(" ")} "$@"; }\npnpm() { "$@"; }\n${retry}`], retryOptions)
         : undefined;
       const envelope = jsonMode && retry?.endsWith(" --json") && replayed?.status === 0 ? JSON.parse(replayed.stdout) : undefined;
-      c(`the printed simulation retry runs verbatim in ${jsonMode ? "JSON" : "human output"} with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
+      c(`the printed simulation retry runs verbatim in ${mode} mode with ${handler === undefined ? "a new handler" : "the existing handler path"}`,
         missing.status === 5 && replayed?.status === 0 && (jsonMode
           ? missing.stderr === "" && failure.error?.code === "OPERATION_FAILED" && failure.error?.cause?.code === "L6001"
             && replayed.stderr === "" && envelope?.outcome === "ok" && envelope.completeness === "complete"
             && envelope.result?.outcome === "completed" && envelope.result.elapsedMs === 23000
-          : /Program outcome:\s+completed/.test(replayed.stdout) && /Virtual time:\s+23000 ms/.test(replayed.stdout)), { missing, replayed });
+          : /Program outcome:\s+completed/.test(replayed.stdout) && /Virtual time:\s+23000 ms/.test(replayed.stdout)
+            && (mode !== "plain" || (retry?.endsWith(" --plain") === true && missing.stdout === "" && !missing.stderr.includes("\x1b")
+              && replayed.stderr === "" && !replayed.stdout.includes("\x1b")))), { missing, replayed });
     }
     for (const [empty, named] of [["--admit-read", "--admit-publish"], ["--admit-publish", "--admit-read"]]) {
       const refused = run("start", program, "--local", "--server", "nats://127.0.0.1:1", empty!, " , , ", named!, "none");

@@ -97,6 +97,34 @@ check(
   refusalFor({ model: "xai/grok-4.6" }) !== null,
 );
 
+// ---- EFFORT: the variant is claude's `--effort` level ------------------------------------------
+// claude 2.1.330 warns and runs at its default effort when `--effort` names a level it does not
+// know, so an unknown level has to stop the launch here or the seat runs on a level nobody chose.
+check("the connector declares model variant support", claudeConnector.supportsModelVariant === true);
+for (const variant of ["low", "medium", "high", "xhigh", "max"]) {
+  const msg = refusalFor({ model: "opus", variant });
+  const spec = msg === null ? (launch({ model: "opus", variant }) as { args: string[]; env: Record<string, string> }) : undefined;
+  const at = spec?.args.indexOf("--effort") ?? -1;
+  check(`variant ${variant} renders --effort ${variant} and labels the seat with it`, at >= 0 && spec?.args[at + 1] === variant && spec?.env.COTAL_VARIANT === variant, msg ?? spec?.args);
+}
+for (const variant of ["extreme", "minimal", "HIGH"]) {
+  for (const validateOnly of [false, true]) {
+    const msg = refusalFor({ model: "opus", variant, validateOnly });
+    check(`variant ${variant} is refused${validateOnly ? " by launch validation" : ""}, naming the levels claude accepts`, msg !== null && msg.includes(`"${variant}"`) && msg.includes("low, medium, high, xhigh, max"), msg);
+  }
+}
+{
+  const spec = launch({ model: "opus" }) as { args: string[]; env: Record<string, string> };
+  check("no variant renders no --effort and no label", !spec.args.includes("--effort") && spec.env.COTAL_VARIANT === undefined, spec.args);
+  const passed = launch({ model: "opus", variant: "high", launchOptions: { effort: "low" } }) as { args: string[]; env: Record<string, string> };
+  const efforts = passed.args.flatMap((a, i) => (a === "--effort" ? [passed.args[i + 1]] : []));
+  check(
+    "an explicit --opt effort wins over the variant, and the seat is not labelled with the variant it did not run",
+    JSON.stringify(efforts) === JSON.stringify(["low"]) && passed.env.COTAL_VARIANT === undefined,
+    { efforts, label: passed.env.COTAL_VARIANT },
+  );
+}
+
 // ---- The cell count itself, because three cells above are conditional ------------------------
 // The argv and COTAL_MODEL checks only run when the launch was accepted, so a regression that makes
 // the guard refuse EVERYTHING does not fail them - it DELETES them. Six assertions stop existing
@@ -105,7 +133,7 @@ check(
 //
 // A count is the only thing that sees a cell that is not there. It is a real assertion and it is
 // allowed to fail on a legitimate edit: change the cases above and change this number deliberately.
-const EXPECTED = 21;
+const EXPECTED = 35;
 check(
   `every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   passed() + failed() === EXPECTED, // counted BEFORE this check lands, so it counts the cells above it

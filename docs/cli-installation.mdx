@@ -57,9 +57,11 @@ a project keeps that project.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
-scripted form for the destination and not the full command help. The local form, filled in:
+scripted form for the destination and not the full command help. For local setup, create the project
+folder if it does not exist, then run setup:
 
 ```bash
+mkdir -p -m 700 ~/research
 cotal setup --destination local --harness claude --project ~/research --space research --no-input
 ```
 
@@ -621,7 +623,8 @@ it exits 0 without reconciling packages, inspecting Manager custody or creating 
 record. If self-update already repaired installation permissions or changed connector state during
 preflight, it reports that no installed packages were replaced.
 Losing registry connectivity during release checks, extension-dependency checks or target staging
-also exits 0 before replacement.
+also exits 0 before replacement. If npm reports a registry fetch timeout during staging,
+the command keeps the previous version installed and asks you to retry when the registry responds.
 On Linux and macOS, the updater stops a staging install that stops making progress or reaches
 its five-minute limit. It removes the disposable staging copy and leaves the running installation
 and local spaces unchanged. Unless npm reports a network error, the command reports the staging

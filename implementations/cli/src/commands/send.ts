@@ -146,6 +146,7 @@ function sendAgain(destination: Pick<SendInput, "mode" | "target">, values: Valu
   const options = targetOptions(values);
   options.push(...(values.mention ?? []).map((name) => option("mention", name)));
   if (values["reply-to"] !== undefined) options.push(option("reply-to", values["reply-to"]));
+  if (values.verbose) options.push("--verbose");
   return `run ${codeSpan(["cotal send", recipient, ...options, body].join(" "))}`;
 }
 

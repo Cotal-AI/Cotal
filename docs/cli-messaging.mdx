@@ -28,10 +28,10 @@ and `USAGE_INVALID` (exit 1, without the command's help) for a directory, invali
 that is empty or contains only whitespace.
 The refusal names the mesh the send was aimed at when this machine's records name one. The retry
 uses a quoted body and keeps the destination and any `--space`, `--server` and `--creds` options.
-It also keeps `--json` or `--plain` when requested.
+It also keeps `--json` or `--plain` and any `--verbose` flag.
 No destination, several destinations, several body sources or an empty message is refused. A lone
 `-` is refused too, because stdin is read only through `--stdin` or `--file -`. The suggested
-stdin command also keeps `--json` or `--plain` when requested. An empty
+stdin command keeps the same receipt options. An empty
 `--to`, `--channel` or `--role` value is refused before reading the body. Set that destination in the original command to keep the body source, space and output format.
 The recipient grammar is checked before connector installation or target preparation. Channel
 and role names use the native subject grammar. A channel name holding `*` or `>` is refused with
@@ -553,8 +553,9 @@ the id. A member the roster has not named says `name not reported`. JSON keeps t
 or null when the roster has none. With `--follow --json`, it emits membership NDJSON
 records. If it refuses invalid arguments or setup fails before the snapshot, it writes an `error`
 with the code and any remedy, then an `end` with `reason: "setup-failed"` and `lastAsOf: null`.
-Both records name the requested channel and the space when known.
-This includes the name retained by a directly started local space after it stops.
+Both records name the requested channel and the space when known, including the name retained by
+a directly started local space after it stops. If `--space` has a missing or blank value,
+`target.space` is `null` even if a later `--space` supplies a value.
 
 A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
@@ -836,8 +837,10 @@ snapshot, it writes an `error` with the code and any remedy, then an `end` with 
 without a snapshot. Invalid arguments include a missing `--limit` value, an invalid `--server` URL
 and an empty `--space` value.
 Both targets include the requested `channel` (`null` if none) and `dms` flag, along with any known
-space or project root. An `end` record closes the stream. The exit code is the snapshot's, the
-failure's when setup or the credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
+space or project root. If `--space` has a missing or blank value, `target.space` is `null` even if
+a later `--space` supplies a value.
+An `end` record closes the stream. The exit code is the snapshot's, the failure's when setup or the
+credential ends the follow, or 130 or 143 when SIGINT or SIGTERM ends it.
 
 To resume a JSON follow, save the last processed event's `data.ts` and the `data.id` values
 you processed at that timestamp. Restart with `--since` set to one millisecond before the saved

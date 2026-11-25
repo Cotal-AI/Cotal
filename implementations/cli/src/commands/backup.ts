@@ -509,6 +509,9 @@ export function validateBackupArguments(args: ParsedArgs): void {
     }
     throw new CommandFailure("refused", "USAGE_INVALID", mode === "restore" ? "backup restore accepts only --only, --store-dir and --accept-missing-source; the space, broker and runtime come from the preserved cut" : "backup inspection and verification accept no creation, target or restore inputs");
   }
+  if (maintenance && args.values["dry-run"] && args.values.yes) {
+    throw new CommandFailure("refused", "USAGE_INVALID", `backup ${mode} cannot combine --dry-run and --yes`, { remedy: "use --dry-run to review or --yes to apply" });
+  }
   if (mode === "create") selection(args.values.only as string | undefined);
   // The native restore accepts only a registry narrowing and otherwise follows the artifact's own
   // selection, so an explicit `full` could not be honored over a registry-only artifact. Refused here,

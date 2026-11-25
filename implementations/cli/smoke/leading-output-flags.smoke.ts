@@ -13,7 +13,7 @@
  * Run: pnpm smoke:leading-output-flags
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -24,7 +24,7 @@ if (!existsSync(BIN)) {
   process.exit(1);
 }
 
-interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string }[] }
+interface Envelope { command?: string; outcome?: string; error?: { code?: string; message?: string; remedy?: string }; warnings?: { code?: string; message?: string }[] }
 
 const { check, finish } = createSuite();
 const home = mkdtempSync(join(tmpdir(), "cotal-leading-flags-"));
@@ -95,6 +95,40 @@ for (const placement of ["leading", "trailing"]) {
     !existsSync(journal) && existsSync(root), shown(r));
 }
 
+const collisionConfig = join(home, "retained-collision");
+const collisionRoot = join(collisionConfig, "cotal", "extensions");
+const collisionManifest = join(collisionRoot, "extensions.json");
+const collisionFixture = JSON.stringify({ extensions: [{ pkg: "output-fixture", spec: "output-fixture@1.0.0", version: "1.0.0", commands: [{ name: "config", summary: "Test a retained command collision" }] }] });
+mkdirSync(collisionRoot, { recursive: true });
+writeFileSync(collisionManifest, collisionFixture);
+const missingKey = ["config", "get", "missing-key"];
+const collisionRefusal = run([...missingKey, "--json"], collisionConfig);
+const collisionWarnings = collisionRefusal.envelope?.warnings;
+check("finite JSON refusal carries the retained extension collision once", collisionRefusal.status === 1 && collisionRefusal.stderr === "" &&
+  collisionRefusal.envelope?.command === "config" && collisionRefusal.envelope.outcome === "refused" &&
+  collisionRefusal.envelope.error?.code === "USAGE_INVALID" && collisionRefusal.envelope.error.message?.includes('unknown preference "missing-key"') === true &&
+  collisionWarnings?.length === 1 && collisionWarnings[0]?.code === "EXTENSION_COMMAND_COLLISION" &&
+  collisionWarnings[0].message?.includes("output-fixture@1.0.0") === true && readFileSync(collisionManifest, "utf8") === collisionFixture, shown(collisionRefusal));
+const collisionText = run(missingKey, collisionConfig);
+check("text refusal keeps the retained extension collision on stderr", collisionText.status === 1 && collisionText.stdout === "" &&
+  collisionText.stderr.includes("output-fixture@1.0.0"), shown(collisionText));
+const collisionParse = run(["--json", "config", "get", "color", "--unknown-option"], collisionConfig);
+check("JSON parser refusal carries the retained extension collision", collisionParse.status === 1 && collisionParse.stderr === "" &&
+  collisionParse.envelope?.error?.code === "USAGE_INVALID" && collisionParse.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionParse));
+const collisionSuccess = run(["cfg", "get", "color", "-j"], collisionConfig);
+check("JSON success keeps the built-in alias and the retained extension warning", collisionSuccess.status === 0 && collisionSuccess.stderr === "" &&
+  collisionSuccess.envelope?.command === "config" && collisionSuccess.envelope.outcome === "ok" &&
+  collisionSuccess.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(collisionSuccess));
+for (const args of [["history", "general"], ["channel", "members", "general"]]) {
+  const finite = run([...args, "--json", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision in its finite JSON refusal`, finite.status === 1 && finite.stderr === "" &&
+    finite.envelope?.error?.code === "USAGE_INVALID" && finite.envelope.warnings?.[0]?.code === "EXTENSION_COMMAND_COLLISION", shown(finite));
+  const stream = run([...args, "--json", "--follow", "--follow=false"], collisionConfig);
+  check(`${args.join(" ")} keeps the collision on stderr for its JSON stream refusal`, stream.status === 1 &&
+    stream.envelope === undefined && stream.stdout.includes('"type":"error"') && stream.stdout.includes('"type":"end"') &&
+    stream.stderr.includes("output-fixture@1.0.0"), shown(stream));
+}
+
 for (const args of [["--json", "version"], ["-j", "version"], ["--no-input", "--json", "version"], ["--json", "--no-input", "version"]]) {
   const r = run(args);
   check(`cotal ${args.join(" ")} writes the version envelope`, r.status === 0 && r.envelope?.command === "version" && r.envelope.outcome === "ok", shown(r));
@@ -145,6 +179,21 @@ for (const flag of ["--no-input", "--no-color"]) {
 const malformedText = run(["--no-input=", ...search.slice(0, -1)]);
 check("an empty attached value still gets the switch remedy in text", malformedText.status === 1 && malformedText.stdout === "" &&
   malformedText.stderr.includes("--no-input takes no value") && malformedText.stderr.includes("omit --no-input or pass it without a value"), shown(malformedText));
+
+for (const [flag, ...tail] of [
+  ["--no-color", "--no-input=false", "status", "--json"],
+  ["--no-input", "-j", "--no-color=false", "--", "status"],
+]) {
+  const args = [`${flag}=false`, ...tail];
+  const r = run(args);
+  check(`${args.join(" ")} preserves the first error in JSON`, r.status === 1 && r.stderr === "" &&
+    r.envelope?.command === "status" && r.envelope.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" &&
+    r.envelope.error.message === `${flag} takes no value` && r.envelope.error.remedy === `omit ${flag} or pass it without a value`, shown(r));
+}
+
+const malformedWithLiteralJson = run(["--no-color=false", "--no-input=false", "status", "--", "--json"]);
+check("a literal --json does not set the format of a malformed leading switch refusal", malformedWithLiteralJson.status === 1 &&
+  malformedWithLiteralJson.stdout === "" && malformedWithLiteralJson.stderr.includes("--no-color takes no value"), shown(malformedWithLiteralJson));
 
 const literalGlobal = run([...search, "--", "--no-input=false"]);
 check("after -- an attached global value is still a page word", literalGlobal.status === 1 && literalGlobal.stderr === "" &&

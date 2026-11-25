@@ -103,6 +103,34 @@ function checkBrokerForegroundPreview(): void {
     && status.status === 0 && /Recorded state:\s+not started/.test(out(status)), { preview: out(preview), status: out(status) });
 }
 
+function checkControllerBrokerRestart(controller: (args: string[]) => ReturnType<typeof cotal>, root: string, space: string): void {
+  const restart = ["service", "restart", "stack-broker", "--space", space];
+  const status = () => JSON.parse(controller(["service", "status", "stack-broker", "--space", space, "--json"]).stdout).result;
+  const before = status();
+  const preview = controller([...restart, "--dry-run", "--json"]);
+  const receipt = JSON.parse(preview.stdout);
+  const down = `down --dry-run --json --space ${space}`;
+  check("a running controller broker restart preview suggests only the read-only stop preview",
+    preview.status === 2 && preview.stderr === "" && receipt.outcome === "refused" && receipt.error?.code === "LIFECYCLE_BLOCKED"
+    && receipt.error.remedy === `change to the project folder with \`cd '${root}'\`, then run \`cotal ${down}\`. This previews only the stop part of a restart.`, out(preview));
+  const plain = controller([...restart, "--dry-run", "--plain"]);
+  check("the controller broker restart preview preserves plain output",
+    plain.status === 2 && ["cotal", "pnpm cotal"].some((cli) => out(plain).includes(`\`${cli} down --dry-run --plain --space ${space}\``)), out(plain));
+  const inspected = controller(down.split(" "));
+  const inspection = JSON.parse(inspected.stdout);
+  check("the suggested whole-stack preview only inspects the same running broker",
+    inspected.status === 0 && inspection.target?.space === space && inspection.result?.kind === "controller-stack-stop-preview"
+    && inspection.result.signalled === false && inspection.result.members.some((member: { instanceId: string; process: string }) =>
+      member.instanceId === before?.instanceId && member.process === "running"), out(inspected));
+  const apply = controller([...restart, "--yes", "--json"]);
+  const refusal = JSON.parse(apply.stdout);
+  const after = status();
+  check("an applied controller broker restart still names the stop and start and leaves the broker running",
+    apply.status === 2 && refusal.error?.code === "LIFECYCLE_BLOCKED" && refusal.error.remedy?.includes("`cotal down`")
+    && refusal.error.remedy.includes(`\`cotal up --root '${root}' --space ${space}\``)
+    && after?.observedProcess === "running" && after.instanceId === before?.instanceId && after.pid === before?.pid, out(apply));
+}
+
 /** A plain `logs --follow` in `at`, read until it exits. */
 function followText(args: string[], at = { root, env }) {
   const child = spawn(process.execPath, ["--import", TSX_LOADER, BIN, ...args, "--follow"], { cwd: at.root, env: at.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -512,6 +540,7 @@ try {
     const controllerServer = `nats://127.0.0.1:${await freePort()}`;
     const controllerUp = controller(["up", "--open", "--space", controllerSpace, "--server", controllerServer, "--seat-cap", "2", "--max-sessions", "3"]);
     check("the controller control starts its broker and manager", controllerUp.status === 0, out(controllerUp));
+    checkControllerBrokerRestart(controller, controllerRoot, controllerSpace);
     const controllerDown = controller(["down", "--yes"]);
     check("the controller control stops its whole stack", controllerDown.status === 0, out(controllerDown));
     const brokerLog = controller(["service", "logs", "stack-broker", "--space", controllerSpace, "--tail", "5"]);

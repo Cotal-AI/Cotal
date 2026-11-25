@@ -298,9 +298,11 @@ running processes, `space forget` exits 2 with `PERMISSION_DENIED` and keeps the
 access to the project folder and its process records before retrying. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it, and a discovered space with `CONFLICT`, because
 its catalog keeps it. A stack `cotal up` started stays a prepared space at its root after that
-`down`, so the refusal names `cotal down` and then `space forget` again. A legacy root's `down` drops
-the record, and the refusal says so, unless the space is named after its folder: that `down` keeps the
-record, and the refusal names `space forget` again. A space whose root holds its stack journal counts as
+`down`, so the refusal names `cotal down` in the project folder and then `space forget` again.
+When the command cannot prompt or uses `--json`, it names `cotal down --yes` to confirm the stop
+explicitly. A legacy root's `down` drops the record, and the refusal says so, unless the space is
+named after its folder: that `down` keeps the record, and the refusal names `space forget` again.
+A space whose root holds its stack journal counts as
 running while any stack member's process may still run. The refusal names one such member and
 writes nothing: the registration, the selection and the root's files stay. A space whose folder was
 deleted while it ran also refuses with `LIFECYCLE_BLOCKED` and keeps its record. A controller stack
@@ -783,6 +785,8 @@ with `cotal backup restore <dir> --accept-missing-source` instead of offering to
 
 For the selected space, `Default agent` reports the harness a bare `cotal spawn` selects.
 The default persona's `agent:` pin overrides environment and saved harness preferences.
+If the catalog contains `suffix.md` (`.cotal/agents/suffix.md.md`), both commands select that entry
+even if the space's project root has a file named `suffix.md`. Use `./suffix.md` to select the project file explicitly.
 If that persona cannot be read or validated, status reports the application as unresolved
 and includes a warning instead of presenting a harness preference as the launch choice.
 Non-regular persona paths, including named pipes, are refused without reading them.
@@ -888,6 +892,8 @@ names the `cotal up` that starts it there.
 receipts, which only `up` and `down` read, so `status` does not name it. When `status` verifies
 that a controller startup still holds the root's maintenance lock, it reports `Startup in progress`.
 For a prepared space, `status --space <name>` checks that space's root even from another folder.
+In the project's own folder, this includes an open stack restart while it registers the space again.
+Next does not suggest a store reset or settlement for that restart.
 Wait for startup to finish, then run the status command shown under Next.
 An `up` or `down` that was interrupted before it recorded an outcome and left some members running
 and others stopped is

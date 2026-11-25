@@ -50,6 +50,10 @@ if [ "$1" = plugin ] && [ "$2" = list ]; then
   printf '%s\\n' "[{\\"id\\":\\"cotal-skills@cotal-mesh\\",\\"scope\\":\\"user\\",\\"enabled\\":true,\\"version\\":\\"$ver\\"}]"
   exit 0
 fi
+if [ "$1" = plugin ] && [ "$2" = marketplace ] && [ "$3" = list ] && [ -n "$FAKE_MARKET_PATH" ]; then
+  printf '%s\\n' "[{\\"name\\":\\"cotal-mesh\\",\\"source\\":\\"directory\\",\\"path\\":\\"$FAKE_MARKET_PATH\\"}]"
+  exit 0
+fi
 if [ "$1" = plugin ] && { [ "$2" = install ] || [ "$2" = update ] || [ "$2" = marketplace ]; }; then
   printf '%s\\n' "$current" > "$state"
   echo already installed
@@ -86,6 +90,7 @@ exit 0
       XDG_RUNTIME_DIR: join(home, "runtime"),
       TMPDIR: tmpdir(),
       COTAL_SKIP_CONNECTOR_SEED: "1",
+      DO_NOT_TRACK: "1",
       NO_COLOR: "1",
       PATH: join(home, "bin"),
     },
@@ -160,12 +165,34 @@ try {
   assert.match(refused.stderr, /--skills cannot be combined with --full or --demo/, "refusal names the --skills combination fence");
   const refusedDemo = await run(["setup", "--skills", "--demo"], first.env, first.cwd);
   assert.notEqual(refusedDemo.code, 0, "setup --skills --demo is refused");
+  assert.equal(existsSync(join(cotalHome, "telemetry.json")), false, "the fixture does not create a reporting identity");
 
   const setupSource = readFileSync(join(repoRoot, "implementations", "cli", "src", "commands", "setup.ts"), "utf8");
   const skillsOnly = setupSource.slice(setupSource.indexOf("async function runSkillsOnly"), setupSource.indexOf("\n}\n", setupSource.indexOf("async function runSkillsOnly")) + 2);
   assert.match(skillsOnly, /await reconcileConnectorSkills\(\);\s*seedAgentSkills\(\);/, "setup --skills dispatches only provider and cross-vendor skills reconcile");
   assert.doesNotMatch(skillsOnly, /seedDefaultAgent|runEnsure/, "setup --skills dispatch contains no persona or full-setup path");
   assert.doesNotMatch(setupSource, /plugin", "(?:install|update)"|\.claude-plugin|--scope/, "generic setup owns no harness plugin command or asset path");
+
+  // Equal versions with a differing payload are not printed as a version mismatch.
+  const samever = freshEnv();
+  writeFileSync(join(samever.home, ".claude-fake-state"), `${cliVersion}\n`);
+  const sameStatus = await run(["status"], samever.env, samever.cwd);
+  assert.equal(sameStatus.code, 0, `status exits 0: ${sameStatus.stderr}`);
+  const sameRow = skillRow(sameStatus.stdout, "Claude skills");
+  assert.match(sameRow, new RegExp(`v${cliVersion.replaceAll(".", "\\.")} payload differs · stale · cotal setup --skills`), "equal versions name a payload difference");
+  assert.doesNotMatch(sameRow, /≠/, "equal versions are not printed as a mismatch");
+
+  // A shared Claude profile whose marketplace belongs to another Cotal home names that home's choices,
+  // not the skills write that would refuse.
+  const other = mkdtempSync(join(tmpdir(), "cotal-9937-other-"));
+  created.push(other);
+  const owned = { ...samever.env, FAKE_MARKET_PATH: join(other, "claude-plugin") };
+  const ownedStatus = await run(["status"], owned, samever.cwd);
+  assert.equal(ownedStatus.code, 0, `status exits 0: ${ownedStatus.stderr}`);
+  const ownedRow = skillRow(ownedStatus.stdout, "Claude skills");
+  assert.ok(ownedRow.includes(`Claude marketplace cotal-mesh belongs to Cotal home ${other}, not ${samever.env.COTAL_HOME}.`), `status names the owning home: ${ownedRow}`);
+  assert.match(ownedRow, /Use that COTAL_HOME or a separate CLAUDE_CONFIG_DIR and plugin cache for this home\./, "status gives the refusal's choices");
+  assert.doesNotMatch(ownedStatus.stdout, /Claude skills:.*setup --skills/, "status does not recommend the refused skills write");
 
   console.log(`status-skills-remedy.smoke: ${cells()} checks passed`);
 } finally {

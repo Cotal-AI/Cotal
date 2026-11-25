@@ -744,7 +744,7 @@ setCurrent("keep");
     check("a space whose controller stack still runs is LIFECYCLE_BLOCKED, naming the member and cotal down",
       refused(running, 2, "LIFECYCLE_BLOCKED") && /stack-broker/.test(running.env?.error?.message ?? "") && /cotal down/.test(running.env?.error?.remedy ?? ""), shown(running));
     check("...and since a stack's down keeps it as a prepared space, the remedy names forget again",
-      running.env?.error?.remedy === `stop it with \`cotal down\` in ${runningRoot}, which keeps it as a prepared space there, then run \`cotal space forget stackrun\` again`, running.env?.error);
+      running.env?.error?.remedy === `stop it with \`cotal down --yes\` in ${runningRoot} to explicitly confirm the stop. The stop keeps it as a prepared space there. Then run \`cotal space forget stackrun\` again.`, running.env?.error);
     const meshesRm = await run(["meshes", "rm", "stackrun"]);
     check("meshes rm of it refuses too, saying its down keeps it prepared and naming space forget",
       meshesRm.status === 1 && meshesRm.stderr.includes(`- \`cotal down\` there stops it and keeps it as a prepared space there, which \`cotal space forget stackrun\` then removes`) && findMesh("stackrun") !== undefined, meshesRm);

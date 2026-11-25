@@ -310,9 +310,14 @@ text report to stderr and keep the same exit code. A usage error under
 finite `--json` output is a `refused` envelope with code `USAGE_INVALID`, and the help it names stays off stdout.
 This also applies when `-j` comes before a short option that is unknown or needs a value, as in
 `cotal config get harness -jZ` or `cotal config get harness -js`.
+If several leading global switches have attached values, the JSON refusal names the first malformed switch.
 A word that names none of a command's subcommands and is near none of them is a usage error that
 lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
+
+When a retained extension command collides with a built-in, the built-in wins. A finite JSON
+envelope from a built-in carries `EXTENSION_COMMAND_COLLISION` in `warnings` rather than printing
+the warning on stderr.
 
 An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
 on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.

@@ -217,7 +217,12 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean, mi
   }
   if (prepared !== undefined) {
     const here = canonicalRoot(prepared) === canonicalRoot(root);
-    const block = preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
+    const control = join(prepared, ".cotal");
+    let controlIsFile = false;
+    try { controlIsFile = lstatSync(control, { throwIfNoEntry: false })?.isFile() === true; } catch { /* no confirmed obstruction */ }
+    const block = controlIsFile
+      ? { message: `${codeSpan(control)} is a regular file, not a directory`, remedy: "move the file aside and restore the original .cotal directory" }
+      : preparedRootWriteProblem(prepared) ?? rootStoreProblem(prepared) ?? channelSeedRestartBlock(prepared);
     return `"${named}" is prepared but not started; ${block ? `${block.message}. First ${block.remedy}, then ` : ""}start it with ${codeSpan(upCommand(prepared, named!, ...(here ? [] : ["--root", shellWord(prepared)])))}, then run \`${command}\` ${here ? "again" : "in that folder"}`;
   }
   if (registered && !existsSync(registered)) return `the folder space ${named} is recorded at, ${registered}, no longer exists; if it was moved or renamed, move it back and run \`${command}\` there; otherwise forget the space with \`cotal space forget ${named}\``;
