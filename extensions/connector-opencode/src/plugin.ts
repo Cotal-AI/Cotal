@@ -51,6 +51,8 @@ import {
   AguiEmitterHolder,
   eventPlaneStopped,
   BoundStartSource,
+  DeltaMergedSource,
+  streamSeed,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
@@ -59,15 +61,18 @@ import {
   scrubLaunchMaterial,
   registerOnceExit,
   type InboxItem,
+  type Merged,
   type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeRecord } from "./agui-source.js";
 import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
+import { OpenCode1DeltaStream } from "./stream1.js";
 import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
 import { opencode1FailureCondition } from "./failure-condition.js";
+import { opencode1Commands } from "./commands1.js";
 import {
   log,
   SWAP_SETTLE_MS,
@@ -78,6 +83,7 @@ import {
   SurfacedBatch,
 } from "./plugin-seams.js";
 import { pluginIo } from "./plugin-io.js";
+import { opencode1Asks } from "./prompt-asks.js";
 export {
   SESSION_RETIRED,
   SETTLE_ABANDONED,
@@ -125,8 +131,27 @@ export const cotal: Plugin = async () => {
     await verifyServerModel(serverUrl, serverAuth, selectedModel);
   })();
 
-  const agent = new MeshAgent(config);
+  const commands = opencode1Commands({
+    api: <T>(path: string, init?: RequestInit, timeoutMs?: number) => opencodeApi<T>(path, init, timeoutMs),
+    ensureSession,
+    running: () => (busy || batch.open ? sessionID : undefined),
+    markInterrupt: markInterruptIntent,
+    firstTurnSystem: () => firstTurnSystem(),
+    primed: () => { primed = true; },
+    warn: log,
+  });
+  const agent = new MeshAgent(config, undefined, { commands: commands.dispatcher });
   const { reapRetiredWal, opencodeApi, isMessageAbortedError, runErrorOf } = pluginIo({ agent, config, serverUrl, serverAuth });
+  // OpenCode answers a reply to an ask it does not hold with a 404.
+  const asks = opencode1Asks({
+    desk: () => agent.prompts,
+    warn: log,
+    session: () => sessionID,
+    send: (path, init) => opencodeApi(path, init).then(() => true, (e: { status?: number }) => {
+      if (e.status === 404) return false;
+      throw e;
+    }),
+  });
   // OpenCode lazily loads plugins while answering /provider. Awaiting that request in this
   // plugin's initializer would deadlock the server. Return hooks first, but do not join or
   // create a session until the server has answered. This is a managed serve process: on a
@@ -142,7 +167,9 @@ export const cotal: Plugin = async () => {
    * is on. A personal `opencode` never publishes, because the launcher sets that variable only for
    * a managed session.
    */
-  let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
+  let events: AguiEmitterHolder<Merged<OpenCodeRecord>> | undefined;
+  /** Each holder's delta stream, which journals what its session streams. */
+  const deltaStreams = new WeakMap<AguiEmitterHolder<Merged<OpenCodeRecord>>, OpenCode1DeltaStream>();
   /** Per session, the cursor of its end when the connector last reported a turn over. */
   const turnEndedAt = new Map<string, string>();
   /** This principal's event WAL lock, taken by whichever holder started first and held until the
@@ -176,7 +203,7 @@ export const cotal: Plugin = async () => {
    * its own emitter and its own log, which is the sequential-sessions-one-principal case the shared
    * subject frontier exists for.
    */
-  function newEventHolder(): AguiEmitterHolder<OpenCodeRecord> {
+  function newEventHolder(): AguiEmitterHolder<Merged<OpenCodeRecord>> {
     // Scoped to this holder, not to the process: the run-closed callback below has to reach the
     // mapper, and the two are assigned at different times because the mapper is built inside the
     // factory, keyed on the session the bus names.
@@ -185,18 +212,21 @@ export const cotal: Plugin = async () => {
     // this factory again, and the boundary captured below is the position the thread adopted at;
     // a second capture would sit at the re-establish, and every message between the two would be
     // lost without a word. Same rule as the Claude Code connector's holder.
-    let source: BoundStartSource<OpenCodeRecord> | undefined;
+    let start: { session: OpenCodeSessionSource; boundary: string } | undefined;
+    let source: BoundStartSource<Merged<OpenCodeRecord>> | undefined;
+    let merged: DeltaMergedSource<OpenCodeRecord> | undefined;
+    const stream = new OpenCode1DeltaStream(config.reasoningEvents === true);
     // Built LAZILY, on the first event that names a session: `start()` reaches the broker, and that
     // work must not run for a session that never emits.
-    return new AguiEmitterHolder<OpenCodeRecord>(
+    const holder = new AguiEmitterHolder<Merged<OpenCodeRecord>>(
       async (id: string) => {
         // Captured as the FACTORY'S FIRST ACT, before the mesh wait below: a lazily-built source
         // otherwise positions itself on its own first read, which happens only after the mesh wait
         // and everything else this bind does first, and anything the session writes to its message
         // list in that window is silently dropped.
-        const bound =
-          source ??
-          (source = await (async () => {
+        const at =
+          start ??
+          (start = await (async () => {
             const session = new OpenCodeSessionSource({
               // The session's end when its turn was last reported over: a part still filling then
               // is settled by that, not by marks it will never get.
@@ -211,8 +241,7 @@ export const cotal: Plugin = async () => {
               // compared as an order and never dereferenced as an identity.
               onVanished: (cursor) => log(`AG-UI: the resume cursor was removed from the session (revert): ${cursor}`),
             });
-            const boundary = await session.read(undefined);
-            return new BoundStartSource(session, boundary.cursor);
+            return { session, boundary: (await session.read(undefined)).cursor };
           })());
         // WAIT FOR THE MESH FIRST. This factory runs off the first `session.created` on the bus,
         // and the shim creates that session before the mesh link binds, so `AguiEmitter.start`
@@ -227,7 +256,7 @@ export const cotal: Plugin = async () => {
         const workspaceRoot = resolveEventsStateRoot(process.env);
         const threadId = id; // the native session IS the AG-UI thread
         const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-        const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        const { walPath, subjectPath, deltaJournalPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
         // HELD FOR THE PROCESS, NOT FOR THIS HOLDER, and holding it at all is the half #599 named
         // that this connector did not do. `ensureEventWalDir` hands back the lock it actually took;
         // dropping it on the floor here left `release()` with no caller anywhere in shipped source,
@@ -247,25 +276,38 @@ export const cotal: Plugin = async () => {
         // expects an empty subject its own first session filled, and halts for good.
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+        if (!source) {
+          stream.open(id, {
+            path: deltaJournalPath,
+            onWrite: () => holder.flush(id),
+            onError: (e) => log(`AG-UI: streamed text could not be journaled, the saved part carries it: ${e.message}`),
+          });
+          merged = new DeltaMergedSource(at.session, deltaJournalPath);
+          source = new BoundStartSource(merged, merged.start(at.boundary));
+        }
         // Seeded from the bracket state that will exist AFTER `start` settles a pending frame: a
         // re-established plane starts with the log's run open, and a mapper that opened with none
         // would drop every record until the next prompt, whose `RUN_STARTED` the brackets refuse.
-        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
-        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
-        return AguiEmitter.start<OpenCodeRecord>({
+        const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+        const seed = await streamSeed(deltaJournalPath, wal.pending === null ? wal.frontier.sourceCursor : wal.pending.sourceCursor, brackets);
+        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: brackets?.run, reasoning: config.reasoningEvents, seed });
+        return AguiEmitter.start<Merged<OpenCodeRecord>>({
           endpoint: agent.ep,
           withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
-          source: bound,
-          map: mapper.map,
-          onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable session record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
+          source,
+          map: mapper.mapMerged,
+          onUnreadable: (gap) =>
+            log(`AG-UI source: skipped an unreadable ${gap.file ? "delta journal line" : "session record"} at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
         });
       },
       {
         onError: eventPlaneStopped({ log }),
         // The session's end when `session.idle` or `session.error` reports the turn over: what
         // names the turn a terminal held through an outage ends.
+        // Before the first start opens the journal nothing is journaled, so the session's end is
+        // the whole position: the merged source reads a session cursor alone as that position.
         sourceEnd: async (sessionId: string) => {
           const end = await new OpenCodeSessionSource({
             read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(sessionId)}/message`, undefined, 30_000),
@@ -273,7 +315,10 @@ export const cotal: Plugin = async () => {
           // Recorded for the session's source: every record at or before this end belongs to a
           // turn that has ended, and is read as settled whatever its own marks say.
           turnEndedAt.set(sessionId, end);
-          return end;
+          if (!merged) return end;
+          // The streams no saved part will close end here, before the run does.
+          stream.turnEnded(end);
+          return merged.start(end);
         },
         // The turn terminal closes a run the record stream never described, so without this the
         // mapper would still believe that run is open, attribute the next records to it, and have
@@ -281,8 +326,20 @@ export const cotal: Plugin = async () => {
         onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
       },
     );
+    deltaStreams.set(holder, stream);
+    return holder;
   }
   if (eventsArmed) events = newEventHolder();
+
+  /** Close a holder and then its delta journal. */
+  const closeHolder = async (holder: AguiEmitterHolder<Merged<OpenCodeRecord>> | undefined): Promise<void> => {
+    if (!holder) return;
+    try {
+      await holder.close();
+    } finally {
+      deltaStreams.get(holder)?.close();
+    }
+  };
 
   /**
    * Give this principal's event WAL lock back, ONCE, at the final event teardown.
@@ -321,7 +378,9 @@ export const cotal: Plugin = async () => {
   let busy = false; // a turn is running (ours via drive(), OR the human's via session.status) → don't
   // prompt: opencode would COALESCE onto it (no reject). Released at EVERY turn end (completeTurn).
   let driving = false; // re-entrancy guard around an in-flight server prompt
+  let lastTurnWasCommand = false; // the last turn the connector started ran an agent command
   let primed = false; // persona goes out as `system` on the first CONNECTOR-SUBMITTED turn, once
+  const firstTurnSystem = (): string | undefined => (!primed && persona ? `${persona}\n\n${briefing(config, "opencode")}` : undefined);
   // Set on the first connector-submitted turn whether or not there was a briefing to send: the flag
   // records that the attempt was made, so an empty briefing is not retried on every later turn.
   let briefed = false;
@@ -336,6 +395,12 @@ export const cotal: Plugin = async () => {
   let turnEndsSeen = 0;
   const noteTurnEnd = (): void => {
     turnEndsSeen += 1;
+  };
+  // A turn started in `id`, whoever submitted it; a command's dispatch waits for this.
+  const noteTurnStart = (id: string): void => {
+    commands.turnStarted(id);
+    agent.noteActivity();
+    busy = true;
   };
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
@@ -512,6 +577,7 @@ export const cotal: Plugin = async () => {
    */
   const quiesce = async (): Promise<void> => {
     stopping = true;
+    commands.close();
     try {
       controlServer?.close();
     } catch {
@@ -552,7 +618,7 @@ export const cotal: Plugin = async () => {
     }
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
-    await settleWithin(events?.close(), SWAP_SETTLE_MS, "event holder at teardown");
+    await settleWithin(closeHolder(events), SWAP_SETTLE_MS, "event holder at teardown");
     await releaseEventLock();
     clearErrorRetry(true);
     await agent.stop();
@@ -648,7 +714,7 @@ export const cotal: Plugin = async () => {
    * CALL SITE and not by membership, so a site added later is not covered by it. Feed a site an
    * event-carried id off that chain and this becomes reachable.
    */
-  function eventsFor(id: string | undefined): AguiEmitterHolder<OpenCodeRecord> | undefined {
+  function eventsFor(id: string | undefined): AguiEmitterHolder<Merged<OpenCodeRecord>> | undefined {
     const holder = events;
     if (holder === undefined || id === undefined) return undefined;
     return holder.path === undefined || holder.path === id ? holder : undefined;
@@ -730,14 +796,14 @@ export const cotal: Plugin = async () => {
    *  makes the ordinary wake paths pick it up again. */
   const bootPending = (): boolean => bootReady && bootPrompt !== undefined;
 
-  /** Is there anything at all for a drive to carry? Three sources, and a caller that asks only about
-   *  the inbox misses two of them: the boot text and a held wake nudge are both real work that
-   *  `pendingForWake()` cannot see.
+  /** Is there anything at all for a drive to carry? Four sources, and a caller that asks only about
+   *  the inbox misses three of them: the boot text, a held wake nudge and a queued agent command are
+   *  all real work that `pendingForWake()` cannot see.
    *
    *  It answers WHETHER there is work, not HOW MUCH: the nudge slot holds at most one wake, so two
    *  callers' nudges read here as one. That is sound only because a wake is a hint rather than
    *  content; see the note on the slot itself. */
-  const workPending = (): boolean => bootPending() || pendingWake !== undefined || pendingForWake() > 0;
+  const workPending = (): boolean => bootPending() || pendingWake !== undefined || pendingForWake() > 0 || agent.queuedCommands > 0;
 
   /** Drive a turn carrying the current inbox batch (and the boot briefing once) into the visible
    *  session via the server API — server-side, so it can't race like the TUI input box, and the TUI
@@ -788,6 +854,7 @@ export const cotal: Plugin = async () => {
     // there is nothing to compose with. The boot task's own drive reaches this line once the
     // preconditions are met, and a pending wake waits in its slot until then.
     if (bootPrompt !== undefined && boot === undefined) return;
+    if (takeCommandTurn(boot, carried)) return driveCommand();
     driving = true;
     // The turns this submission carries under a claim, released if it fails.
     let turnIds: string[] = [];
@@ -838,7 +905,7 @@ export const cotal: Plugin = async () => {
       const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt), with the shared briefing after it —
       // gated on persona so we never replace OpenCode's default system.
-      if (!primed && persona) body.system = `${persona}\n\n${briefing(config, "opencode")}`;
+      body.system = firstTurnSystem();
       // The surface opens the batch, which arms the turn end BEFORE the await: a turn-end signal can
       // land before the server request resolves, and completeTurn bails unless armed — arming after
       // would drop it and wedge the agent.
@@ -900,7 +967,39 @@ export const cotal: Plugin = async () => {
       scheduleErrorRetry();
     } finally {
       driving = false;
+      // Messages went first after a command turn, and a command still waits when they sent nothing.
+      if (boot === undefined && !busy && agent.queuedCommands > 0) void drive();
     }
+  }
+
+  /** Whether the next idle turn runs a queued command. No boot text may hold the floor, and right
+   *  after a command turn waiting messages go first, so a stream of commands cannot hold the inbox
+   *  back (the rule 2.x keeps). */
+  function takeCommandTurn(boot: string | undefined, carried: string | undefined): boolean {
+    if (boot !== undefined || agent.queuedCommands === 0) return false;
+    const messagesFirst = lastTurnWasCommand && (carried !== undefined || pendingForWake() > 0);
+    lastTurnWasCommand = false;
+    return !messagesFirst;
+  }
+
+  /** Run the oldest queued command as a turn of its own. The batch opens empty, so neither the inbox
+   *  nor the prompt hook's prefix rides it. A command OpenCode did not take leaves the session free,
+   *  and whatever waits behind it drives at once. */
+  async function driveCommand(): Promise<void> {
+    if (!batch.surface([])) return;
+    busy = true;
+    const endsAtSend = turnEndsSeen;
+    if ((await agent.dispatchNextCommand()) === "dispatched") {
+      lastTurnWasCommand = true;
+      return;
+    }
+    // A turn end seen meanwhile, such as the session error OpenCode publishes with a refusal, has
+    // already released the session, and a turn started after it may hold it now.
+    if (turnEndsSeen === endsAtSend) {
+      busy = false;
+      batch.abandon();
+    }
+    if (!busy && workPending()) void drive();
   }
 
   /** Submit the boot prompt as the first CONNECTOR-SUBMITTED turn, and only ever one of those. It
@@ -1023,6 +1122,7 @@ export const cotal: Plugin = async () => {
   agent.on("wake", () => {
     if (!busy) void drive();
   });
+  agent.on("command", () => void drive());
 
   /** Match an event's session against the one we drive. Adopt the first session id we see, then
    *  filter to it; later top-level `session.created` events adopt explicitly as reset-in-place.
@@ -1095,12 +1195,20 @@ export const cotal: Plugin = async () => {
 
   const intake = {
     event: async ({ event }) => {
+      asks.event(event.type, event.properties as Record<string, unknown>);
+      if (events) deltaStreams.get(events)?.event(event.type, event.properties);
       // The server emits `permission.asked` (the SDK's `permission.updated` type ships but never
       // fires — #11616), so match the real runtime name out of band. With permission:"allow" this
       // rarely triggers, but it keeps presence correct if the posture tightens.
       if ((event.type as string) === "permission.asked") {
         const p = event.properties as { sessionID?: string; title?: string };
         if (!p.sessionID || ours(p.sessionID)) await safeStatus("waiting", p.title);
+        return;
+      }
+      // A question waits on a person as a permission ask does.
+      if ((event.type as string) === "question.asked") {
+        const q = event.properties as { sessionID?: string; questions?: Array<{ header?: string }> };
+        if (q.sessionID && ours(q.sessionID)) await safeStatus("waiting", q.questions?.length === 1 ? q.questions[0]?.header : "Questions");
         return;
       }
       switch (event.type) {
@@ -1156,7 +1264,7 @@ export const cotal: Plugin = async () => {
               // releases no durable state, because the log's lifetime and the lock's are not the
               // holder's to decide. Bounded like every other join here, for the same reason.
               const retired = previous.path;
-              await settleWithin(previous.close(), SWAP_SETTLE_MS, `release of ${retired}`);
+              await settleWithin(closeHolder(previous), SWAP_SETTLE_MS, `release of ${retired}`);
               // The lifetime is stated on the reaper, not decided here: this hands over what only the
               // swap knows, which is whether the drain settled or spent its bound.
               await reapRetiredWal(retired, drained);
@@ -1186,6 +1294,7 @@ export const cotal: Plugin = async () => {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
           noteTurnEnd();
+          asks.turnEnded();
           // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
@@ -1205,8 +1314,7 @@ export const cotal: Plugin = async () => {
           const s = event.properties.status;
           // Presence only — session.idle owns ack + drive (so a duplicate idle can't mis-ack).
           if (s.type === "busy") {
-            agent.noteActivity();
-            busy = true;
+            noteTurnStart(event.properties.sessionID);
             await safeStatus("working");
           } else if (s.type === "idle") {
             noteTurnEnd();
@@ -1222,6 +1330,7 @@ export const cotal: Plugin = async () => {
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
           noteTurnEnd();
+          asks.turnEnded();
           if (!busy && !batch.open) return; // no turn to fail — stray error
           // WHICH `session.error`s ARE FAILED TURNS, decided here and stated rather than left to be
           // inferred, because that judgment is the whole of #596. Every error that reaches this line
@@ -1304,8 +1413,13 @@ export const cotal: Plugin = async () => {
       }
     },
 
-    // Surface the running tool as presence activity (parity with Claude's PreToolUse).
-    "tool.execute.before": async (input) => {
+    // The turn of a command the agent endpoint started is about to start.
+    "command.execute.before": async (input) => commands.starting(input.sessionID, input.command),
+
+    // Surface the running tool as presence activity (parity with Claude's PreToolUse). A subagent's
+    // call is handed to the asks too, since its permission asks are served.
+    "tool.execute.before": async (input, output) => {
+      asks.toolStarted(input.callID, { name: input.tool, input: () => output.args });
       if (!ours(input.sessionID)) return;
       agent.noteActivity();
       await safeStatus("working", input.tool);

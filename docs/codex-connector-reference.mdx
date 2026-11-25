@@ -69,7 +69,7 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   `COTAL_SPACE`, `COTAL_MANAGER_INSTANCE`, `COTAL_NAME`, `COTAL_ID`, `COTAL_LIFECYCLE_UID`,
   `COTAL_ACCEPTED_TOKEN` and `COTAL_HOME`. Broker credentials and the launch-material pointer
   remain private to the connector host.
-- **Autonomy defaults.** Spawned agents run `approval_policy=never`,
+- **Autonomy defaults.** Spawned agents run `approval_policy=never` unless asked otherwise,
   `sandbox_mode=workspace-write`, and `sandbox_workspace_write={network_access=true}`.
   See [Sandbox autonomy](#sandbox-options) for what each one means and how to
   change it.
@@ -137,6 +137,15 @@ TUI, and answers `interrupted`. It answers `idle` when no turn runs, and when Co
 the turn already ended. A stopped turn ends `interrupted`, which the host handles as an Escape in
 the TUI: the messages it carried count as delivered, and the next queued skill runs.
 
+`turn` runs the owner's words as a turn of its own on the same thread, again only while no other
+turn runs. `turn/start` carries the text, and each image as `{ type: "image", url }` with a `data:`
+URL, as T3 Code sends them. A turn of images alone sends no text. When Codex refuses the start, the
+turn ends `refused` with `failed-precondition`. `usage` answers the thread's context use from
+Codex's last `thread/tokenUsage/updated`: `used` is the last model call's total tokens, which is what
+Codex's own context meter counts, and `size` is the model's context window. It has no context until
+Codex reported both, and none again after an app-server restart starts a new thread. Codex reports
+no cost.
+
 Codex's app-server has no method that lists or runs its built-in slash commands or custom prompts,
 so the agent offers no `command` target, and a `command` for one is `unimplemented`.
 
@@ -170,9 +179,60 @@ terminal. The defaults follow from that, and all three are overridable per spawn
 
 | Default | What it means |
 | --- | --- |
-| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An interactive policy is refused loud rather than honored dishonestly, because a mesh-driven turn would block forever on a prompt nobody sees, and the alternative (auto-answering for you) nullifies the policy you asked for. |
+| `approval_policy="never"` | Never **ask** before running a command. Not "refuse": the agent runs its commands, it just does not stop to prompt. An asking policy is answered through the prompt desk (see [Answering approvals](#answering-approvals)). |
 | `sandbox_mode="workspace-write"` | Commands may read anywhere but write only inside the agent's workspace. This, not the prompt, is the part that is actually enforced; see below for the (real) exposure it leaves. |
 | `sandbox_workspace_write={network_access=true}` | Network **on** inside that sandbox. Codex's own default is off, which breaks installing a dependency, pushing a branch, or calling an API, with an error that reads like the task is impossible rather than the sandbox saying no. Applied only when the sandbox is actually `workspace-write`: tighten the mode and no network grant is emitted at all. |
+
+### Answering approvals
+
+With an asking `approval_policy`, the seat serves Codex's requests
+on its `agent` endpoint (SPEC 13.22) and declares `prompts`.
+
+The connector declares `supportsAskPermissions`. A Manager launch with `askPermissions` starts the
+thread with `approvalPolicy: "untrusted"`, a `read-only` sandbox and the user as the approvals
+reviewer, as T3 Code's approval-required mode does. These go on `thread/start`, because codex 0.162
+refuses `approval_policy = "untrusted"` in config, and they replace the autonomy defaults above. Such
+a launch is refused when its launch options set `approval_policy`, `sandbox_mode` or
+`approvals_reviewer`.
+
+The prompts:
+
+- A command approval opens a `permission` prompt for `exec_command` (or `write_stdin` for input to
+  a running command) with the command, its working directory and Codex's reason.
+- A file change approval opens a `permission` prompt for `apply_patch` whose input is the change
+  list Codex proposed on the item, `{ changes: [{ path, kind, diff }] }`.
+- Both offer Codex's decisions: allow, allow for this session, deny, and deny and stop the turn.
+  A server that lists its decisions gets only those.
+- When the prompt would pass the desk's size limit, as a patch that deletes a large file does, its
+  input is left out and only deny and deny and stop the turn are offered. Nobody can read that
+  input remotely, so it cannot be approved there; the attached TUI can still approve it.
+- A permissions request opens a `permission` prompt for `request_permissions`. Codex sends one when
+  the model calls its `request_permissions` tool, which a launch turns on with
+  `features.request_permissions_tool`, to ask for network access or file system access the sandbox
+  does not give. The input is what it asks for, `{ permissions: { network?, fileSystem? } }`, and the
+  body gives the model's reason and names the access. Allow for this turn or for this session
+  grants what it asked for, and deny grants nothing.
+- An MCP tool-call approval opens a `permission` prompt. Codex sends one, as an MCP elicitation,
+  before it runs a tool of an MCP server other than cotal, such as a server that a trusted project's
+  `.codex/config.toml` defines. Its subject is the running call, with the tool's arguments and the
+  server. It offers allow, the persistence Codex lists, deny and cancel. Allow for this session
+  lasts until Codex's session ends, and always allow is saved in the config that defines the
+  server. Deny and cancel both stop that call, and the turn goes on.
+- A form that an MCP server asks for opens a `form` prompt with the server's fields, and its body
+  names the server. Submit sends the values, and decline and cancel send none. A url elicitation,
+  an OpenAI form, or a form outside the desk's form profile is not put on the desk.
+- A `request_user_input` call opens a `question` prompt with a form, one field per question. A
+  question with choices and no free answer is a single choice. A question marked secret is not put
+  on the desk, because a form never asks for a secret.
+
+The answer goes back as the request's result. The attached TUI shows the same request, and
+whichever answer reaches Codex first applies. Codex reports only that the request was resolved,
+not who answered, so a prompt the TUI answered first closes `withdrawn`, and one answered remotely
+closes unconfirmed. A request nobody answers stays open for seven days and is then declined, or
+cancelled when it is an MCP elicitation. A seat whose `agent` endpoint the broker refused, which its
+log reports when it joins, holds no prompt desk. A permissions request that no prompt desk holds
+grants nothing, an MCP elicitation that no prompt desk holds is cancelled, and any other request is
+declined.
 
 What the sandbox guarantees, stated literally: it **blocks out-of-workspace local filesystem
 writes**. It does **not** block reads, exfiltration, or networked side effects.
@@ -210,7 +270,7 @@ qualify Codex payload mapping or native payload acceptance. See the
 [payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
 
 A spawned seat publishes a structured account of what it did: run
-boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
+boundaries per turn, assistant text, reasoning when the launch asks for it, and the tool calls the model makes through Codex's
 function-call and custom-tool interfaces, each with its start and its end. Tool arguments and
 tool results are not republished onto this channel. That covers the tools you watch a seat use,
 `shell` and `apply_patch` among them. The channel is
@@ -228,7 +288,7 @@ it. A plugin connection publishes its own activity from the moment you approve i
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`
 ```
 
-Eight things are specific to Codex and worth knowing before you read a stream:
+Twelve things are specific to Codex and worth knowing before you read a stream:
 
 - **The thread's rollout file is the durable record.** The seat's
   rollout lives inside its own isolated `CODEX_HOME`, under
@@ -285,8 +345,44 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   three out. Who may READ a plane is minted separately and out of band either way, with
   `cotal actor grant` on a user-auth mesh and `cotal auth mint --profile agent --allow-subscribe` on a
   static one. Who may read the plane is still that mint, not the spawn grant.
-- **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
+- **Assistant text and reasoning summaries stream while Codex writes them.** The seat journals the
+  deltas of each agent message and each reasoning summary next to the thread's write-ahead log, at
+  most one line every 250 ms, and publishes them under the message id `stream:<item id>` before
+  Codex saves the record. The saved record then sends the rest of its text and ends the message, so
+  a reader gets the saved text once. When the saved text does not continue what streamed, the
+  streamed message ends and the saved text is published as a message of its own, so a reader sees
+  the abandoned text once. A message that began before the seat opened its journal, as the first
+  reply of a seat still connecting to the mesh can, is published whole when Codex saves it. A turn
+  that ends, or a seat that stops, while a message streams ends that message before the run. A
+  reasoning summary streams only when the model provider sends one.
+- **Reasoning is off by default, and published as its summary only.** A seat launched with the
+  [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields) publishes it, and sends a reasoning
+  summary setting on every `turn/start`: the `model_reasoning_summary` set with `--opt`, else
+  `auto`. Codex's model catalog can default the summary to none, and T3 Code's own Codex provider
+  sends the same setting on each turn. A seat without the field publishes no reasoning, journals
+  none, and leaves Codex's own default in place. Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
+- **Each tool result carries the `cotal.toolResult` marker.** A Codex tool output has no error flag,
+  so `isError` comes from the call's end record: a command's exit code, whether a patch applied, or
+  an MCP tool's error. When the seat has seen no end record for the call, as for `write_stdin`,
+  `update_plan` or a command still running when its output is written, the marker leaves `isError`
+  out.
+- **In code mode, the calls a script makes are the tool calls.** With code mode, which Codex 0.162
+  runs for its catalog models, the model makes every tool call from one `exec` script. app-server
+  reports no item for the script, so T3 Code's own Codex provider shows only the calls it makes.
+  The seat does the same: the script and its output are not published. Each command, file change
+  and MCP call the script makes is published as its own tool call, `exec_command`, `apply_patch`
+  with Codex's change list, or the MCP tool's name. The rollout records such a call only once it
+  has ended, but app-server reports it when it starts, and the seat journals that. So the call is
+  published while it runs, and its result when it ends. A call that started before the seat opened
+  its journal is published whole at its end.
+- **The plan tool is off unless a launch turns it on.** Codex 0.162 offers `update_plan` only when
+  its config enables the tool, as T3 Code's own Codex provider does for every thread. A seat gets
+  it with `--opt 'tools={update_plan={enabled=true}}'`, since a launch-option key names one config
+  field. A direct `update_plan` call is published from the rollout. A plan a code-mode script sets
+  reaches app-server clients only as `turn/plan/updated`, so the seat journals it and publishes it
+  as the `update_plan` call the script made, with the plan in `update_plan`'s own arguments. A plan
+  Codex reports before the seat opens its journal is not published.
 
 ## Trust boundaries
 

@@ -90,12 +90,14 @@ function modesRefusal(agent: string, model: ModelInfo, modes: LaunchModes | unde
       const listed = model.modes?.map((m) => m.id) ?? [];
       return `${agent} lists ${listed.length ? `modes ${quoted(listed)}` : "no modes"} for model ${JSON.stringify(model.id)}, not ${JSON.stringify(id)} (modes)`;
     }
-    if (mode.unavailable !== undefined)
-      return `mode ${JSON.stringify(id)} of model ${JSON.stringify(model.id)} is unavailable: ${mode.unavailable} (modes)`;
     if (mode.kind === "toggle" && typeof value !== "boolean")
       return `mode ${JSON.stringify(id)} of model ${JSON.stringify(model.id)} is a toggle, so it takes true or false, not ${JSON.stringify(value)} (modes)`;
     if (mode.kind === "choice" && !mode.options.some((o) => o.id === value))
       return `mode ${JSON.stringify(id)} of model ${JSON.stringify(model.id)} takes one of ${quoted(mode.options.map((o) => o.id))}, not ${JSON.stringify(value)} (modes)`;
+    // An unavailable mode can still be set off: a toggle to false, a choice to its default.
+    const turnsOn = mode.kind === "toggle" ? value === true : value !== mode.default;
+    if (mode.unavailable !== undefined && turnsOn)
+      return `mode ${JSON.stringify(id)} of model ${JSON.stringify(model.id)} is unavailable: ${mode.unavailable} (modes)`;
   }
   return undefined;
 }

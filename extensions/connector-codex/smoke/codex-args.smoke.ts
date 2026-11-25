@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv } from "@cotal-ai/connector-core";
 import { codexConnector } from "../src/index.js";
-import { configOverrides } from "../src/host.js";
+import { configOverrides } from "../src/codex-config.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -116,12 +116,14 @@ try {
   const ownConfig = process.env.COTAL_CODEX_CONFIG;
   delete process.env.COTAL_CODEX_CONFIG;
   try {
-    const rendered = serviceTiers(configOverrides(undefined, undefined, "priority"));
+    const rendered = serviceTiers(configOverrides(undefined, undefined, false, "priority"));
     check("a tier renders service_tier", rendered.length === 1 && rendered[0] === '"priority"', rendered);
-    check("no tier renders no service_tier", serviceTiers(configOverrides(undefined, undefined, undefined)).length === 0);
+    check("no tier renders no service_tier", serviceTiers(configOverrides(undefined, undefined, false, undefined)).length === 0);
+    const asking = serviceTiers(configOverrides(undefined, undefined, true, "priority"));
+    check("an askPermissions launch keeps its tier", asking.length === 1 && asking[0] === '"priority"', asking);
     process.env.COTAL_CODEX_CONFIG = JSON.stringify({ service_tier: '"flex"' });
-    throws("the host refuses a tier beside an operator service_tier", () => configOverrides(undefined, undefined, "priority"), /both set the service tier/);
-    const opTier = serviceTiers(configOverrides(undefined, undefined, undefined));
+    throws("the host refuses a tier beside an operator service_tier", () => configOverrides(undefined, undefined, false, "priority"), /both set the service tier/);
+    const opTier = serviceTiers(configOverrides(undefined, undefined, false, undefined));
     check("an operator service_tier alone renders once", opTier.length === 1 && opTier[0] === '"flex"', opTier);
   } finally {
     if (ownConfig === undefined) delete process.env.COTAL_CODEX_CONFIG;

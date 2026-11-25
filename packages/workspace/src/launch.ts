@@ -36,6 +36,10 @@ export interface ManagedLaunchRequest {
   /** Whether the agent publishes an event plane. Absent leaves it to the manager and the space's policy. */
   events?: boolean;
   eventPayloads?: boolean;
+  /** Launch the harness asking before it uses a tool. Only for a connector that declares it. */
+  askPermissions?: boolean;
+  /** Publish the model's reasoning on the event plane. Only for a connector that declares it. */
+  reasoningEvents?: boolean;
   runtime?: string;
 }
 
@@ -68,6 +72,8 @@ export function requestManagedLaunch<R>(request: ManagedLaunchRequest, start: Ma
     allowPublish: request.allowPublish,
     events: request.events,
     eventPayloads: request.eventPayloads,
+    askPermissions: request.askPermissions,
+    reasoningEvents: request.reasoningEvents,
     ...(request.runtime !== undefined ? { runtime: request.runtime } : {}),
   });
 }

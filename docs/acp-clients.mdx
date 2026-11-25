@@ -89,16 +89,32 @@ That sign-in runs in a terminal. It installs Cotal with `curl -fsSL https://get.
 | --- | --- |
 | A new thread | Nothing yet. A thread that is opened and dropped leaves no agent. |
 | The thread's first prompt | Spawns an agent in the thread's folder, with that prompt as its first task. The agent's name is the thread's id, or the name you gave it with `/name`. The turn ends when that first task's run ends. |
-| A later prompt | Is typed into the agent's terminal through its manager, so it reaches the agent as your own words. The turn ends once the agent has started working and stopped again. |
+| A later prompt | Reaches the agent as your own words: through the agent's `turn` where its presence says it takes one now, else typed into its terminal through its manager. The thread picks the path from the agent's presence before it sends the prompt, and a path that fails is reported, not retried another way. The turn ends once the agent has started working and stopped again. |
 | Listing sessions | The managed agents in that folder, including ones you spawned elsewhere. An agent a thread spawned or opened is listed as that thread. |
 | Importing a session | Shows what the agent's event channel still holds, then follows it live. |
 | Deleting a session | Hides that agent run from the list. The agent keeps running. |
 
-If the agent does not start working on a later prompt within 30 seconds, the turn ends with a note saying so.
+A later prompt sent as a `turn` joins the agent's queue, as one of the agent's own commands does. While the agent finishes earlier work, the prompt waits there and its turn stays open, however long that takes. The turn shows only the agent's run for that prompt.
+If the agent does not start working on a later prompt within 30 seconds of taking it, or of having it typed in, the turn ends with a note saying so.
 The agent still has the prompt, and answers it when it gets to it.
 
-A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls by name and status.
-Tool arguments and results stay off the ordinary event channel, so the client does not show them.
+A turn shows the agent's messages, its reasoning when the application publishes it, and its tool calls.
+A tool call shows its arguments and its result, and a file edit shows as a diff.
+They come from the agent's payload rail ([SPEC 13.19](../SPEC.md#1319-private-tool-results)), so a call shows by name and status until its payload arrives, and a result over the rail's size limit is replaced by a note.
+Importing a session and `/open` replay the rail's history too. When it cannot be read, they fail and say that the agent's earlier tool inputs and results cannot be read, and why.
+A to-do list the agent keeps, such as Claude Code's tasks, Codex's plan, or the to-do lists of OpenCode, Jcode and Hermes, shows as the thread's plan.
+On current models Claude Code keeps tasks only when the operator opts in ([Claude connector](claude-connector-reference.mdx#event-plane)).
+The thread knows the file and shell tools of Claude Code, Pi, Codex, OpenCode, Jcode and Hermes. Any other tool shows by name, with its arguments and result as the agent sent them.
+
+The thread also uses the agent's `agent` endpoint ([SPEC 13.22](../SPEC.md#1322-the-agent-endpoint)), on every space.
+On a static space the bridge calls it through a connection that holds only the calls an owner makes to their agents, minted from the space's signing key on this machine.
+On an open mesh nothing checks who calls, so any program that reaches the broker can answer an agent's questions or run its commands.
+
+- A question the agent stops to ask, such as a tool permission, shows as a permission request in the client, which may answer it from the thread's mode. A question with a form is shown as a form when the client takes forms. The answer goes back to the agent. An option that needs a written note is not offered; answer it at the agent's terminal. A client takes a question only during a prompt, so one the agent asks while the thread runs none, as when it works on a message from another agent, shows when you next send a prompt in the thread. Answer it there or at the agent's terminal. A prompt stays open while a question it shows is unanswered.
+- An agent the thread spawns asks before it uses a tool where its application can, so those permission requests reach the thread. It also publishes its reasoning where its application can. The thread asks for both only where the manager reports that the application takes them, and a manager that refuses fails the first prompt with its reason.
+- The agent's own commands and skills join the command list. A skill is listed with a leading `$`. Sending one runs it through the agent's `command`.
+- A prompt can carry images (PNG, JPEG, GIF or WebP) when the agent's presence says it takes them with a turn. Otherwise the prompt fails before anything is sent. A first prompt with images starts the agent with no task, waits up to 20 seconds until it takes a turn, and then gives it the prompt.
+- After each turn, the client's context meter shows how full the agent's context window is, when the agent's presence says it reports its usage. The usage arrives before the prompt answers, unless the agent takes more than 3 seconds to report it.
 
 ## Choose the agent [#options]
 
@@ -106,16 +122,17 @@ A new thread offers these options next to the model list. They apply when the fi
 
 | Option | What it sets |
 | --- | --- |
-| Model | The application and model, as `<application>/<model>`. Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. A model id the list does not show is passed to the manager as given. |
+| Model | The application and model, as `<application>/<model>`. Each name starts with its application, so the list picks the application in clients that do not show groups, such as T3 Code. `<application>/default` leaves the model to the application. When the application lists a model whose id is `default`, this choice has that model's name and reasoning choices. A model id the list does not show is passed to the manager as given. |
 | Harness | The application the agent runs, when more than one can. Choosing a model moves it to that model's application, and choosing another harness starts that application on its default model. |
-| Reasoning | The model's variant, when the model has more than one. |
-| Persona | A persona from the manager's catalog. |
-| Channel | One channel the new agent joins. |
-| Machine | Which manager spawns the agent, when more than one is offered. The default is the manager on this machine, else one whose presence the bridge sees as current, else the first listed. On a space where people sign in, the list comes from the space's auth service: the space's own manager while you have registered none, and each of your registered managers it lists as a candidate once you have. A candidate can be one whose computer is gone. With none of yours live, a new thread is refused until you start one with `cotal manager start`. Every call a thread makes names its manager, so a space host that sends unnamed calls to its own manager (`local-primary`, see [Embedding a manager](embedding-manager.mdx)) does not change the list. A thread keeps the manager it started on. When a thread you load offers this list, its agent's manager is in it; with one manager there is no list, and a new agent starts on that manager. |
+| Reasoning | The model's variant. Offered while any listed model has variants; for a model without them it holds only the model default. |
+| Persona | A persona from the manager's catalog. A catalog of 64 or more personas offers a short list: the default, the current choice, and up to 16 personas you own. `/persona` picks any other. |
+| Channel | One channel the new agent joins. A space with 64 or more channels offers a short list: no channel, the current choice, and up to 16 channels, those the space describes first, each group with the most retained messages first. `/join` picks any other. |
+| Machine | Which manager spawns the agent. The default is your live manager on this machine. Another computer's manager is never the default, because it cannot use this machine's folder. With none of yours live on this machine, a new thread has no machine: this list offers the other computers, also when there is only one, and a prompt fails until you start this machine's manager with `cotal manager start` or choose a computer here. The list is offered when there is more than one manager, or when none of them runs on this machine. On a space where people sign in, the list comes from the space's auth service: the space's own manager while you have registered none, and each of your registered managers it lists as a candidate once you have. A candidate can be one whose computer is gone. With none of yours live, a new thread is refused until you start one with `cotal manager start`. Every call a thread makes names its manager, so a space host that sends unnamed calls to its own manager (`local-primary`, see [Embedding a manager](embedding-manager.mdx)) does not change the list. A thread keeps the manager it started on. When a thread you load offers this list, its agent's manager is in it and is the current choice, so a new agent the thread starts after `/despawn` starts there unless you choose another. |
 
-Only applications that publish an event plane are offered, because the thread is built from it.
-Hermes publishes none (see [Connectors](connectors.mdx)).
-A select that would hold 64 or more choices is not offered.
+Only applications that publish an event plane are offered, because the thread is built from it (see [Connectors](connectors.mdx)).
+An application whose models the manager could not read is not offered either. Choosing it, or opening a thread where it is the only application, fails with the manager's reason. Loading a thread or using `/open` on a running agent of that application still works, because driving it starts nothing. The model list then shows only that agent's model, and after `/despawn` a prompt there fails with the manager's reason. An application whose connector lists no models offers only its default.
+Any other select that would hold 64 or more choices is not offered.
+The session's model list also gives each model its reasoning choices, so a client that reads them, such as T3 Code, shows a model's reasoning choices before any thread has run it.
 
 ## Slash commands [#slash-commands]
 
@@ -126,6 +143,10 @@ A select that would hold 64 or more choices is not offered.
 | `/despawn` | Send it by itself to stop the thread's agent. The thread stays, and its next prompt spawns a new agent when your grant may spawn agents (see [Sign in](#sign-in)). |
 | `/roster` | Lists who is on the mesh and what each is doing. |
 | `/channels` | Lists the space's channels. |
+| `/persona <name>` | Sets the Persona option to any persona in the manager's catalog, by its exact name. Offered when the Persona option shows a short list. |
+| `/join <channel>` | Sets the Channel option to any channel of the space, by its exact name. Offered when the Channel option shows a short list. |
+
+`/persona` and `/join` are offered only while the thread has no agent, because the choices apply when the agent starts. While an agent runs, the thread does not take them, so the agent's own command of that name reaches it. A name the list does not hold fails with one line, and the choice stays.
 
 ## Sign in [#sign-in]
 
@@ -142,23 +163,22 @@ person controls every agent under their own owner (see
 
 ## Limits [#limits]
 
-- Stopping a turn sends the agent's interrupt key through its manager. Claude Code and Pi agents support it. For any other application, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh.
+- Stopping a turn takes one path, picked from the agent's presence when you stop it: the agent's own `interrupt` where its presence says it serves it now, else the interrupt key through its manager, which Claude Code and Pi agents support. A Claude Code agent serves `interrupt` only while its command mod runs. When that path fails, the thread says the agent could not be stopped, the turn ends as cancelled, and the agent keeps working on the mesh. A prompt still waiting in the agent's queue is taken out of the queue instead, so it never runs, and the agent's earlier work goes on.
 - When you stop a Claude Code turn before the agent answered, Claude puts that prompt back in its input box. Your next prompt is typed after it, so the agent gets both.
-- A later prompt is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
-- A later prompt ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
-- A later prompt needs an agent on the built-in `pty` runtime, because the manager types it into the agent's terminal. An agent on tmux, cmux, Orca or Herdr refuses it, and so does a Claude Code agent showing a selection menu. The turn then fails with the manager's reason.
+- A later prompt that is typed into the agent's terminal is typed as if you typed it into the application, so the application's input shortcuts apply. In Claude Code, a prompt that starts with `!` runs as a shell command and its turn does not show in the thread.
+- A later prompt typed through the manager ends when the agent stops working. When the agent was already busy as the prompt arrived, the turn can end when that earlier work does.
+- A later prompt typed through the manager needs an agent on the built-in `pty` runtime. An agent on tmux, cmux, Orca or Herdr refuses it, and so does a Claude Code agent showing a selection menu. The turn then fails with the manager's reason. An agent that takes a `turn` has no such limit.
+- Images need the `agent` endpoint and a harness that takes them. Otherwise the prompt fails and says why.
 - Work an agent does between your prompts, such as answering a peer, does not show live in T3 Code.
 - An agent on another machine's manager shows its conversation and tool calls, but T3 Code shows no diffs or checkpoints for it.
 - An agent on another machine's manager starts in the thread's folder, so that folder must exist on that machine. Otherwise the spawn is refused.
 - On a space where people sign in, the thread list shows your agents on every live manager the space's auth service lists for you, the space's own included. You can load them even while none of your managers may start a new thread.
-- A manager that does not answer leaves its agents out of the list until it answers again. While it does not answer, loading or deleting any thread the list does not show fails, because its agent may run there. On a space where people do not sign in, a registered manager whose host is gone is not waited for. Where they do, it is waited for like one that does not answer, until you remove it with `cotal endpoint deregister manager <id> --space <space> --yes`, which needs the `supervise` scope. The error names that command when one of your own registrations does not answer a read. The space's own manager is not yours to remove; ask the space's operator. A new thread prefers a manager whose presence the bridge sees as current. A manager that died less than a minute ago can still look current, and then a new thread fails reading its lists before the Machine list shows. Try again once its presence lapses, or remove the registration. A sleeping laptop's manager is not gone, so it holds those loads up until the laptop wakes.
+- A manager that does not answer leaves its agents out of the list until it answers again. While it does not answer, loading or deleting any thread the list does not show fails, because its agent may run there. On a space where people do not sign in, a registered manager whose host is gone is not waited for. Where they do, it is waited for like one that does not answer, until you remove it with `cotal endpoint deregister manager <id> --space <space> --yes`, which needs the `supervise` scope. The error names that command when one of your own registrations does not answer a read. The space's own manager is not yours to remove; ask the space's operator. With no manager of yours on this machine, a new thread shows the lists of one whose presence the bridge sees as current until you choose a Machine. A manager that died less than a minute ago can still look current, and then a new thread fails reading its lists before the Machine list shows. Try again once its presence lapses, or remove the registration. A sleeping laptop's manager is not gone, so it holds those loads up until the laptop wakes.
 - Every manager read and command opens its own connection. A list opens one for each manager it reads, a new or loaded thread opens about three more, and each prompt, cancel or `/despawn` opens one. A space limits how many connections one sign-in opens a minute (60 by default), and your other `cotal` commands count too. Opening many threads at once can be refused, and the refusal names the limit. The allowance refills through the minute, so a retry a few seconds later can pass.
 - When your sign-in is granted again, or this machine signs in as another account, while `cotal acp` runs, it stops and says why. It sends nothing as the new sign-in. Start the agent again in your client.
-- Renaming a running agent with `/name` needs a space where people sign in, because only there does an agent take a new name from its owner.
 - `/open` finds the agents the thread list would show. If another thread in the same client drives that agent, the agent moves to the new thread.
 - A rollback in T3 Code starts a fresh session, which spawns a new agent.
-- Pi agents publish text as completed messages, so their replies arrive whole.
-- Questions an agent stops to ask, such as tool permissions, are not forwarded to the client yet.
+- An agent whose credential holds no rows for the `agent` endpoint, such as one an older release started on a static space, answers none of its calls: its questions stay at its terminal, its commands are not listed, and `/name` fails. Despawn it and start it again.
 - The client's own MCP servers are not passed to the agent.
 
 ## cotal acp [#acp]

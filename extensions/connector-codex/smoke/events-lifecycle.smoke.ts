@@ -31,7 +31,10 @@
  *   1. first bind: an armed seat publishes its thread's activity, and the frames carry the run.
  *   2. restart: the app-server dies, the host brings up a NEW thread, and the plane KEEPS
  *      PUBLISHING, with every run the dead thread opened closed before the swap.
- *   3. shutdown: a mid-turn exit closes the run the record stream never got to close.
+ *   1b. streaming: a reasoning summary and a reply are on the wire before Codex saves them, and each
+ *       is the saved text.
+ *   3. shutdown: a mid-turn exit closes the run the record stream never got to close, ending the
+ *      reply it was streaming first.
  *   4. late file: a seat whose rollout did not exist when the launch looked still binds later, and
  *      publishes what it had already written.
  *   5. restart INTO a late file: the successor thread's rollout misses the bind budget while a
@@ -48,7 +51,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { CotalEndpoint, eventChannel, isAguiFramePart, seedChannelRegistry, isReachable, LAUNCH_MATERIAL_ENV, writeLaunchMaterial, type LaunchMaterial } from "@cotal-ai/core";
 import { eventWalLocation, JsonlFileSource, type WalDoc } from "@cotal-ai/connector-core";
 import { skipSuite, freePort, killAndAwaitExit, SMOKE_BROKER_TOKEN, awaitBrokerReady, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -91,6 +94,8 @@ interface AguiFramePart {
   events: { type: string; [k: string]: unknown }[];
 }
 const frames: AguiFramePart[] = [];
+/** When each frame in `frames` arrived, by index. */
+const frameAt: number[] = [];
 const evTypes = (): string[] => frames.flatMap((f) => f.events.map((e) => e.type));
 /** Runs whose RUN_STARTED was seen but whose terminal was not. The plane's whole promise. */
 function openRunsIn(list: AguiFramePart[]): string[] {
@@ -200,7 +205,11 @@ operator.on("presence", (e: { type: string; presence: { card: { id: string; name
   if (e.type !== "offline") online.add(e.presence.card.name);
 });
 operator.on("message", (msg: { parts: unknown[] }) => {
-  for (const part of msg.parts) if (isAguiFramePart(part)) frames.push(part as AguiFramePart);
+  for (const part of msg.parts)
+    if (isAguiFramePart(part)) {
+      frames.push(part as AguiFramePart);
+      frameAt.push(Date.now());
+    }
 });
 
 let hostA: ReturnType<typeof spawn> | undefined;
@@ -247,6 +256,9 @@ function startHost(
    *  first pump open, in ms, so a caller can read the log there. Test-only, omitted here means
    *  the variable is never set and the seat runs with no hold. */
   postStartHoldMs?: number,
+  /** The launch material a launcher hands the seat, such as `reasoningEvents`. It carries the
+   *  broker URL too, since a seat refuses a material file beside COTAL_SERVERS. */
+  material?: LaunchMaterial,
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -258,7 +270,7 @@ function startHost(
       COTAL_SPACE: space,
       COTAL_NAME: name,
       COTAL_ID: name,
-      COTAL_SERVERS: servers,
+      ...(material === undefined ? { COTAL_SERVERS: servers } : { [LAUNCH_MATERIAL_ENV]: writeLaunchMaterial({ ...material, servers }) }),
       COTAL_SUBSCRIBE: "team",
       COTAL_ROLE: "coder",
       COTAL_CODEX_BIN: BIN,
@@ -327,6 +339,29 @@ let storeRemoveError: unknown;
  *  rather than every seat that ever existed. */
 const stoppedOnPurpose = new Set<number>();
 
+/** The fake's own journal of a seat, one entry per line. */
+const fakeLog = (path: string): { ev: string; turnId?: string; at?: number }[] =>
+  existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+
+/** The streamed message in `list` (`TEXT` or `REASONING`): its key, its text on the wire, how often
+ *  it started and ended, and when its first content arrived. `from` is the index of `list[0]` in
+ *  `frames`. */
+function streamedMessage(list: AguiFramePart[], from: number, kind: "TEXT" | "REASONING" = "TEXT") {
+  const evs = list.flatMap((f, i) => f.events.map((e) => ({ e, at: frameAt[from + i]! })));
+  const key = evs.find(({ e }) => e.type === `${kind}_MESSAGE_START` && String(e.messageId).startsWith("stream:"))?.e.messageId as string | undefined;
+  const of = (type: string) => evs.filter(({ e }) => e.type === `${kind}_MESSAGE_${type}` && e.messageId === key);
+  const contents = of("CONTENT");
+  return {
+    key,
+    text: contents.map(({ e }) => String(e.delta)).join(""),
+    contents: contents.length,
+    firstContentAt: contents[0]?.at,
+    starts: of("START").length,
+    ends: of("END").length,
+    types: evs.map(({ e }) => (e.messageId === key ? `${e.type}*` : e.type)),
+  };
+}
+
 /** DM a peer by its ROSTER id (principal dot-form), names are not unicast recipients. */
 async function dm(peer: string, text: string): Promise<void> {
   const id = operator.getRoster().find((p) => p.card.name === peer)?.card.id;
@@ -359,7 +394,8 @@ try {
   // ---- (1) first bind ------------------------------------------------------------------------
   const A = "eventspeer";
   const homeA = join(dir, "a");
-  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk));
+  // Seat A is launched with reasoningEvents, so it publishes the model's reasoning. Seat B is not.
+  hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"), (chunk) => (errA += chunk), undefined, undefined, undefined, { reasoningEvents: true });
   check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
 
@@ -371,12 +407,19 @@ try {
       "and the run it published opened and closed",
       "and the assistant's text reached the wire",
       "every frame so far carries ONE thread",
+      "a streamed reply reaches the wire before Codex saves it",
+      "and the wire carries the saved text once, as one message",
+      "a streamed reasoning summary reaches the wire before Codex saves it",
+      "and the wire carries the saved summary once, before the reply",
+      "a plan a code-mode script sets reaches the wire as an update_plan call, and the script does not",
+      "a command a code-mode script runs reaches the wire while it runs, and only once",
       "the restarted app-server really is a NEW thread",
       "the plane KEEPS PUBLISHING after the restart",
       "and no run the dead thread opened was left open",
       "the emitter never refused a second adopt",
       "a mid-turn exit CLOSES the run it left open",
       "and there was a run to close, so the cell is not vacuous",
+      "and the reply it was streaming ended before the run closed",
     ])
   ) {
     // Phases 2 and 3 both publish through the SAME first binding this cell just judged: a seat that
@@ -387,6 +430,53 @@ try {
     check("and the assistant's text reached the wire", evTypes().includes("TEXT_MESSAGE_CONTENT"), evTypes());
     const threadA = threadsSeen()[0];
     check("every frame so far carries ONE thread", threadsSeen().length === 1, threadsSeen());
+
+  // ---- (1b) a streamed reply -------------------------------------------------------------------
+  // The fake streams a reasoning summary in three deltas and the reply in four, 400 ms apart, and
+  // saves each only after its deltas. The seat journals them, so each is on the wire before the
+  // record that carries it exists.
+  const streamFrom = frames.length;
+  await dm(A, "THINK then STREAM a reply");
+  const streamDone = await settle("A:the streamed run finished", () => frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
+  const sm = streamedMessage(frames.slice(streamFrom), streamFrom);
+  const n = sm.key?.match(/^stream:msg_(\d+)$/)?.[1];
+  const savedAt = fakeLog(join(dir, "a.log.jsonl")).find((r) => r.ev === "saved" && r.turnId === `turn_${n}`)?.at;
+  check("a streamed reply reaches the wire before Codex saves it", streamDone && sm.contents >= 2 && savedAt !== undefined && sm.firstContentAt! < savedAt, { ...sm, savedAt, ...margin("A:the streamed run finished") });
+  check("and the wire carries the saved text once, as one message", sm.starts === 1 && sm.ends === 1 && sm.text === `streamed:${n}:one two three` &&
+    !frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "TEXT_MESSAGE_START" && e.messageId === `msg_${n}`)), sm);
+  const rm = streamedMessage(frames.slice(streamFrom), streamFrom, "REASONING");
+  const reasoningSavedAt = fakeLog(join(dir, "a.log.jsonl")).find((r) => r.ev === "reasoningSaved" && r.turnId === `turn_${n}`)?.at;
+  check("a streamed reasoning summary reaches the wire before Codex saves it", rm.key === `stream:rs_${n}` && rm.contents >= 2 && reasoningSavedAt !== undefined && rm.firstContentAt! < reasoningSavedAt, { ...rm, reasoningSavedAt });
+  check("and the wire carries the saved summary once, before the reply", rm.starts === 1 && rm.ends === 1 && rm.text === `weighing:${n}:the rivers` &&
+    rm.types.indexOf("REASONING_MESSAGE_END*") < rm.types.indexOf("TEXT_MESSAGE_START") &&
+    !frames.slice(streamFrom).some((f) => f.events.some((e) => e.type === "REASONING_MESSAGE_START" && e.messageId === `rs_${n}`)), rm);
+
+  // ---- (1c) a plan a code-mode script sets ----------------------------------------------------
+  // Codex sends it only as turn/plan/updated. The seat journals it, and the plane publishes it as
+  // the update_plan call the script made. Arguments go to the payload plane, so the call's start
+  // is what this channel shows.
+  const planFrom = frames.length;
+  await dm(A, "PLAN from a code-mode script");
+  const planDone = await settle("A:the PLAN run finished", () => frames.slice(planFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
+  const planEvents = frames.slice(planFrom).flatMap((f) => f.events) as unknown as { type: string; toolCallId?: string; toolCallName?: string }[];
+  check("a plan a code-mode script sets reaches the wire as an update_plan call, and the script does not",
+    planDone && planEvents.some((e) => e.type === "TOOL_CALL_START" && e.toolCallName === "update_plan") && !planEvents.some((e) => e.toolCallId?.startsWith("exec_")),
+    { types: planEvents.map((e) => `${e.type}${e.toolCallName ? `(${e.toolCallName})` : ""}`), ...margin("A:the PLAN run finished") });
+
+  // ---- (1d) a command a code-mode script runs ------------------------------------------------
+  // Codex records it in the rollout only once it ends. The seat journals its item/started, so the
+  // call is on the wire while it runs. Its arguments and result go to the payload plane.
+  const nestedFrom = frames.length;
+  await dm(A, "NESTED command from a code-mode script");
+  const nestedDone = await settle("A:the NESTED run finished", () => frames.slice(nestedFrom).some((f) => f.events.some((e) => e.type === "RUN_FINISHED")));
+  const nestedEvents = frames.slice(nestedFrom).flatMap((f, i) => f.events.map((e) => ({ ...(e as unknown as { type: string; toolCallId?: string }), at: frameAt[nestedFrom + i]! })));
+  const nestedEndedAt = fakeLog(join(dir, "a.log.jsonl")).find((r) => r.ev === "nestedEnded")?.at;
+  const ofNested = nestedEvents.filter((e) => e.toolCallId?.startsWith("exec-nested-"));
+  const nestedStart = ofNested.find((e) => e.type === "TOOL_CALL_START");
+  check("a command a code-mode script runs reaches the wire while it runs, and only once",
+    nestedDone && nestedEndedAt !== undefined && nestedStart !== undefined && nestedStart.at < nestedEndedAt &&
+      JSON.stringify(ofNested.map((e) => e.type)) === JSON.stringify(["TOOL_CALL_START", "TOOL_CALL_END"]),
+    { types: ofNested.map((e) => e.type), startAt: nestedStart?.at, nestedEndedAt, ...margin("A:the NESTED run finished") });
 
   // ---- (2) restart: the defect that killed the plane ------------------------------------------
   // `DIE now` kills the app-server mid-turn. The host's crash rail brings up a replacement, which
@@ -416,8 +506,12 @@ try {
   // A SLOW turn holds the thread open. SIGTERM lands mid-turn, so the interrupt's own record may
   // never reach the file: `interrupt()` returns when the RPC is acknowledged, not when codex has
   // written anything. The backstop is what closes the run.
-  await dm(A, "SLOW hold this turn open");
+  const exitFrom = frames.length;
+  await dm(A, "STREAM SLOW hold this turn open");
   const opened = await settle("A:a run is open mid-turn", () => openRuns().length > 0);
+  // SIGTERM lands while the reply is streaming: the run cannot close until that message ends. The
+  // wait is bounded well inside the turn's 2.8 s, so the exit still lands mid-turn without a stream.
+  const midStream = await settle("A:the reply is streaming", () => streamedMessage(frames.slice(exitFrom), exitFrom).contents > 0, 1500);
   const openAtExit = openRuns();
   hostA.kill("SIGTERM");
   if (hostA.pid !== undefined) stoppedOnPurpose.add(hostA.pid);
@@ -429,6 +523,9 @@ try {
     closed: margin("A:the open run closes at exit"),
   });
   check("and there was a run to close, so the cell is not vacuous", openAtExit.length > 0, { openAtExit });
+  const exitMessage = streamedMessage(frames.slice(exitFrom), exitFrom);
+  const ended = exitMessage.types.indexOf("TEXT_MESSAGE_END*");
+  check("and the reply it was streaming ended before the run closed", midStream && ended !== -1 && ended < exitMessage.types.indexOf("RUN_FINISHED"), { ...exitMessage, ...margin("A:the reply is streaming") });
   }
 
   // ---- (4) the file that was not there yet ----------------------------------------------------
@@ -475,6 +572,7 @@ try {
       "late-file:the wait for the post-bind frames did not expire",
       "and from the bind onward the seat publishes normally",
       "late-file:the stream carries the turn that ran AFTER the bind and neither of the two that ran before it",
+      "a seat launched without reasoningEvents publishes its reply and none of its reasoning",
     ])
   ) {
   check("and the seat SAID it was starting from there rather than losing them quietly", errB.includes("not republished"), {
@@ -508,6 +606,18 @@ try {
     startsB === 1 && finishesB === 1 && !deltasB.includes("ok:1") && !deltasB.includes("ok:2") && deltasB.includes("ok:3"),
     { starts: startsB, finishes: finishesB, deltas: deltasB },
   );
+  // The fake streams and saves a summary whether or not the seat asked for one, as Codex does for
+  // an operator's own model_reasoning_summary.
+  const thinkFrom = frames.length;
+  await dm(B, "THINK then STREAM, launched without reasoningEvents");
+  const thinkDone = await settle("B:the THINK run finished", () =>
+    frames.slice(thinkFrom).some((f) => f.threadId === bThread && f.events.some((e) => e.type === "RUN_FINISHED")),
+  );
+  const thinkTypes = frames.slice(thinkFrom).filter((f) => f.threadId === bThread).flatMap((f) => f.events.map((e) => e.type));
+  const thoughtSaved = fakeLog(join(dir, "b.log.jsonl")).some((r) => r.ev === "reasoningSaved");
+  check("a seat launched without reasoningEvents publishes its reply and none of its reasoning",
+    thinkDone && thoughtSaved && thinkTypes.includes("TEXT_MESSAGE_CONTENT") && !thinkTypes.some((t) => t.startsWith("REASONING")),
+    { thoughtSaved, types: thinkTypes, ...margin("B:the THINK run finished") });
   }
 
   // ---- (5) the restart INTO a file that was not there yet -------------------------------------
@@ -825,7 +935,11 @@ try {
       tail: errE.slice(-400),
     },
   );
-  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && walE?.frontier.sourceCursor !== undefined && walE?.frontier.sourceCursor === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
+  // The log holds the merged cursor `[rollout, journal]`, whose rollout half is the bind's boundary,
+  // as the merged source reads it; a rollout cursor alone is read as that half.
+  const cursorE = walE?.frontier.sourceCursor;
+  const rolloutHalfE = cursorE?.startsWith("[") ? (JSON.parse(cursorE) as string[])[0] : cursorE;
+  check("bind:the start boundary is on disk before the first pump (#705)", boundE && walEReady && rolloutHalfE !== undefined && rolloutHalfE === expectedBindCursorE, { ...margin("E:the start boundary lands on disk after the launch bind"), sourceCursor: walE?.frontier.sourceCursor, expectedBindCursorE, walPath });
   }
 
   completed = true;

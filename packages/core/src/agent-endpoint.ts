@@ -1,10 +1,11 @@
 /**
- * The `agent` endpoint, revision 4 (SPEC 13.22): the fixed command set an agent serves about itself
+ * The `agent` endpoint, revision 5 (SPEC 13.22): the fixed command set an agent serves about itself
  * on the principal route (SPEC 13.21). `prompts`, `prompt` and `prompt-answer` serve the questions
  * an agent's harness stops to ask: a tool permission, a question, a plan, a form. `commands` lists
  * the harness commands and skills the agent runs, `command` queues one, `command-cancel` cancels a
- * queued one and `command-state` reads how far one got. `interrupt` stops the turn the agent is
- * running. `set-name` changes the agent's display name.
+ * queued one and `command-state` reads how far one got. `turn` queues the owner's own words as a
+ * turn on the same queue. `interrupt` stops the turn the agent is running. `usage` reads what the
+ * harness reports about its context window and cost. `set-name` changes the agent's display name.
  *
  * The contract is a core constant, like the registry's: every agent serves the same cluster, a
  * caller embeds these artifacts and pins their digests, and nothing is published to the contract
@@ -19,7 +20,7 @@ import type { PrincipalAuthority } from "./endpoint-subjects.js";
 
 export const AGENT_ENDPOINT = "agent";
 export const AGENT_CLUSTER_URN = "ai.cotal.agent";
-export const AGENT_CLUSTER_REVISION = 4;
+export const AGENT_CLUSTER_REVISION = 5;
 
 export const AGENT_CMD_PROMPTS = "prompts";
 export const AGENT_CMD_PROMPT = "prompt";
@@ -30,6 +31,8 @@ export const AGENT_CMD_COMMAND_CANCEL = "command-cancel";
 export const AGENT_CMD_COMMAND_STATE = "command-state";
 export const AGENT_CMD_INTERRUPT = "interrupt";
 export const AGENT_CMD_SET_NAME = "set-name";
+export const AGENT_CMD_TURN = "turn";
+export const AGENT_CMD_USAGE = "usage";
 
 /** The canonical `content` of one prompt is at most this many bytes (SPEC 13.22). */
 export const AGENT_PROMPT_CONTENT_MAX_BYTES = 262144;
@@ -46,6 +49,12 @@ export const AGENT_COMMAND_DESCRIPTION_MAX = 1024;
 export const AGENT_COMMAND_INPUT_HINT_MAX = 256;
 /** The `message` of a command state is at most this many characters. */
 export const AGENT_COMMAND_MESSAGE_MAX = 2048;
+/** A `turn`'s text is at most this many characters. */
+export const AGENT_TURN_TEXT_MAX = 262144;
+/** A `turn` carries at most this many images. */
+export const AGENT_TURN_IMAGES_MAX = 16;
+/** The image types a `turn` carries. */
+export const AGENT_TURN_IMAGE_TYPES = Object.freeze(["image/png", "image/jpeg", "image/gif", "image/webp"] as const);
 
 /** `details[].kind` on a `conflict`, and on a `failed-precondition` for a closed prompt: `{ state }`. */
 export const AGENT_PROMPT_STATE_DETAIL = "ai.cotal.agent.prompt-state";
@@ -244,6 +253,26 @@ export interface InterruptOutput {
   state: "interrupted" | "idle";
 }
 
+/** One image a `turn` carries: its type and its bytes in standard base64. */
+export interface TurnImage {
+  mimeType: (typeof AGENT_TURN_IMAGE_TYPES)[number];
+  data: string;
+}
+
+/** What `turn` takes: the owner's own words, and the images they attached. `text` is empty only
+ *  when there are images. */
+export interface TurnInput {
+  text: string;
+  images?: TurnImage[];
+}
+
+/** What `usage` answers. `supported: false`: the agent's connector reports no usage. `context` is
+ *  the tokens in the model's context window and the window's size, and `cost` the session's cost so
+ *  far, each present once the harness reported it. */
+export type UsageOutput =
+  | { supported: false }
+  | { supported: true; context?: { used: number; size: number }; cost?: { amount: number; currency: string } };
+
 /** What `set-name` takes and answers: the display name, which the answer gives as the card now
  *  carries it. */
 export interface SetNameIO {
@@ -441,11 +470,31 @@ export const AGENT_INTERRUPT_OUTPUT_SCHEMA = deepFreeze(closed(["state"], { stat
 // `name-invalid` refusal from the agent, a long one included.
 export const AGENT_SET_NAME_INPUT_SCHEMA = deepFreeze(closed(["name"], { name: anyString }));
 export const AGENT_SET_NAME_OUTPUT_SCHEMA = deepFreeze(closed(["name"], { name: { type: "string", minLength: 1, maxLength: MAX_NAME_LENGTH } }));
+const IMAGE = closed(["mimeType", "data"], {
+  mimeType: { enum: [...AGENT_TURN_IMAGE_TYPES] },
+  data: { type: "string", minLength: 4, pattern: "^[A-Za-z0-9+/]+={0,2}$" },
+});
+export const AGENT_TURN_INPUT_SCHEMA = deepFreeze(closed(["text"], {
+  text: { type: "string", maxLength: AGENT_TURN_TEXT_MAX },
+  images: { type: "array", minItems: 1, maxItems: AGENT_TURN_IMAGES_MAX, items: IMAGE },
+}));
+export const AGENT_TURN_OUTPUT_SCHEMA = deepFreeze(closed(["id"], { id: COMMAND_ID }));
+export const AGENT_USAGE_INPUT_SCHEMA = deepFreeze(closed([], {}));
+export const AGENT_USAGE_OUTPUT_SCHEMA = deepFreeze({
+  oneOf: [
+    closed(["supported"], { supported: { const: false } }),
+    closed(["supported"], {
+      supported: { const: true },
+      context: closed(["used", "size"], { used: uint, size: uint }),
+      cost: closed(["amount", "currency"], { amount: { type: "number", minimum: 0 }, currency: { type: "string", pattern: "^[A-Z]{3}$" } }),
+    }),
+  ],
+});
 
-/** The command rows of revision 4. Every command is untargeted. The prompt commands admit both
- *  authority words; `commands`, `command`, `command-cancel`, `command-state`, `interrupt` and
- *  `set-name` admit `owner` only, so only the owner's interactive session runs an agent's commands,
- *  stops its turn or renames it. */
+/** The command rows of revision 5. Every command is untargeted. The prompt commands admit both
+ *  authority words; `commands`, `command`, `command-cancel`, `command-state`, `interrupt`,
+ *  `set-name`, `turn` and `usage` admit `owner` only, so only the owner's interactive session runs
+ *  an agent's commands, gives it a turn, stops its turn, reads its usage or renames it. */
 export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_PROMPTS, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPTS_INPUT_SCHEMA, output: AGENT_PROMPTS_OUTPUT_SCHEMA },
   { name: AGENT_CMD_PROMPT, capability: "agent.prompts.read", authorities: ["owner", "grant"], input: AGENT_PROMPT_INPUT_SCHEMA, output: AGENT_PROMPT_OUTPUT_SCHEMA },
@@ -456,6 +505,8 @@ export const AGENT_COMMANDS = deepFreeze([
   { name: AGENT_CMD_COMMAND_STATE, capability: "agent.commands.read", authorities: ["owner"], input: AGENT_COMMAND_STATE_INPUT_SCHEMA, output: AGENT_COMMAND_STATE_OUTPUT_SCHEMA },
   { name: AGENT_CMD_INTERRUPT, capability: "agent.turn.interrupt", authorities: ["owner"], input: AGENT_INTERRUPT_INPUT_SCHEMA, output: AGENT_INTERRUPT_OUTPUT_SCHEMA },
   { name: AGENT_CMD_SET_NAME, capability: "agent.profile.write", authorities: ["owner"], input: AGENT_SET_NAME_INPUT_SCHEMA, output: AGENT_SET_NAME_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_TURN, capability: "agent.turn.start", authorities: ["owner"], input: AGENT_TURN_INPUT_SCHEMA, output: AGENT_TURN_OUTPUT_SCHEMA },
+  { name: AGENT_CMD_USAGE, capability: "agent.usage.read", authorities: ["owner"], input: AGENT_USAGE_INPUT_SCHEMA, output: AGENT_USAGE_OUTPUT_SCHEMA },
 ].map((row) => ({ ...row, targeted: false, authorities: row.authorities as PrincipalAuthority[] })));
 
 const TABLE = serviceContractTable(AGENT_COMMANDS);
@@ -463,7 +514,7 @@ const TABLE = serviceContractTable(AGENT_COMMANDS);
 /** The compiled input and output pair per command, compiled on first access. */
 export const AGENT_CONTRACTS = TABLE.contracts;
 
-/** The cluster document of revision 4, deep-frozen. */
+/** The cluster document of revision 5, deep-frozen. */
 export const AGENT_CLUSTER: Readonly<ClusterDocument> = deepFreeze(buildClusterDocument(AGENT_CLUSTER_URN, AGENT_CLUSTER_REVISION, AGENT_COMMANDS));
 
 /** The cluster document's two digests: the root artifact and the closure manifest a caller pins

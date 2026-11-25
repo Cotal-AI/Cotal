@@ -3,14 +3,14 @@
  * graded on what would leave: every mapped unit goes through the emitter's own egress policy and the
  * bracket machine, the two steps a unit passes before it is written. The expected streams are the
  * 1.x plane's contract restated per captured session: run boundaries, assistant text, each tool
- * call's start and end, and nothing a person or a tool wrote.
+ * call's start, end and result marker, and nothing a person or a tool wrote.
  *
  * Run: pnpm smoke:agui-opencode2-map
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { AguiBrackets, AGUI_EVENT_TYPE as T, applyAguiEgressPolicy, type AguiEvent } from "@cotal-ai/connector-core";
+import { AguiBrackets, AGUI_EVENT_TYPE as T, TOOL_RESULT_EVENT, applyAguiEgressPolicy, type AguiEvent } from "@cotal-ai/connector-core";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { OpenCode2SessionSource, type OpenCode2Message } from "../src/agui-source2.js";
 import { createOpenCode2Mapper, type OpenCode2MapperOptions } from "../src/agui-map2.js";
@@ -28,7 +28,7 @@ const THREAD = "ses_fixture";
 /** What a session publishes: each mapped unit through egress and the brackets, in order. */
 async function publish(messages: OpenCode2Message[], opts: Partial<OpenCode2MapperOptions> = {}) {
   let n = 0;
-  const map = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, ...opts });
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, ...opts });
   const read = await new OpenCode2SessionSource({ page: async () => ({ data: messages, cursor: { next: null } }) }).read("");
   const brackets = new AguiBrackets();
   const mapped: AguiEvent[] = [];
@@ -51,13 +51,13 @@ async function publish(messages: OpenCode2Message[], opts: Partial<OpenCode2Mapp
 }
 
 const TEXT = [T.TEXT_MESSAGE_START, T.TEXT_MESSAGE_CONTENT, T.TEXT_MESSAGE_END];
-const TOOL = [T.TOOL_CALL_START, T.TOOL_CALL_END];
+const TOOL = [T.TOOL_CALL_START, T.TOOL_CALL_END, T.CUSTOM];
 const expected: Record<string, string[]> = {
   "shell then text, two turns": [T.RUN_STARTED, ...TOOL, ...TEXT, T.RUN_FINISHED, T.RUN_STARTED, ...TEXT, T.RUN_FINISHED],
   "reasoning, text and a slow shell, then a long step": [T.RUN_STARTED, ...TEXT, ...TOOL, ...TEXT, T.RUN_FINISHED],
   "interrupted while streaming": [T.RUN_STARTED, ...TEXT, T.RUN_FINISHED],
   "tool error": [T.RUN_STARTED, ...TOOL, ...TEXT, T.RUN_FINISHED],
-  "failed before any step": [],
+  "failed before any step": [T.RUN_STARTED, T.RUN_ERROR],
   "prompt steered into a running turn": [T.RUN_STARTED, ...TEXT, T.RUN_FINISHED, T.RUN_STARTED, ...TEXT, T.RUN_FINISHED],
 };
 
@@ -65,7 +65,7 @@ const all: { name: string; mapped: AguiEvent[]; published: AguiEvent[] }[] = [];
 for (const session of fixture.sessions) {
   const out = await publish(session.snapshots.at(-1)!);
   all.push({ name: session.name, ...out });
-  check(`stream:${session.name}: run boundaries, text and tool start and end, balanced and closed`,
+  check(`stream:${session.name}: run boundaries, text, tool start and end and the result marker, balanced and closed`,
     JSON.stringify(out.published.map((e) => e.type)) === JSON.stringify(expected[session.name])
       && out.violation === undefined && !out.open,
     { types: out.published.map((e) => e.type), violation: out.violation, open: out.open });
@@ -100,6 +100,12 @@ for (const s of all) {
   const results = (name: string) => all.find((s) => s.name === name)!.mapped.filter((e) => e.type === T.TOOL_CALL_RESULT) as { cotal?: { isError?: boolean } }[];
   check("tool:a tool that failed is marked as an error before egress, a completed one is not",
     results("tool error").every((e) => e.cotal?.isError === true) && results("shell then text, two turns").every((e) => e.cotal?.isError === undefined));
+  const markers = (name: string) => all.find((s) => s.name === name)!.published
+    .filter((e) => e.type === T.CUSTOM && (e as { name?: string }).name === TOOL_RESULT_EVENT)
+    .map((e) => (e as { value: { isError: boolean } }).value.isError);
+  check("tool:the published result marker says a failed tool failed and a completed one did not",
+    JSON.stringify(markers("tool error")) === "[true]" && JSON.stringify(markers("shell then text, two turns")) === "[false]",
+    { error: markers("tool error"), completed: markers("shell then text, two turns") });
 }
 
 {
@@ -131,7 +137,7 @@ for (const s of all) {
 }
 
 {
-  const map = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-open" });
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-open" });
   const step: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 21, streamed: 22, completed: 23 }, content: [{ type: "text", text: "after a restart" }] };
   const a = map({ message: step, index: 0, element: step.content![0] });
   const b = map({ message: { id: "msg_3", type: "idle", time: { created: 24 }, outcome: "succeeded" }, index: -1 });
@@ -139,6 +145,33 @@ for (const s of all) {
     a !== null && "runId" in a && a.runId === "run-open" && !a.events.some((e) => e.type === T.RUN_STARTED)
       && b !== null && "runId" in b && b.runId === "run-open" && b.events[0]?.type === T.RUN_FINISHED,
     { a, b });
+}
+
+{
+  const { map, forgetOpenRun } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-1" });
+  const step: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 21, streamed: 22, completed: 23 }, content: [{ type: "text", text: "stopped" }] };
+  const idle: OpenCode2Message = { id: "msg_3", type: "idle", time: { created: 24 }, outcome: "interrupted" };
+  map({ message: step, index: 0, element: step.content![0] });
+  forgetOpenRun("run-other");
+  const kept = map({ message: step, index: 0, element: step.content![0] });
+  forgetOpenRun("run-1");
+  const late = map({ message: idle, index: -1 });
+  check("forget:a run closed out of band is forgotten by its id alone, and a later idle closes nothing",
+    kept !== null && "runId" in kept && kept.runId === "run-1" && !kept.events.some((e) => e.type === T.RUN_STARTED) && late === null,
+    { kept, late });
+}
+
+{
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => "run-empty" });
+  const prompt = { id: "msg_1", type: "user", time: { created: 31 }, text: "[user 1]" } as OpenCode2Message;
+  const refused: OpenCode2Message = { id: "msg_2", type: "assistant", time: { created: 32, completed: 33 }, content: [] };
+  const idle: OpenCode2Message = { id: "msg_3", type: "idle", time: { created: 34 }, outcome: "succeeded" };
+  const none = [map({ message: prompt, index: -1 }), map({ message: refused, index: -1 })];
+  const closed = map({ message: idle, index: -1 });
+  const again = map({ message: { ...idle, id: "msg_4", time: { created: 35 } }, index: -1 });
+  const types = closed && "events" in closed ? closed.events.map((e) => [e.type, (e as { timestamp?: number }).timestamp]) : [];
+  check("empty-turn:a turn with no element publishes a run at its idle, started at its prompt, and a second idle closes nothing",
+    none.every((u) => u === null) && JSON.stringify(types) === JSON.stringify([[T.RUN_STARTED, 31], [T.RUN_FINISHED, 34]]) && again === null, { none, closed, again });
 }
 
 {
@@ -154,6 +187,56 @@ for (const s of all) {
     { tool: stamp(T.TOOL_CALL_START), text: stamp(T.TEXT_MESSAGE_START), end: stamp(T.RUN_FINISHED) });
 }
 
-const EXPECTED = 20;
+{
+  // A tool shown while it runs: its call publishes when the read first finds it running, and its
+  // result once it completes, as OpenCode's own ACP agent shows a call before its result.
+  let n = 0;
+  const { map } = createOpenCode2Mapper({ threadId: THREAD, mintRunId: () => `run-${++n}`, reasoning: false });
+  const brackets = new AguiBrackets();
+  let violation: string | undefined;
+  let messages: OpenCode2Message[] = [];
+  const src = new OpenCode2SessionSource({ page: async () => ({ data: messages, cursor: { next: null } }) });
+  const drain = async (cursor: string) => {
+    const read = await src.read(cursor);
+    const types: string[] = [];
+    for (const { value } of read.records) {
+      const unit = map(value);
+      if (unit === null || !("runId" in unit)) continue;
+      for (const e of applyAguiEgressPolicy(unit.events)) {
+        try {
+          brackets.accept(e);
+        } catch (err) {
+          violation ??= (err as Error).message;
+        }
+        types.push(e.type === T.CUSTOM ? String((e as { name?: string }).name) : e.type);
+      }
+    }
+    return { types, cursor: read.cursor };
+  };
+  const shell = (status: "running" | "completed") => ({
+    type: "tool" as const, id: "call_9", name: "shell",
+    state: { status, input: { command: "[input 9]" }, ...(status === "completed" ? { content: [{ type: "text", text: "[result 9]" }] } : {}) },
+    time: { created: 42, ran: 43, ...(status === "completed" ? { completed: 50 } : {}) },
+  });
+  messages = [
+    { id: "msg_1", type: "user", time: { created: 41 } },
+    { id: "msg_2", type: "assistant", time: { created: 42, streamed: 43 }, content: [shell("running")] },
+  ];
+  const running = await drain("");
+  check("call:a tool first read running publishes its run, start and end, and no result yet",
+    JSON.stringify(running.types) === JSON.stringify([T.RUN_STARTED, T.TOOL_CALL_START, T.TOOL_CALL_END]) && violation === undefined && brackets.open,
+    { types: running.types, violation });
+  messages = [
+    messages[0]!,
+    { id: "msg_2", type: "assistant", time: { created: 42, streamed: 43, completed: 50 }, content: [shell("completed")] },
+    { id: "msg_3", type: "idle", time: { created: 51 }, outcome: "succeeded" },
+  ];
+  const done = await drain(running.cursor);
+  check("call:once it completes, it publishes only its result marker, and the turn end closes the run",
+    JSON.stringify(done.types) === JSON.stringify([TOOL_RESULT_EVENT, T.RUN_FINISHED]) && violation === undefined && !brackets.open,
+    { types: done.types, violation });
+}
+
+const EXPECTED = 25;
 check(`meta:every cell ran - ${EXPECTED} expected`, passed() + failed() === EXPECTED, `${passed() + failed()} cells reported`);
 finish();

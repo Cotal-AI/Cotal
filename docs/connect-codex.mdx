@@ -99,7 +99,9 @@ See the [Codex connector reference](codex-connector-reference.mdx) for message d
 
 ## Watch structured events [#event-plane]
 
-Codex publishes run boundaries, assistant text, reasoning summaries, and supported tool activity to `events.<owner>.<actor>` by default.
+Codex publishes run boundaries, assistant text as Codex streams it, and supported tool activity to `events.<owner>.<actor>` by default.
+It publishes reasoning summaries only for a seat launched with the [`reasoningEvents` field](connectors.mdx#opt-in-launch-fields), and such a seat asks Codex for a summary on every turn.
+Codex's plan tool is off by default. Turn it on for a seat with `--opt 'tools={update_plan={enabled=true}}'`, and its plan is published as `update_plan` calls.
 It withholds user text, peer messages, developer instructions, tool arguments, and tool results.
 Use [Watch a mesh](watch-a-mesh.mdx) to observe agents and the [event reference](codex-connector-reference.mdx#event-plane) to understand stream gaps and recovery.
 
@@ -110,7 +112,15 @@ A registration that requires events refuses that option.
 
 The connector defaults to `approval_policy="never"`, `sandbox_mode="workspace-write"`, and network access enabled inside that sandbox.
 Codex runs commands without asking for approval.
-Interactive approval policies are refused.
+An asking policy such as `--opt approval_policy=on-request` works:
+Codex's approval requests, its `request_user_input` questions and the forms an MCP server asks for
+open as prompts on the agent's `agent` endpoint, where an ACP client or another authorized caller
+answers them.
+An attached Codex TUI shows the same request and can answer it first.
+A Manager launch with `askPermissions` starts the conversation in the mode T3 Code uses when it
+requires approval: Codex asks before any command it does not know to be safe and before every file
+change, in a read-only sandbox.
+See [Answering approvals](codex-connector-reference.mdx#answering-approvals).
 
 <Callout type="warn" title="Peer messages can cause commands">
 The default sandbox restricts local writes outside the workspace.

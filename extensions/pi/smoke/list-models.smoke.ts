@@ -21,6 +21,7 @@ interface JournalEntry {
   argv?: string[];
   seatIdentity?: boolean;
   providerKey?: boolean;
+  env?: Record<string, string | null>;
   command?: { id?: string; type?: string; provider?: string; modelId?: string };
   sigterm?: boolean;
 }
@@ -57,6 +58,14 @@ async function goneWithin(pid: number | undefined, ms: number): Promise<boolean>
     await new Promise((r) => setTimeout(r, 50));
   }
   return !alive(pid);
+}
+/** A read that should fail: the catalog it listed instead, or the error it threw. */
+async function failure(bin: string): Promise<{ catalog?: ModelCatalog; error: string }> {
+  try {
+    return { catalog: await listPiModels({ resolvedBinaries: { pi: bin } }), error: "" };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
 }
 const replyFile = (body: unknown): string => {
   const file = join(dir, `reply-${++cases}.json`);
@@ -119,10 +128,33 @@ try {
   }
 
   {
+    // spawn.env names reach the catalog's pi as they reach a launch, so it reads the agent dir and
+    // provider key a seat reads. A name nobody declared stays out.
+    const agentDir = join(dir, "private-agent");
+    Object.assign(process.env, { PI_CODING_AGENT_DIR: agentDir, PI_CATALOG_DECLARED_KEY: "declared", PI_CATALOG_UNDECLARED: "undeclared" });
+    const names = ["PI_CODING_AGENT_DIR", "PI_CATALOG_DECLARED_KEY", "PI_CATALOG_UNDECLARED"];
+    const envAllow = ["PI_CODING_AGENT_DIR", "PI_CATALOG_DECLARED_KEY"];
+    const declared = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REPORT_ENV: names.join(",") });
+    await listPiModels({ resolvedBinaries: { pi: declared.bin }, envAllow });
+    const seen = declared.journal()[0]?.env;
+    check("a catalog read gives pi the spawn.env names it is handed, with their values",
+      seen?.PI_CODING_AGENT_DIR === agentDir && seen?.PI_CATALOG_DECLARED_KEY === "declared", seen);
+    check("a name spawn.env does not declare stays out of the catalog read", seen?.PI_CATALOG_UNDECLARED === null, seen);
+    const launch = piConnector.buildLaunch({ space: "pilistmodels", name: "pi-1", events: false, envAllow }).env ?? {};
+    check("the catalog read gets the declared names a launch gets",
+      names.every((name) => (name in launch) === (seen?.[name] !== null)), { launch: names.filter((name) => name in launch), seen });
+    const bare = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REPORT_ENV: names.join(",") });
+    await listPiModels({ resolvedBinaries: { pi: bare.bin } });
+    check("without spawn.env names the catalog read gets none of them",
+      names.every((name) => bare.journal()[0]?.env?.[name] === null), bare.journal()[0]?.env);
+    for (const name of names) delete process.env[name];
+  }
+
+  {
     const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "get_available_thinking_levels" });
     const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
     check(
-      "a pi that cannot list thinking levels is unavailable with pi's own error and the version that added them",
+      "a pi too old to list thinking levels is unavailable with pi's own error and the version that added them",
       catalog.models.length === 0 &&
         catalog.unavailable === "pi refused get_available_thinking_levels for anthropic/claude-fable-5: Unknown command: get_available_thinking_levels (pi 0.81.0 added it)",
       catalog,
@@ -130,12 +162,22 @@ try {
   }
 
   {
-    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "set_model" });
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "get_available_thinking_levels", FAKE_PI_REFUSE_ERROR: "No model selected" });
+    const read = await failure(pi.bin);
     check(
-      "a pi that refuses to select a listed model is unavailable with pi's own error",
-      catalog.models.length === 0 && catalog.unavailable === "pi refused set_model for anthropic/claude-fable-5: Unknown command: set_model",
-      catalog,
+      "a pi that refuses to list a model's thinking levels for another reason fails the read with pi's own error",
+      read.error === "pi refused get_available_thinking_levels for anthropic/claude-fable-5: No model selected",
+      read,
+    );
+  }
+
+  {
+    const pi = fakePi("catalog", { FAKE_PI_REPLY: fixture("pi-catalog.json"), FAKE_PI_REFUSE: "set_model" });
+    const read = await failure(pi.bin);
+    check(
+      "a pi that refuses to select a listed model fails the read with pi's own error",
+      read.error === "pi refused set_model for anthropic/claude-fable-5: Unknown command: set_model",
+      read,
     );
   }
 
@@ -143,76 +185,76 @@ try {
     const recorded = JSON.parse(readFileSync(fixture("pi-catalog.json"), "utf8")) as { levels: Record<string, unknown> };
     recorded.levels["local/plain"] = "off";
     const pi = fakePi("catalog", { FAKE_PI_REPLY: replyFile(recorded) });
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
+    const read = await failure(pi.bin);
     check(
-      "a model whose levels are not a list makes the whole catalog unavailable",
-      catalog.models.length === 0 && catalog.unavailable === "pi answered get_available_thinking_levels for local/plain without a level list",
-      catalog,
+      "a model whose levels are not a list fails the whole read",
+      read.error === "pi answered get_available_thinking_levels for local/plain without a level list",
+      read,
     );
   }
 
   {
     const pi = fakePi("reply", { FAKE_PI_REPLY: fixture("pi-models-none.jsonl") });
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
+    const read = await failure(pi.bin);
     check(
-      "a pi with no credentials is unavailable, saying it holds no provider credentials",
-      catalog.models.length === 0 && /holds no provider credentials/.test(catalog.unavailable ?? ""),
-      catalog,
+      "a pi with no credentials fails the read, saying it holds no provider credentials and how to sign in",
+      read.catalog === undefined && /holds no provider credentials; sign in with \/login in pi/.test(read.error),
+      read,
     );
   }
 
   {
-    const catalog = await listPiModels({ resolvedBinaries: { pi: join(dir, "not-installed", "pi") } });
-    check("a missing pi is unavailable, saying it could not start", catalog.models.length === 0 && /could not be started \(ENOENT\)/.test(catalog.unavailable ?? ""), catalog);
+    const read = await failure(join(dir, "not-installed", "pi"));
+    check("a missing pi fails the read, saying it could not start", read.catalog === undefined && /could not be started \(ENOENT\)/.test(read.error), read);
   }
 
   {
     const pi = fakePi("silent");
     const started = Date.now();
-    const catalog = await Promise.race([
-      listPiModels({ resolvedBinaries: { pi: pi.bin } }),
-      new Promise<ModelCatalog>((r) => setTimeout(() => r({ models: [], unavailable: "the suite stopped waiting after 15s" }), 15_000)),
+    const read = await Promise.race([
+      failure(pi.bin),
+      new Promise<{ error: string }>((r) => setTimeout(() => r({ error: "the suite stopped waiting after 15s" }), 15_000)),
     ]);
     const elapsed = Date.now() - started;
-    check("a pi that never answers is unavailable after 6 seconds", /did not answer get_available_models within 6s/.test(catalog.unavailable ?? "") && elapsed >= 5_500 && elapsed < 8_000, { catalog, elapsed });
+    check("a pi that never answers fails the read after 6 seconds", /did not answer get_available_models within 6s/.test(read.error) && elapsed >= 5_500 && elapsed < 8_000, { read, elapsed });
     check("a pi that never answered is stopped", await goneWithin(pi.pid(), 3_000));
   }
 
   {
     const pi = fakePi("garbage");
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    check("a pi that writes a line that is not JSON is unavailable, saying so", /not JSON/.test(catalog.unavailable ?? ""), catalog);
+    const read = await failure(pi.bin);
+    check("a pi that writes a line that is not JSON fails the read, saying so", read.catalog === undefined && /not JSON/.test(read.error), read);
   }
 
   {
     const pi = fakePi("reply", { FAKE_PI_REPLY: replyFile({ type: "response", command: "get_available_models", success: false, error: "Model registry failed to load" }) });
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    check("a pi that refuses is unavailable with pi's own error", catalog.unavailable === "pi refused get_available_models: Model registry failed to load", catalog);
+    const read = await failure(pi.bin);
+    check("a pi that refuses fails the read with pi's own error", read.error === "pi refused get_available_models: Model registry failed to load", read);
   }
 
   {
     const pi = fakePi("reply", { FAKE_PI_REPLY: replyFile({ type: "response", command: "get_available_models", success: true, data: {} }) });
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    check("a reply with no models list is unavailable", /without a models list/.test(catalog.unavailable ?? ""), catalog);
+    const read = await failure(pi.bin);
+    check("a reply with no models list fails the read", read.catalog === undefined && /without a models list/.test(read.error), read);
   }
 
   {
     const recorded = JSON.parse(readFileSync(fixture("pi-catalog.json"), "utf8")) as { models: { data: { models: unknown[] } } };
     recorded.models.data.models.push({ name: "No identity" });
     const pi = fakePi("catalog", { FAKE_PI_REPLY: replyFile(recorded) });
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    check("a model with no provider or id makes the whole catalog unavailable", catalog.models.length === 0 && /no provider or id/.test(catalog.unavailable ?? ""), catalog);
+    const read = await failure(pi.bin);
+    check("a model with no provider or id fails the whole read", read.catalog === undefined && /no provider or id/.test(read.error), read);
   }
 
   {
     const pi = fakePi("exit");
-    const catalog = await listPiModels({ resolvedBinaries: { pi: pi.bin } });
-    check("a pi that exits before answering is unavailable, naming its exit code", /exited \(3\) before get_available_models answered/.test(catalog.unavailable ?? ""), catalog);
+    const read = await failure(pi.bin);
+    check("a pi that exits before answering fails the read, naming its exit code", read.catalog === undefined && /exited \(3\) before get_available_models answered/.test(read.error), read);
   }
 
   {
     const pi = fakePi("reply", { FAKE_PI_REPLY: fixture("pi-models-none.jsonl"), FAKE_PI_STUBBORN: "1" });
-    await listPiModels({ resolvedBinaries: { pi: pi.bin } });
+    await failure(pi.bin);
     check("a pi that ignores SIGTERM is killed within 5 seconds", await goneWithin(pi.pid(), 7_000));
     check("pi is asked to shut down before it is killed", pi.journal().some((e) => e.sigterm), pi.journal());
   }

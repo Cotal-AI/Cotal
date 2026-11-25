@@ -37,11 +37,13 @@ interface Options {
   messages?: SessionMessage[]
   stop?: (taskId: string) => Stub
   readerFails?: boolean
+  drop?: string
+  usage?: { context: { tokens?: number; window: number }; cost?: { usd: number } }
 }
 
 // Stands in for Claude Code under the mod and for the seat server beyond its reader and helper.
 function seat(on: On, options: Options = {}) {
-  const record = { reader: [] as string[][], helper: [] as string[][], runs: [] as string[][], aborts: [] as string[], stops: [] as string[] }
+  const record = { reader: [] as string[][], helper: [] as string[][], runs: [] as string[][], aborts: [] as string[], stops: [] as string[], prompts: [] as unknown[] }
   const lines: string[] = []
   const answers = new Map<string, (frame: Frame) => void>()
   let wake = () => {}
@@ -70,6 +72,11 @@ function seat(on: On, options: Options = {}) {
     record.runs.push([e.command, e.args])
     return { text: '' }
   })
+  on('prompt.submit', ($, e) => {
+    record.prompts.push({ text: e.text, origin: e.origin })
+    return options.drop !== undefined ? { drop: options.drop } : { text: e.text }
+  })
+  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], ...(options.usage ?? { context: { window: 200000 } }) } }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   // Claude writes the results an abort moved to the background just after the abort resolves, so
   // they show only once a turn completed.
@@ -301,6 +308,33 @@ describe('interrupt', () => {
       reason: 'the aborted turn did not complete within 2 s, so tools it moved to the background may still run',
     })
     expect(record.stops).toHaveLength(0)
+  })
+})
+
+describe('prompt', () => {
+  test('submits the owner\'s words as the person\'s own', async ($, on) => {
+    const { ask, record } = seat(on)
+    await start($)
+    expect(await ask({ op: 'prompt', text: 'hello there' })).toEqual({ id: 'r1', op: 'prompt', outcome: 'submitted' })
+    expect(record.prompts).toEqual([{ text: 'hello there', origin: { kind: 'plugin', name: 'cotal', asUser: true } }])
+  })
+  test('a prompt Claude drops: refused, with Claude\'s reason', async ($, on) => {
+    const { ask } = seat(on, { drop: 'a Stop stands' })
+    await start($)
+    expect(await ask({ op: 'prompt', text: 'hello' })).toEqual({ id: 'r1', op: 'prompt', outcome: 'refused', reason: 'a Stop stands' })
+  })
+})
+
+describe('usage', () => {
+  test('reports the window, the tokens over it and the cost', async ($, on) => {
+    const { ask } = seat(on, { usage: { context: { tokens: 1234, window: 200000 }, cost: { usd: 0.5 } } })
+    await start($)
+    expect(await ask({ op: 'usage' })).toEqual({ id: 'r1', op: 'usage', window: 200000, tokens: 1234, usd: 0.5 })
+  })
+  test('leaves out what Claude has not reported', async ($, on) => {
+    const { ask } = seat(on, { usage: { context: { window: 200000 } } })
+    await start($)
+    expect(await ask({ op: 'usage' })).toEqual({ id: 'r1', op: 'usage', window: 200000 })
   })
 })
 

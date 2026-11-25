@@ -18,6 +18,7 @@ export interface PluginIoDeps {
 
 export interface PluginIo {
   reapRetiredWal(threadId: string, drained: boolean): Promise<void>;
+  /** An answer that is not 2xx throws an Error carrying the HTTP `status`. */
   opencodeApi<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T>;
   isMessageAbortedError(error: unknown): boolean;
   runErrorOf(error: unknown): { message: string; code?: string };
@@ -65,7 +66,7 @@ export function pluginIo(deps: PluginIoDeps): PluginIo {
       return;
     }
     const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-    const { threadDir, walPath } = eventWalLocation({
+    const { threadDir, walPath, deltaJournalPath } = eventWalLocation({
       workspaceRoot: resolveEventsStateRoot(process.env),
       space: config.space,
       principal,
@@ -84,11 +85,13 @@ export function pluginIo(deps: PluginIoDeps): PluginIo {
       return;
     }
     // NEVER A RECURSIVE REMOVE. `rm` here is `force` but NOT `recursive`, so it can only ever unlink
-    // the one file this layout puts in the directory, and `rmdir` then refuses outright if anything
-    // else is in there. A computed path plus a recursive delete is one wrong component away from
-    // taking a tree with it, and the components here are hashes of values from outside this process.
+    // the two files this layout puts in the directory, the WAL and the delta journal that lives and
+    // dies with it, and `rmdir` then refuses outright if anything else is in there. A computed path
+    // plus a recursive delete is one wrong component away from taking a tree with it, and the
+    // components here are hashes of values from outside this process.
     try {
       await rm(walPath, { force: true });
+      await rm(deltaJournalPath, { force: true });
       await rmdir(threadDir);
       log(`${WAL_REAPED} ${threadId}`);
     } catch (e) {
@@ -106,7 +109,7 @@ export function pluginIo(deps: PluginIoDeps): PluginIo {
         ...(init?.headers ?? {}),
       },
     });
-    if (!res.ok) throw new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`);
+    if (!res.ok) throw Object.assign(new Error(`OpenCode HTTP ${res.status} ${res.statusText} for ${path}`), { status: res.status });
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }

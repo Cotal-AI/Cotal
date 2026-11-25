@@ -14,6 +14,7 @@ import { MAX_AGENTS, supervisePolicy } from "./resume.js";
 import type { TeardownTarget } from "./retirement.js";
 import type { AgentHandle, Runtime } from "./runtime/index.js";
 import { watchConnectorHolder } from "./seat-custody.js";
+import { optInLaunchFields } from "./harness-resolution.js";
 import { foreignEventChannels, ownLists, ownPersona, userMeshEndpointsRefusal, type SeatLaunch, type SeatLaunchDeps } from "./seat-launch.js";
 import type { ManagedAgent, SpawnHooks, StartAgentOpts } from "./seat-types.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot } from "./static-lifecycle.js";
@@ -116,19 +117,19 @@ export class SeatStart {
   private onceRefusal(...args: Parameters<SeatLaunch["onceRefusal"]>): ReturnType<SeatLaunch["onceRefusal"]> { return this.launch.onceRefusal(...args); }
 
   /** Why this manager cannot hand a seat a first command, or undefined when it can. The agent runs it
-   *  on its `agent` endpoint, which only a user-auth mesh serves, as its first turn. */
+   *  on its `agent` endpoint, which it serves on every mesh mode, as its first turn. */
   private firstCommandRefusal(runtime: Runtime, launch: { prompt?: string; once: boolean }): string | undefined {
-    if (!this.userMode) return "a first command runs on the agent endpoint, which only a user-auth mesh serves (firstCommand)";
     if (runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no first command (firstCommand)`;
     if (launch.prompt !== undefined) return "a spawn's first turn is its prompt or its first command, not both (prompt, firstCommand)";
     if (launch.once) return "a once seat's first turn is its task, so it takes no first command (once, firstCommand)";
     return undefined;
   }
   /** Why this launch cannot run its variant or modes: a runtime that starts seats elsewhere carries no
-   *  modes, and the connector's catalog must list both for the launched model. */
-  private choiceRefusal(connector: Connector, runtime: Runtime, harness: { binaries?: Readonly<Record<string, string>> }, choice: LaunchChoice): string | Promise<string | undefined> {
+   *  modes, and the connector's catalog, read with the harness files and spawn.env names the launch
+   *  receives, must list both for the launched model. */
+  private choiceRefusal(connector: Connector, runtime: Runtime, launch: Pick<LaunchOpts, "resolvedBinaries" | "envAllow">, choice: LaunchChoice): string | Promise<string | undefined> {
     if (choice.modes && runtime.spawnDelegated) return `runtime "${runtime.kind}" starts seats outside this host and carries no modes (modes)`;
-    return this.parts.harnessResolution.catalogRefusal(connector, harness.binaries, choice);
+    return this.parts.harnessResolution.catalogRefusal(connector, launch.resolvedBinaries, launch.envAllow, choice);
   }
   private spawnerName(...args: Parameters<SeatLaunch["spawnerName"]>): ReturnType<SeatLaunch["spawnerName"]> { return this.launch.spawnerName(...args); }
   private spawnPersona(...args: Parameters<SeatLaunch["spawnPersona"]>): ReturnType<SeatLaunch["spawnPersona"]> { return this.launch.spawnPersona(...args); }
@@ -136,6 +137,28 @@ export class SeatStart {
   private staticSpawnBound(...args: Parameters<SeatLaunch["staticSpawnBound"]>): ReturnType<SeatLaunch["staticSpawnBound"]> { return this.launch.staticSpawnBound(...args); }
   private spawnBoundRefusal(...args: Parameters<SeatLaunch["spawnBoundRefusal"]>): ReturnType<SeatLaunch["spawnBoundRefusal"]> { return this.launch.spawnBoundRefusal(...args); }
   private managedStaticInstanceReads(...args: Parameters<SeatLaunch["managedStaticInstanceReads"]>): ReturnType<SeatLaunch["managedStaticInstanceReads"]> { return this.launch.managedStaticInstanceReads(...args); }
+
+  /** Why a delegated runtime cannot start this spawn, or undefined when it can. A delegated seat
+   *  starts outside this host from values alone, so a choice only this host can honour is refused
+   *  before enrollment, and named rather than dropped. */
+  private delegatedRefusal(runtime: Runtime, opts: StartAgentOpts, hostFields: ReturnType<Manager["hostLaunchFields"]>): string | undefined {
+    const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
+    if (!this.remoteAuthority?.enrollManagedAgent)
+      return `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path`;
+    try {
+      this.userProvision.delegatedMeshRecord();
+    } catch (e) {
+      return rejectionText(e);
+    }
+    const hostOnly = hostOnlyChoice(opts, delegatedBy);
+    if (hostOnly) return hostOnly;
+    if (opts.askPermissions || opts.reasoningEvents)
+      return `${delegatedBy}, and its child launch takes neither askPermissions nor reasoningEvents`;
+    const shared = Object.keys(hostFields.mcpServers!);
+    if (shared.length)
+      return `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none`;
+    return undefined;
+  }
 
   async startActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
@@ -264,23 +287,8 @@ export class SeatStart {
       if (hooks?.onAccepted) throw new EpEnvelopeError("failed-precondition", error, undefined, "not-executed");
       return { ok: false, error };
     }
-    // A delegated seat starts outside this host from values alone, so a choice only this host can
-    // honour is refused here, before enrollment, and named rather than dropped.
-    if (runtime.spawnDelegated) {
-      const delegatedBy = `runtime "${runtime.kind}" starts seats outside this host`;
-      if (!this.remoteAuthority?.enrollManagedAgent)
-        return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
-      try {
-        this.userProvision.delegatedMeshRecord();
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      const hostOnly = hostOnlyChoice(opts, delegatedBy);
-      if (hostOnly) return { ok: false, error: hostOnly };
-      const shared = Object.keys(hostFields.mcpServers!);
-      if (shared.length)
-        return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
-    }
+    const delegatedRefused = runtime.spawnDelegated ? this.delegatedRefusal(runtime, opts, hostFields) : undefined;
+    if (delegatedRefused) return { ok: false, error: delegatedRefused };
 
     // A placed spawn's cwd is checked on this host BEFORE anything is minted or reserved: an absolute
     // path this manager cannot realpath, or one that is not a directory, is refused here with the
@@ -509,9 +517,9 @@ export class SeatStart {
     // declared name. Refused before any reserve or mint when the connector cannot reopen an exact
     // session or the recorded assignment does not match this declaration.
     const exact = opts.resolved?.continuity === "exact";
-    const unsupported = this.capabilityRefusal(connector, { variant, modes: opts.modes, prompt, firstCommand: opts.firstCommand, exact })
+    const unsupported = this.capabilityRefusal(connector, { variant, modes: opts.modes, prompt, firstCommand: opts.firstCommand, exact, askPermissions: opts.askPermissions, reasoningEvents: opts.reasoningEvents, events })
       ?? (opts.firstCommand && this.firstCommandRefusal(runtime, { prompt, once: opts.once !== undefined }))
-      ?? await this.choiceRefusal(connector, runtime, harness, { model, variant, modes: opts.modes });
+      ?? await this.choiceRefusal(connector, runtime, hostFields, { model, variant, modes: opts.modes });
     if (unsupported) return { ok: false, error: unsupported };
     const onceRefused = opts.once && this.onceRefusal(connector, runtime, { ...opts, launchOptions, prompt }, spawner, hooks);
     if (onceRefused) return { ok: false, error: onceRefused };
@@ -913,6 +921,7 @@ export class SeatStart {
         endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
         eventPayloads,
+        ...optInLaunchFields(opts),
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -993,6 +1002,7 @@ export class SeatStart {
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
           eventPayloads,
+          ...optInLaunchFields(opts),
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),

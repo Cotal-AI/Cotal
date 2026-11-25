@@ -21,7 +21,8 @@ import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.j
 import { registerCotalTools } from "./tools.js";
 import { wrapped } from "./wrap.js";
 import { PiEvents } from "./events.js";
-import { piCommandDispatcher, piRunsCommands, type PiCommandHost } from "./commands.js";
+import { askBeforeTools } from "./approvals.js";
+import { piCommandDispatcher, piRunsCommands, type PiCommandHost, type PiSessionView } from "./commands.js";
 import { savedProjectTrust } from "./trust.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
@@ -38,6 +39,8 @@ interface PiRuntime {
   events?: PiEvents;
   /** The API of the latest load, which a reload replaces. */
   commandHost?: PiCommandHost;
+  /** The context of the open session's start. It reads the live session until pi replaces it. */
+  session?: PiSessionView;
 }
 
 type GlobalWithPi = typeof globalThis & { [RUNTIMES]?: Map<string, PiRuntime> };
@@ -137,7 +140,12 @@ function cleanPersonaFile(runtime: PiRuntime): void {
 
 function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>, runsCommands: boolean): PiRuntime {
   let runtime: PiRuntime | undefined;
-  const commands = runsCommands ? piCommandDispatcher(() => runtime?.commandHost, (): PiDriver => driver) : undefined;
+  const commands = piCommandDispatcher({
+    host: () => runtime?.commandHost,
+    turns: (): PiDriver => driver,
+    session: () => runtime?.session,
+    commands: runsCommands,
+  });
   const mesh = new MeshAgent(config, undefined, { commands });
   const driver = new PiDriver(mesh);
   runtime = {
@@ -216,7 +224,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtimes.set(key, runtime);
   }
   if (eventsEnabled) {
-    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({ log: (line) => console.error(`Pi ${line}`) }), config.eventPayloadsWithheld);
+    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({ log: (line) => console.error(`Pi ${line}`) }), config.eventPayloadsWithheld, config.reasoningEvents);
   }
   runtime.expectedSessionId = expectedSessionId;
   if (startupSessionId) {
@@ -230,6 +238,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   // The pinned Pi types predate sendUserMessage's expandPromptTemplates; piRunsCommands gates its use.
   runtime.commandHost = pi as unknown as PiCommandHost;
   registerCotalTools(pi, runtime.mesh, runtime.config);
+  if (runtime.config.askPermissions) askBeforeTools(pi, () => runtime.mesh.prompts);
   pi.registerMessageRenderer<CotalBatchDetails>(CUSTOM_TYPE, (message) => wrapped(messageText(message.content)));
 
   if (supervisedCwd) {
@@ -237,6 +246,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   pi.on("session_start", async (_event, context) => {
+    runtime.session = context;
     cleanPersonaFile(runtime);
     runtime.sessionId = context.sessionManager.getSessionId();
     if (runtime.expectedSessionId && runtime.sessionId !== runtime.expectedSessionId)
@@ -259,12 +269,22 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     const update = event.assistantMessageEvent;
     if ((update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") && update.delta.length > 0)
       runtime.mesh.noteActivity();
+    runtime.events?.delta(update);
   });
+  // Pi saves the message after its extensions see message_end, so that hook cannot read it yet.
+  pi.on("message_end", () => runtime.events?.settle());
+  /** Read what Pi has saved so far onto the event plane. */
+  const readSaved = (context: ExtensionContext): void => {
+    runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+    runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
+  };
   pi.on("context", (event) => runtime.driver.onContext(event.messages));
   pi.on("after_provider_response", (event) => runtime.driver.onProviderResponse(event.status));
-  pi.on("tool_execution_start", (event) => {
+  // Pi saves a reply before it runs the reply's tools, so its tool calls show while they run.
+  pi.on("tool_execution_start", (event, context) => {
     runtime.mesh.noteActivity();
     runtime.driver.onToolStart(event.toolName);
+    readSaved(context);
   });
   pi.on("tool_execution_update", () => runtime.mesh.noteActivity());
   pi.on("tool_execution_end", () => {
@@ -273,11 +293,9 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   });
   pi.on("session_before_compact", (event) => runtime.driver.onBeforeCompact(event.reason, event.willRetry));
   pi.on("agent_end", (event, context) => runtime.driver.onAgentEnd(event.messages, asContext(context)));
-  pi.on("turn_end", (_event, context) => {
-    runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
-    runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
-  });
+  pi.on("turn_end", (_event, context) => readSaved(context));
   pi.on("session_shutdown", async (event, context) => {
+    runtime.session = undefined;
     runtime.driver.onSessionShutdown();
     runtime.events?.flush(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile());
     await runtime.events?.shutdown();

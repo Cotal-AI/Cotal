@@ -172,11 +172,14 @@ function failureCondition(ev: HookEvent): PresenceCondition | undefined {
   };
 }
 
+/** What the hooks call on the session's emitter holder, whatever records its source reads. */
+type EventHolder = Pick<AguiEmitterHolder<unknown, unknown>, "adopt" | "flush" | "closeRun">;
+
 interface ClaudeHandleDeps {
   /** Launch environment for a hosted session's carried-fork record. Omitted uses the process env. */
   env?: NodeJS.ProcessEnv;
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
-  events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
+  events?: () => EventHolder | undefined;
   /** Told which inbox items a frame surfaced; pass {@link WakePolicy.surfaced}. */
   surfaced?: (items: readonly InboxItem[]) => void;
   /** False when native ingress owns delivery and these hooks observe lifecycle only. */
@@ -253,7 +256,7 @@ export interface ClaudeHooks {
  * `drive()` OWNS delivery; this connector only hands a reply off, so the ack binds to the handoff.
  */
 export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
-  const events = (): AguiEmitterHolder<ClaudeEntry, unknown> | undefined => deps.events?.();
+  const events = (): EventHolder | undefined => deps.events?.();
 
   /**
    * Claude runs each hook in a separate process. Their control-socket relays can therefore arrive
@@ -408,9 +411,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     return () => (turnOpen && mark === turn ? endInterruptedTurn(agent, mark.path, false) : Promise.resolve());
   };
 
-  /** Stops the interrupt watch of the open main-agent turn. Claude Code fires no hook when its user
-   *  interrupts a turn, so the transcript is watched for the interrupt record while a turn is open,
-   *  and every terminal hook stops the watch. */
+  /** Stops the transcript watch of the open main-agent turn, which reads the interrupt record no hook
+   *  reports and wakes the event reader on growth, since a hook can run before its line is written.
+   *  Every terminal hook stops the watch. */
   let stopInterruptWatch: (() => void) | undefined;
   const unwatchTurn = (): void => {
     stopInterruptWatch?.();
@@ -424,7 +427,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
       if (stopInterruptWatch !== stop) return;
       stopInterruptWatch = undefined;
       void endInterruptedTurn(agent, path, true);
-    });
+    }, () => flushEvents(path));
     stopInterruptWatch = stop;
   };
 

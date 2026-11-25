@@ -1,0 +1,2 @@
+# A spawn's first command runs on a static mesh through a real Manager, and its other refusals hold.
+smoke:first-command-static
