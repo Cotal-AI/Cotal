@@ -51,8 +51,6 @@ export const PI_PROVIDER_KEYS = [
   "XIAOMI_TOKEN_PLAN_CN_API_KEY", "XIAOMI_TOKEN_PLAN_AMS_API_KEY", "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
 ] as const;
 
-const unavailable = (reason: string): ModelCatalog => ({ models: [], unavailable: reason });
-
 /** pi's thinking levels, lowest first, as `--thinking` takes them. */
 const PI_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
@@ -69,16 +67,17 @@ function thinkingLevels(model: { reasoning?: unknown; thinkingLevelMap?: unknown
 
 /** Map pi's `get_available_models` response to the catalog. The ids are `provider/id`, the form
  *  pi's `--model` takes, so a model offered by two providers stays two choices. A model's variants
- *  are its thinking levels. */
+ *  are its thinking levels. Every pi the connector runs answers this command, so a reply that names
+ *  no model a seat could run throws, and the manager reports a failed read. */
 function piCatalog(reply: PiRpcResponse): ModelCatalog {
   if (reply.success !== true)
-    return unavailable(`pi refused get_available_models: ${typeof reply.error === "string" ? reply.error : "no reason given"}`);
+    throw new Error(`pi refused get_available_models: ${typeof reply.error === "string" ? reply.error : "no reason given"}`);
   const entries = reply.data?.models;
-  if (!Array.isArray(entries)) return unavailable("pi answered get_available_models without a models list");
+  if (!Array.isArray(entries)) throw new Error("pi answered get_available_models without a models list");
   const models: ModelInfo[] = [];
   for (const m of entries as { provider?: unknown; id?: unknown; name?: unknown; reasoning?: unknown; thinkingLevelMap?: unknown }[]) {
     if (typeof m?.provider !== "string" || !m.provider || typeof m.id !== "string" || !m.id)
-      return unavailable("pi answered get_available_models with a model that has no provider or id");
+      throw new Error("pi answered get_available_models with a model that has no provider or id");
     const variants = thinkingLevels(m);
     models.push({
       id: `${m.provider}/${m.id}`, provider: m.provider,
@@ -88,7 +87,7 @@ function piCatalog(reply: PiRpcResponse): ModelCatalog {
   }
   // pi lists only the models of providers it holds credentials for.
   if (models.length === 0)
-    return unavailable("pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key");
+    throw new Error("pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key");
   return { source: "pi --mode rpc get_available_models", models };
 }
 
@@ -97,7 +96,8 @@ export async function listPiModels(opts: ModelCatalogOpts = {}): Promise<ModelCa
   // The spawn.env names a launch gets, such as PI_CODING_AGENT_DIR, so pi lists what a seat reaches.
   const env = launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow });
   const answer = await askPi({ bin: opts.resolvedBinaries?.pi ?? "pi", args: ["--no-session", "--offline"], env, type: "get_available_models", boundMs: 6_000 });
-  return "failed" in answer ? unavailable(answer.failed) : piCatalog(answer.reply);
+  if ("failed" in answer) throw new Error(answer.failed);
+  return piCatalog(answer.reply);
 }
 
 export const piConnector: Connector = {

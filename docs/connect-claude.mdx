@@ -223,7 +223,7 @@ cotal spawn --harness claude --model sonnet
 `--model` overrides the persona's model pin.
 To list the models your Claude login can use, run `cotal models --harness claude`.
 The connector asks your own `claude` without sending a prompt.
-A logged-out `claude` reports `claude is not logged in; run claude to log in`.
+With a logged-out `claude`, the read fails with `claude is not logged in; run claude to log in`.
 `--variant` picks Claude's effort level, which the connector passes as `--effort`:
 
 ```bash
