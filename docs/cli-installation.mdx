@@ -761,6 +761,9 @@ reading; `--allow-publish` is optional when the session will not post. A credent
 permission joins read-only, and the prompt says so instead of inviting broadcasts. Attempting to
 post confirms that nothing was sent and names the mint with `--allow-publish` for that channel.
 Reading, roster commands and DMs remain available. Use the intended channel in both commands.
+If the broker rejects a credential for another space, `join` explains how to use the original
+file on its own broker. When the target space is known, it also shows the owner how to mint a
+replacement with a read grant for the landing channel. That grant does not add permission to post.
 For a channel that starts with `-`, attach the values with `=`, as in `--allow-subscribe=-general`
 when minting and `--channel=-general` when joining.
 A subscription pattern such as `team.>` can be the landing channel when the read grant covers it.
