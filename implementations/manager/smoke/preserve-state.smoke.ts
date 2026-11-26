@@ -110,6 +110,7 @@ function silentExitHandle(name: string): AgentHandle & { exitSilently(): void } 
   };
 }
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 const root = mkdtempSync(join(tmpdir(), "cotal-preserve-"));
 const agentsDir = join(root, ".cotal", "agents");
 const runDir = join(root, ".cotal", "run");

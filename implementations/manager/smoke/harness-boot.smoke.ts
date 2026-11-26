@@ -25,6 +25,7 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
   console.log(`  ✓ ${name}`);
 };
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(root, "ws");
 const binDir = join(root, "bin");
