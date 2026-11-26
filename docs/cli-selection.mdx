@@ -563,6 +563,8 @@ one registered space other than the selection, and whose broker answers, the com
 space, as it does with nothing selected, and the note under its `Mesh:` heading, a refusal's
 included, says the selection applies outside the folder. If the selection was adopted automatically,
 offline registrations do not prevent the folder's only running space from taking precedence.
+When a target selection checks broker inventory, it skips an unchecked open registration if the
+inventory shows that broker does not serve the space. The registration and saved selection stay unchanged.
 `cotal whoami` does not contact the broker. When folder registrations compete with an adopted
 selection, it reports the identity from local records and notes that it cannot check this precedence.
 A space `cotal space create` prepared there

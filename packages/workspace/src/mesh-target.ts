@@ -111,7 +111,7 @@ export interface ResolveFlags {
   offline?: readonly string[];
   /** Report that folder precedence is unverified when the command does not probe brokers. */
   reportUnverifiedFolderPrecedence?: boolean;
-  /** Broker inventory evidence used only by the unflagged registry fallback. */
+  /** Broker inventory evidence for automatic target selection. */
   openInventory?: { served: readonly string[]; unserved: readonly string[] };
 }
 
@@ -898,7 +898,7 @@ function recordsRunElsewhere(folder: { root: string; registered: readonly string
  * A root with several running spaces, none of them the selection, keeps the selection and says so
  * before the command acts, with the `--space` that targets one of them instead.
  */
-function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>, reportUnverifiedFolderPrecedence = false): boolean {
+function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSelection, meshes: readonly MeshEntry[], offline: ReadonlySet<string>, flags: Pick<ResolveFlags, "openInventory" | "reportUnverifiedFolderPrecedence"> = {}): boolean {
   const folder = folderSpaces(cwd, meshes);
   if (source === "explicit") {
     if (folder && !folder.registered.includes(current) && folder.prepared !== current) {
@@ -909,7 +909,8 @@ function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSe
     return true;
   }
   if (!folder || folder.registered.includes(current) || folder.prepared === current) return true;
-  const running = folder.registered.filter((space) => !offline.has(space));
+  const registered = folder.registered.filter((space) => !flags.openInventory?.unserved.includes(space));
+  const running = registered.filter((space) => !offline.has(space));
   if (running.length === 0) {
     if (recordsRunElsewhere(folder)) return false;
     const unfinished = unfinishedStackSpace(folder.root);
@@ -917,10 +918,10 @@ function selectionTargetsHere(cwd: string, { space: current, source }: CurrentSe
       noteFolderSpace(unfinished, current);
       return false;
     }
-    noteFolderSpaceHeld(folder, current);
+    noteFolderSpaceHeld({ ...folder, registered }, current);
     return true;
   }
-  if (reportUnverifiedFolderPrecedence) {
+  if (flags.reportUnverifiedFolderPrecedence) {
     const space = running.length === 1 ? running[0]! : current;
     const message = "This report uses local records. It cannot check whether this folder takes precedence over the automatically selected space. Name a space with `--space` to choose it explicitly.";
     recordOperationSpaceNote(space, message);
@@ -1246,7 +1247,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
 
   const selection = readCurrentSelection();
   const meshes = loadMeshes();
-  if (selection && selectionTargetsHere(cwd, selection, meshes, offline, flags.reportUnverifiedFolderPrecedence)) {
+  if (selection && selectionTargetsHere(cwd, selection, meshes, offline, flags)) {
     const current = selection.space;
     const cur = meshes.find((m) => m.space === current);
     if (!cur) {
@@ -1286,7 +1287,8 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // to `DEFAULT_SERVER` below, silently. `mesh-registry.ts` states the rule on `meshesForRoot`:
     // "a raw `===` silently misses". This is the same rule, one predicate, not a second spelling.
     // An adopted selection yields to the one registration here that the liveness sweep kept.
-    const recorded = registrationAt(root, meshes, selection?.source === "adopted" ? offline : undefined);
+    const recorded = registrationAt(root, meshes, selection?.source === "adopted"
+      ? new Set([...offline, ...(flags.openInventory?.unserved ?? [])]) : undefined);
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded", flags.readOnly);
     // A root whose own stack recorded a broker is not given the default address: with no
     // registration that stack is not running here, and the default port may hold another mesh. The
