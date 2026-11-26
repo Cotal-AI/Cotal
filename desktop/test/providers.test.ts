@@ -6,7 +6,10 @@ test("refresh scopes provider failures and retains old daemon behavior", () => {
   assert.match(catalogRefreshNotice({ refresh: "partial", failedProviders: [other] }, own), /hack\.cotal\.ai/);
   assert.throws(() => catalogRefreshNotice({ refresh: "partial", failedProviders: [own] }, own), /cloud\.cotal\.ai/);
   assert.throws(() => catalogRefreshNotice({ refresh: "partial" }, own), /Some space catalogs/);
-  assert.throws(() => catalogRefreshNotice({ refresh: "partial", failedProviders: [], collisions: 1 }, own), /names conflict/);
+  assert.match(catalogRefreshNotice({ refresh: "partial", failedProviders: [], collisions: 1 }, own), /kept those registrations.*`cotal sync`.*`cotal space`/);
+  assert.match(catalogRefreshNotice({ refresh: "partial", failedProviders: [other], collisions: 1 }, own), /names conflict.*hack\.cotal\.ai/);
+  assert.throws(() => catalogRefreshNotice({ refresh: "partial", failedProviders: [own], collisions: 1 }, own), /cloud\.cotal\.ai/);
+  assert.throws(() => catalogRefreshNotice({ refresh: "partial", failedProviders: [], collisions: 1, unreadable: 1 }, own), /could not be read/);
   assert.throws(() => catalogRefreshNotice({ refresh: "complete", failedProviders: [], unreadable: 1 }, own), /could not be read/);
 });
 test("account follows active provider or the only supported account, not the last saved account", () => {

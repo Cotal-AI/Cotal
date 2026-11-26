@@ -1021,7 +1021,7 @@ function nextAfterSignIn(): void {
   if (selectedSpace()) showStage("connect", true);
   else {
     showStage("connect", true);
-    if (requestedSpace && !selectedSpace()) notice("The requested space is not available to this account. Ask its owner for access, then refresh spaces.");
+    if (requestedSpace && !selectedSpace()) notice([el("notice-wrap").classList.contains("expanded") ? el("notice").textContent : "", "The requested space is not available to this account. Ask its owner for access, then refresh spaces."].filter(Boolean).join(" "));
     else if (!el<HTMLSelectElement>("space").options[1]) { problem = "NO_SPACES"; showStage("connect", true); }
   }
 }

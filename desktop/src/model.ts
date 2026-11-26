@@ -104,9 +104,11 @@ export function catalogRefreshNotice(result: Record<string, unknown>, provider?:
     const host = provider ? new URL(provider).host : failed.map(url => new URL(url).host).join(", ");
     throw new Error(`Spaces from ${host} could not be refreshed. Saved entries from that host may be out of date.`);
   }
-  if (Number(result.collisions) > 0) throw new Error("Some space names conflict with existing registrations. No conflicting registration was replaced.");
   if (Number(result.unreadable) > 0) throw new Error("Some local space registrations could not be read. They were not changed.");
-  return failed?.length ? `Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.` : "";
+  const notices = [];
+  if (Number(result.collisions) > 0) notices.push("Some space names conflict with existing registrations. Cotal kept those registrations. With the Cotal CLI installed, run `cotal sync` to list the conflicting names and `cotal space` to check their sources.");
+  if (failed?.length) notices.push(`Spaces from ${[...new Set(failed.map(url => new URL(url).host))].join(", ")} could not be refreshed. Saved entries from that host may be out of date.`);
+  return notices.join(" ");
 }
 
 /** The notice for a sign-in that replaced an account but could not delete some of that account's

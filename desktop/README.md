@@ -14,6 +14,10 @@ On Connect and in Settings after connecting, choose **Edit** in the computer-nam
 
 With several saved logins, the app follows the provider just signed in to, then the selected space's provider, then the only supported account. A failed refresh at another provider shows a notice naming its host without blocking sign-in or Refresh spaces. Failure at the active provider remains an error. Older daemons without provider failure details retain their existing error behavior.
 
+A catalog space whose name conflicts with an existing registration does not block sign-in. The app shows a notice and keeps the existing registration. With the Cotal CLI installed, run `cotal sync` for the conflicting names and `cotal space` for their registration sources.
+
+To keep an existing registration, leave it alone. To take the catalog's registration instead, remove the existing one and run `cotal sync` again. `cotal space forget <name>` removes a manual registration but will not forget a running local space or an entry owned by another catalog. See [space registration and removal](../docs/cli-selection.mdx#forgetting-a-local-record) for those cases.
+
 While waiting for the browser, copy the approval code with **Copy** and watch its countdown. An expired code offers **Get a new code**. A replacement waits for the old native sign-in to settle, so two sign-ins never overlap. Approval advances the app automatically. Missing applications, declined sign-in, an unreachable host, empty accounts, pending owner approval, active sessions and version mismatch each show a recovery action. Details keeps the original diagnosis.
 
 Step changes fade in with a small movement. Progress markers show waiting, running and completion, and the running row says what is being checked. Details and notices expand in height. Reduced motion removes movement and continuous animation. Enter invokes the current primary action, Escape closes Details, and one polite live region announces state changes. Background refresh preserves focus, typed fields and unchanged progress nodes.
