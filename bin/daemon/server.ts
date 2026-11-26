@@ -35,11 +35,19 @@ import { createAccountReconciler } from "./account-reconcile.js";
 import { createAccountComputer } from "./account.js";
 
 type ManagerResult = DaemonStatus | HostedManager | ServiceConnectionResult | { argv: string[] };
-function agentActionError(error: unknown) {
-  const failure = isConnectRefusal(error) ? error.failure() : error;
-  if (!isCommandFailure(failure)) return;
+function managerResultError(op: string, error: unknown, log: (message: string) => void) {
   const clean = (value: string) => value.replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
+  const cause = clean(String(error instanceof Error ? error.message : error));
+  log(`daemon: ${op} refused: ${cause}`);
+  if (error instanceof HostedManagerRefusal) return { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) };
+  if (op !== "agent-stop" && op !== "agent-terminal") return managerUnavailable(op, cause);
+  const failure = isConnectRefusal(error) ? error.failure() : error;
+  if (!isCommandFailure(failure)) return managerUnavailable(op, cause);
   return { code: failure.code, message: clean(failure.message), ...(failure.remedy ? { remedy: clean(failure.remedy) } : {}) };
+}
+
+function managerUnavailable(op: string, cause: string) {
+  return { code: "MANAGER_UNAVAILABLE" as const, message: `the daemon could not complete ${op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" };
 }
 
 /** Requests one connection may send. A sign-in needs two (start, cancel); status polling a few. */
@@ -335,12 +343,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
           return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
         }, (error: unknown) => {
           counters.requestsRefused++;
-          const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
-          log(`daemon: ${req.op} refused: ${cause}`);
-          if (error instanceof HostedManagerRefusal) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: error.code, message: error.message.slice(0, 1500), remedy: error.remedy.slice(0, 1500) } });
-          const actionError = (req.op === "agent-stop" || req.op === "agent-terminal") && agentActionError(error);
-          if (actionError) return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: actionError });
-          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: { code: "MANAGER_UNAVAILABLE", message: `the daemon could not complete ${req.op}: ${cause}`, remedy: "read \`cotal daemon status\`, restore the Manager connection if needed, then run the same command again" } });
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: false, error: managerResultError(req.op, error, log) });
         }));
       };
       if (req.op === "manager-start" || req.op === "manager-status") {
