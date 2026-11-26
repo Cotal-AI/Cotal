@@ -30,6 +30,33 @@ syncBuiltinESMExports();
   return { record, env: { NODE_OPTIONS: `--require="${preload}"` } };
 }
 
+function checkMissingLocalTarball(
+  dir: string,
+  prefix: string,
+  cli: (args: string[], extra?: NodeJS.ProcessEnv) => { status: number | null; stderr: string },
+): void {
+  const source = join(dir, "bad-dependency");
+  mkdirSync(source);
+  writeFileSync(join(source, "package.json"), JSON.stringify({
+    name: "cotal-bad-dependency-demo", version: "1.0.0", type: "module", main: "./greeting.mjs",
+    peerDependencies: { "@cotal-ai/core": "*" }, dependencies: { "missing-library": "file:./missing-library.tgz" },
+  }));
+  writeFileSync(join(source, "greeting.mjs"), `import { registry } from "@cotal-ai/core";
+registry.register({ kind: "command", name: "demo-bad-dependency", summary: "Print a greeting", run() {} });
+`);
+  const files = ["package.json", "package-lock.json", "extensions.json"].map(name => join(prefix, name));
+  const before = files.map(file => readFileSync(file));
+  const refused = cli(["ext", "add", "./bad-dependency"], { npm_config_offline: "true" });
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /cotal-bad-dependency-demo: it could not open the tarball for missing-library/);
+  assert.match(refused.stderr, /`npm pack --dry-run \.\/bad-dependency`/);
+  assert.match(refused.stderr, /absolute path of an existing archive/);
+  assert.match(refused.stderr, /`(?:pnpm )?cotal ext add \.\/bad-dependency`/);
+  assert.match(refused.stderr, /npm can install from a registry/);
+  assert.doesNotMatch(refused.stderr, /\.extensions\.stage-/);
+  assert.deepEqual(files.map(file => readFileSync(file)), before);
+}
+
 function main(): void {
   const repo = resolve(import.meta.dirname, "../../..");
   const binary = join(repo, "bin", "dist", "cotal.js");
@@ -196,6 +223,7 @@ registry.register({ kind: "command", name: "greet-fallback", summary: "Fallback 
       check(`a fresh CLI loads the installed command through its ${form} root export`, greeted.status === 0 && greeted.stdout.trim() === "Hello from the extension");
 
       if (form !== "nested") continue;
+      checkMissingLocalTarball(dir, prefix, cli);
       const manifestPath = join(prefix, "extensions.json");
       const before = readFileSync(manifestPath, "utf8");
       writeFileSync(join(source, "README.md"), "# Greeting extension\n");
