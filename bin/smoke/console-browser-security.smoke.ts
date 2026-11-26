@@ -39,6 +39,7 @@ const browser = (() => {
   }
   throw new Error("no Chromium-family browser on PATH and COTAL_SMOKE_BROWSER is unset; console browser security requires a real browser and has no substitute");
 })();
+const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
 const frame = Buffer.from('{"value":"界🙂"}\0');
 const splitDecoder = new StringDecoder("utf8");
 let decoded = "";
@@ -50,7 +51,7 @@ const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const brokerPort = await freePort();
 const server = `nats://127.0.0.1:${brokerPort}`;
 const space = "browsersecurity";
-const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawn("nats-server", ["-p", String(brokerPort), "-js", "-sd", store, "-a", "127.0.0.1"], { env: childEnv, stdio: "ignore" });
 const release = teardownOnSignal(broker, store);
 let chrome: ChildProcess | undefined;
 let dashboard: ChildProcess | undefined;
@@ -65,7 +66,7 @@ const responses: { session?: string; status: number; type: string; path: string 
 const failures: { session?: string; blocked?: string }[] = [];
 
 async function startDashboard(port: number): Promise<{ launchUrl: string; launchNonce: string }> {
-  const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../implementations/web/smoke/console-security-server.ts", import.meta.url)), server, space, String(port)], { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../implementations/web/smoke/console-security-server.ts", import.meta.url)), server, space, String(port)], { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
   dashboard = child;
   let output = "";
   child.stdout.on("data", (data: Buffer) => { output += data.toString(); });
@@ -137,6 +138,37 @@ async function channelVerification(session: string, sender: CotalEndpoint): Prom
   check("dashboard: navigation to the channel did not reload the page", await evaluate(session, "performance.getEntriesByType('navigation').length === 1"));
 }
 
+async function rosterLayout(session: string): Promise<void> {
+  const name = `name-start-${"W".repeat(108)}-name-end`;
+  const agent = new CotalEndpoint({ space, servers: server, channels: [], consume: false, card: { name, role: "writer", kind: "agent" } });
+  agent.on("error", () => {});
+  try {
+    await agent.start();
+    const row = `document.querySelector(${JSON.stringify(`button[data-agent="${agent.card.id}"]`)})`;
+    await cdp("Emulation.setDeviceMetricsOverride", { width: 1280, height: 960, deviceScaleFactor: 1, mobile: false }, session);
+    await until(() => evaluate(session, `!!${row}`), "Agents renders the live 128-character name");
+    await evaluate(session, "document.fonts.ready.then(() => true)");
+    const result = await evaluate(session, `(() => {
+      const row = ${row};
+      const name = row.querySelector('.v3-aname b');
+      const role = name.nextElementSibling;
+      const right = Math.min(row.getBoundingClientRect().right, innerWidth);
+      const style = getComputedStyle(name);
+      return {
+        shortened: name.clientWidth > 0 && name.scrollWidth > name.clientWidth &&
+          style.overflowX === 'hidden' && style.textOverflow === 'ellipsis' && name.getBoundingClientRect().right <= right,
+        fullName: name.title === name.textContent ? name.title : null,
+        roleVisible: role.textContent === 'writer' && role.clientWidth > 0 &&
+          role.scrollWidth <= role.clientWidth && role.getBoundingClientRect().right <= right,
+      };
+    })()`);
+    check("dashboard roster: a 128-character name fits with an ellipsis", result.shortened);
+    check("dashboard roster: the shortened name has its full value in the tooltip", result.fullName === name);
+    check("dashboard roster: the role remains fully visible next to the shortened name", result.roleVisible);
+  } finally {
+    await agent.stop();
+  }
+}
 
 async function channelPurge(session: string, publisher: CotalEndpoint): Promise<void> {
   const channel = "purge-fixture";
@@ -230,7 +262,7 @@ try {
   const { launchUrl, launchNonce } = await startDashboard(port);
   const dashboardToken = new URL(launchUrl).searchParams.get("k")!;
   const dashboardBase = new URL(launchUrl).origin;
-  chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], detached: true });
+  chrome = spawn(browser, ["--headless", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank"], { env: childEnv, stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"], detached: true });
   const decoder = new StringDecoder("utf8");
   (chrome.stdio[4] as Readable).on("data", (data: Buffer) => {
     wire += decoder.write(data);
@@ -300,6 +332,7 @@ try {
   const purgePage = await page(dashboardBase + "/#/channel/general");
   await until(() => evaluate(purgePage, "document.body?.textContent.includes('Connected to cotal web') === true"), "the authenticated dashboard opens its live feed");
   await channelPurge(purgePage, seed);
+  await rosterLayout(await page(dashboardBase + "/#/agents"));
   const connected = "Array.from(document.querySelectorAll('[data-sidebar=footer] [data-slot=item-actions]')).some(el => el.textContent.trim().startsWith('Connected'))";
   await cdp("Page.navigate", { url: dashboardBase }, dashboardPage);
   await until(() => evaluate(dashboardPage, connected), "dashboard reconnects before the restart");

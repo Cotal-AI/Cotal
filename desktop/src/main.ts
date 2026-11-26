@@ -1248,7 +1248,7 @@ async function readServiceLog(): Promise<void> {
     const result = await request({ op: "log" });
     if (typeof result.text !== "string") throw new Error("The background service log reply is unsupported.");
     text("service-log-text", result.text);
-    text("service-log-status", !result.text ? "No background service log has been recorded." : result.truncated ? "Showing the most recent 8 KB." : "Recent background service output.");
+    text("service-log-status", !result.text ? "No background service log has been recorded." : result.truncated ? "Showing recent output. Older lines were omitted." : "Recent background service output.");
   } catch (error) {
     text("service-log-text", "");
     text("service-log-status", error instanceof Error ? error.message : String(error));

@@ -212,8 +212,8 @@
 .v3-arow[aria-current="true"] { background: var(--soft); }
 .v3-arow .ui-av { --s: 36px; }
 .v3-aname { display: flex; align-items: baseline; gap: 8px; min-width: 0; white-space: nowrap; }
-.v3-aname b { font-weight: 600; }
-.v3-aname span { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+.v3-aname b { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.v3-aname span { flex-shrink: 0; max-width: calc(100% - 8px - 2ch); color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
 .v3-aact { color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .v3-arow-off .v3-aname b { color: var(--dim); }
 .v3-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12.5px; white-space: nowrap; }

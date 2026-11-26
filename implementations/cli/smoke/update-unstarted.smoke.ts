@@ -4,6 +4,7 @@ import nodeAssert from "node:assert/strict";
 import { assertSmokeSandboxDown, countedAssert, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { chmodSync, chownSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,12 +12,110 @@ import { join, resolve } from "node:path";
 import { createSpaceAuth } from "@cotal-ai/core";
 import type { MeshTarget } from "@cotal-ai/workspace";
 import { isStoppedLocalMesh, readManagerContinuity } from "../src/commands/update.js";
-import { authDir, clearCurrent, findPreparedSpace, meshFile, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { assertRecordIdentity, authDir, clearCurrent, findPreparedSpace, localProcessPath, MANAGER_PIDFILE, meshFile, parsePid, readCurrent, recordMesh, recordPreparedSpace, removeMesh, saveSpaceAuth, setCurrent, spaceKey, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { writeStackJournal, STACK_ROLES, type StackJournal } from "../src/lib/stack-journal.js";
-import { serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
+import { serviceInstances, serviceInstanceStore, processServiceHost, requireProcessIdentity } from "../src/lib/service-instances.js";
+import { SEED_BUILTINS } from "../src/seed/paths.js";
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
+
+function offlineUpdateFixture(bin: string, cwd: string, version: string, env: NodeJS.ProcessEnv) {
+  const scratch = mkdtempSync(join(cwd, "inaccessible-update-"));
+  const config = join(scratch, "config"), seed = join(config, "cotal", "seed");
+  mkdirSync(seed, { recursive: true, mode: 0o700 });
+  // Honor previously removed built-ins without attempting any package installation.
+  writeFileSync(join(seed, "authority.json"), JSON.stringify({ everSeeded: SEED_BUILTINS }), { mode: 0o600 });
+  writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: version }), { mode: 0o600 });
+  const stamp = join(seed, "stamp.json");
+  writeFileSync(stamp, JSON.stringify({ generation: version }), { mode: 0o600 });
+  const npm = join(scratch, "npm"), unexpected = join(scratch, "unexpected-npm-call");
+  writeFileSync(npm, `#!/bin/sh
+case "$1 $2" in
+  "view cotal-ai@latest") printf '"%s"\\n' "$SMOKE_CLI_VERSION" ;;
+  "--version ") printf '11.0.0\\n' ;;
+  *) printf '%s\\n' "$*" >> "$SMOKE_UNEXPECTED_NPM"; exit 97 ;;
+esac
+`, { mode: 0o700 });
+  const run = (args: string[], extra?: NodeJS.ProcessEnv) => spawnSync(process.execPath, [bin, ...args], {
+    cwd, encoding: "utf8", timeout: 120_000,
+    env: { ...env, XDG_CONFIG_HOME: config, PATH: `${scratch}:${env.PATH}`, TMPDIR: scratch, TMP: scratch, TEMP: scratch,
+      SMOKE_CLI_VERSION: version, SMOKE_UNEXPECTED_NPM: unexpected, ...extra },
+  });
+  return { run, config, stamp, unexpected };
+}
+
+function checkInaccessibleUpdate(bin: string, cwd: string, project: string, space: string, version: string, env: NodeJS.ProcessEnv & { COTAL_HOME: string }): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const { run, unexpected } = offlineUpdateFixture(bin, cwd, version, env);
+  const records = [meshFile(space), join(project, ".cotal", "stack-controller.json")];
+  const definitions = join(env.COTAL_HOME, "services", spaceKey(space), "definitions");
+  const instances = join(env.COTAL_HOME, "services", spaceKey(space), "instances");
+  for (const dir of [definitions, instances]) records.push(...readdirSync(dir).filter(name => name.endsWith(".json")).map(name => join(dir, name)));
+  const before = records.map(path => readFileSync(path));
+  const attempts = [project, join(project, ".cotal")].flatMap(blocked => {
+    const mode = statSync(blocked).mode & 0o777;
+    try {
+      chmodSync(blocked, 0o000);
+      assert.throws(() => statSync(join(blocked, blocked === project ? ".cotal" : "stack-controller.json")), { code: "EACCES" });
+      return [[], ["--space", space]].map(flags => ({ blocked, result: run(["update", ...flags]) }));
+    } finally { chmodSync(blocked, mode); }
+  });
+  assert.deepEqual(attempts.map(({ result }) => result.status), [0, 0, 0, 0], attempts.map(({ blocked, result }) => `${blocked}:\n${result.stdout}${result.stderr}`).join("\n"));
+  for (const { result } of attempts) {
+    assert.ok(result.stdout.includes(`${space}: folder is gone; leaving its processes untouched, continuity not checked`));
+    assert.ok(result.stdout.includes(`Registry latest: ${version}`), "the private npm stub answered the version lookup");
+    assert.doesNotMatch(result.stderr, /running manager continuity check/);
+  }
+  assert.equal(existsSync(unexpected), false, "update never requests an npm install or unrelated registry lookup");
+  assert.deepEqual(records.map(path => readFileSync(path)), before, "update leaves registration, journal, definitions and instance records byte-identical");
+}
+
+function checkDeniedManagerUpdate(bin: string, cwd: string, project: string, space: string, version: string,
+  env: NodeJS.ProcessEnv, layout: "legacy" | "static"): void {
+  if (process.platform === "win32" || process.getuid?.() === 0) return;
+  const { run, config, stamp, unexpected } = offlineUpdateFixture(bin, cwd, version, env);
+  const dot = join(project, ".cotal"), journal = join(dot, "stack-controller.json");
+  assert.equal(existsSync(journal), layout === "static", "the live stack uses the expected layout");
+  const pid = layout === "static"
+    ? serviceInstances(space, "stack-manager").find(row => row.record.value.state === "running")?.record.value.process?.pid
+    : parsePid(readFileSync(localProcessPath(MANAGER_PIDFILE, { root: project, space }), "utf8"));
+  assert.ok(pid, "a real Manager is running behind the denied path");
+  const manager = requireProcessIdentity(pid);
+  const auth = authDir(project), serverConf = join(auth, "server.conf");
+  const snapshot = () => readdirSync(config, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile())
+    .map(entry => join(entry.parentPath, entry.name)).sort().map(path => [path, readFileSync(path)]);
+  const paths = layout === "legacy" ? [[project, dot], [dot, join(dot, "stack-home.json")]] : [[auth, serverConf]];
+  for (const [blocked, probe] of paths) {
+    const mode = statSync(blocked).mode & 0o777;
+    writeFileSync(stamp, JSON.stringify({ generation: version }));
+    const current = snapshot();
+    try {
+      chmodSync(blocked, 0o000);
+      assert.throws(() => statSync(probe), { code: "EACCES" });
+      if (layout === "static") assert.ok(statSync(journal).isFile(), "the journal is still visible when only auth is denied");
+      const detail = layout === "legacy" ? `${dot}: directory could not be listed` : `cannot inspect ${join(auth, `manager-instance.${spaceKey(space)}.json`)}`;
+      for (const flags of [[], ["--space", space]]) {
+        const result = run(["update", ...flags]);
+        const output = result.stdout + result.stderr;
+        assert.equal(result.status, 1, output);
+        assert.ok(result.stderr.includes(`running manager continuity check: local Manager continuity cannot be established: ${detail}`), output);
+        assert.doesNotMatch(output, /continuity not checked|connectors reconciled|connector integrations refreshed/);
+        assert.deepEqual(snapshot(), current, "a refused update leaves the connector configuration and seed bytes unchanged");
+      }
+      writeFileSync(stamp, JSON.stringify({ generation: "0.0.1" }));
+      const before = snapshot();
+      const seed = run(["send", "--space", space, "-c", "general", "seed hold probe"], { COTAL_SKIP_CONNECTOR_SEED: "0" });
+      const output = seed.stdout + seed.stderr;
+      assert.ok(seed.stderr.includes(`${detail}; its connectors stay at their existing version until the Manager is restarted`), output);
+      assert.doesNotMatch(output, /migrated operator-global seed store/);
+      assert.deepEqual(snapshot(), before, "automatic seed leaves the previous generation and connector records unchanged");
+    } finally { chmodSync(blocked, mode); }
+    assert.equal(assertRecordIdentity(manager).kind, "match", "the same running Manager survives update and automatic seed");
+  }
+  assert.equal(existsSync(unexpected), false, "no npm install or unrelated registry lookup was requested");
+}
+
 const root = mkdtempSync(join(tmpdir(), "cotal-update-unstarted-"));
 const other = mkdtempSync(join(tmpdir(), "cotal-update-deleted-"));
 const prior = process.env.COTAL_HOME;
@@ -266,6 +365,7 @@ try {
     const up = stoppedCli("up", "--detach", "--server", target.server, "--space", stoppedSpace);
     started = up.status === 0;
     assert.equal(up.status, 0, `explicit-space project starts\n${up.stdout}\n${up.stderr}`);
+    checkDeniedManagerUpdate(bin, other, stoppedProject, stoppedSpace, version, env, "legacy");
     const sent = stoppedCli("send", "-c", "general", "hello");
     assert.equal(sent.status, 0, `explicit-space project stores a message\n${sent.stdout}\n${sent.stderr}`);
     const down = stoppedCli("down", "--yes");
@@ -317,8 +417,29 @@ try {
     const up = controllerCli(["up", "--detach", "--server", target.server]);
     started = up.status === 0;
     assert.equal(up.status, 0, `${up.stdout}\n${up.stderr}`);
+    checkInaccessibleUpdate(bin, other, controllerProject, controllerSpace, version, env);
+    checkDeniedManagerUpdate(bin, other, controllerProject, controllerSpace, version, env, "static");
+    expectSuccess(["send", "-c", "general", "broker still running after update"]);
     expectSuccess(["down", "--yes"]);
     started = false;
+    if (process.platform === "win32") {
+      const { supervisorMayServe } = await import("../src/lib/manager-proc.js");
+      const entry = join(controllerProject, "installed path", "dist", "cotal.js");
+      mkdirSync(resolve(entry, ".."), { recursive: true });
+      writeFileSync(entry, "setInterval(() => {}, 1000);\n");
+      const supervisor = spawn(process.execPath, [entry, "supervise", "--space", controllerSpace], { stdio: "ignore" });
+      try {
+        await once(supervisor, "spawn");
+        assert.equal(supervisorMayServe(controllerSpace, entry), true, "Windows sees a matching supervisor with a spaced entry path");
+        assert.equal(supervisorMayServe(`${controllerSpace}-other`, entry), false, "Windows excludes a supervisor that names a different space");
+      } finally {
+        const stopped = once(supervisor, "close");
+        supervisor.kill();
+        await stopped;
+      }
+      assert.equal(supervisorMayServe(controllerSpace, entry), false, "Windows no longer sees the stopped supervisor");
+      assert.match(expectSuccess(["update"]).stdout, /stopped; no manager running/);
+    }
     expectSuccess(["use", "--clear"]);
     const journalPath = join(".cotal", "stack-controller.json");
     let journalBefore = readFileSync(join(controllerProject, journalPath));

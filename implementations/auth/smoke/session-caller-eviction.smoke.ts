@@ -11,22 +11,25 @@ if (process.argv[2] === "agent-bearer") {
 async function main() {
   const assert: typeof import("node:assert/strict") = (await import("node:assert/strict")).default;
   const { createServer } = await import("node:http");
+  const { spawn } = await import("node:child_process");
   const { createRequire } = await import("node:module");
-  const { mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
-  const { join, resolve } = await import("node:path");
+  const { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } = await import("node:fs");
+  const { dirname, join, resolve } = await import("node:path");
   const { SignJWT, generateKeyPair, exportJWK, decodeJwt } = createRequire(new URL("../../auth/package.json", import.meta.url))("jose") as any;
   const { CotalEndpoint, mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, registry, standaloneConnectOpts, issuedUserCaller, resolveService, invokeCommand, provisionAgentDurables } = core;
   const { connect } = await import("@nats-io/transport-node");
-  const { startAuthService, grantActor, loadOwnerSecret, deriveOwnerForIdpSubject } = auth;
+  const { startAuthService, grantActor, loadOwnerSecret, deriveOwnerForIdpSubject, closeSession, openSessionAuthStore, saveIdpSession } = auth;
   const { startHostedAuthFixture } = await import("../../auth/smoke/_hosted-auth-fixture.js");
   const { startDeliveryService } = await import("../../delivery/src/index.js");
-  const { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey } = await import("@cotal-ai/workspace");
+  const { connectionEvictorCredsKey, deliveryCredsKey, homeCotalDir, membershipObserverCredsKey, membershipRwCredsKey, recordMesh, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+  const { authCalloutKey, authIssuerKey, authServiceKeysKey } = await import("../src/store.js");
   const { nativeRemoteManager } = await import("../../manager/smoke/_native-remote-manager.js");
   const { nativeAccountConnections } = await import("../../manager/smoke/_native-account-connections.js");
   const { remoteManagerClient } = await import("../../manager/dist/index.js");
+  const { kvManagerSessionLedger } = await import("../../manager/src/session/plane.js");
   const { meshSessionTransport } = await import("../../../packages/workspace/src/attach/attach-client.js");
   await import("../../runtime/dist/index.js");
-  const { emitSentinel } = await import("@cotal-ai/smoke-kit");
+  const { emitSentinel, killAndAwaitExit } = await import("@cotal-ai/smoke-kit");
   const { openAuthorityClient } = await import("../../auth/dist/authority-client.js");
   const { readNativeIssuance } = await import("../../auth/dist/native-issuance.js");
   const { Kvm } = await import("@nats-io/kv");
@@ -38,11 +41,28 @@ async function main() {
   const until = async (fn: () => Promise<boolean> | boolean) => { for (let i = 0; i < 200; i++) { if (await fn()) return true; await wait(100); } return false; };
   const pair = await generateKeyPair("EdDSA", { extractable: true });
   const jwk = { ...await exportJWK(pair.publicKey), kid: "native-idp", alg: "EdDSA", use: "sig" };
-  const idp = createServer((q, s) => { if (q.url !== "/api/auth/jwks") { s.writeHead(404); s.end(); return; } s.setHeader("content-type", "application/json"); s.end(JSON.stringify({ keys: [jwk] })); });
+  const idp = createServer(async (q, s) => {
+    s.setHeader("content-type", "application/json");
+    if (q.url === "/api/auth/token" && q.headers.authorization === "Bearer terminal-fixture") s.end(JSON.stringify({ token: await jwt("owner") }));
+    else if (q.url === "/api/auth/jwks") s.end(JSON.stringify({ keys: [jwk] }));
+    else { s.writeHead(404); s.end(); }
+  });
   await new Promise<void>((r) => idp.listen(0, "127.0.0.1", r));
   const origin = `http://127.0.0.1:${(idp.address() as import("node:net").AddressInfo).port}`;
   const jwt = (sub: string, exp: string | number = "10m") => new SignJWT({}).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(origin).setAudience(origin).setSubject(sub).setIssuedAt().setExpirationTime(exp).sign(pair.privateKey);
   const fx = await startHostedAuthFixture("native-selected", 1); const a = fx.accounts[0]!;
+  const previousHome = process.env.COTAL_HOME;
+  const cliHome = join(fx.dir, "cli-home");
+  mkdirSync(cliHome);
+  process.env.COTAL_HOME = cliHome;
+  const cliEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(cliEnv)) if (key.startsWith("COTAL_")) delete cliEnv[key];
+  Object.assign(cliEnv, { COTAL_HOME: cliHome, NO_COLOR: "1", COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" });
+  const authRoot = join(fx.dir, "auth");
+  const stateDir = userAuthStateDir(authRoot, a.space);
+  mkdirSync(dirname(stateDir), { recursive: true });
+  renameSync(a.stateDir, stateDir);
+  a.stateDir = stateDir;
   // The disposable fixture's existing dummy pin is replaced before service boot. No live issuer changes.
   writeFileSync(join(a.stateDir, "idp.json"), JSON.stringify({ ver: 1, url: `${origin}/api/auth`, issuer: origin, audience: origin, jwksUri: `${origin}/api/auth/jwks` }), { mode: 0o600 });
   const root = join(fx.dir, "participant"), controlRoot = join(fx.dir, "control");
@@ -61,6 +81,7 @@ async function main() {
   let control: Awaited<ReturnType<typeof nativeRemoteManager>> | undefined;
   let caller: Awaited<ReturnType<typeof connect>> | undefined;
   let sessionNc: Awaited<ReturnType<typeof connect>> | undefined;
+  let attackWriter: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
   let freelance: InstanceType<typeof CotalEndpoint> | undefined;
   let transport: ReturnType<typeof meshSessionTransport> | undefined;
   let launched = 0, enrollments = 0;
@@ -85,7 +106,8 @@ async function main() {
     await a.store.put(connectionEvictorCredsKey(a.space, composition), await core.mintConnectionEvictorCreds(a.auth, newIdentity()));
     delivery = await startDeliveryService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity });
     check("stock delivery service is ready", await until(async () => (await delivery!.readiness()).state === "ready"));
-    service = await startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity, publicFace: { port: 0, trustedProxy: false }, platformControl: { observeAssignment: async () => assignment } });
+    const startFullAuth = () => startAuthService({ context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space, servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity, publicFace: { port: 0, trustedProxy: false }, platformControl: { observeAssignment: async () => assignment } });
+    service = await startFullAuth();
     const humanCall = async (request: any) => { if (request.kind === "manager-managed-agent-enrollment") enrollments++; const response = await fetch(`${service!.publicUrl}/manager-service-authority`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ idpToken: token, request }) }); const body = await response.json() as any; if (!response.ok) throw new Error(`native authority refused ${request.kind}: ${body.error}`); return body; };
     const controlCall = (request: any) => service!.platformControlAuthority!({ v: 1, kind: "platform-control-authority", space: a.space, accountPublicKey: a.accountPublicKey, assignmentRevision: 1, request });
     control = await nativeRemoteManager({ space: a.space, servers: fx.servers, root: controlRoot, exchangeUrl: service.publicUrl!, execution: "none", call: controlCall });
@@ -157,7 +179,7 @@ async function main() {
     const before = readFileSync(sink).length; transport.send(Buffer.from("session-byte"));
     check("redeemed terminal sends real bytes to participant child", await until(() => readFileSync(sink).subarray(before).equals(Buffer.from("session-byte"))));
     check("redeemed terminal returns real child output", await until(() => Buffer.concat(received).includes(Buffer.from("session-byte"))));
-    const attackWriter = await openAuthorityClient({ server: fx.servers, space: a.space, dataAccount: { pub: a.auth.account.pub, signingSeed: a.auth.account.signingSeed! }, label: `session-evidence-fixture:${a.space}`, grants: (id: string) => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
+    attackWriter = await openAuthorityClient({ server: fx.servers, space: a.space, dataAccount: { pub: a.auth.account.pub, signingSeed: a.auth.account.signingSeed! }, label: `session-evidence-fixture:${a.space}`, grants: (id: string) => ({ publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
     const attackKv = await new Kvm(attackWriter.nc).open(core.epAuthBucket(a.space));
     const attackKey = `sessionconn.${newIdentity().id}`;
     const victimNc = (freelance as unknown as { conn: { nc: Awaited<ReturnType<typeof connect>> } }).conn.nc;
@@ -219,7 +241,6 @@ async function main() {
     check("W2 same-session reconnect recovers after receipt writes resume", !recoveredReconnect.isClosed());
     await recoveredReconnect.close();
     siblingTransport.close(); await siblingNc.close();
-    await attackWriter.close();
 
     const attachAgain = async () => { const reply = await call("attach", undefined, target); assert.ok(reply.ok); return (reply.data as any).grant; };
     const freshGrant = await attachAgain();
@@ -228,10 +249,56 @@ async function main() {
     const freshNc = await connect({ ...reconnectOptions, ...standaloneConnectOpts({ bearer: freshExchange.body.token, sentinelCreds: a.sentinelCreds, tls: false }) });
     try { check("E1 a fresh attach admits a replacement after the ended session is refused", await socketWorks(freshNc)); }
     finally { await freshNc.close(); }
-    const detachEvents = ["closed", "retired", "delete", "purge"] as const;
+    const detachEvents = ["closed", "retired", "expired", "superseded", "elapsed exp", "delete", "purge"] as const;
     const ledgerWriter = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: await mintCreds(a.auth, newIdentity(), "session-ledger"), tls: false }), reconnect: false });
     const sessionKv = await new Kvm(ledgerWriter).open(core.sessionsBucket(a.space));
     try {
+      const sessionAuth = await openSessionAuthStore(attackWriter.nc, a.space);
+      const ledger = kvManagerSessionLedger(sessionKv);
+      const observerKv = await new Kvm(attackWriter.nc).open(core.sessionsBucket(a.space));
+      const cliState = userAuthStateDir(root, a.space);
+      mkdirSync(cliState, { recursive: true });
+      const sentinel = join(cliState, "sentinel.creds");
+      writeFileSync(sentinel, a.sentinelCreds, { mode: 0o600 });
+      saveIdpSession(homeCotalDir(), `${origin}/api/auth`, { token: "terminal-fixture", sub: "owner", expiresAt: Math.floor(Date.now() / 1000) + 600 });
+      recordMesh({ space: a.space, server: fx.servers, root, mode: "user", origin: "manual", policy: { events: "required" }, userAuth: { provider: "cotal", remote: true, idp: { url: `${origin}/api/auth`, issuer: origin, audience: origin }, endpoints: { url: service.publicUrl! }, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });
+      const cliAttach = async (text: string, end: () => Promise<void>) => {
+        const cli = spawn(process.execPath, [resolve("bin/dist/cotal.js"), "attach", "native", "--space", a.space, "--on", participant!.state.instanceId, "--no-reconnect"], { cwd: root, env: cliEnv, stdio: ["pipe", "pipe", "pipe"] });
+        let output = "";
+        for (const stream of [cli.stdout, cli.stderr]) stream.on("data", (data: Buffer) => { output = (output + data.toString()).slice(-8192); });
+        const cliExit = new Promise<number | null>((done) => { cli.once("close", done); });
+        cli.on("error", (error) => { output += String(error); });
+        try {
+          await until(() => output.includes("attached to native") || cli.exitCode !== null);
+          assert.match(output, /attached to native/);
+          cli.stdin.write(text);
+          assert.ok(await until(() => readFileSync(sink).includes(Buffer.from(text))), output);
+          await end();
+          assert.ok(await until(() => cli.exitCode !== null), output);
+          return { code: await cliExit, output };
+        } finally { await killAndAwaitExit(cli, "SIGKILL"); }
+      };
+      const beforeCliKeys = new Set<string>();
+      for await (const key of await observerKv.keys("session.*")) beforeCliKeys.add(key);
+      const oneShot = await cliAttach("one-shot-terminal-fixture", async () => {
+        const active: string[] = [];
+        for await (const key of await observerKv.keys("session.*")) {
+          if (beforeCliKeys.has(key)) continue;
+          const entry = await sessionKv.get(key);
+          if (entry?.operation === "PUT" && entry.json<core.SessionLedgerRow>().state === "active") active.push(entry.json<core.SessionLedgerRow>().sessionId);
+        }
+        assert.equal(active.length, 1);
+        const end = await closeSession(sessionAuth, { ledger, revokeCredential: async () => {} }, { sessionId: active[0]!, closer: { kind: "operator" } });
+        assert.equal(end.transitioned, true);
+      });
+      console.log(`OBSERVED CLI one-shot eviction exit ${oneShot.code}: ${JSON.stringify(oneShot.output)}`);
+      measurement("one-shot attach reports the terminal connection ended without swallowing the broker failure",
+        oneShot.code === 1 && /terminal session connection ended: Authorization Violation/i.test(oneShot.output));
+      const peerEnd = await cliAttach("peer-ended-terminal-fixture", async () => {
+        const plane = (participant!.manager as unknown as { servePlane: { sessionPlane: { endForTarget(name: string, uid: string, reason: "target-despawn"): void } } }).servePlane.sessionPlane;
+        plane.endForTarget("native", row.lifecycleUid, "target-despawn");
+      });
+      check("one-shot attach with a manager end frame still exits cleanly", peerEnd.code === 0 && /Attach session ended/.test(peerEnd.output));
       for (const event of detachEvents) {
         const eventGrant = await attachAgain();
         const eventExchange = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: eventGrant }, false);
@@ -242,7 +309,13 @@ async function main() {
           const key = core.sessionLedgerKey(eventGrant.sessionId);
           if (event === "delete") await sessionKv.delete(key);
           else if (event === "purge") await sessionKv.purge(key);
-          else { const entry = (await sessionKv.get(key))!; await sessionKv.update(key, JSON.stringify({ ...entry.json(), state: event }), entry.revision); }
+          else if (event === "elapsed exp") {
+            const entry = (await sessionKv.get(key))!;
+            await sessionKv.update(key, JSON.stringify({ ...entry.json(), exp: Date.now() - 1 }), entry.revision);
+          } else {
+            const result = await closeSession(sessionAuth, { ledger, revokeCredential: async () => {} }, { sessionId: eventGrant.sessionId, closer: { kind: "operator" }, to: event });
+            assert.equal(result.transitioned, true);
+          }
           check(`E1 ${event} evicts only the ended session`, await closedWithin(eventNc));
           await caller.flush(); check(`E1 ${event} leaves actor control connected`, !caller.isClosed());
           let denied = false;
@@ -268,6 +341,41 @@ async function main() {
     if (!sessionNc.isClosed()) { await sessionNc.flush(); console.log("OBSERVED E2 socket still answers broker PING after identity proof expiry"); }
     transport.close(); await sessionNc.close(); sessionNc = undefined;
 
+    const replicaGrant = await attachAgain();
+    const replicaExchange = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: replicaGrant }, false);
+    assert.equal(replicaExchange.status, 200);
+    const replicaStore = workspaceSecretStore(authRoot);
+    for (const makeKey of [authCalloutKey, authIssuerKey, authServiceKeysKey]) {
+      const key = makeKey(a.space);
+      await replicaStore.put(key, (await a.store.get(key))!);
+    }
+    const replica = spawn(process.execPath, [resolve("bin/dist/cotal.js"), "auth-service", "--callout-only", "--space", a.space, "--server", fx.servers], { cwd: authRoot, env: cliEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let replicaOutput = "";
+    for (const stream of [replica.stdout, replica.stderr]) stream.on("data", (data: Buffer) => { replicaOutput = (replicaOutput + data.toString()).slice(-8192); });
+    replica.on("error", (error) => { replicaOutput += String(error); });
+    try {
+      await until(() => replicaOutput.includes("auth callout replica up") || replica.exitCode !== null);
+      assert.match(replicaOutput, /auth callout replica up/);
+      await service.close(); service = undefined;
+      sessionNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ bearer: replicaExchange.body.token, sentinelCreds: a.sentinelCreds, tls: false }), reconnect: false });
+      transport = meshSessionTransport(sessionNc, replicaGrant);
+      let replicaReady = false;
+      transport.onReady(() => { replicaReady = true; });
+      assert.ok(await until(() => replicaReady));
+      transport.send(Buffer.from("replica-control"));
+      check("replica alone admits a working session-caller connection", await until(() => readFileSync(sink).includes(Buffer.from("replica-control"))));
+      transport.close();
+      const evicted = await closedWithin(sessionNc);
+      if (!evicted) { await sessionNc.flush(); console.log("OBSERVED replica-admitted ended socket still answers broker PING with full auth stopped"); }
+      measurement("replica alone evicts the ended terminal connection", evicted);
+      await caller.flush();
+      check("replica sweep leaves same-actor control connected", !caller.isClosed());
+    } finally {
+      await sessionNc?.close(); sessionNc = undefined;
+      await killAndAwaitExit(replica);
+    }
+    service = await startFullAuth();
+
     const revokeGrant = await attachAgain();
     const revokeExchange = await exchange({ idpToken: token, actor: "cli", view: "session-caller", sessionGrant: revokeGrant }, false);
     assert.equal(revokeExchange.status, 200);
@@ -290,7 +398,10 @@ async function main() {
     console.log(`session caller eviction: ${passed} passed, ${failed} failed`); emitSentinel({ passed, failed });
     if (failed) process.exitCode = 1;
   } finally {
-    transport?.close(); await sessionNc?.close(); await caller?.close(); await freelance?.stop(); await participant?.manager.stop({ withAgents: true }); await control?.manager.stop();
-    try { await service?.close(); } finally { await delivery?.close(); await fx.close(); await new Promise<void>((r) => idp.close(() => r())); }
+    transport?.close(); await sessionNc?.close(); await attackWriter?.close(); await caller?.close(); await freelance?.stop(); await participant?.manager.stop({ withAgents: true }); await control?.manager.stop();
+    try { await service?.close(); } finally {
+      await delivery?.close(); await fx.close(); await new Promise<void>((r) => idp.close(() => r()));
+      if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+    }
   }
 }
