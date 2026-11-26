@@ -616,11 +616,74 @@ function switchValueRefusal(flag: string, cmd?: Command, rest: readonly string[]
   return { message: `${flag} takes no value`, remedy: `omit ${flag}${acceptsFlag ? " or pass it without a value" : ""}` };
 }
 
+/** Positional word limit for the separator remedy only, counting subcommand words. Commands with
+ *  variable or unspecified arity keep their own grammar. */
+function operandLimit(cmd: Command, selected: Command | Subcommand, first: string | undefined, rest: readonly string[]): number {
+  const mode = selected.name;
+  const values = () => parseArgs({ args: [...rest], options: parserOptions(cmd), strict: false, allowPositionals: true }).values;
+  switch (cmd.name) {
+    case "app-identity": case "chat": case "clean": case "describe": case "docs": case "doctor":
+    case "feedback": case "manager": case "pending": case "telemetry": return 1;
+    case "backup": case "invoke": case "persona": case "reset": case "service-endpoint": case "space":
+      return 2;
+    case "config": return mode === "set" ? 3 : 2;
+    case "actor": return mode === "list" ? 1 : mode === "label" ? 3 : 2;
+    case "auth": return mode === "grants" || mode === "signer" ? 1 : mode === "inspect" ? 3 : 2;
+    case "channel": return mode === "defaults" ? 1 : 2;
+    case "daemon": return mode === "name" ? 2 : 1;
+    case "endpoint":
+      if (mode === "list") return 1;
+      if (mode === "lease" || mode === "commit") return 4;
+      if (mode === "work") return 3;
+      return ["deregister", "invoke", "watch", "session"].includes(mode) ? 3 : 2;
+    case "ext": return mode === "root" || mode === "list" ? 1 : mode === "add" || mode === "remove" ? 2 : Infinity;
+    case "linear": return mode === "account" ? 2 : ["add", "login", "show", "call", "resource", "prompt"].includes(mode) ? 3 : 2;
+    case "meshes": return first === "add" ? 2 : Infinity;
+    case "personas": case "service": case "team": return mode === "list" ? 1 : 2;
+    case "run":
+      if (mode === "list" || mode === "turns") return 1;
+      if (mode === "answer" || mode === "amend") return 3;
+      if (mode === "check") return values().file === undefined ? 3 : 2;
+      if (mode === "start" && values().file !== undefined) return 1;
+      return 2;
+    case "attach": return values().name === undefined ? 1 : 0;
+    case "history": return mode === "clear" || mode === "limit" || !values().dms ? 1 : 0;
+    case "input": {
+      const { name, text } = values();
+      return name !== undefined ? 0 : text !== undefined ? 1 : 2;
+    }
+    case "login": {
+      const { cloud, idp, "migrate-from": migrateFrom } = values();
+      return cloud || idp !== undefined || migrateFrom !== undefined ? 0 : 1;
+    }
+    case "send": {
+      const { file, stdin } = values();
+      return file !== undefined || stdin ? 0 : 1;
+    }
+    case "spawn": return values().file === undefined ? 1 : 0;
+    case "status": {
+      const { all, components, wide, verbose } = values();
+      return all || components || wide || verbose ? 0 : 1;
+    }
+    case "stop": {
+      const { self, name } = values();
+      return self || name !== undefined ? 0 : 1;
+    }
+    case "topology": return values().file === undefined ? 2 : 1;
+    case "update": {
+      const { auto, notify } = values();
+      return auto || notify ? 1 : 0;
+    }
+    case "use": return values().clear ? 0 : 1;
+    default: return Infinity;
+  }
+}
+
 /** A parse error as a refusal. A mistyped option names its spelling. A word that starts with `-`
  *  goes after `--` only where the command has room for an operand and there is no spelling suggestion.
  *  An option value that starts with `-` is written `--name=value`, and an option given with no value,
  *  last, before `--`, or before another of the command's options, is named with its placeholder. */
-function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean, operandsFull: boolean): { message: string; remedy?: string } {
+function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: readonly string[], flagNames: readonly string[] | undefined, takesOperands: boolean, operandsFull: () => boolean): { message: string; remedy?: string } {
   if (error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
     const reason = error.message.replace(/'\. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "(?:[^"\\]|\\.)*"$/u, "'");
     const option = /^Unknown option '(--.+)'$/su.exec(reason)?.[1];
@@ -641,7 +704,7 @@ function parseRefusal(error: Error & { code?: string }, cmd: Command, rest: read
     const message = spellings ? `${reason} - did you mean ${spellings}?` : reason;
     const remedy = cmd.name === "completion" ? "drop the unknown option"
       : !takesOperands ? undefined : spellings ? `use ${spellings}`
-      : operandsFull ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
+      : operandsFull() ? "drop the unknown option" : "to pass a word that starts with \"-\", put -- before it";
     return { message, remedy };
   }
   if (error.code === "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL") {
@@ -701,17 +764,7 @@ function parseOrExit(cmd: Command, rest: string[], noMoreOperands = false): Pars
       }
       const takesOperands = !seed && cmd.positionals !== undefined &&
         (!cmd.subcommands?.length || cmd.name === "history" || (first !== undefined && findSubcommand(cmd, first) !== undefined));
-      const operandsFull = noMoreOperands || (cmd.name === "config" && ((selected.name === "set" && positionals.length >= 3)
-        || ((selected.name === "get" || selected.name === "unset") && positionals.length >= 2)))
-        || (cmd.name === "docs" && positionals.length >= 1)
-        || (cmd.name === "ext" && selected.name === "root")
-        || (cmd.name === "history" && selected.name === "limit")
-        || (cmd.name === "space" && selected.name === "add" && positionals.length >= 2)
-        || (cmd.name === "channel" && selected.name === "set" && positionals.length >= 2)
-        || (cmd.name === "service" && selected !== cmd && (selected.name === "list" || positionals.length >= 2))
-        || (cmd.name === "team" && ["check", "boot", "deploy"].includes(selected.name) && positionals.length >= 2)
-        || (cmd.name === "endpoint" && ((selected.name === "check" && positionals.length >= 2)
-          || (first === "work" && selected.name === "lease" && positionals.length >= 4)));
+      const operandsFull = () => noMoreOperands || positionals.length >= operandLimit(cmd, selected, first, rest);
       const refusal = parseRefusal(e as Error & { code?: string }, cmd, rest, seed?.flagNames ?? selected.flagNames, takesOperands, operandsFull);
       usageExit(refusal.message, cmd, json, plain, refusal.remedy, rest);
     }

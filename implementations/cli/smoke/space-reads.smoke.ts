@@ -597,6 +597,14 @@ recordMesh({ space: "gamma", server: CATALOG, root, mode: "user", origin: "catal
   const prepared = run(["space", "create", "hint-live"], {}, project);
   check("rig: create prepares the hint's project root", prepared.status === 0, shown(prepared));
   try {
+    const withUnknown = json(["space", "show", "hint-live", "--wibble"], project);
+    const corrected = json(["space", "show", "hint-live"], project);
+    check("space show tells you to drop an unknown option and keep the supplied name",
+      withUnknown.status === 1 && withUnknown.stderr === "" && withUnknown.env?.outcome === "refused"
+      && withUnknown.env.error?.code === "USAGE_INVALID" && withUnknown.env.error.message === "Unknown option '--wibble'"
+      && withUnknown.env.error.remedy === "drop the unknown option"
+      && corrected.status === 0 && corrected.stderr === "" && corrected.env?.result?.space === "hint-live",
+      { withUnknown: shown(withUnknown), corrected: shown(corrected) });
     setCurrent("alpha");
     const selection = json(["use"], project);
     check("bare use reports the prepared folder without changing the selection or target", selection.status === 0 && selection.env?.target?.space === "alpha" && selection.env?.result?.current === "alpha" && selection.env?.result?.folder === "hint-live" && getCurrent() === "alpha", shown(selection));
