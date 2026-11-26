@@ -913,25 +913,26 @@ const takeoverRun = startedId()!;
     isCommandFailure(override) && override.code === "USAGE_INVALID" && override.message.includes("--discard-approvals") && override.message.includes("only checks"),
     override instanceof Error ? override.message.slice(0, 160) : ERRS);
 
-  // A run ID nothing records is refused as `run show` refuses it: by code, with the list as Next.
+  // Check and resume refuse an unrecorded run and point to an inventory on the same broker.
   const unrecorded = "run-0123456789abcdef0123456789abcdef";
   const endpoint = "check-only";
-  const unknownCheck = await wf(["check", unrecorded], { file: CHECKPOINT, endpoint }).then(() => undefined, (e: Error) => e);
-  const remedy = isCommandFailure(unknownCheck) ? unknownCheck.remedy : undefined;
-  const next = `cotal run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
-  const command = /`([^`]+)`/.exec(remedy ?? "")?.[1];
-  const [, alias, ...args] = command === next
-    ? execFileSync("bash", ["-c", `printf '%s\\0' ${command}`], { encoding: "utf8" }).split("\0").slice(0, -1)
-    : [];
-  const run = alias && findCommand(registry.all<Command>("command"), alias);
-  reset();
-  const listed = run && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
-  c("a missing run check refuses with exit 2 and its remedy lists the same endpoint without a manager",
-    isCommandFailure(unknownCheck) && unknownCheck.code === "TARGET_NOT_FOUND" && exitCode(unknownCheck.outcome, unknownCheck.code) === 2
-      && unknownCheck.message === `run ${unrecorded}: no record on endpoint ${endpoint}; a run that was never started cannot be checked`
-      && remedy === `list the recorded runs with \`${next}\``
-      && listed === true && (process.exitCode ?? 0) === 0 && captured().includes("No workflow runs in this authorized record view."),
-    { error: unknownCheck, remedy, out: captured() });
+  const next = `run list --local --space ${SPACE} --server '${servers}' --endpoint ${endpoint}`;
+  for (const verb of ["check", "resume"]) {
+    const refusal = await wf([verb, unrecorded], { file: CHECKPOINT, endpoint }).then(() => undefined, (e: Error) => e);
+    const remedy = isCommandFailure(refusal) ? refusal.remedy : undefined;
+    const inventory = /^list the recorded runs with `(?:pnpm )?cotal (.+)`$/.exec(remedy ?? "")?.[1];
+    const [, ...args] = inventory === next
+      ? execFileSync("bash", ["-c", `printf '%s\\0' ${inventory}`], { encoding: "utf8" }).split("\0").slice(0, -1)
+      : [];
+    const run = findCommand(registry.all<Command>("command"), "run");
+    reset();
+    const listed = run && args.length > 0 && await runWorkflow(parseCommandArgs(run, args)).then(() => true, () => false);
+    c(`a missing run ${verb} refuses with exit 2 and its remedy lists the same endpoint without a manager`,
+      isCommandFailure(refusal) && refusal.code === "TARGET_NOT_FOUND" && exitCode(refusal.outcome, refusal.code) === 2
+        && refusal.message === `run ${unrecorded}: no record on endpoint ${endpoint}; a run that was never started cannot be ${verb === "check" ? "checked" : "resumed"}`
+        && listed === true && (process.exitCode ?? 0) === 0 && captured().includes("No workflow runs in this authorized record view."),
+      { refusal, remedy, out: captured() });
+  }
   } finally { process.exit = origExit; }
 }
 
@@ -1168,7 +1169,7 @@ const takeoverRun = startedId()!;
 
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 144;
+const DECLARED = 145;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);
