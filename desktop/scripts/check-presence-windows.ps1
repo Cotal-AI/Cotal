@@ -17,6 +17,12 @@ public static class PresenceWindow {
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int kind, out int value, int size, out int written);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern uint GetLongPathName(string path, StringBuilder longPath, uint size);
+  // An MSI writes [!File] values with the file's 8.3 short name, so compare paths in their long form; null when the file is missing.
+  public static string LongPath(string path) {
+    var buffer = new StringBuilder(32768);
+    return GetLongPathName(path, buffer, (uint)buffer.Capacity) == 0 ? null : buffer.ToString();
+  }
   public static bool IsElevated(IntPtr process) {
     IntPtr token;
     if (!OpenProcessToken(process, 8, out token)) throw new System.ComponentModel.Win32Exception();
@@ -168,6 +174,11 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     $installed = $true
     $path = Join-Path $directory 'cotal-desktop.exe'
     if (!(Test-Path $path)) { throw 'Installed executable missing.' }
+    # Browser sign-in returns to the app through cotal: links, so each installer must register them for the installed executable.
+    $linkKey = Get-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\cotal\shell\open\command' -ErrorAction SilentlyContinue
+    $linkCommand = if ($linkKey) { $linkKey.GetValue('') }
+    $linkTarget = if ($linkCommand -match '^"([^"]+)" "%1"$') { [PresenceWindow]::LongPath($Matches[1]) }
+    if (!$linkTarget -or $linkTarget -ine [PresenceWindow]::LongPath($path)) { throw "$kind did not register the cotal: link handler for $path (found: $linkCommand)" }
     if ($kind -eq 'nsis') { Check-LoginScope $path }
     if ($LoginScopeOnly) {
       $uninstaller = Get-ChildItem $directory -Filter '*uninstall*.exe' | Select-Object -First 1
@@ -215,21 +226,79 @@ foreach ($kind in $(if ($LoginScopeOnly) { @('nsis') } else { @('nsis', 'msi') }
     Stop-Process -Id $owned.Id
     Wait-Process -Id $owned.Id -ErrorAction SilentlyContinue
     $owned = $null
+    # Sign-in installs the background service. Install it the same way, through the app's bridge, so the uninstaller must remove it.
+    $receiptPath = Join-Path $env:LOCALAPPDATA 'Cotal\daemon\service-unit.json'
+    $bridgeOut = @('{"op":"install"}' | & (Join-Path $directory 'node.exe') (Join-Path $directory 'runtime\dist\cotal.js') daemon desktop)
+    $bridgeOut | Set-Content (Join-Path $out "$kind-service-install.txt")
+    $installFrames = @($bridgeOut | ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } | Where-Object { $_ -and $_.event -eq 'result' })
+    if ($installFrames.Count -ne 1 -or $installFrames[0].ok -ne $true) { throw "$kind app bridge did not install the background service: $($bridgeOut -join ' ')" }
+    $serviceTask = (Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json).unit
+    if (@(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -ceq $serviceTask }).Count -ne 1) { throw "$kind background service task $serviceTask is not registered before uninstall" }
+    # Ending the task in Task Scheduler must stop the daemon, not only the launcher that started it.
+    $mineNow = { @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$directory\", [StringComparison]::OrdinalIgnoreCase) }) }
+    $deadline = (Get-Date).AddSeconds(60)
+    do { Start-Sleep -Milliseconds 500; $running = @(& $mineNow | Where-Object { $_.Name -eq 'node.exe' }) } while ($running.Count -lt 1 -and (Get-Date) -lt $deadline)
+    if ($running.Count -lt 1) { throw "$kind background service has no running daemon after install" }
+    Get-ScheduledTask | Where-Object { $_.TaskName -ceq $serviceTask } | Stop-ScheduledTask
+    $deadline = (Get-Date).AddSeconds(15)
+    do { Start-Sleep -Milliseconds 500; $left = & $mineNow } while ($left.Count -gt 0 -and (Get-Date) -lt $deadline)
+    if ($left.Count -ne 0) { throw "$kind ending the background service task left $($left.Count) process(es) running: $(($left | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" }
+    Get-ScheduledTask | Where-Object { $_.TaskName -ceq $serviceTask } | Start-ScheduledTask
     # The disconnected welcome cannot enable startup. Seed the real plugin's exact Run entry to test uninstaller cleanup separately.
     $run = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     New-ItemProperty -Path $run -Name Cotal -PropertyType String -Value "`"$path`" --background" -Force | Out-Null
+    # A person uninstalls with the app open and its service running: the window's status reader and the daemon both run from the program files.
+    $owned = Start-Process -FilePath $path -PassThru
+    $deadline = (Get-Date).AddSeconds(60)
+    do {
+      Start-Sleep -Milliseconds 500
+      $mine = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$directory\", [StringComparison]::OrdinalIgnoreCase) })
+      $reader = @($mine | Where-Object { $_.Name -eq 'node.exe' -and $_.ParentProcessId -eq $owned.Id })
+      $daemon = @($mine | Where-Object { $_.Name -eq 'node.exe' -and $_.ParentProcessId -ne $owned.Id })
+    } while (($reader.Count -lt 1 -or $daemon.Count -lt 1) -and (Get-Date) -lt $deadline)
+    if ($reader.Count -lt 1 -or $daemon.Count -lt 1) { throw "$kind app and service were not both running before uninstall: $($reader.Count) window reader(s), $($daemon.Count) other node process(es)" }
     if ($kind -eq 'nsis') {
       $uninstaller = Get-ChildItem $directory -Filter '*uninstall*.exe' | Select-Object -First 1
       $p = Start-Process $uninstaller.FullName -ArgumentList @('/S', "_?=$directory") -Wait -PassThru
     } else {
-      $p = Start-Process msiexec.exe -ArgumentList @('/x', "`"$($installer.FullName)`"", '/qn', '/norestart', '/l*v', "`"$out/msi-uninstall.log`"") -Wait -PassThru
+      # Settings > Apps uninstalls with Windows Installer's basic UI, which shows its own "close these applications" prompt.
+      # A silent uninstall never shows it, so it cannot catch a prompt that a person would be stuck on.
+      $p = Start-Process msiexec.exe -ArgumentList @('/x', "`"$($installer.FullName)`"", '/qb', '/norestart', '/l*v', "`"$out/msi-uninstall.log`"") -PassThru
+      $null = $p.Handle
+      $prompt = $null
+      $deadline = (Get-Date).AddSeconds(240)
+      while (-not $p.HasExited -and -not $prompt -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $installers = @(Get-Process msiexec -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+        foreach ($window in [System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)) {
+          if ($installers -notcontains $window.Current.ProcessId) { continue }
+          $text = @($window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name }) -join ' '
+          if ($text -match 'should be closed before continuing|unable to automatically close') { $prompt = $text; break }
+        }
+      }
+      if ($prompt) {
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        throw "msi uninstall with the app open stopped on Windows Installer's prompt to close Cotal: $prompt"
+      }
+      if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; throw 'msi uninstall with the app open did not finish within 240 s' }
+      $p.WaitForExit()
     }
     if ($p.ExitCode -notin @(0, 3010)) { throw "$kind uninstall exited $($p.ExitCode)" }
     foreach ($link in $links) { if (Test-Path $link) { throw "Shortcut remains: $link" } }
     if (Get-ItemProperty -Path $run -Name Cotal -ErrorAction SilentlyContinue) { throw 'App login entry remains after uninstall.' }
+    if (Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\cotal') { throw 'The cotal: link handler remains after uninstall.' }
+    if (@(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -ceq $serviceTask }).Count -ne 0) { throw "$kind uninstall left the background service task $serviceTask registered" }
+    if (Test-Path -LiteralPath $receiptPath) { throw "$kind uninstall left the background service receipt" }
+    $left = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$directory\", [StringComparison]::OrdinalIgnoreCase) })
+    if ($left.Count -ne 0) { throw "$kind uninstall left $($left.Count) process(es) of this installation running: $(($left | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ', ')" }
+    # A process still running from the program files keeps these locked, so the uninstaller cannot delete them.
+    $kept = @(@('cotal-desktop.exe', 'node.exe') | Where-Object { Test-Path -LiteralPath (Join-Path $directory $_) }) + @(Get-ChildItem -LiteralPath (Join-Path $directory 'runtime') -Recurse -Filter '*.node' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName.Substring($directory.Length + 1) })
+    if ($kept.Count -ne 0) { throw "$kind uninstall left program files behind: $($kept -join ', ')" }
+    $owned = $null
     $installed = $false
-    $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login')
+    $checks = @('shortcuts', 'shortcut-aumid', 'visible-window', 'single-instance', 'hide', 'restore', 'uninstall-shortcuts', 'uninstall-login', 'link-handler', 'uninstall-link-handler')
     if ($taskbarNamed) { $checks += 'explorer-taskbar-button' }
+    $checks += 'end-task-stops-daemon', 'uninstall-service', 'uninstall-while-open'
     $results += @{ installer = $kind; result = $(if ($taskbarNamed) { 'passed' } else { 'passed-with-taskbar-name-unproven' }); checks = $checks; taskbarNameProven = $taskbarNamed }
     @{ platform = 'Windows'; results = $results } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $out 'result.json')
   } finally {

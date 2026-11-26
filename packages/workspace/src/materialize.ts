@@ -87,13 +87,17 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string,
 
 /** Select the package's explicit export, if it has one. */
 function exportedEntry(meta: InstalledExtensionPackage): string | undefined {
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
+  if (typeof meta.exports === "string") return meta.exports;
+  const exports = meta.exports as Record<string, unknown> | undefined;
+  const dot = exports?.["."];
   if (typeof dot === "string") return dot;
   if (dot && typeof dot === "object") {
     const d = dot as Record<string, string>;
     return d.import ?? d.default;
   }
-  return typeof meta.exports === "string" ? meta.exports : undefined;
+  if (!exports || typeof exports !== "object" || Object.keys(exports).some((key) => key.startsWith("."))) return undefined;
+  const entry = exports.import ?? exports.default;
+  return typeof entry === "string" ? entry : undefined;
 }
 
 /**
@@ -190,7 +194,7 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   const pkg = ext.pkg;
   const onDisk = installedExtensionPackage(pkg);
   if (!onDisk) {
-    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
+    throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - ${extensionReinstallAdvice(ext)}`);
   }
   if (onDisk.version !== ext.version) {
     throw new Error(
@@ -203,13 +207,13 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // The import self-registers into OUR registry (core is linked); runStaged keeps those
   // registrations invisible until we've validated them, so a throw discards the stage untouched.
   const { staged } = await registry.runStaged(() =>
-    importExtensionEntry(pkg, ext.version, `reinstall it: \`cotal ext add ${ext.spec}\``, onDisk),
+    importExtensionEntry(pkg, ext.version, extensionReinstallAdvice(ext), onDisk),
   );
   // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
   // registrations (never leave a package's other keys live when its advertised one is absent).
   if (!staged.some((r) => r.kind === advertised.kind && r.name === advertised.name)) {
     throw new Error(
-      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg}@${ext.version} imported but did not register ${advertised.kind} "${advertised.name}" - ${extensionReinstallAdvice(ext)}`,
     );
   }
   registry.commitStaged(staged);

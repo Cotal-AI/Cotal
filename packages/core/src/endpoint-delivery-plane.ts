@@ -13,8 +13,9 @@ import { isRestoredConsumer } from "./backup.js";
 import { ackWaitOf, authenticatedChannelMessage, durableDelivery, isRecord } from "./endpoint-inbound.js";
 import type { CotalEndpoint } from "./endpoint.js";
 import { isFromSubjectSender } from "./endpoint-messages.js";
+import { hasStoredOrigin } from "./endpoint-provenance.js";
 import { deliveryLimitOf, fitHistoryPage, type HistoryPage } from "./endpoint-options.js";
-import { EVICT_PRINCIPALS_MAX } from "./evict.js";
+import { EVICT_PRINCIPALS_MAX, type KickTarget } from "./evict.js";
 import { issuedPermitsSubject } from "./issued-authority.js";
 import { isConsumerAlreadyExists, isJetStreamMissing } from "./jetstream-missing.js";
 import { deleteMember, durableEligible, listLifecycleMemberChannels, listMembers, membersForFanout, readMember } from "./members.js";
@@ -165,7 +166,7 @@ export class EndpointDeliveryPlane {
     onDeliveryCredsAdopted?: () => void;
     /** Composition-root hook: the live-eviction executor — scan→KICK→verify a denied
      *  principal's connections via the daemon's $SYS observer/evictor creds (opened per call). */
-    evictPrincipal?: (principal: string) => Promise<unknown>;
+    evictPrincipal?: (principal: string, connections?: KickTarget[]) => Promise<unknown>;
     /** Composition-root hook: {@link evictPrincipal} for a SET of denied principals in one shared
      *  scan→KICK→verify sweep, one result per principal in request order. */
     evictPrincipals?: (principals: string[]) => Promise<unknown>;
@@ -254,7 +255,7 @@ export class EndpointDeliveryPlane {
    *  is required, not optional (the responder would otherwise be lost on a broker blip). */
   async startPlane3(
     aclFor: (owner: string, lifecycleUid: string) => MaybePromise<string[] | undefined>,
-    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
+    opts: { reloadMembershipCreds?: (expected?: string) => Promise<unknown>; evictPrincipal?: (principal: string, connections?: KickTarget[]) => Promise<unknown>; evictPrincipals?: (principals: string[]) => Promise<unknown>; planeConnLiveness?: (query: unknown) => Promise<unknown>; principalLiveness?: (principal: string) => Promise<unknown>; reloadStoreIdentity?: () => SecretStoreIdentity; onDeliveryCredsAdopted?: () => void; startupComplete?: () => boolean } = {},
   ): Promise<void> {
     if (!this.conn.js) throw new Error(this.notLiveMsg());
     this.plane3 = { aclFor, reloadMembershipCreds: opts.reloadMembershipCreds, evictPrincipal: opts.evictPrincipal, evictPrincipals: opts.evictPrincipals, planeConnLiveness: opts.planeConnLiveness, principalLiveness: opts.principalLiveness, reloadStoreIdentity: opts.reloadStoreIdentity, onDeliveryCredsAdopted: opts.onDeliveryCredsAdopted, startupComplete: opts.startupComplete };
@@ -695,20 +696,7 @@ export class EndpointDeliveryPlane {
         ? { ok: false, error: failures.join("; "), data: { delivery, membership } }
         : { ok: true, data: { delivery, membership } };
     }
-    if (req.op === "evictPrincipal") {
-      // The LIVE-EVICTION executor: force-drop a denied principal's connections.
-      // Composition-root hook because the $SYS observer/evictor creds live outside this endpoint's
-      // trust boundary; absent hook = a daemon build without the executor, refused loudly.
-      if (!this.plane3?.evictPrincipal)
-        return { ok: false, error: "evictPrincipal: no eviction executor wired on this daemon" };
-      const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
-      if (!principal) return { ok: false, error: "evictPrincipal: a principal (owner.actor dot-form) is required" };
-      try {
-        return { ok: true, data: await this.plane3.evictPrincipal(principal) };
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
-    }
+    if (req.op === "evictPrincipal" || req.op === "evictSessionConnections") return this.deliveryEvictPrincipal(req);
     if (req.op === "evictPrincipals") {
       // The same executor over a SET: one shared sweep instead of one request and one scan per
       // principal. The set is bounded so one request stays inside one sweep's work.
@@ -825,6 +813,47 @@ export class EndpointDeliveryPlane {
     return { ok: false, error: `op "${req.op}" not supported on the delivery admin service` };
   }
 
+  private async deliveryEvictPrincipal(req: ControlRequest): Promise<ControlReply> {
+    const hasFilter = !!req.args && Object.hasOwn(req.args, "connections");
+    if (req.op === "evictSessionConnections" && !hasFilter)
+      return { ok: false, error: "evictSessionConnections: send connections with the exact broker serverId and cid for each target" };
+    // The $SYS observer and evictor credentials live outside this endpoint, in the delivery daemon.
+    const plane3 = this.plane3;
+    const evict = plane3?.evictPrincipal;
+    if (!evict)
+      return { ok: false, error: hasFilter ? "evictSessionConnections: no eviction executor is wired; install and restart a delivery daemon that supports targeted session eviction" : "evictPrincipal: no eviction executor wired on this daemon" };
+    const principal = typeof req.args?.principal === "string" ? req.args.principal.trim() : "";
+    if (!principal)
+      return { ok: false, error: hasFilter ? "evictSessionConnections: set principal to the session holder's owner.actor" : "evictPrincipal: a principal (owner.actor dot-form) is required" };
+    let connections: KickTarget[] | undefined;
+    if (hasFilter) {
+      const raw = req.args?.connections;
+      if (!Array.isArray(raw) || raw.length === 0 || raw.length > 256 || raw.some((t: unknown) => {
+        const v = t as Partial<KickTarget> | null;
+        return !v || typeof v !== "object" || Object.keys(v).some((k) => k !== "serverId" && k !== "cid") ||
+          typeof v.serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(v.serverId) || !Number.isSafeInteger(v.cid) || v.cid! <= 0;
+      })) return { ok: false, error: "evictSessionConnections: send 1 to 256 exact serverId and positive cid pairs in connections" };
+      connections = raw as KickTarget[];
+      if (evict.length < 2)
+        return { ok: false, error: "evictSessionConnections: update the eviction executor to accept the exact connection filter as its second argument" };
+    }
+    try {
+      const result = connections === undefined
+        ? await evict.call(plane3, principal)
+        : await evict.call(plane3, principal, connections.map((target) => ({ ...target })));
+      if (connections !== undefined) {
+        const selected = (result as { connections?: unknown } | null)?.connections;
+        if (!Array.isArray(selected) || selected.length !== connections.length || selected.some((value, i) => {
+          const target = value as Partial<KickTarget> | null;
+          return !target || target.serverId !== connections[i]!.serverId || target.cid !== connections[i]!.cid;
+        })) return { ok: false, error: "evictSessionConnections: update the eviction executor to return the exact filter in its connections result" };
+      }
+      return { ok: true, data: result };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  }
+
   /** Create one of the daemon's Plane-3 durables. A named create is idempotent for the same config,
    *  and a denial is never taken for existence. The one conflict accepted is this durable as a full
    *  restore recreated it, starting after its recorded ACK floor ({@link isRestoredConsumer}); every
@@ -864,7 +893,7 @@ export class EndpointDeliveryPlane {
     // would consume the successor's work.
     if (!this.plane3MayAct()) return;
     const parsed = parseSubject(m.subject);
-    if (!parsed || parsed.kind !== "chat") { m.ack(); return; }
+    if (!parsed || parsed.kind !== "chat" || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const channel = parsed.rest;
     let msg: CotalMessage;
     try { msg = m.json<CotalMessage>(); } catch { m.ack(); return; }
@@ -990,7 +1019,7 @@ export class EndpointDeliveryPlane {
     // serving the shard. The entry redelivers to the holder rather than being consumed here.
     if (!this.plane3MayAct()) return;
     const pr = parseDinboxPrincipal(m.subject);
-    if (!pr) { m.ack(); return; } // unparseable subject (incl. a pre-cut 5-segment form) — not a real entry
+    if (!pr || hasStoredOrigin(m.headers)) { m.ack(); return; }
     const owner = `${pr.owner}.${pr.actor}`; // the member principal dot-form (acl/member keys, msgID)
     let entry: Plane3Entry;
     try { entry = m.json<Plane3Entry>(); } catch { m.ack(); return; } // undecodable — drop
@@ -1106,7 +1135,7 @@ export class EndpointDeliveryPlane {
   /** Agent-side: bind + pump our pre-created Plane-3 DELIVER durable (`dlv_<id>`). Every message here is
    *  delivery-daemon-written (DLV is delivery-write-only, broker-enforced) and is a CHANNEL message by contract
    *  (the backstop never carries DMs), so `kind=channel` is path-derived (SPEC §4) and the body is
-   *  trusted (no spoof-guard). `durable:true` — real JetStream ack, coalesced with the core-sub live
+   *  trusted after the stored-origin check. `durable:true` — real JetStream ack, coalesced with the core-sub live
    *  copy by `MeshAgent.ingest`. No-op when the durable isn't present (open mode / not provisioned). A read
    *  list declared on a credential that cannot fetch the durable refuses. */
   async pumpDlv(): Promise<void> {
@@ -1146,6 +1175,11 @@ export class EndpointDeliveryPlane {
     this.delivery.streamMsgs.push(msgs);
     void (async () => {
       for await (const m of msgs) {
+        if (hasStoredOrigin(m.headers)) {
+          try { m.term(); } catch { /* draining */ }
+          this.emit("error", new Error("dropped delivery copy carrying stored-message headers. Send a fresh channel post without those headers."));
+          continue;
+        }
         // A copy with a full store behind it means the store held its count, so older copies may have
         // been discarded unread (#5404); NATS gives no notice of the discard itself. The count is the
         // one the trusted writer stamped on this copy. Checked on every delivery, ahead of the checks

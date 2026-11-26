@@ -15,6 +15,13 @@ export function codeSpan(command: string): string {
   return `${fence}${command}${fence}`;
 }
 
+/** One argument in PowerShell and Command Prompt without interpolation by either shell. */
+export function windowsShellWord(value: string): string | undefined {
+  if (/^[A-Za-z0-9_./:+-]+$/.test(value)) return value;
+  if (/["$`%!\u0000-\u001f\u201c\u201d\u201e]/.test(value) || value.endsWith("\\")) return undefined;
+  return `"${value}"`;
+}
+
 /** `text` split at spaces into the words {@link wrapWords} breaks between. A span in backticks, from
  *  its opening run of backticks to the next run of as many, is one word, so no line holds part of it,
  *  whatever it starts with and whatever words it holds. A line that starts with a command outside

@@ -283,6 +283,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.natkey.>",
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
+    "$KV.cotal_auth_d32m.sessionconn.*",
     "$KV.cotal_auth_d32m.consent.*",
     // Chat admission and sweep: holder index, owner quota, sweep cursor (exact arity, no `.>`).
     "$KV.cotal_auth_d32m.chatholder.*.*",
@@ -557,6 +558,10 @@ for (const name of Object.keys(FIXTURE)) {
   c(`fixture pin: ${name}`, JSON.stringify(gen[name]) === JSON.stringify(FIXTURE[name]), gen[name]);
 }
 c("no unreviewed principal appeared", Object.keys(gen).every((k) => FIXTURE[k] !== undefined), Object.keys(gen));
+c("session receipt writes belong to the auth mint writer, not derived host writers",
+  gen["auth-writer"]!.publish.includes(`$KV.cotal_auth_${S}.sessionconn.*`) &&
+  !gen["environment-admission-writer"]!.publish.some((row) => row.includes("sessionconn")) &&
+  !gen["remote-manager-issuer"]!.publish.some((row) => row.includes("sessionconn")));
 
 // ---- 2. the grep tests over the aggregate -----------------------------------------------------
 console.log("2. the 13.9 normative grep tests");
@@ -807,8 +812,9 @@ const BASELINE_PUB = [
   `cotal.${S}.ep.one.manager.turn-yield.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.turn-unconfirmed.self.u_abc.cli.${UID}.*`,
   `cotal.${S}.ep.one.manager.run-answer.self.u_abc.cli.${UID}.*`,
+  `cotal.${S}.ep.prin-reply.agent.u_abc.cli.${UID}.*.*.*.*.*`,
 ];
-c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish + own reply rail)",
+c("the agent's control-surface reach is exactly its caller rows + the Appendix-B baseline (request/journal publish, own reply read and SPEC §13.21 principal reply publish)",
   untrusted.agent.pub.filter((r) => r.includes(".ep.") || r.includes(".epj.")).every((r) => gen["caller"].publish.includes(r) || BASELINE_PUB.includes(r))
   && BASELINE_PUB.every((r) => untrusted.agent.pub.includes(r))
   && untrusted.agent.sub.filter((r) => r.includes(".ep.reply.")).every((r) => gen["caller"].subscribe.includes(r)),

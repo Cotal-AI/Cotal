@@ -101,7 +101,7 @@ try {
   {
     const m = await failureFor({ scope: "@cotal-ai", version: "0.0.1", peerRange: ">=0.1.0" });
     check("lockstep, extension older: names the EXTENSION as the older side", m.includes("The extension is the older side"), m);
-    check("lockstep, extension older: keeps the `cotal ext add` remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+    check("lockstep, extension older: keeps the `cotal ext add` remedy", m.includes("cotal ext add '@cotal-ai/remedy-"), m);
   }
 
   // 5. A third-party extension whose declared range the linked core satisfies: nothing available
@@ -119,7 +119,7 @@ try {
   {
     const m = await failureFor({ scope: "@cotal-ai", version: "99.0.0", peerRange: ">=0.1.0", body: `import "./does-not-exist.mjs";\n` });
     check("control, non-export failure: claims no side", !/is BEHIND|older side|Same version|Neither side/.test(m), m);
-    check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+    check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add '@cotal-ai/remedy-"), m);
   }
   // A package whose `main` names a directory resolves through that directory's index file, the
   // way Node's own resolution does. The add-time existence check already passes for such a package
@@ -207,6 +207,8 @@ try {
     const meta = { version: "1.0.0", main: "./entry" };
     check("entry resolution keeps an exact file ahead of a suffixed sibling", resolveExtensionEntry(dir, meta) === join(dir, "entry"));
     check("entry resolution keeps a root import export ahead of main", resolveExtensionEntry(dir, { ...meta, exports: { ".": { import: "./export.js" } } }) === join(dir, "export.js"));
+    check("entry resolution accepts a default root export in shorthand", resolveExtensionEntry(dir, { ...meta, exports: { default: "./export.js" } }) === join(dir, "export.js"));
+    check("entry resolution keeps main when exports declare only a subpath", resolveExtensionEntry(dir, { ...meta, exports: { "./import": "./export.js" } }) === join(dir, "entry"));
     check("entry resolution keeps an exported directory's index", resolveExtensionEntry(dir, { ...meta, exports: "./dist" }) === join(dir, "dist", "index.js"));
     check("entry resolution does not expand a missing explicit export", resolveExtensionEntry(dir, { ...meta, exports: "./export" }) === join(dir, "export"));
   }

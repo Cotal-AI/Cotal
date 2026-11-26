@@ -18,6 +18,7 @@
  *   5. a principal whose presence row claims the seat's name and incarnation, so the name is held
  *      by two live principals, does not answer;
  *   6. a `from` handle this run never spawned is refused instead of matched by name.
+ *   7. a matching post with a reserved storage header does not answer, but a fresh post does.
  *
  * The far side is a suite-served manager-shaped endpoint (the runtime never imports
  * `@cotal-ai/manager`), as in the replied and turn suites. Posts go out through the shipped
@@ -30,7 +31,7 @@ import { spawn as spawnProc } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
+import { connect, headers } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -98,7 +99,9 @@ const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}waitsender-`));
-const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const broker = spawnProc("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], {
+  stdio: "ignore", env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
+});
 teardownOnSignal(broker, sd);
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
@@ -432,11 +435,30 @@ log("answered", m.from.id);`);
   await named.stop();
 }
 
+{
+  const run = drive("ws-7", GATE(`{ from: lead, matches: "^APPROVED" }`));
+  await waitOpen("ws-7");
+  const lead = lastSeat();
+  const seat = seatOf(lead.principal);
+  const { owner, actor } = seat.principal;
+  const marked = headers();
+  marked.set("Nats-Sequence", "1");
+  await js.publish(chatSubject(SPACE, owner, actor, CHANNEL), wire({
+    id: "marked-wait-fixture", ts: Date.now(), space: SPACE, from: seat.ref(), channel: CHANNEL,
+    parts: [{ kind: "text", text: "APPROVED with a reserved storage header" }],
+  }), { headers: marked });
+  await seat.multicast("APPROVED in a fresh post", { channel: CHANNEL });
+  const out = await withDeadline(run, 30_000, "the provenance run");
+  const got = await answered("ws-7");
+  c("wait ignores a matching marked post and answers with the fresh post", out?.status === "completed"
+    && textOf(got) === "APPROVED in a fresh post", textOf(got));
+}
+
 await Promise.allSettled(terminals);
 for (const s of seats.values()) await s.stop().catch(() => { /* teardown */ });
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 11;
+const EXPECTED_CELLS = 12;
 const ran = ok + fail;
 console.log(`wait-sender.smoke: ${ok} passed, ${fail} failed`);
 emitSentinel({ passed: ok, failed: fail, cells: EXPECTED_CELLS });

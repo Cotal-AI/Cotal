@@ -70,7 +70,7 @@ export function App({
   /** Builds the operator's presence peer (root.tsx); absent where the mesh cannot host one. */
   makeParticipant?: () => CotalEndpoint;
 }) {
-  const mesh = useMesh(ep, { tapSubject });
+  const { mesh, discardChatHistory } = useMesh(ep, { tapSubject });
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { focus, focusNext, focusPrevious } = useFocusManager();
@@ -482,7 +482,10 @@ export function App({
       );
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);
-      void ctl("purge", {}).then((r) => setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`));
+      void ctl("purge", {}).then((r) => {
+        if (r.ok) discardChatHistory();
+        setNotice(r.ok ? "purged space history" : `purge: ${r.error ?? "failed"}`);
+      });
     } else if (c?.kind === "delchan") {
       // Core's clearChannel with the web's per-action authority (console/control.ts). The tab
       // vanishes on the next channel poll (MeshView rebuilds the list from the broker) and its
@@ -498,7 +501,6 @@ export function App({
 
   useInput(
     (input, key) => {
-      if (helpOpen) return setHelpOpen(false);
       if (detail) {
         if (detail.kind === "agent" && !key.escape && !key.return) return;
         return setDetail(null);
@@ -535,13 +537,13 @@ export function App({
         if (idx < tabs.length) setActiveChannel(tabs[idx]);
       }
     },
-    { isActive: !attachTarget && !palette.active && !newAgent && confirm === null && compose === null },
+    { isActive: !helpOpen && !attachTarget && !palette.active && !newAgent && confirm === null && compose === null },
   );
 
   // Attached: render nothing so Ink releases stdin/stdout to the seat (the suspend effect owns the
   // terminal). App stays mounted, so the observer endpoint + MeshView survive in the background.
   if (attachTarget) return null;
-  if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
+  if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} onClose={() => setHelpOpen(false)} />;
   if (detail) return <Detail ep={ep} target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
   if (confirm)
     return (
