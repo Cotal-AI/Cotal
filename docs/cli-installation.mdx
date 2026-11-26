@@ -826,6 +826,10 @@ canonical service preset and local-process example. Installed packages and their
 `add` rolls back. Both `add` and a later load name the missing export and identify the older install
 when the versions establish one. If the versions match, check the extension's import against the
 exports of the linked peer before replacing either build.
+For a local package, `add` can succeed even if the bundled `@cotal-ai/core` version falls outside the
+package's declared peer range. Before adding a local extension, compare its `@cotal-ai/core` peer
+range with the version shown by `cotal --version`. If they do not match, use an extension build
+that supports your CLI version or a CLI version that satisfies the range.
 Each load or add reads the installed package's metadata once, using that same result for its version,
 peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
 that later changes its own `package.json` cannot change the peer range used to diagnose that import.
