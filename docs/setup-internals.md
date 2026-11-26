@@ -467,7 +467,9 @@ record:
 
 - It compares a seeded entry at the running generation byte for byte with the shipped payload and
   with the seed-store copy (`seed/verify.ts`).
-- It compares the prefix tree with its lock once. An optional entry can leave this host out through
+- It compares the prefix tree with its lock once. When npm's `package-lock` setting is false, it
+  uses the installed-tree record under `node_modules` instead and checks each built-in separately.
+  An optional entry can leave this host out through
   its `os`, `cpu`, or `libc` list, under npm's own `checkPlatform` rule with negations and `any`
   included. Such an entry is absent by design, and verify mode does not count it as missing.
 - Extension installs and removals explicitly include optional dependencies, even when npm configuration

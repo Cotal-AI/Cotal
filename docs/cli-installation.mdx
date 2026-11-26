@@ -395,8 +395,10 @@ connector installed in its harness to this release (the `cotal` plugin copy Clau
 load, and its Claude Desktop entry), then checks other `@cotal-ai/*` operator extensions against
 npm's own record in the extensions prefix. One recorded at the binary's exact version with the spec
 `update` installs (`<package>@<version>`) is kept when the prefix lock records it at that version
-and every package the lock records is on disk at its recorded version. The extension's entry file
-must also be present and loadable. The extension check does not compare file contents. Cotal keeps a working
+and every package the lock records is on disk at its recorded version. When npm's `package-lock`
+setting is false, update checks npm's installed-tree record instead of the public lockfile and still
+verifies each built-in against the shipped payload. The extension's entry file must also be present
+and loadable. The extension check does not compare file contents. Cotal keeps a working
 local-path extension at the binary's version under the same lock and entry checks. If it needs
 repair at that version, Cotal reinstalls it from the recorded path. A registry extension that
 needs repair is reinstalled at the binary's exact version. A built-in or extension

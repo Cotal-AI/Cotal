@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dirent } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, cmdSpawnSpec, extensionPackageDir, extensionsDir, hostPackageDir, installedExtensionPackage, isExtensionPathSpec, resolveExtensionEntry, type InstalledExtension } from "@cotal-ai/workspace";
+import { npmInvocation } from "../lib/npm-invocation.js";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
 import { sharedPlacements, type SharedPlacement } from "./shared.js";
 
@@ -88,9 +89,11 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
   const spec = operatorUpdateSpec(entry, generation);
   if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
   if (entry.spec !== spec) return `recorded spec ${entry.spec} is not ${spec}`;
-  const differs = prefixLockDiffers();
+  const prefix = extensionsDir();
+  const lock = readPrefixLock(prefix);
+  if (typeof lock === "string") return lock;
+  const differs = lockedTreeDiffers(prefix, lock);
   if (differs) return differs;
-  const lock = JSON.parse(readFileSync(join(extensionsDir(), "package-lock.json"), "utf8")) as { packages: Record<string, LockEntry> };
   const locked = lock.packages[`node_modules/${entry.pkg}`]?.version;
   if (locked === undefined) return "the prefix lock does not record it";
   if (locked !== generation) return `the prefix lock records it at ${String(locked)}`;
@@ -115,15 +118,37 @@ export function operatorInstallDiffers(entry: InstalledExtension, generation: st
  */
 export function prefixLockDiffers(): string | undefined {
   const prefix = extensionsDir();
-  let lock: { packages?: Record<string, LockEntry> };
+  const lock = readPrefixLock(prefix);
+  return typeof lock === "string" ? lock : lockedTreeDiffers(prefix, lock);
+}
+
+const builtInLockKeys = new Set(Object.values(SEEDED_EXTENSIONS).map(({ pkg }) => `node_modules/${pkg}`));
+
+/** npm records the installed tree under node_modules even with package-lock disabled. */
+function readPrefixLock(prefix: string): { packages: Record<string, LockEntry>; installed: boolean } | string {
+  const actual = join(prefix, "node_modules", ".package-lock.json");
+  let installed = false;
+  if (existsSync(actual)) {
+    const npm = npmInvocation(process.env, ["config", "get", "package-lock", "--prefix", prefix, "--logs-max=0", "--update-notifier=false"]);
+    const { file, args, windowsVerbatimArguments } = cmdSpawnSpec(npm.file, npm.args, npm.env);
+    const config = spawnSync(file, args, { cwd: npm.cwd, env: npm.env, windowsVerbatimArguments, encoding: "utf8", timeout: 5_000, windowsHide: true });
+    installed = config.status === 0 && config.stdout.trim() === "false";
+  }
   try {
-    lock = JSON.parse(readFileSync(join(prefix, "package-lock.json"), "utf8")) as typeof lock;
+    const { packages } = JSON.parse(readFileSync(installed ? actual : join(prefix, "package-lock.json"), "utf8")) as { packages?: Record<string, LockEntry> };
+    if (!packages || typeof packages !== "object" || Array.isArray(packages)) return "the prefix lock records no packages";
+    return { packages, installed };
   } catch (e) {
     return `the prefix lock is unreadable: ${(e as Error).message}`;
   }
-  if (!lock.packages || typeof lock.packages !== "object") return "the prefix lock records no packages";
+}
+
+function lockedTreeDiffers(prefix: string, lock: { packages: Record<string, LockEntry>; installed: boolean }): string | undefined {
   for (const [key, recorded] of Object.entries(lock.packages)) {
     if (key === "" || recorded.link === true) continue;
+    // Built-ins are checked against their payloads individually. The installed-tree record only
+    // checks their dependencies and other packages, not the previous version of a built-in.
+    if (lock.installed && (!key.startsWith("node_modules/") || builtInLockKeys.has(key))) continue;
     if (typeof recorded.version !== "string") return `the prefix lock records no version for ${key}`;
     let actual: unknown;
     try {

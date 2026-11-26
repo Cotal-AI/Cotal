@@ -56,6 +56,39 @@ else process.exit(spawnSync(${JSON.stringify(npm)}, process.argv.slice(2), { std
     result.status === 0 && /connectors reconciled.*seeded/.test(result.stdout), result.stdout + result.stderr);
 }
 
+function checkSelfUpdateWithoutPackageLock(
+  selfUpdate: () => string, prefix: string, npmrc: string, claudePayload: string,
+): void {
+  const userConfig = readFileSync(npmrc, "utf8");
+  const lockPath = join(prefix, "package-lock.json");
+  const contents = readFileSync(lockPath, "utf8");
+  const stale = JSON.parse(contents);
+  stale.packages["node_modules/@cotal-ai/connector-claude-code"].version = "0.0.0";
+  const staleContents = JSON.stringify(stale, null, 2) + "\n";
+  const payload = readFileSync(claudePayload);
+  writeFileSync(npmrc, `${userConfig}package-lock=false\n`);
+  writeFileSync(lockPath, staleContents);
+  try {
+    const current = selfUpdate();
+    check("self-update keeps all current built-ins when npm leaves a stale lockfile",
+      current.includes("installed package closure is current"), current);
+    writeFileSync(claudePayload, Buffer.concat([payload, Buffer.from("\n")]));
+    const repaired = selfUpdate();
+    check("self-update reinstalls only the damaged built-in with package-lock disabled",
+      repaired.match(/Reconciling built-in \w+/g)?.join(", ") === "Reconciling built-in claude" &&
+      readFileSync(claudePayload).equals(payload), repaired);
+    check("self-update leaves the stale public lockfile unchanged", readFileSync(lockPath, "utf8") === staleContents);
+    rmSync(lockPath);
+    const unlocked = selfUpdate();
+    check("self-update keeps current built-ins without creating a public lockfile",
+      unlocked.includes("installed package closure is current") && !existsSync(lockPath), unlocked);
+    check("self-update leaves the user's package-lock setting unchanged", readFileSync(npmrc, "utf8") === `${userConfig}package-lock=false\n`);
+  } finally {
+    writeFileSync(npmrc, userConfig);
+    writeFileSync(lockPath, contents);
+  }
+}
+
 async function checkLocalOperatorUpdate(entry: string, cwd: string, env: NodeJS.ProcessEnv, version: string, extensions: string): Promise<void> {
   const command = "local-peer-probe", pkg = `@cotal-ai/${command}`, source = join(cwd, command);
   mkdirSync(source);
@@ -368,6 +401,7 @@ try {
     const loaded = importDashboard();
     check("the dashboard imports after self-update rebinds its peer", loaded.status === 0, loaded.stderr);
     check("a second self-update skips reconciliation", selfUpdate().includes("installed package closure is current"));
+    checkSelfUpdateWithoutPackageLock(selfUpdate, extensionPrefix, npmrc, installedAt("claude", "package.json"));
   }
   // Real npm creates the reported existing installation while leaving its lock intact.
   const omitted = spawnSync("npm", ["install", "--omit=optional", "--legacy-peer-deps", "--install-links", "--no-audit", "--no-fund"], {
