@@ -41,8 +41,67 @@ import { checkInheritedPipeCleanup } from "./_foreground-pipe-fixture.js";
 import { assertSmokeSandboxDown, emitSentinel, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
-  console.log("SKIP foreground-up-signals: POSIX terminal process groups do not apply on Windows");
+  await windowsHangupCell();
+  emitSentinel({ passed: 1, failed: 0 });
   process.exit(0);
+}
+
+async function windowsHangupCell(): Promise<void> {
+  const { cotalPty, clean, COTAL, wait } = await import("./_console-pty.js");
+  const base = mkdtempSync(join(tmpdir(), "cotal-foreground-close-"));
+  const mesh = join(base, "owner's mesh"), home = join(base, "stack home"), xdg = join(base, "xdg");
+  const bin = join(base, "bin"), caller = join(base, "caller"), tsx = import.meta.resolve("tsx");
+  const space = "foreground-windows", port = await freePort();
+  for (const path of [mesh, home, xdg, bin, caller]) mkdirSync(path);
+  const sandbox = recordSmokeSandbox({ root: mesh, cotalHome: home, xdgConfigHome: xdg });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k, v]) => v !== undefined && !/^COTAL_|^PATH$/i.test(k))) as Record<string, string>;
+  Object.assign(env, { PATH: `${bin};${process.env.PATH ?? ""}`, COTAL_HOME: home, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" });
+  writeFileSync(join(bin, "cotal.cmd"), `@"${process.execPath}" --import "${tsx}" "${COTAL}" %*\r\n`);
+  const probe = (args: string[]) => {
+    assertSmokeSandboxDown(sandbox, args, { cwd: mesh, env });
+    return foregroundCliProbe(COTAL, tsx, mesh, env, args, 90_000);
+  };
+  const created = await probe(["space", "create", space, "--root", "."]);
+  assert.equal(created.code, 0, created.out + created.err);
+  const child = cotalPty(["up", "--foreground", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`], { cwd: mesh, env, cols: 1000 });
+  let raw = "", exit: number | undefined;
+  child.onData((text) => { raw += text; });
+  child.onExit((event) => { exit = event.exitCode; });
+  const poll = async (ready: () => boolean, timeout: number) => {
+    const deadline = Date.now() + timeout;
+    while (!ready() && exit === undefined && Date.now() < deadline) await wait(50);
+  };
+  try {
+    await poll(() => clean(raw).includes("Controller stack started"), 90_000);
+    assert.ok(exit === undefined && clean(raw).includes("Controller stack started"), clean(raw));
+    child.kill();
+    await poll(() => exit !== undefined, 15_000);
+    assert.equal(exit, 129, clean(raw));
+    const notice = /The terminal closed\. This stack is still running; inspect it with `([^`\r\n]+)`; to stop it, run `([^`\r\n]+)`/.exec(clean(raw));
+    assert.ok(notice, clean(raw));
+    const run = (shell: "powershell" | "cmd", action: "--dry-run" | "--yes", command: string) => {
+      const literal = (path: string) => path.replaceAll("'", "''");
+      assert.ok(command.includes(`Set-Location -LiteralPath '${literal(realpathSync(mesh))}'; `)
+        && command.includes(`SetEnvironmentVariable('COTAL_HOME', '${literal(home)}')`)
+        && command.includes(`'down' '${action}'`), command);
+      const options = { cwd: caller, env: { ...env, COTAL_HOME: join(caller, "other home") }, encoding: "utf8", timeout: 90_000 } as const;
+      assertSmokeSandboxDown(sandbox, ["down", action], { cwd: mesh, env });
+      const result = shell === "powershell"
+        ? spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], options)
+        : spawnSync("cmd.exe", ["/d", "/s", "/c", `"${command}"`], { ...options, windowsVerbatimArguments: true });
+      assert.equal(result.status, 0, `${command}\n${result.stdout}${result.stderr}${result.error ?? ""}`);
+      return result.stdout;
+    };
+    assert.match(run("powershell", "--dry-run", notice[1]!), /stack-broker/);
+    assert.match(run("cmd", "--dry-run", notice[1]!), /stack-broker/);
+    assert.equal(await portOpen(port), true, "both previews left the broker running");
+    assert.match(run("cmd", "--yes", notice[2]!), /Controller stack stopped/);
+    assert.equal(await portOpen(port), false, "the printed command stopped the broker");
+    console.log("PASS foreground-up-signals Windows console close commands");
+  } finally {
+    if (exit === undefined) child.kill();
+    if (await portOpen(port)) await probe(["down", "--yes"]);
+  }
 }
 const wt = resolve(import.meta.dirname, "../../..");
 const cliEntry = join(wt, "bin/cotal.ts");
