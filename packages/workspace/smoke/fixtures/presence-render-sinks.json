@@ -3279,7 +3279,7 @@
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "status-token",
-      "anchor": "    >\n      {status === \"working\" && <Orbit r={size / 2 +",
+      "anchor": "tle>}\n      {status === \"working\" && <Orbit r={size / 2 +",
       "class": "presence-only-glyph/count",
       "rationale": "A topology node's status dot, drawn as the avatars draw it, and a working node's ring and arc: presence glyphs that are aria-hidden and say nothing in text."
     },
