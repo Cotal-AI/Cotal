@@ -1165,7 +1165,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   checkCommandLocalState(cmd, parsed, rest);
   // Keep failures in the resolved space and completion warnings behind COTAL_COMPLETE_DEBUG.
   if (cmd.name === "__complete" && !debugFlag("COTAL_COMPLETE_DEBUG")) scope.quiet = true;
-  const execute = () => withProjectTrustMigration(parsed.values["dry-run"] !== true && cmd.name !== "update", parsed.values.json === true, executeCommand);
+  const execute = () => withProjectTrustMigration(parsed.values["dry-run"] !== true && cmd.name !== "update", structured(cmd, parsed.positionals[0]) && parsed.values.json === true, executeCommand);
   const executeCommand = async () => npmProjectDirectory.run(updateDirectory, async () => {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
