@@ -144,15 +144,25 @@ the new version.
 An upgraded Linear extension enforces `allowedTools` in `<cotal-home>/linear/<name>.json` for
 both `linear call` and endpoint `call-tool`. An empty list refuses every tool. If a tool should
 be callable, have the account operator add its case-sensitive name to the list, for example
-`"allowedTools": ["list_issues", "get_issue"]`. Restart any running Linear service for that
-account and retry the call. If the account has no `allowedTools` field, upstream permissions still
+`"allowedTools": ["list_issues", "get_issue"]`. For each running managed Linear service for this
+account, run `cotal service restart <name> --space <space> --yes` before retrying endpoint calls.
+If a service has several instances, run the command for each with `--instance <id>`. For a service
+started with `cotal linear serve`, press Ctrl+C and repeat the original command. Direct calls read
+the list on each invocation. If an account has no `allowedTools` field, upstream permissions still
 decide what it can call. Inventory still lists tools the upstream advertises.
 
-If `linear account add` or `linear account login` refuses an invalid record, repair the named JSON
-file before rerunning the same command. Set `name` to the account name and `mode` to `write` or
-`readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the private token
-file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct nonempty tool
-names without whitespace at either end or terminal controls.
+Every command that opens or replaces the account record refuses a malformed `allowedTools` list,
+including `cotal linear account add`, `cotal linear account login`, and Linear service startup.
+Repair the named JSON file before rerunning the command. Set `name` to the account name and `mode`
+to `write` or `readonly`. Set `auth` to `token` with `tokenFile` set to the absolute path of the
+private token file, or set `auth` to `oauth`. Keep the intended `allowedTools` list, using distinct
+nonempty tool names without whitespace at either end or terminal controls.
+
+If you downgrade or share the same account records between CLI installs, older Linear extensions
+do not enforce `allowedTools`. Running `cotal linear account add` or `cotal linear account login`
+with one of those extensions also rewrites the account record without the list. Use an upgraded
+extension everywhere you use that account. If an older extension has rewritten the record, restore
+the intended list before using the account again, then restart its services as described above.
 
 A missing or mismatched OAuth `state` gets HTTP 400 and leaves the pending login open. Return to
 the authorization URL printed by that login and finish there.
