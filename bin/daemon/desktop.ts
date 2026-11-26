@@ -10,18 +10,20 @@ import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { daemonConnectionLost, loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, applyUninstall, installedDaemonIdentity, planUninstall, preflightInstalledDaemon, startInstalled } from "./install.js";
-import { nativeDaemonLog } from "./native-log.js";
-import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
+import { nativeDaemonLog, previousNativeDaemonLog } from "./native-log.js";
+import { encode, isAgentLifecycleUid, isDaemonSpaceName, type AgentRowRequest, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
 
 export type DesktopRequest =
+  | AgentRowRequest
   | { readonly op: "update-policy"; readonly auto?: boolean }
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
   | { [K in "about" | "status" | "status-watch" | "install" | "log" | "remove-service"]: { readonly op: K } }["about" | "status" | "status-watch" | "install" | "log" | "remove-service"]
+  | { readonly op: "space-recover"; readonly space: string; readonly candidate: string; readonly holder: string }
   | { readonly op: "space-intent"; readonly space: string; readonly enabled: boolean }
   | { readonly op: "name"; readonly name?: string }
   | { readonly op: "spaces"; readonly refresh?: boolean }
@@ -34,9 +36,13 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
+  if (o.op === "agent-stop" || o.op === "agent-terminal") {
+    if (Object.keys(o).some(key => !["op", "space", "lifecycleUid"].includes(key)) || !isDaemonSpaceName(o.space) || !isAgentLifecycleUid(o.lifecycleUid)) throw new Error("invalid local agent selection");
+    return { op: o.op, space: o.space, lifecycleUid: o.lifecycleUid };
+  }
   const simple = ["about", "status", "status-watch", "install", "log", "remove-service", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-recover" ? ["op", "space", "candidate", "holder"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
   if (o.op === "update-policy") {
     if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
@@ -49,6 +55,10 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (o.op === "update-settings") {
     if ([o.auto, o.notify].some(value => value !== undefined && typeof value !== "boolean")) throw new Error("invalid update setting");
     return { op: "update-settings", ...(o.auto !== undefined ? { auto: o.auto as boolean } : {}), ...(o.notify !== undefined ? { notify: o.notify as boolean } : {}) };
+  }
+  if (o.op === "space-recover") {
+    if (!isDaemonSpaceName(o.space) || typeof o.candidate !== "string" || !/^[0-9a-f]{64}$/.test(o.candidate) || typeof o.holder !== "string" || o.holder.length > 2048) throw new Error("invalid custody recovery");
+    return { op: "space-recover", space: o.space, candidate: o.candidate, holder: normalizeIdpUrl(o.holder) };
   }
   if (o.op === "space-intent") {
     if (!isDaemonSpaceName(o.space) || typeof o.enabled !== "boolean") throw new Error("invalid space intent");
@@ -131,29 +141,38 @@ function attemptStartupRefusal(state: string, attemptStartedAt: number): string 
   return refusal;
 }
 
-/** The last 8 KiB of the background service log, with terminal codes, control characters and tokens removed. */
-function readServiceLogTail(state: string): { text: string; truncated: boolean } {
-  let fd: number | undefined;
-  let bytes = Buffer.alloc(0), truncated = false;
+/** Read a bounded tail without requiring an active writer to stop appending. */
+function serviceLogTail(file: string): { text: string; truncated: boolean } {
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { text: "", truncated: false };
+    throw error;
+  }
   try {
-    try { fd = openSync(nativeDaemonLog(state), constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (fd !== undefined) {
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
-      const start = Math.max(0, stat.size - 8192);
-      truncated = start > 0;
-      bytes = Buffer.alloc(Math.min(8192, stat.size));
-      let length = 0;
-      while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
-      bytes = bytes.subarray(0, length);
-    }
-  } finally { if (fd !== undefined) closeSync(fd); }
-  const text = bytes.toString("utf8")
-    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
-    .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>") ?? "";
-  return { text, truncated };
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || process.platform !== "win32" && (stat.uid !== process.getuid!() || (stat.mode & 0o077) !== 0)) throw new Error("The background service log is not a private regular file.");
+    const start = Math.max(0, stat.size - 8192);
+    const bytes = Buffer.alloc(Math.min(8192, stat.size));
+    let length = 0;
+    while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, start + length); if (!count) break; length += count; }
+    const text = bytes.subarray(0, length).toString("utf8")
+      .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
+      .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+      .replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>");
+    return { text, truncated: start > 0 };
+  } finally { closeSync(fd); }
+}
+
+/** Show the bounded tails of the previous and current service launches. */
+function readServiceLogTail(state: string): { text: string; truncated: boolean } {
+  let previous = { text: "", truncated: false };
+  if (process.platform !== "darwin") {
+    try { previous = serviceLogTail(previousNativeDaemonLog(state)); } catch { /* Unreadable history must not block the current log. */ }
+  }
+  const current = serviceLogTail(nativeDaemonLog(state));
+  const text = previous.text ? `Previous launch:\n${previous.text}${current.text ? `\n\nCurrent launch:\n${current.text}` : ""}` : current.text;
+  return { text, truncated: previous.truncated || current.truncated };
 }
 
 /**

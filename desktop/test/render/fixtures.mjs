@@ -55,7 +55,7 @@ export function nativeStub(scenario) {
       if (state.serviceStopped && request.op === "status") state.stoppedStatusChecks = (state.stoppedStatusChecks ?? 0) + 1;
       if (state.serviceStopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it.", detail: { installed: true } } };
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.managers ?? (state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : []), ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.agentTerminal ? { agentTerminal: true } : {}), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
       if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
       if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
       if (request.op === "status-watch") {
@@ -87,6 +87,12 @@ export function nativeStub(scenario) {
         if (state.accountAction === "signout-refusal") return fail("LOGOUT_FAILED", "The provider refused to revoke this sign-in. Try again.");
         state.signedIn = false;
         return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, removedRegistrations: [], skippedServices: [] });
+      }
+      if (request.op === "space-recover") {
+        state.accountRequests.push({ ...request });
+        const row = state.account.spaces.find(item => item.space === request.space);
+        delete row.custodyRecovery; delete row.lastRefusal; row.observed = "connected";
+        return ok({ state: "ready" });
       }
       if (request.op === "service-disconnect") {
         if (state.accountAction) {
@@ -158,6 +164,21 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  ...[false, true].map(confirm => ({
+    name: `custody-recovery-${confirm ? "confirm" : "cancel"}`,
+    state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected", lastRefusal: "The local space connection is held by https://old.example/api/auth.", custodyRecovery: { holder: "https://old.example/api/auth", candidate: "b".repeat(64) } }] } },
+    expect: async page => {
+      const button = page.getByRole("button", { name: /^Use signed-in account for / });
+      await button.waitFor();
+      assert.match(await page.locator('[data-testid="connected-space-row"]').textContent(), /old.example/);
+      page.once("dialog", dialog => confirm ? dialog.accept() : dialog.dismiss());
+      await button.click();
+      if (confirm) await page.waitForFunction(() => window.__renderState.accountRequests.some(row => row.op === "space-recover"));
+      assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests.filter(row => row.op === "space-recover")), confirm ? [
+        { op: "space-recover", space: "acme-team", candidate: "b".repeat(64), holder: "https://old.example/api/auth" },
+      ] : []);
+    },
+  })),
   { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },
     act: page => page.click('#open-settings'), expect: async page => { assert.match(await page.locator('#settings-update-summary').textContent(), /An app operation is still running/); } },
   { name: 'mac-apply-visible', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0' } },
@@ -369,6 +390,83 @@ export const scenarios = [
     state: { installed: true, signedIn: true, connected: true, agents: mode === "none" ? [] : mode === "unreadable" ? [{ space: "acme-team", state: "unreadable" }] :
       ["acme-team", ...(mode === "spaces" ? ["research"] : [])].map(space => ({ space, state: "read", agents: Array.from({ length: mode === "many" ? 12 : 1 }, (_, i) => ({ name: mode === "long" ? "writer-with-a-very-long-agent-name-".repeat(3) : `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: mode === "long" ? `/projects/${"long-folder/".repeat(20)}work` : "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) })) },
     expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), true); if (mode === "unreadable") assert.match(await page.locator("#agents-unavailable").textContent(), /Could not read/); else assert.equal(await page.locator(".agent-row").count(), mode === "none" ? 0 : mode === "many" ? 12 : mode === "spaces" ? 2 : 1); },
+  })),
+  ...["started", "refused"].map(outcome => ({
+    name: `agent-terminal-${outcome}`,
+    state: { installed: true, signedIn: true, connected: true, agents: [{ ...auditAgents[0], agents: auditAgents[0].agents.slice(0, 2).map((agent, index) => ({ ...agent, lifecycleUid: `test-${index}` })) }] },
+    act: async page => {
+      await page.evaluate(outcome => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+          if (command === 'daemon_request' && args.request.op === 'agent-terminal') {
+            window.__terminalRequest = args.request;
+            return new Promise(resolve => { window.__finishTerminal = () => resolve(outcome === 'started'
+              ? { v: 1, event: 'result', ok: true, result: { started: true } }
+              : { v: 1, event: 'result', ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'The selected local agent is no longer running.' } }); });
+          }
+          return invoke(command, args);
+        };
+        window.__renderState.agentTerminal = true;
+        window.__pushStatus();
+      }, outcome);
+      await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).click();
+    },
+    expect: async page => {
+      assert.deepEqual(await page.evaluate(() => window.__terminalRequest), { op: 'agent-terminal', space: 'acme-team', lifecycleUid: 'test-0' });
+      assert.equal(await page.getByRole('button', { name: 'Opening terminal… writer-1' }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Open in Terminal writer-2' }).isEnabled(), true);
+      assert.equal(await page.locator('#open-settings').isEnabled(), true);
+      await page.evaluate(() => window.__finishTerminal());
+      await page.getByRole('button', { name: 'Open in Terminal writer-1', exact: true }).waitFor();
+      if (outcome === 'refused') {
+        assert.match(await page.locator('#refusal-detail').textContent(), /The selected local agent is no longer running/);
+        assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+      } else await page.getByText('Terminal opened for writer-1.', { exact: true }).first().waitFor();
+    },
+  })),
+  ...["success", "refused", "exited"].map(outcome => ({
+    name: `agent-stop-${outcome}`,
+    state: { installed: true, signedIn: true, connected: true, agents: [{ ...auditAgents[0], agents: auditAgents[0].agents.slice(0, 2).map((agent, index) => ({ ...agent, lifecycleUid: `test-${index}` })) }] },
+    act: async page => {
+      await page.evaluate(outcome => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = (command, args) => {
+          if (command !== 'daemon_request' || args.request.op !== 'agent-stop') return invoke(command, args);
+          window.__selectedAgent = args.request.lifecycleUid;
+          return new Promise(resolve => { window.__finishStop = () => {
+            if (outcome !== 'success') return resolve({ v: 1, event: 'result', ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'The selected local agent is no longer running.' } });
+            window.__renderState.agents[0].agents.shift();
+            resolve({ v: 1, event: 'result', ok: true, result: {} });
+          }; });
+        };
+      }, outcome);
+      await page.getByRole('button', { name: 'Stop writer-1', exact: true }).click();
+    },
+    expect: async page => {
+      assert.equal(await page.evaluate(() => window.__selectedAgent), 'test-0');
+      assert.equal(await page.getByRole('button', { name: /Open in Terminal/ }).count(), 0);
+      assert.equal(await page.getByRole('button', { name: 'Stopping… writer-1' }).isDisabled(), true);
+      assert.equal(await page.getByRole('button', { name: 'Stop writer-2' }).isEnabled(), true);
+      assert.equal(await page.locator('#open-settings').isEnabled(), true);
+      if (outcome === 'exited') {
+        await page.evaluate(() => {
+          window.__renderState.agents[0].agents.shift();
+          const remaining = window.__renderState.agents[0].agents[0];
+          remaining.model = 'updated-model';
+          window.__pushStatus();
+        });
+        await page.getByText('Codex · updated-model').waitFor();
+        assert.equal(await page.getByRole('button', { name: 'Stopping… writer-1' }).isDisabled(), true);
+      }
+      await page.evaluate(() => window.__finishStop());
+      if (outcome !== 'success') {
+        await page.waitForFunction(() => document.querySelector('#refusal-detail').textContent.includes('The selected local agent is no longer running.'));
+        assert.equal(await page.locator('#details').evaluate(el => el.open), true);
+      }
+      if (outcome !== 'refused') {
+        await page.locator('.agent-row').filter({ hasText: 'writer-1' }).waitFor({ state: 'detached' });
+      }
+    },
   })),
   { name: "account-disconnect-long-confirmation", state: { installed: true, signedIn: true, connected: true, accountAction: "disconnect-confirmation", catalogSpaces: longAccountSpaces, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "account", hostSupport: "supported", spaces: [{ space: longAccountSpaces[0].space, desired: true, observed: "connected" }] } }, act: async page => {
     await page.click("#open-settings");

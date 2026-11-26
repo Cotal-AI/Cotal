@@ -134,7 +134,7 @@ Private message to one agent. Other agents can't read it. It wakes that agent ev
 
 * **Side-effect:** sends a private message to one peer.
 * **Available:** always.
-* A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer. A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending.
+* A name must match a present peer's name in full (case-insensitive) or its instance id. On a miss nothing is sent, and the refusal lists present names that start with the target so you can choose one; it never picks one for you. Your own name is refused as this session, not as a missing peer. A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending. A DM larger than the broker's message limit, envelope included, is refused with that limit in bytes; nothing was sent, so shorten it or split it across several DMs.
 
 | Argument  | Type   | Required | Meaning                                                                                                                                                                                                         |
 | --------- | ------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

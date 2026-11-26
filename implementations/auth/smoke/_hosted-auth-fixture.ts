@@ -83,10 +83,11 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
     ...(maxPayload === undefined ? {} : { maxPayload }), ...(wsPort !== undefined ? { wsPort } : {}),
   }) + (route === undefined ? "" : `\nserver_name: "owned-payload-${node}"\ncluster {\n name: ${JSON.stringify(opts.clusterName ?? "owned-fixture")}\n host: 127.0.0.1\n port: ${route}\n routes: ["nats://127.0.0.1:${opts.clusterPort}", "nats://127.0.0.1:${clusterPeer!.route}"]\n}\n`);
   writeFileSync(join(dir, "server.conf"), render(port, "primary", opts.clusterPort));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
   let peer: ChildProcess | undefined, releasePeer: (() => void) | undefined;
   if (clusterPeer) {
     writeFileSync(join(dir, "peer.conf"), render(clusterPeer.port, "peer", clusterPeer.route));
-    peer = spawn("nats-server", ["-c", join(dir, "peer.conf")], { stdio: "ignore" });
+    peer = spawn("nats-server", ["-c", join(dir, "peer.conf")], { env, stdio: "ignore" });
     releasePeer = teardownOnSignal(peer, opts.keepFiles ? undefined : dir);
   }
   let startupError = "";
@@ -100,7 +101,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
     partial = lines.pop() ?? "";
     for (const line of lines) if (line.includes("Reloaded server configuration")) reloads++;
   };
-  let nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+  let nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { env, stdio: ["ignore", "ignore", "pipe"] });
   nats.stderr?.on("data", absorb);
   let release = teardownOnSignal(nats, opts.keepFiles ? undefined : dir);
   let up = false;
@@ -115,7 +116,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
       release();
     },
     async restartBroker() {
-      nats = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
+      nats = spawn("nats-server", ["-c", join(dir, "server.conf")], { env, stdio: ["ignore", "ignore", "pipe"] });
       nats.stderr?.on("data", absorb);
       release = teardownOnSignal(nats, opts.keepFiles ? undefined : dir);
       for (let i = 0; i < 50; i++) { if (await isReachable(servers)) return; await wait(200); }

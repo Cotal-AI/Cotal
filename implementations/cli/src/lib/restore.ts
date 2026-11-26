@@ -801,7 +801,7 @@ export async function prepareRestore(root: string, flags: RestoreFlags, validate
         first_seq: snapshotState.first_seq,
         last_seq: snapshotState.last_seq,
       })) throw new Error(`checkpoint ${checkpoint.stream}/${checkpoint.name} does not match its snapshot stream state`);
-      consumerConfigFromCheckpoint(journal.space, checkpoint);
+      consumerConfigFromCheckpoint(journal.space, checkpoint, artifact.manifest.mode === "open");
     }
     const authorityBeforeMutation = await authorityFingerprint(root, journal.space, journal.mode);
     if (JSON.stringify(authorityBeforeMutation) !== JSON.stringify(currentAuthority))

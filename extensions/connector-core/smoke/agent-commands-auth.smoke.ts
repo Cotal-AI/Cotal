@@ -724,13 +724,18 @@ try {
   console.log("\na MeshAgent on a per-user mesh");
   const servedBy = (w: Who) => until(() => rosterOf(w)?.prompts !== undefined, 10_000);
   {
-    const harness = fake();
-    const agent = new MeshAgent(meshConfig(W.meshWithDispatcher), {}, { commands: harness });
+    const harness = fake({ setModel: async (model) => ({ model: model ?? "big" }) });
+    const agent = new MeshAgent({ ...meshConfig(W.meshWithDispatcher), modelPolicy: "reviewer" }, {}, { commands: harness });
     agent.on("error", () => {});
     agent.on("command", () => void agent.dispatchNextCommand());
     stops.push(() => agent.stop());
     await agent.start();
     check("a MeshAgent with a dispatcher serves its agent endpoint once it joined: presence shows the prompts field", await servedBy(W.meshWithDispatcher));
+    const blocked = await settled(call(webEp, W.meshWithDispatcher, "set-model", { model: "big" }));
+    check("the live set-model refusal names the policy in the Cotal configuration without asking the harness",
+      verdict(blocked) === "failed-precondition/not-executed" && blocked.ok && !blocked.value.ok
+      && blocked.value.error.message.includes("modelPolicy.reviewer in the Cotal configuration") && harness.switches.length === 0,
+      blocked.ok ? blocked.value : verdict(blocked));
     const list = await settled(call(webEp, W.meshWithDispatcher, "commands"));
     const run = await queue(W.meshWithDispatcher, { target: "skill", name: "browser", args: "open the docs" });
     const ran = await finalState(W.meshWithDispatcher, run.id);

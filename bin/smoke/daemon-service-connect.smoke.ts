@@ -112,6 +112,7 @@ import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../../implementations/auth/src/lifecycle-registry.js";
 import { daemonPaths, daemonPathsFor } from "../daemon/endpoint.js";
+import { exchangeDesktopRequest } from "../daemon/desktop.js";
 import { processBirth } from "../daemon/lifetime.js";
 import { daemonConnectIntentFile } from "../daemon/service.js";
 import { runSetup } from "../daemon/setup.js";
@@ -257,6 +258,9 @@ const jwk = { ...await exportJWK(key.publicKey), kid: "a2b2-idp" };
 const SESSION = "a2b2-session-handle-not-a-secret";
 let idpOrigin = "";
 const accountOnly = process.argv.includes("--account-only");
+if (process.argv.includes("--account-custody-repro")) {
+  assert.ok(accountOnly && !process.argv.includes("--no-manager-only"), "custody cases require the hosted account-computer fixture");
+}
 let accountDesired = false;
 let accountRevision = 1;
 let accountRegistration: { managers?: { spaceId: string; instanceId: string }[] } | undefined;
@@ -295,6 +299,9 @@ let exchangeGate: ((view: unknown, res: ServerResponse) => Promise<boolean>) | u
 const exchangeReads: Array<{ view: unknown; managerInstanceId: unknown }> = [];
 let unsupportedComputerReads = 0;
 let custodyOldFails = false;
+const custodySubject = (host?: string) => process.argv.includes("--account-recovery-repro") && host !== new URL(idpOrigin).host
+  ? { sub: "replacement-owner" }
+  : {};
 const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   res.setHeader("content-type", "application/json");
   if (req.url === "/api/auth/sign-out") {
@@ -355,10 +362,10 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
       return aliasRow;
     }) : [];
     res.setHeader("etag", JSON.stringify(accountRevision));
-    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth` } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
+    res.end(JSON.stringify({ v: 1, machineId, revision: accountRevision, account: process.argv.includes("--account-custody-repro") ? { ...(snapshot.account as object), idpUrl: `http://${req.headers.host}/api/auth`, ...custodySubject(req.headers.host) } : snapshot.account, spaces, bindingRevisions: Object.fromEntries(spaces.map(row => [row.id, accountBindingRevision])) })); return;
   }
   if (req.url === "/catalog" && catalogUnavailable) { res.writeHead(503); return void res.end("{}"); }
-  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth` } } : catalog));
+  if (req.url === "/catalog" && catalog) return void res.end(JSON.stringify(process.argv.includes("--account-custody-repro") ? { ...(catalog as object), account: { ...(catalog as { account: object }).account, idpUrl: `http://${req.headers.host}/api/auth`, ...custodySubject(req.headers.host) } } : catalog));
   const accountTarget = [...accountTargets].find(([space]) => req.url?.startsWith(`/account-space/${space}/`));
   if (accountOnly && accountTarget) {
     const [space, target] = accountTarget;
@@ -398,9 +405,9 @@ const idp = createHttpServer(async (req: IncomingMessage, res: ServerResponse) =
   if (req.url === "/api/auth/token" && (req.headers.authorization ?? "") === `Bearer ${SESSION}`) {
     await tokenGate?.(res);
     if (res.destroyed) return;
-    if (catalog) res.setHeader("link", `<${idpOrigin}/catalog>; rel="https://cotal.ai/relations/space-catalog"`);
+    if (catalog) res.setHeader("link", `</catalog>; rel="https://cotal.ai/relations/space-catalog"`);
     const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject("machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
+    const token = await new SignJWT({ email: "operator@example.test" }).setProtectedHeader({ alg: "EdDSA", kid: jwk.kid }).setIssuer(idpOrigin).setAudience(idpOrigin).setSubject(custodySubject(req.headers.host).sub ?? "machine-owner").setIssuedAt(now).setExpirationTime(now + idpJwtTtl).sign(key.privateKey);
     jwtsIssued.push(token);
     return void res.end(JSON.stringify({ token }));
   }
@@ -2737,6 +2744,29 @@ process.stdin.once('data', () => {
             const accounts = signedInMachineAccounts(home);
             const holder = accounts.find(account => account.idpUrl === idpUrl)!;
             const current = accounts.find(account => account.idpUrl.includes("[::ffff:"))!;
+            if (process.argv.includes("--account-recovery-repro")) {
+              assert.equal(current.sub, "replacement-owner");
+              const recoveryShown = (s: Record<string, any>) => s.account?.spaces?.some((row: any) => row.space === ON && row.custodyRecovery?.candidate === current.ownerKey);
+              const owner = () => JSON.parse(readFileSync(join(home, "daemon", "account-spaces.json"), "utf8")).spaces[ON].owner;
+              const recover = (expectedHolder: string) => ask(paths.socket, { op: "space-recover", space: ON, candidate: current.ownerKey, holder: expectedHolder }, 100_000);
+              await waitAccount(recoveryShown, "failing holder exposes confirmed recovery through real daemon status");
+              check("different subject never silently takes custody", owner() === holder.ownerKey);
+              check("CLI points to the explicit app action", (await plainCommand("status")).out.includes("choose Use signed-in account"));
+              const changed = await recover("https://changed.example/api/auth");
+              check("stale holder address refuses without moving custody", !changed.ok && JSON.stringify(changed).includes("holding account changed") && owner() === holder.ownerKey, changed);
+              custodyOldFails = false;
+              await waitAccount(s => !recoveryShown(s), "an answering holder clears the recovery action");
+              const answering = await recover(idpUrl);
+              check("a holder that answers again cannot be confirmed away", !answering.ok && owner() === holder.ownerKey, answering);
+              if (process.argv.includes("--account-recovery-signed-out")) deleteIdpSession(home, idpUrl);
+              else custodyOldFails = true;
+              await waitAccount(recoveryShown, "a signed-out or failing holder offers recovery again");
+              const moved = await recover(idpUrl);
+              check("confirmed real daemon recovery request succeeds", moved.ok === true, moved);
+              check("confirmed real daemon recovery changes custody", owner() === current.ownerKey);
+              check("confirmed recovery changes the registry owner", findMesh(ON)?.catalogOwner === current.ownerKey);
+              return;
+            }
             check("fixture presents matching issuer and subject at different addresses", holder.issuer === current.issuer && holder.sub === current.sub && holder.ownerKey !== current.ownerKey);
             check("copied identity is refused and status names the holder", status.account.spaces.some((row: any) => row.space === ON && row.lastRefusal === `The local space connection is held by ${idpUrl}.`), status.account);
             check("copied identity leaves custody with the holder", custody.spaces[ON]?.owner === holder.ownerKey, custody);
@@ -2885,6 +2915,54 @@ process.stdin.once('data', () => {
               check("S0b CLI JSON exposes the same real inventory", inventoryJson.doc.result?.agents?.some((row: any) => row.space === ON && row.state === "read" && row.agents.length === count), inventoryJson);
               const inventoryText = await plainCommand("status");
               check("S0c CLI text names real seat and folder", inventoryText.code === 0 && inventoryText.out.includes("shutdown_seat_0") && inventoryText.out.includes(participant), inventoryText);
+              if (process.argv.includes("--desktop-agent-attach-probe")) {
+                const lifecycleUid = inventory.agents[0].lifecycleUid;
+                assert.equal(typeof lifecycleUid, "string");
+                const request = { op: "agent-terminal", space: ON, lifecycleUid } as const;
+                const answer = await exchangeDesktopRequest({ paths }, request);
+                assert.ok(answer.ok && "result" in answer && "argv" in answer.result, JSON.stringify(answer));
+                const argv = answer.result.argv;
+                assert.deepEqual(argv, [process.execPath, cliEntry, "attach", "shutdown_seat_0", "--on", manager.instanceId, "--space", ON]);
+                assert.doesNotMatch(JSON.stringify(answer), /eyJ[A-Za-z0-9_-]{12,}|Bearer /);
+                const command = argv.map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+                const attach = spawn("script", ["-qefc", command, "/dev/null"], { cwd: root, env: { ...env, TERM: "xterm" }, stdio: ["pipe", "pipe", "pipe"] });
+                let output = "";
+                let sent = false;
+                const collect = (chunk: Buffer) => {
+                  output += chunk.toString();
+                  if (!sent && /attached to/i.test(output)) {
+                    sent = true;
+                    setTimeout(() => { if (!attach.stdin.destroyed) attach.stdin.write("\x1d"); }, 100);
+                  }
+                };
+                attach.stdout.on("data", collect);
+                attach.stderr.on("data", collect);
+                const timeout = setTimeout(() => attach.kill("SIGTERM"), 45_000);
+                try {
+                  const code = await new Promise<number | null>((resolve, reject) => { attach.once("error", reject); attach.once("close", resolve); });
+                  check("CLI attach reaches the real hosted seat", sent && code === 0, output);
+                  console.log("ATTACH PROBE", JSON.stringify(output));
+                } finally { clearTimeout(timeout); }
+                const stopped = await exchangeDesktopRequest({ paths }, { ...request, op: "agent-stop" });
+                assert.equal(stopped.ok, true, JSON.stringify(stopped));
+                await waitAccount(s => s.agents?.some((row: any) => row.space === ON && row.state === "read" && !row.agents.some((seat: any) => seat.lifecycleUid === lifecycleUid && seat.state === "running")), "terminal selection exits");
+                const stale = await exchangeDesktopRequest({ paths }, request);
+                check("terminal command refuses the exited lifecycle", !stale.ok && stale.error.code === "TARGET_NOT_FOUND", stale);
+                return;
+              }
+              if (process.argv.includes("--desktop-agent-stop")) {
+                const lifecycleUid = inventory.agents[0].lifecycleUid;
+                assert.equal(typeof lifecycleUid, "string");
+                const request = { op: "agent-stop", space: ON, lifecycleUid } as const;
+                const stopped = await exchangeDesktopRequest({ paths }, request);
+                check("desktop Stop reaches the hosted Manager", stopped.ok, stopped);
+                await waitAccount(s => s.agents?.some((row: any) => row.space === ON && row.state === "read" && !row.agents.some((seat: any) => seat.lifecycleUid === lifecycleUid && seat.state === "running")), "desktop Stop removes the selected running seat");
+                const refused = await exchangeDesktopRequest({ paths }, request);
+                check("desktop Stop refuses the exited lifecycle", !refused.ok && refused.error.code === "TARGET_NOT_FOUND", refused);
+                const unknown = await exchangeDesktopRequest({ paths }, { ...request, lifecycleUid: "not-a-hosted-lifecycle" });
+                check("desktop Stop rejects a lifecycle that the local Manager did not report", !unknown.ok && unknown.error.code === "TARGET_NOT_FOUND", unknown);
+                return;
+              }
               shutdownLatency = process.argv.includes("--hosted-latency");
               if (shutdownLatency) brokerReplyDelay = 150;
               const started = Date.now();

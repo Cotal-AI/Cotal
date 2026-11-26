@@ -1,5 +1,12 @@
 # @cotal-ai/connector-opencode
 
+## 0.182.0
+
+### Patch Changes
+
+- 1f37adb: OpenCode seats launched without a model pin report the model they use after a mesh-delivered prompt in `cotal who` and plain `cotal status`.
+- 9f63fee: Keep Windows consoles from opening during background extension installs, updates, and helper commands.
+
 ## 0.181.0
 
 ### Minor Changes

@@ -120,6 +120,19 @@ const chipsIn = (root: Element) => all(root, 'header span[data-variant="outline"
 const days = (root: Element) => all(root, '[data-slot="marker"][data-variant="separator"]').map(textOf);
 /** Every message a view draws, in order. */
 const rowsIn = (root: Element) => all(root, '[data-slot="message"]');
+
+{
+  const open = { channel: "review", messages: reviewMessages, olderRetained: true };
+  const view = centre(shellDom(channelSeed({ space: "review-space", open }), channelRoute));
+  const notice = "Earlier messages are retained.";
+  const hint = all(view, "code").find((code) => textOf(code).startsWith("cotal history"));
+  same("the history notice names the channel and space in the existing CLI command", textOf(hint), "cotal history '#review' --limit 2000 --space review-space");
+  ok("the retained history notice appears before the first message", textOf(view).indexOf(notice) >= 0 && textOf(view).indexOf(notice) < textOf(view).indexOf("Pushed the presence TTL change."));
+  const complete = centre(shellDom(channelSeed({ open: { ...open, olderRetained: false } }), channelRoute));
+  const other = centre(shellDom(channelSeed({ open }), { view: "channel", channel: "general" }));
+  ok("a complete window and a different channel do not show the notice", !textOf(complete).includes(notice) && !textOf(other).includes(notice));
+}
+
 /** A message's body, as its bubble shows it. */
 const bodyOf = (r: Element) => textOf(r.querySelector('[data-slot="bubble-content"]'));
 /** The sender's name, which opens a message's header. */
@@ -872,4 +885,3 @@ const workLink = (r: Element | undefined) => (r ? all(r, "a").find((a) => textOf
 
 await closeDom();
 console.log(`views: ${n} checks passed`);
-

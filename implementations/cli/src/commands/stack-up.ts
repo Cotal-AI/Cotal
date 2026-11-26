@@ -77,7 +77,7 @@ import { listLedgerFiles } from "../lib/manifest/ledger.js";
 import { listAdditiveTeamAttempts, retainedAdditiveTeamAttempts, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { foreignLocalProcesses, legacyBrokerPidfileBlock, newStackOperation, readStackJournal, removeStaleLocalRecords, runningStackRoles, serviceHeldRecords, settleRetainedStackStops, settleStackOperation, STACK_ADAPTER, STACK_DEFINITION, STACK_ROLES, stackDefinitionsAt, stackMaintenanceFence, stackNeverStarted, stackRecoveryHost, stackOperationUnsettled, stackRoleApplies, stackSettlementNotice, staleRecordWarning, withSettledMembers, writeStackJournal, type LocalRecord, type StackJournal, type StackJournalSnapshot, type StackMember, type StackMode, type StackRole, type StackSettlement } from "../lib/stack-journal.js";
-import { retryStackAddress } from "../lib/up-broker-address.js";
+import { stackRetryServer } from "../lib/up-broker-address.js";
 import { withManagerName } from "../lib/up-manager-name.js";
 import { NATS_DEFAULT_MAX_PAYLOAD, natsServerLabel, type NatsServer } from "../lib/nats-bin.js";
 import { sharedStoreAtStart, sharedStoreWarning, type StoreTenant } from "../lib/store-dir.js";
@@ -349,12 +349,12 @@ export function controllerStackApplies(root: string, space: string, values: Pars
   return true;
 }
 
-export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean): never {
+export function refuseForegroundStackHolder(root: string, space: string, holderPid: number, noManager: boolean, maxPayload?: number): never {
   const home = readStackJournal(root)?.journal.recovery?.home;
   const cmd = home !== undefined && home !== resolve(homeCotalDir()) ? `COTAL_HOME=${shellWord(home)} ${displayCmd()}` : "cotal";
   throw new CommandFailure("refused", "CONFLICT", `a foreground \`cotal up\` in process ${holderPid} already holds this stack's lifetime; this terminal did not take it over and nothing was started`, {
     target: { root, space, holderPid },
-    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground${noManager ? " --no-manager" : ""}`)} again`,
+    remedy: `use the terminal that runs process ${holderPid}, where Ctrl-C stops the stack, or stop it with ${codeSpan(`${cmd} down --yes`)} from ${root} and run ${codeSpan(`${cmd} up --foreground${noManager ? " --no-manager" : ""}${maxPayload !== undefined ? ` --max-payload ${maxPayload}` : ""}`)} again`,
   });
 }
 
@@ -416,11 +416,14 @@ function stackPreflight(request: StackUpRequest, recorded: StackJournal | undefi
   try { ledgers = listLedgerFiles(root, { requireReadable: true }); additive = listAdditiveTeamAttempts(root); boots = listFreshTeamAttempts(root); summaries = listFreshTeamSummaries(root); }
   catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "team records under this root could not be read; no empty team state was inferred", { target: { root, space } }); }
   const settled = new Map(summaries.valid.map((summary) => [summary.deploymentId, summary]));
-  // A channel-only deployment that returned onto this recorded stack stays with it across a stop: its
-  // cards are in this broker's store, so starting the stack again adopts nothing and its records stay
-  // as they are. Any other retained deployment still blocks.
-  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && attempt.requestedAgents.length === 0 && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
-    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode;
+  // Ordinary startup of the recorded stack does not replay returned additive launches or adopt their
+  // cards. Fresh boots, broker maintenance and unsettled removals retain the agent deployment fence.
+  const ordinaryUp = !manifest && !request.rotateSys && request.recreateIssuedStores === undefined && !request.recreateMembershipStore && request.channels === undefined;
+  const removing = new Set([...(additive.removal?.attempts ?? []), ...(additive.channelRemoval?.attempts ?? [])].map((row) => row.deploymentId));
+  const carried = (attempt: AdditiveTeamAttempt) => recorded !== undefined && additive.returned.some((row) => row.deploymentId === attempt.deploymentId)
+    && attempt.space === recorded.space && canonicalRoot(attempt.root) === canonicalRoot(root) && attempt.server === recorded.server && attempt.authMode === recorded.mode
+    && (attempt.requestedAgents.length === 0 || (ordinaryUp && !removing.has(attempt.deploymentId) && space === recorded.space
+      && canonicalServer(request.server) === canonicalServer(recorded.server) && attempt.tlsRequired === (request.transport.kind === "tls-required")));
   const retained = retainedAdditiveTeamAttempts(additive).filter((attempt) => !carried(attempt));
   const unsettledBoots = boots.valid.filter((attempt) => attempt.deploymentId !== manifest?.deploymentId && !freshTeamAttemptSettled(attempt, settled.get(attempt.deploymentId)));
   if (ledgers.valid.length || ledgers.refused.length || retained.length || additive.refused.length || boots.refused.length || summaries.refused.length || unsettledBoots.length) {
@@ -654,8 +657,8 @@ export async function stackStartAddressProblem(root: string, space: string, serv
     const held = await recordedAddressHeld(space, journal.server, journal.broker?.host);
     if (!held) return undefined;
     if (refusedStart && stackNeverStarted(journal)) {
-      const retry = await retryStackAddress(["--foreground"], root, journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
-      return { message: held.says, remedy: `${retry ? `${retry}, or ` : ""}${held.frees}, then run ${codeSpan(`${displayCmd()} up`)} in ${root}` };
+      const alternate = await stackRetryServer(journal.server, journal.broker?.host ?? brokerListenAddress(journal.server).host);
+      return { message: held.says, remedy: `${held.frees}, then repeat your original startup command from the same folder${alternate ? `, or repeat it from that folder with ${codeSpan(`--server ${alternate}`)} and all other options unchanged` : ""}` };
     }
     const noManager = journal.members.some((row) => row.role === "manager" && row.state === "not-attempted" && (cleanStop || row.instanceId === null));
     const restart = `${displayCmd()} up${noManager ? " --no-manager" : ""}`;
