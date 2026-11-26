@@ -1,6 +1,7 @@
 // The live feed: one `EventSource` on `/feed`, each event decoded and handed to a handler. The
 // handlers are the dashboard's (state/boot.ts wires them to the controller), so this module knows
 // the wire and nothing about the state.
+import { sessionInvalid } from "./http.js";
 import type { AgentFrame, FeedMessage, MembershipSnapshot, PresenceView, RosterEntry } from "./types.js";
 
 export interface FeedHandlers {
@@ -42,19 +43,6 @@ const CLOSED = 2;
 /** The browser's `EventSource`. Its `onopen` takes the event, which the feed does not read, so the
  *  property types differ and TypeScript will not see it as a `FeedSource` without the cast. */
 const nativeSource = (url: string): FeedSource => new EventSource(url) as unknown as FeedSource;
-
-/** EventSource does not expose the HTTP status. Check the same session gate on a short JSON read. */
-async function sessionInvalid(): Promise<boolean> {
-  try {
-    const options = { cache: "no-store" as const, signal: AbortSignal.timeout(3000) };
-    const response = await fetch("/api/meta", options);
-    if (response.status !== 401) return false;
-    const body = await response.json() as { error?: unknown } | null;
-    return body?.error === "unauthenticated";
-  } catch {
-    return false;
-  }
-}
 
 /** Open the feed and return the function that closes it. */
 export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSource = nativeSource, checkSession = sessionInvalid): () => void {
