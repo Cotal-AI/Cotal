@@ -548,10 +548,10 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     // the post sent after the legacy restore.
     assert.equal(active.launch?.previousCutNewer, true, `${mode} restore journals that the cut it replaced is newer than its artifact`);
     const leftOut = restoreArtifact === registryArtifact ? "chat and DM history and workflow runs" : "newer space state";
-    // The receipt names the restore attempt and the cleanup that retires it, with --discard-history.
+    // The receipt previews cleanup and names the separate consent that deletion needs.
     assert.ok(restored.stdout.includes(`✓ restored the backup ${restoreArtifact === registryArtifact ? "registry" : "in full"} as restore attempt ${active.restore.attemptId}`), `${mode} up --restore names its attempt\n${restored.stdout}`);
     const cleanupNext = restored.stdout.split("\n").find((line) => line.startsWith("next: ")) ?? "";
-    assert.ok(cleanupNext.includes(`\`${launcher} backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\``) && cleanupNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} up --restore names the cleanup that retires it\n${restored.stdout}`);
+    assert.ok(cleanupNext.includes(`\`${launcher} backup cleanup-fallback ${active.restore.attemptId} --dry-run\``) && cleanupNext.includes(`requires --discard-history and removes the only copy of the ${leftOut} it left out`), `${mode} up --restore previews cleanup and names the retained data\n${restored.stdout}`);
     // A registry restore says history starts empty and names the store that holds its only copy.
     if (restoreArtifact === registryArtifact) {
       assert.match(restored.stdout, /channel settings only, so chat and DM history and workflow runs start empty/, `${mode} registry restore names the empty history\n${restored.stdout}`);
@@ -568,7 +568,8 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     const running = run("up", "-f", "cotal.yaml");
     assert.equal(running.status, 2, `${mode} up -f while the restored stack runs refuses, exit 2\n${running.stdout}\n${running.stderr}`);
     assert.match(running.stderr, /Code: +CONFLICT/);
-    assert.ok(running.stderr.includes(`stop the restored stack with \`cotal down\`, retire the restore with \`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds, then run \`cotal up -f cotal.yaml\` again`), `${mode} up -f names the way out\n${running.stderr}`);
+    const conditionalCleanup = ["cotal", "pnpm cotal"].map((cli) => `retire the restore with \`${cli} backup cleanup-fallback ${active.restore.attemptId}\` only if you choose to discard the ${leftOut} held only in the previous store (deletion requires --discard-history)`);
+    assert.ok(conditionalCleanup.some((step) => running.stderr.includes(step)), `${mode} up -f names the separate choice\n${running.stderr}`);
     // Any other `up` over the restored broker refuses before it touches the journal, which stays active.
     for (const args of [["up"], ["up", "--server", server]]) {
       const again = run(...args);
@@ -579,12 +580,12 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
     // `status` names the same cleanup for the attempt it shows under Maintenance.
     const status = run("status", "--space", space);
     const statusNext = status.stdout.split("\n").find((line) => line.includes(`cotal backup cleanup-fallback ${active.restore.attemptId}`)) ?? "";
-    assert.ok(statusNext.includes("--discard-history") && statusNext.includes(`the only copy of the ${leftOut} it left out`), `${mode} status names the cleanup that retires the restore\n${status.stdout}`);
+    assert.ok(statusNext.includes("--dry-run`") && statusNext.includes(`requires --discard-history and removes the only copy of the ${leftOut} it left out`), `${mode} status previews cleanup and names the retained data\n${status.stdout}`);
     must("down", run("down", "--yes"));
     const stopped = run("up", "-f", "cotal.yaml");
     assert.equal(stopped.status, 2, `${mode} up -f after the restored stack stopped refuses, exit 2\n${stopped.stdout}\n${stopped.stderr}`);
     assert.match(stopped.stderr, /Code: +LIFECYCLE_BLOCKED/);
-    assert.ok(stopped.stderr.includes(`retire the restore with \`cotal backup cleanup-fallback ${active.restore.attemptId} --yes --discard-history\`, which deletes the previous store and the ${leftOut} only it holds, then run \`cotal up -f cotal.yaml\` again`), `${mode} up -f names the cleanup\n${stopped.stderr}`);
+    assert.ok(conditionalCleanup.some((step) => stopped.stderr.includes(step)), `${mode} up -f names the separate choice\n${stopped.stderr}`);
     rmSync(manifest);
     if (mode === "open") {
       // The committed journal survives the broker's death; a later bare `up` relaunches over the
@@ -602,6 +603,16 @@ async function scenario(mode: "open" | "auth"): Promise<void> {
       const previous = active.restore.previousSource!.identity.path;
       const journalPath = join(root, ".cotal", "maintenance", "v1", "journal.json");
       const journalBefore = readFileSync(journalPath, "utf8");
+      const wrongAttempt = "restore-00000000-0000-4000-8000-000000000000";
+      for (const flags of [[], ["--discard-history"]]) {
+        const wrong = run("backup", "cleanup-fallback", wrongAttempt, "--yes", "--json", ...flags);
+        assert.equal(wrong.status, 2, wrong.stdout + wrong.stderr);
+        const { error } = JSON.parse(wrong.stdout);
+        assert.equal(error.code, "TARGET_NOT_FOUND");
+        assert.ok(error.remedy.includes(`\`cotal backup cleanup-fallback ${active.restore.attemptId} --dry-run${flags.length ? " --discard-history" : ""}\``), wrong.stdout);
+        assert.ok(error.remedy.includes(`requires --discard-history and removes the only copy of the ${leftOut} it left out`), wrong.stdout);
+        assert.doesNotMatch(error.remedy, /--yes/);
+      }
       const otherStore = join(root, ".cotal", "not-the-fallback");
       mkdirSync(otherStore, { mode: 0o700 });
       writeFileSync(join(otherStore, "marker"), "kept");
@@ -1178,6 +1189,15 @@ async function missingRegistrySourceGuidanceScenario(): Promise<void> {
     }
     const preview = succeeds(run("backup", "cleanup-fallback", attempt, "--dry-run", "--plain"));
     assert.match(preview, /Previous source:\s+none retained/);
+    for (const flags of [[], ["--discard-history"]]) {
+      const unconfirmed = run("backup", "cleanup-fallback", attempt, "--json", ...flags);
+      assert.equal(unconfirmed.status, 1, unconfirmed.stdout + unconfirmed.stderr);
+      const { error } = JSON.parse(unconfirmed.stdout);
+      assert.equal(error.code, "USAGE_INVALID");
+      assert.match(error.message, /requires --yes/);
+      assert.equal(error.remedy, `review it with \`cotal backup cleanup-fallback ${attempt} --dry-run\`, then run \`cotal backup cleanup-fallback ${attempt} --yes${flags.length ? " --discard-history" : ""}\``);
+      assert.deepEqual(readMaintenanceJournal(root), journal);
+    }
     assert.match(succeeds(run("backup", "cleanup-fallback", attempt, "--yes", "--plain")), /Completed restore journal retired/);
     assert.equal(readMaintenanceJournal(root), undefined);
     assert.ok(existsSync(join(store, "jetstream")) && existsSync(join(saved, "jetstream")));
@@ -1791,7 +1811,7 @@ async function otherAccountScenario(): Promise<void> {
     assert.equal(receipt.result.previousStore, previous, `the receipt names the store that holds the open account\n${restored.stdout}`);
     assert.deepEqual(receipt.warnings.find((warning) => warning.code === "OTHER_ACCOUNTS_NOT_RESTORED")?.target, { space, previousStore: previous, otherAccounts: ["$G"] }, `the receipt says the open account is not restored\n${restored.stdout}`);
     const status = must("status", run("status", "--space", space));
-    assert.ok(status.stdout.includes(`\`cotal backup cleanup-fallback ${attemptId} --yes --discard-history\``) && status.stdout.includes("the only copy of the streams of account $G"), `status names the consent the cleanup needs\n${status.stdout}`);
+    assert.ok(["cotal", "pnpm cotal"].some((cli) => status.stdout.includes(`\`${cli} backup cleanup-fallback ${attemptId} --dry-run\``)) && status.stdout.includes("requires --discard-history and removes the only copy of the streams of account $G"), `status previews cleanup and names the consent it needs\n${status.stdout}`);
     const preview = JSON.parse(must("cleanup preview", run("backup", "cleanup-fallback", attemptId, "--dry-run", "--json")).stdout) as { warnings: { code: string; target: { otherAccounts?: string[] } }[] };
     assert.deepEqual(preview.warnings.find((warning) => warning.code === "HISTORY_ONLY_IN_PREVIOUS_STORE")?.target.otherAccounts, ["$G"], "the cleanup preview names the open account");
     const refused = run("backup", "cleanup-fallback", attemptId, "--yes", "--json");
