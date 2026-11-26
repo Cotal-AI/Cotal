@@ -55,7 +55,9 @@ async function main() {
   const cliHome = join(fx.dir, "cli-home");
   mkdirSync(cliHome);
   process.env.COTAL_HOME = cliHome;
-  const cliEnv = { ...process.env, NO_COLOR: "1", COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const cliEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(cliEnv)) if (key.startsWith("COTAL_")) delete cliEnv[key];
+  Object.assign(cliEnv, { COTAL_HOME: cliHome, NO_COLOR: "1", COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" });
   const authRoot = join(fx.dir, "auth");
   const stateDir = userAuthStateDir(authRoot, a.space);
   mkdirSync(dirname(stateDir), { recursive: true });

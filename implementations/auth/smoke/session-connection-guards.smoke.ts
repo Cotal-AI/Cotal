@@ -172,7 +172,10 @@ try {
     saveSpaceAuth(authDir(root), a.auth);
     const keys = [deliveryCredsKey, membershipRwCredsKey, membershipObserverCredsKey, connectionEvictorCredsKey];
     for (const key of keys) await store.put(key(a.space, { injected: false, root }), (await a.store.get(key(a.space, composition)))!);
-    const daemon = spawn(releasedDelivery, ["deliver", "--space", a.space, "--root", root, "--server", fx.servers], { cwd: root, env: { ...process.env, COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    const daemonEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(daemonEnv)) if (key.startsWith("COTAL_")) delete daemonEnv[key];
+    Object.assign(daemonEnv, { COTAL_HOME: root, COTAL_TELEMETRY: "off", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" });
+    const daemon = spawn(releasedDelivery, ["deliver", "--space", a.space, "--root", root, "--server", fx.servers], { cwd: root, env: daemonEnv, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     for (const stream of [daemon.stdout, daemon.stderr]) stream.on("data", (data: Buffer) => { output = (output + data.toString()).slice(-8192); });
     let spawnError: Error | undefined;
