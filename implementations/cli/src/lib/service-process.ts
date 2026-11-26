@@ -587,7 +587,7 @@ function staleRevisionInstance(definition: ServiceDefinitionSnapshot, selected: 
 }
 
 type DefinitionHold = ReturnType<ReturnType<typeof serviceDefinitionStore>["pin"]>;
-export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap; managerIdleExit?: number }, held?: DefinitionHold) {
+export async function startProcessService(definition: ServiceDefinitionSnapshot, options: { instance?: string; newInstance?: boolean; foreground?: boolean; inheritSupervisor?: true; attempt?: ServiceAdapterAttempt; brokerInstance?: { instanceId: string; launchRequestId: string }; replacement?: { instanceId: string; launchRequestId: string }; managerSeatCap?: SeatCap; managerIdleExit?: number }, held?: DefinitionHold) {
   const value = definition.record.value;
   if (options.attempt && (value.launch.type !== "adapter" || options.foreground)) throw new CommandFailure("refused", "UNSUPPORTED", "a maintenance attempt reaches only an adapter launch in the background; no launch was allocated");
   // Only the broker and manager adapters read an attempt; every other adapter refuses it.
@@ -769,8 +769,11 @@ export async function startProcessService(definition: ServiceDefinitionSnapshot,
           logFrom = info.size;
         }
         const launchChild = value.launch.type === "adapter" && value.launch.adapter === "nats-broker" ? spawnBroker : spawn;
-        const started = options.foreground ? launch : inOwnScope(launch, env, { space: value.space, instanceId: id, launchRequestId });
-        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached: !options.foreground, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
+        // A unit owns the whole stack. Scoping away from systemd or leaving launchd's process
+        // group would let members escape the restart even though the unit owns the launcher.
+        const detached = !options.foreground && !options.inheritSupervisor;
+        const started = detached ? inOwnScope(launch, env, { space: value.space, instanceId: id, launchRequestId }) : launch;
+        child = launchChild(started.program, [...started.args], { cwd: started.cwd, env, shell: false, detached, stdio: options.foreground ? "inherit" : ["ignore", log!, log!] });
         if (!options.foreground) child.unref();
         child.once("exit", (code, signal) => { exited = true; exitCode = code; exitSignal = signal; done(); });
         await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });

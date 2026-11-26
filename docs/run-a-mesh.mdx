@@ -48,7 +48,7 @@ cotal up --detach
 This starts the stack in the background and reports the selected space and mesh address.
 Background startup is also the default for bare `cotal up`.
 For a terminal or service manager that must own the stack's lifetime, use `cotal up --foreground`.
-See [Supervise the stack](supervise-processes.mdx) before creating a systemd unit.
+To have systemd or launchd restart a recorded local stack after a broker crash, see [Supervise the stack](supervise-processes.mdx#keep-a-foreground-stack-running).
 
 Static authentication is the default.
 For per-user authentication, use `--user-auth --idp <url>` and follow [Identity](identity-and-auth.mdx).

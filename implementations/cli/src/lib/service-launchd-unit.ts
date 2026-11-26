@@ -32,6 +32,14 @@ function xml(value: string): string {
   return bounded(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 
+const str = (value: string): string => `<string>${xml(value)}</string>`;
+const entry = (key: string, value: string): string => `<key>${key}</key>${str(value)}`;
+const plistHeader = [
+  '<?xml version="1.0" encoding="UTF-8"?>',
+  '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+  '<plist version="1.0"><dict>',
+];
+
 /** A stable locator only; a saved receipt and unchanged source bytes must establish ownership. */
 export function launchdServiceLabel(space: string, name: string, id: string): string {
   if (token(space) !== space) throw new CommandFailure("refused", "USAGE_INVALID", "the launch agent needs one exact space token");
@@ -51,12 +59,8 @@ export function renderLaunchdServiceUnit(input: LaunchdUnitInput) {
   const [node, script] = input.cli.map(absolute);
   // The unit entry is a daemon launch, so Node runs it under the daemon node flags.
   const argv = [node!, ...DAEMON_NODE_FLAGS, script!, "__service-unit", "--control-home", controlHome, "--space", input.space, "--definition", definition, "--instance", instanceId];
-  const str = (value: string) => `<string>${xml(value)}</string>`;
-  const entry = (key: string, value: string) => `<key>${key}</key>${str(value)}`;
   const bytes = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0"><dict>',
+    ...plistHeader,
     entry("Label", label),
     `<key>ProgramArguments</key><array>${argv.map(str).join("")}</array>`,
     entry("WorkingDirectory", workingDirectory),
@@ -75,4 +79,23 @@ export function renderLaunchdServiceUnit(input: LaunchdUnitInput) {
   ].join("\n");
   if (Buffer.byteLength(bytes) > 64 * 1024) throw new CommandFailure("refused", "USAGE_INVALID", "the launch agent exceeds its bounded source size");
   return { unit: label, bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+export function renderLaunchdStackUnit(label: string, argv: readonly string[], root: string, env: Readonly<Record<string, string>>): string {
+  absolute(argv[0]!);
+  return [
+    ...plistHeader,
+    entry("Label", label),
+    `<key>ProgramArguments</key><array>${argv.map(str).join("")}</array>`,
+    entry("WorkingDirectory", absolute(root)),
+    '<key>EnvironmentVariables</key><dict>',
+    ...Object.entries(env).map(([key, value]) => entry(key, value)),
+    "</dict>",
+    "<key>RunAtLoad</key><true/>",
+    "<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>",
+    "<key>ExitTimeOut</key><integer>240</integer>",
+    "<key>Umask</key><integer>63</integer>",
+    "</dict></plist>",
+    "",
+  ].join("\n");
 }

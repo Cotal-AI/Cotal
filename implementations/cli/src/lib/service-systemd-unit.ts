@@ -31,6 +31,11 @@ function unitValue(value: string, exec = false): string {
   return `"${exec ? escaped.replaceAll("$", "$$") : escaped}"`;
 }
 
+function execStart(argv: readonly string[]): string {
+  if (path(argv[0]!).includes("$")) throw new CommandFailure("refused", "UNSUPPORTED", "the native executable path contains a systemd variable marker; the installer did not guess its first-token expansion");
+  return `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`;
+}
+
 /** A name is a locator, not ownership evidence; the receipt binds the full source bytes. */
 export function systemdServiceUnitName(space: string, name: string, id: string): string {
   if (token(space) !== space) throw new CommandFailure("refused", "USAGE_INVALID", "the owned unit needs one exact space token");
@@ -57,7 +62,6 @@ export function renderSystemdServiceUnit(input: UnitInput) {
   const environmentFile = path(input.environmentFile);
   if (input.cli.length !== 2) throw new CommandFailure("refused", "UNSUPPORTED", "the owned unit needs the durable two-token Node and CLI entry; a transient loader or extra launch flag was not pinned");
   const cli = input.cli.map((part) => path(part));
-  if (cli[0]!.includes("$")) throw new CommandFailure("refused", "UNSUPPORTED", "the native executable path contains a systemd variable marker; the installer did not guess its first-token expansion");
   const unit = systemdServiceUnitName(input.space, definition, instanceId);
   // The unit entry is a daemon launch, so Node runs it under the daemon node flags.
   const argv = [cli[0]!, ...DAEMON_NODE_FLAGS, cli[1]!, "__service-unit", "--control-home", controlHome, "--space", input.space, "--definition", definition, "--instance", instanceId];
@@ -69,7 +73,7 @@ export function renderSystemdServiceUnit(input: UnitInput) {
     "Type=simple",
     `WorkingDirectory=${unitValue(workingDirectory)}`,
     `EnvironmentFile=${unitValue(environmentFile)}`,
-    `ExecStart=${argv.map((part) => unitValue(part, true)).join(" ")}`,
+    execStart(argv),
     "Restart=no",
     "",
     "[Install]",
@@ -78,4 +82,28 @@ export function renderSystemdServiceUnit(input: UnitInput) {
   ].join("\n");
   if (Buffer.byteLength(bytes) > 64 * 1024) throw new CommandFailure("refused", "USAGE_INVALID", "the owned unit exceeds its bounded source size");
   return { unit, bytes, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+export function renderSystemdStackUnit(argv: readonly string[], env: Readonly<Record<string, string>>): string {
+  return [
+    "[Unit]",
+    "Description=Cotal local stack",
+    "StartLimitIntervalSec=1min",
+    "StartLimitBurst=5",
+    "",
+    "[Service]",
+    "Type=exec",
+    ...Object.entries(env).map(([name, value]) => `Environment=${unitValue(`${name}=${value}`)}`),
+    execStart(argv),
+    "Restart=on-failure",
+    "RestartSec=5s",
+    "KillMode=mixed",
+    "TimeoutStopSec=240s",
+    "OOMPolicy=continue",
+    "UMask=0077",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
 }

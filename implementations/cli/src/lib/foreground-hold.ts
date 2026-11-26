@@ -127,8 +127,15 @@ function goneRootStackStopped(held: StackJournal): boolean {
   }) && stackDefinitionsAt(held.space, held.root).length === 0 && findMesh(held.space)?.root !== held.root;
 }
 
+function crashRemedy(root: string, stack: StackJournal, moved: boolean, supervised: boolean): string {
+  if (supervised) return moved ? `Move the project back to ${shellPath(root)} before restarting the native unit.` : "Check the native service manager for the restart outcome.";
+  const brokerOnly = stack.members.some((member) => member.role === "manager" && member.state === "not-attempted" && member.code === undefined);
+  const repair = codeSpan(`${displayCmd()} up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(root)}`);
+  return moved ? `Move the project back to ${shellPath(root)}, then run ${repair} to repair the stack.` : `Run ${repair} to repair the stack.`;
+}
+
 /** Read-only lifetime check. An unreadable record is not proof that its process exited. */
-export function foregroundStackEnd(root: string, held: StackJournal | undefined): number | undefined {
+export function foregroundStackEnd(root: string, held: StackJournal | undefined, supervised = false): number | undefined {
   try {
     const current = readStackJournal(root)?.journal;
     if (!current && held && goneRootStackStopped(held)) {
@@ -159,10 +166,7 @@ export function foregroundStackEnd(root: string, held: StackJournal | undefined)
     if (current) {
       if (latest?.id !== operation.id || latest.phase !== operation.phase) return;
     } else if (latest || store.read(broker.instanceId)?.hash !== snapshot.hash) return;
-    const brokerOnly = stack.members.some((member) => member.role === "manager" && member.state === "not-attempted" && member.code === undefined);
-    const repair = codeSpan(`${displayCmd()} up --foreground${brokerOnly ? " --no-manager" : ""} --root ${shellPath(root)}`);
-    const remedy = current ? `Run ${repair} to repair the stack.` : `Move the project back to ${shellPath(root)}, then run ${repair} to repair the stack.`;
-    process.stderr.write(`nats-server exited unexpectedly (pid ${instance.process.pid}). The stack records were kept. ${remedy}\n`);
+    process.stderr.write(`nats-server exited unexpectedly (pid ${instance.process.pid}). The stack records were kept. ${crashRemedy(root, stack, !current, supervised)}\n`);
     return exitCode("failed", "OPERATION_FAILED");
   } catch { return; }
 }

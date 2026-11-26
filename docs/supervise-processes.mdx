@@ -1,6 +1,6 @@
 ---
 title: "Supervise the stack"
-description: "Choose process ownership under systemd and monitor actual component health."
+description: "Run a local stack under systemd or launchd and monitor component health."
 kind: Guide
 audience: "operators"
 ---
@@ -33,12 +33,29 @@ Inherited terminal or scope metadata alone does not prove that ownership.
 
 `cotal service install <name>` writes an owned systemd user unit for a saved direct-process service definition on Linux.
 It does not install the manager preset, broker, or sibling components as units in this release.
-The snippets below are examples of process ownership to adapt for your deployment, not a shipped stack installer.
+The whole-stack unit below is separate and you install it through the OS.
 See the [service reference](cli-services.mdx#service) for supported definitions.
 
 ## Keep a foreground stack running
 
-For one host, run a foreground launcher in `cotal-stack.service` so systemd can restart it after failure:
+For a recorded static-auth or open controller stack, generate a service definition for your OS:
+
+```bash
+cotal stack-unit --space main --root /srv/cotal-mesh > stack-unit.conf
+```
+
+The command needs a compiled Cotal installation that will still be present when the OS starts the service. It prints the definition to stdout and the suggested filename and boot limits to stderr. It does not write a unit file, install a service, or start one.
+It uses the recorded project, broker address and existing store. It does not start a fresh stack or run an interactive login, a manifest, or a pending recovery. Stop the detached stack with `cotal down --yes` from its project before starting the unit. The unit refuses to take over an already running member.
+
+On Linux, save the output in your systemd user unit directory under the printed `.service` filename. Reload the user manager and start that unit. Enable it if it should start when the user manager starts. The command reads the account's linger state and never changes it. Without linger, an enabled user unit does not start before login after reboot. A failed linger read does not establish boot coverage.
+
+On macOS, save the output under the printed `.plist` filename in `~/Library/LaunchAgents` and load it into your logged-in user's launchd domain. The LaunchAgent starts at login, not before login after a reboot. `stack-unit` refuses on other platforms.
+
+The generated unit delegates recovery to the OS. A broker crash exits the foreground process with failure so the OS can start it again on the same store. Use the native service manager to inspect a failed restart. Stop or unload the unit before running `cotal up` yourself, performing maintenance, or moving the project. Regenerate the unit if you intentionally replace the broker store or change the manager runtime.
+
+A completed `cotal down` exits cleanly and does not request an immediate restart. If the unit remains enabled, the next login or boot can start it again. The unit does not restart individual members while the broker stays up and imposes no seat memory limit. An OS restart can end any seat that still belongs to the unit's control group or process group.
+
+If you manage your own systemd unit, run a foreground launcher rather than detached `up`:
 
 ```ini
 [Unit]

@@ -11,6 +11,10 @@ import { Callout } from 'fumadocs-ui/components/callout';
 background. A prepared root uses the stack controller; existing legacy roots keep their launcher.
 If the native launcher cannot finish registering a broker it just started, it stops that broker and reports the error.
 
+## stack-unit [#stack-unit]
+
+`cotal stack-unit --space <s> --root <dir>` prints a Linux systemd user unit or macOS LaunchAgent for a recorded local controller stack. It does not install, enable, or start the service. See [Supervise the stack](supervise-processes.mdx#keep-a-foreground-stack-running) for the restart policy and boot requirements.
+
 
 ## up [#up]
 

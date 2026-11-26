@@ -94,6 +94,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   ext: { flags: ["force:boolean", "json:boolean:j", "plain:boolean", "repair:boolean", "reset:boolean"], positionals: true },
   // `docs` (2026-10): this version's bundled docs, registered by the composition root.
   docs: { flags: ["json:boolean:j", "plain:boolean", "refresh:boolean", "search:string"], positionals: true },
+  "stack-unit": { flags: ["root:string", "space:string:s"], positionals: false },
   up: {
     flags: [
       "channels:string", "detach:boolean:d", "dry-run:boolean", "file:string:f", "host:string",
@@ -459,6 +460,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: false,
   },
   "__service-unit": { flags: ["control-home:string", "definition:string", "instance:string", "space:string"], positionals: false },
+  "__stack-unit": { flags: ["binding:string", "no-manager:boolean", "root:string", "space:string:s"], positionals: false },
   "__setup-start": { flags: ["expected-version:string", "root:string", "space:string"], positionals: false },
   // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391), and the
   // custody records an earlier Linux pty manager left (#1391). Both are hidden: `manager reconcile`

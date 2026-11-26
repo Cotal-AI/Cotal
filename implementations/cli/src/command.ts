@@ -1037,7 +1037,7 @@ async function dispatchCli(registry: Registry, argv: string[], opts: RunCliOptio
   if (opts.extensions && !controlOnlyManager && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd, parsed?.values)) {
     // Startup checks seed compatibility here and reconciles at launch. A restore that refuses
     // before launch leaves the operator-global store as it found it.
-    const deferred = cmd?.name === "up" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
+    const deferred = cmd?.name === "up" || cmd?.name === "__stack-unit" || (cmd?.name === "backup" && parsed?.positionals[0] === "restore");
     try {
       if (deferred) {
         // Broker-only startup still checks the store generation. An explicit restore can start its

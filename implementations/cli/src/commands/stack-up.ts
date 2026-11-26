@@ -180,6 +180,8 @@ export interface StackUpRequest {
   managerSeatCap?: SeatCap;
   channels?: string;
   foreground: boolean;
+  /** A native unit owns its foreground launcher and its members. It only reopens this pinned store. */
+  supervisedStore?: ExistingStorePin;
   presentation: ReturnType<typeof presentationOf>;
   /** CLI advice that retries this invocation at a free broker port. Team boot has its own recovery. */
   retryAtAnotherAddress?(bindHost: string): Promise<string | undefined>;
@@ -848,7 +850,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
   // The named store must already exist as a real directory: preparation would otherwise create
   // an empty store at a mistyped path and start the stack on it. Its identity is pinned here and
   // checked again by preparation, which never creates a pinned store, and just before the broker starts.
-  const storePin = legacyStopped ? pinExistingStore(resolve(request.storeDir!), { root, space }) : undefined;
+  const storePin = request.supervisedStore ?? (legacyStopped ? pinExistingStore(resolve(request.storeDir!), { root, space }) : undefined);
   const savedBroker = !previous ? serviceDefinitionStore(space).read(STACK_DEFINITION.broker)?.record.value.launch : undefined;
   const savedConfig = savedBroker?.type === "adapter" && savedBroker.adapter === STACK_ADAPTER.broker && savedBroker.options.root === root && typeof savedBroker.options.config === "string" ? savedBroker.options.config : undefined;
   const savedText = savedConfig === undefined ? undefined : readFileSync(savedConfig, "utf8");
@@ -1049,6 +1051,7 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
     const started = await startProcessService(definition, {
       ...(replacement ? { replacement: { instanceId: replacement.instanceId, launchRequestId: replacement.launchRequestId } } : current[0] ? { instance: current[0].name } : {}),
       ...(role === "manager" && request.managerSeatCap !== undefined ? { managerSeatCap: request.managerSeatCap } : {}),
+      ...(request.supervisedStore ? { inheritSupervisor: true } : {}),
     });
     mark(role, { instanceId: started.instance.name, state: started.noOp ? "reused" : "started", replacement: undefined, process: started.instance.record.value.process });
     if (!started.noOp) changed.push(instanceProjection(started.instance));

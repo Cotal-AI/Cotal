@@ -9,6 +9,7 @@ import {
 } from "@cotal-ai/workspace";
 import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { upCommand, upComplete, upFlags, validateUpArguments } from "./commands/up.js";
+import { stackUnit, stackUnitEntry } from "./commands/stack-unit.js";
 import { runtimes, runtimesFlags } from "./commands/runtimes.js";
 import { down, downComplete, validateDownArguments } from "./commands/down.js";
 import { use, useComplete, useFlags, validateUseArguments } from "./commands/use.js";
@@ -203,6 +204,8 @@ const baseCommands: Command[] = [
     run: complete,
   },
   // ---- Mesh ---------------------------------------------------------------------------------
+  stackUnit,
+  stackUnitEntry,
   {
     kind: "command",
     name: "up",

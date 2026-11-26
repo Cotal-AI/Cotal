@@ -572,6 +572,7 @@ interrupted. Ctrl-C ends it at once with exit 130, as it ends the commands above
 | Manager | [`auth-service`](cli-services.mdx#server-daemons) | Deprecated and hidden from `cotal help`: run a user-auth space's auth service by hand; use the `auth-service` service preset |
 | Manager | [`daemon`](cli-processes.mdx#daemon) | Linux: connect this machine to a space with one command, install the local machine daemon as a user service, serve its control endpoint, read its status, sign it in, check and request its own registration with a space |
 | Services | [`service`](cli-services.mdx#service) | Run Cotal's built-in services and your own programs: list, add, start, stop, status, logs |
+| Services | [`stack-unit`](cli-startup.mdx#stack-unit) | Print a systemd user unit or LaunchAgent for a recorded local stack |
 | Services | [`manager`](cli-maintenance.mdx#manager) | Start, stop and check the manager that runs your agents, and its maintenance |
 | Identity | [`mint`](cli-auth.mdx#auth-mint) | Moved: credential minting is `cotal auth mint` |
 | Identity | [`actor`](cli-auth.mdx#actor) | Legacy, hidden from `cotal help`: the actor ledger; `auth grants`, `auth grant` and `auth revoke` replace it |
