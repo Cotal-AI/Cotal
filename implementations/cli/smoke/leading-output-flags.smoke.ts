@@ -52,12 +52,17 @@ const jsonDuplicate = (r: ReturnType<typeof run>, command: string) => r.status =
 for (const args of [
   ["--json", "--no-input", "--no-input", "version"],
   ["--no-input", "--no-input", "-j", "--", "-V"],
+  ["--no-input", "--no-input", "--plain=false", "version", "--json"],
+  ["--no-input", "--plain=false", "--no-input", "-j", "-V"],
   ["--no-input", "version", "--no-input", "--json"],
   ["version", "--no-input", "--no-input", "--json"],
 ]) {
   const r = run(args);
   check(`${args.join(" ")} preserves the JSON refusal`, jsonDuplicate(r, "version"), shown(r));
 }
+const literalJson = run(["--no-input", "--no-input", "--plain=false", "version", "--", "--json"]);
+check("a duplicate with a valued leading switch ignores literal --json", literalJson.status === 1 &&
+  literalJson.stdout === "" && literalJson.stderr === `✗ ${duplicateInput}\n`, shown(literalJson));
 
 const configHelp = run(["config", "get", "--help"]);
 check("config get help is scoped", configHelp.status === 0 && configHelp.stdout.includes("cotal config get <key>") && !configHelp.stdout.includes("--verbose"), shown(configHelp));

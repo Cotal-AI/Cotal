@@ -557,7 +557,8 @@ and serves no HTTP, so it refuses `--port`, the public-face flags and `--service
 refuses to start in a space that admits service endpoints: one whose full service has ever run with
 them. It never writes `auth-service.json`, and
 it exits non-zero when it loses a store connection or the broker. Give it the same `--auth-timeout`
-as the full service, the value the broker config renders.
+as the full service, the value the broker config renders. The replica continues evicting ended
+terminal connections through delivery when the full service is down.
 See [callout replicas](identity-and-auth.mdx#per-user-authentication).
 
 `--callout-only --spaces` serves several spaces from one callout process, one lane each, and stands

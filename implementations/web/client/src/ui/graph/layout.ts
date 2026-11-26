@@ -56,7 +56,7 @@ export class ForceLayout {
   private width = 0;
   private height = 0;
 
-  constructor(width: number, height: number) {
+  constructor(width: number, height: number, drawingScale = 1) {
     this.links = forceLink<Body, SimulationLinkDatum<Body>>([]).id((d) => d.id).strength(0.4);
     // The sized forces are placeholders here, replaced by `resize`. A replaced force keeps its place,
     // so the forces apply in this order whatever the size.
@@ -64,39 +64,32 @@ export class ForceLayout {
       .force("link", this.links)
       .force("charge", forceManyBody<Body>())
       .force("center", forceCenter())
-      .force("collide", forceCollide<Body>().radius((d) => d.r))
       .force("x", forceX<Body>())
       .force("y", forceY<Body>())
-      // The charge of a full mesh can push an outer node past the edge, where the drawing clips it.
-      // Each tick ends by keeping every node, with its radius and the name under it, inside the drawing.
-      .force("bounds", () => {
-        for (const b of this.bodies.values()) {
-          if (b.x !== undefined) b.x = Math.min(Math.max(b.x, b.r), this.width - b.r);
-          if (b.y !== undefined) b.y = Math.min(Math.max(b.y, b.r), this.height - b.r - LABEL_BELOW);
-        }
-      })
       .stop();
-    this.resize(width, height);
+    this.resize(width, height, drawingScale);
   }
 
   /** Fits the forces to a drawing of `width` by `height`: the centre, the pull to the middle and the
    *  spacing. Returns whether the size differs from the last one, which is when the caller should
    *  `reheat` so the nodes move to the new middle. Nodes keep their places until then. */
-  resize(width: number, height: number): boolean {
-    const size = `${width}x${height}`;
+  resize(width: number, height: number, drawingScale = 1): boolean {
+    const size = `${width}x${height}@${drawingScale}`;
     if (size === this.size) return false;
     this.size = size;
     this.width = width;
     this.height = height;
-    // The distances were tuned on the panel's 420 units; a larger drawing spreads them in proportion.
-    const k = Math.min(width, height) / 420;
+    // Extra space for dense drawings is for collisions, not longer links or stronger repulsion.
+    const k = Math.min(width, height) / drawingScale / 420;
     this.links.distance(90 * k);
     this.sim
       .force("charge", forceManyBody<Body>().strength(-280 * k * k))
       .force("center", forceCenter(width / 2, height / 2))
       // A weak pull to the middle keeps a group with no link to the rest from drifting out of view.
       .force("x", forceX<Body>(width / 2).strength(0.04))
-      .force("y", forceY<Body>(height / 2).strength(0.04));
+      .force("y", forceY<Body>(height / 2).strength(0.04))
+      // Resolve collisions after the pulls, with extra passes where many nodes compete for space.
+      .force("collide", forceCollide<Body>().radius((d) => d.r).iterations(drawingScale > 1 ? 3 : 1));
     return true;
   }
 
@@ -116,7 +109,8 @@ export class ForceLayout {
 
   /** Runs the simulation to rest in one go, for the first draw. */
   warm(): void {
-    this.sim.alpha(1).tick(WARM_TICKS);
+    this.sim.alpha(1);
+    for (let i = 0; i < WARM_TICKS; i++) this.tick();
   }
 
   /** Heats the simulation so the layout moves to fit a changed node or link set. */
@@ -127,6 +121,11 @@ export class ForceLayout {
   /** Moves the layout one step. */
   tick(): void {
     this.sim.tick();
+    // D3 applies velocity after its forces run. Bound the coordinates that the SVG actually uses.
+    for (const b of this.bodies.values()) {
+      if (b.x !== undefined) b.x = Math.min(Math.max(b.x, b.r), Math.max(b.r, this.width - b.r));
+      if (b.y !== undefined) b.y = Math.min(Math.max(b.y, b.r), this.height - b.r - LABEL_BELOW);
+    }
   }
 
   /** Whether the layout has come to rest and needs no more ticks. */

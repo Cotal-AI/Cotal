@@ -358,6 +358,9 @@ ledger files are excluded. The other endpoint stores are nonportable control sta
 submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
 auth, session and issued-authority stores. Restore recreates those streams empty with their
 canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup.
+A full backup includes the checkpoint of an open-space DM inbox that is still present after its
+seat disconnects, if the inbox has the standard inactivity threshold or none. A full restore
+recreates the inbox at the checkpoint's replay position with the standard inactivity threshold.
 The delivery daemon's anycast request records are control state too and come back empty. A full
 restore brings back the requests the TASK queue held at the cut and recreates its durables from
 checkpoints, so a role request a holder had taken and not yet acked at the cut is on its role's
@@ -613,8 +616,10 @@ On a legacy root, a restore uses the cap recorded in the preserved state unless 
 receives an explicit `--max-file-store <bytes>`. The restore journals the cap it uses so re-entry
 keeps it. If SIGINT, SIGTERM or SIGHUP interrupts a restore after commit intent and before the listener
 starts, the command names the attempt and tells you to run bare `cotal up` from that root. If SIGINT
-or SIGTERM makes foreground `up --restore` stop its listener before it answers, the command gives
-the same recovery step and exits 130 or 143, respectively. Bare `cotal up` continues the same attempt.
+or SIGTERM stops foreground `up --restore` before it records the manager commit, the command waits
+for its stack to stop, gives the same recovery step, and exits 130 or 143, respectively. Bare
+`cotal up` continues the same attempt. Once the manager commit is recorded, an interrupt lets the
+restore finish and print its receipt before stopping the stack and exiting with the signal's status.
 If no listener was bound to the attempt, it starts one only when no process of this account names
 the attempt and the recorded port is free. A listener spawned and never bound may still be opening
 the restored store, and NATS does not stop a second server from opening it too. While such a process

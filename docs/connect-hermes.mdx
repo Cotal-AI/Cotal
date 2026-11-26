@@ -149,11 +149,20 @@ onboarding:
     tool_progress_prompt: true
 ```
 
-Set the absolute profile path in the environment of the process that builds the launch:
+The default agent file created by `cotal setup` has a Markdown body, which Cotal cannot apply to an adopted profile.
+In your Cotal project, create a separate file at `.cotal/agents/hermes-adopt.md` with only this YAML frontmatter and no text after the closing `---`:
+
+```markdown
+---
+name: hermes-adopt
+---
+```
+
+Select that file and set the absolute profile path in the environment of the process that builds the launch:
 
 ```bash
 export COTAL_HERMES_ADOPT_HOME="$HOME/.hermes"
-cotal spawn --foreground --harness hermes
+cotal spawn --foreground --harness hermes --file .cotal/agents/hermes-adopt.md
 ```
 
 This example uses direct execution so the launcher reads this shell's setting.

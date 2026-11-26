@@ -87,7 +87,8 @@ export interface DashboardState {
    *  the server may hold older ones, or a live DM pushed the oldest out. A read that came back short
    *  of the window held everything the server had, and sets it false. */
   dmsCut: boolean;
-  open: { channel: string; messages: StoredMessage[] } | null;
+  /** `olderRetained` is known after a successful history read and follows that channel's window. */
+  open: { channel: string; messages: StoredMessage[]; olderRetained?: boolean } | null;
   stale: StaleMark[];
   /** Newest last, capped at 50. */
   orderNotes: OrderNote[];
