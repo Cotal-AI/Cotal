@@ -250,6 +250,16 @@ try {
     const unregistered = run(clone, [...args, "--json"]);
     check("an unregistered manifest root still refuses and leaves pending legacy trust unwritten",
       unregistered.status === 1 && unregistered.stdout.includes("launchOptions.mcp-config") && unregistered.stdout.includes(`cotal trust ${clone}`) && recordsAbsent(), unregistered);
+    const prefix = join(config, "cotal", "extensions");
+    const pkg = "@cotal-ai/connector-claude-code";
+    const source = resolve("extensions/connector-claude-code");
+    mkdirSync(join(prefix, "node_modules", "@cotal-ai"), { recursive: true });
+    symlinkSync(source, join(prefix, "node_modules", pkg), "dir");
+    const version = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).version;
+    writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{
+      pkg, version, commands: [], provides: [{ kind: "connector", name: "claude" }],
+      connectors: [{ name: "claude", requires: ["claude"], eventPlane: true, setup: null }],
+    }] }));
     try {
       const retry = run(legacy, args);
       const livePort = new URL(legacyServer).port;
