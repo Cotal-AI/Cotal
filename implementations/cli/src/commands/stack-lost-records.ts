@@ -5,13 +5,12 @@ import type { ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, ConfirmationRequired, assertRecordIdentity, homeCotalDir, loadMeshes, localProcessOwnerStatus, presentationOf, probeLiveness, readMaintenanceLockHolder, recordOperationSpace, releaseMaintenanceLock, stackHomeRemedy, writeResult, type Report } from "@cotal-ai/workspace";
 import { serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import { assertNoServiceUnitAttempts } from "../lib/service-process.js";
-import { acquireStackOperationLock, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, writeStackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
+import { acquireStackOperationLock, newStackOperation, readStackJournal, recordedProcessesUnder, stackMaintenanceFence, stackOperationUnsettled, stackRecoveryHost, stackStartedWithoutManager, writeStackJournal, type StackJournal, type StackJournalSnapshot, type StackMember } from "../lib/stack-journal.js";
 
 const ORDER = ["manager", "delivery", "auth", "broker"];
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-function unconfirmedLaunches(snapshot: StackJournalSnapshot): StackMember[] {
-  const journal = snapshot.journal;
+function unconfirmedLaunches(journal: StackJournal): StackMember[] {
   if (journal.operation.kind !== "up" || !stackOperationUnsettled(journal)) return [];
   return journal.members.filter((row) => row.instanceId === null && (row.state === "planned" || row.state === "unknown"));
 }
@@ -20,11 +19,11 @@ function unconfirmedLaunches(snapshot: StackJournalSnapshot): StackMember[] {
 export function stackRecordsLost(snapshot: StackJournalSnapshot): boolean {
   const space = snapshot.journal.space, store = serviceInstanceStore(space);
   return snapshot.journal.members.some((row) => row.instanceId !== null && store.read(row.instanceId) === undefined)
-    || (unconfirmedLaunches(snapshot).length > 0 && snapshot.journal.members.every((row) => serviceInstances(space, row.definition).length === 0));
+    || (unconfirmedLaunches(snapshot.journal).length > 0 && snapshot.journal.members.every((row) => serviceInstances(space, row.definition).length === 0));
 }
 
-function members(snapshot: StackJournalSnapshot): StackMember[] {
-  const journal = snapshot.journal, target = { root: journal.root, space: journal.space };
+function members(journal: StackJournal): StackMember[] {
+  const target = { root: journal.root, space: journal.space };
   const refuse = (message: string): never => { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", message, { target, remedy: stackHomeRemedy(journal.recovery?.home) }); };
   if (process.platform !== "linux") refuse("recovery from missing stack instance records requires Linux; no member was stopped");
   if (!journal.recovery || journal.recovery.home !== resolve(homeCotalDir()) || journal.recovery.host !== stackRecoveryHost())
@@ -33,7 +32,7 @@ function members(snapshot: StackJournalSnapshot): StackMember[] {
     refuse("the stack retains a maintenance operation; missing-record recovery cannot decide it and no member was stopped");
   if (journal.members.some((row) => row.replacement !== undefined))
     refuse("the stack retains an unresolved replacement launch; no member was stopped");
-  if (unconfirmedLaunches(snapshot).length) {
+  if (unconfirmedLaunches(journal).length) {
     const holder = readMaintenanceLockHolder(journal.root);
     if (holder?.operation === "foreground up" && localProcessOwnerStatus(holder.owner) === "alive")
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "a foreground startup is still in progress; no member was stopped", { target, remedy: "wait for startup to finish, then retry `cotal down --yes`" });
@@ -61,6 +60,17 @@ function members(snapshot: StackJournalSnapshot): StackMember[] {
   return rows.sort((a, b) => ORDER.indexOf(a.role) - ORDER.indexOf(b.role));
 }
 
+/** The exact live broker in a completed, broker-only open stack that has lost its home records. */
+export function lostRecordsBroker(journal: StackJournal): number | undefined {
+  if (journal.mode !== "open" || !stackStartedWithoutManager(journal)) return undefined;
+  const pinned = journal.members.filter((row) => row.instanceId !== null);
+  if (pinned.length !== 1 || pinned[0]?.role !== "broker" || pinned[0].process === undefined) return undefined;
+  try {
+    if (members(journal).length === 1 && assertRecordIdentity(pinned[0].process).kind === "match") return pinned[0].process.pid;
+  } catch { /* A recovery refusal cannot establish a running broker from missing records. */ }
+  return undefined;
+}
+
 /** Recovery never recreates service authority or runs a native adapter with inferred records. */
 export async function lostRecordsStackDown(root: string, values: ParsedArgs["values"]): Promise<void> {
   if (["with-agents", "abandon-stop", "abandon-launch", "preserve-state"].some((flag) => values[flag] !== undefined))
@@ -72,7 +82,7 @@ export async function lostRecordsStackDown(root: string, values: ParsedArgs["val
     if (values.space !== undefined && values.space !== snapshot.journal.space)
       throw new CommandFailure("refused", "CONFLICT", "--space is not this folder's stack; no member was stopped");
     if (!stackRecordsLost(snapshot)) throw new CommandFailure("refused", "CONFLICT", "the stack instance records changed before recovery; run down again");
-    return { snapshot, rows: members(snapshot) };
+    return { snapshot, rows: members(snapshot.journal) };
   };
   const initial = inspect();
   recordOperationSpace(initial.snapshot.journal.space);
@@ -104,7 +114,7 @@ export async function lostRecordsStackDown(root: string, values: ParsedArgs["val
       // Never continue under records or broker-sharing scope that reappeared during an earlier stop.
       const current = readStackJournal(root);
       if (!current || current.sha256 !== snapshot.sha256) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the stack journal changed during recovery; later members were not stopped", { target });
-      try { members(current); }
+      try { members(current.journal); }
       catch {
         save("unknown");
         throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the recovery scope changed after the stop began; recorded member outcomes were kept and later members were not stopped", { target, remedy: "restore the missing records or inspect the stack journal before running down again" });
